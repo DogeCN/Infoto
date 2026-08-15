@@ -49,7 +49,7 @@ function renderIcons(root) {
    ========================================================= */
 const CONFIG = {
     API_BASE: '',
-    CDEAA_LIMIT: 600 * 1024,
+    SINGLE_PART_LIMIT: 600 * 1024,
     CHUNK_SIZE: 1024 * 1024,
     CONCURRENCY: 3,
     MAX_RETRY: 3
@@ -607,16 +607,7 @@ async function withRetry(fn, retries) {
     throw lastErr;
 }
 
-async function uploadPartToCdeaa(blob, name) {
-    return withRetry(async () => {
-        const fd = new FormData();
-        fd.append('file', blob, name);
-        const txt = await uploadViaXhr('https://cdeaa.qdqqd.com/public/resource/oss/put-file-attach', fd, {});
-        const json = JSON.parse(txt);
-        if (!(json.data && json.data.link)) throw new Error('上传响应缺少 link');
-        return 'https://www.lnjubao.cn' + json.data.link;
-    }, CONFIG.MAX_RETRY);
-}
+// cdeaa 直传分支已移除：统一由 uploadPartToTcProgressive 经 /api/upload-proxy 中转 tc 图床。
 
 async function runWithConcurrency(tasks, concurrency) {
     const results = new Array(tasks.length);
@@ -637,11 +628,12 @@ async function runWithConcurrency(tasks, concurrency) {
 async function uploadToBed(blob, name, onProgress) {
     onProgress(0.05);
     const parts = [];
-    if (blob.size <= CONFIG.CDEAA_LIMIT) {
-        onProgress(0.5);
-        parts.push(await uploadPartToCdeaa(blob, name));
+    // 统一走 tc 图床（经 Worker /api/upload-proxy 中转）：Worker 可访问 tc，使 /api/file 能 200 直出字节，
+    // 谷歌搜图等外部抓取可用；小文件整文件、大文件分片均经此通道，不再直传 cdeaa。
+    if (blob.size <= CONFIG.SINGLE_PART_LIMIT) {
+        const link = await uploadPartToTcProgressive(blob, name, p => onProgress(0.05 + p * 0.9));
         onProgress(1);
-        return parts;
+        return [link];
     }
     const total = Math.ceil(blob.size / CONFIG.CHUNK_SIZE);
     const chunkProgress = new Array(total).fill(0);
@@ -1763,12 +1755,12 @@ async function uploadFiles(files) {
                 toast(`「${file.name}」已存在，跳过`, 'info');
                 continue;
             }
-            // 子阶段 2b：直链上传（占该张的 90%，内部按字节级 onProgress）
+            // 子阶段 2b：上传到 tc 图床（占该张的 90%，内部按字节级 onProgress）
             const upStart = SUB.CHECK;
             const upSpan = SUB.UPLOAD;
             const parts = await uploadToBed(pr.blob, upName, p => {
                 addSubProgress(upStart + p * upSpan);
-                recomputeUploadOverall(file.name, p < 1 ? '直链上传' : '获取直链');
+                recomputeUploadOverall(file.name, p < 1 ? '上传到图床' : '上传完成');
             });
             // 子阶段 2c：获取尺寸 + 写库（占该张的 5%）
             addSubProgress(SUB.CHECK + SUB.UPLOAD + SUB.DIMS * 0.2);
@@ -2005,11 +1997,12 @@ function updateLightbox() {
     if (w) {
         w.querySelectorAll('.audio-toggle').forEach(n => n.remove());
     }
-    state.zoom = { s: 1, x: 0, y: 0 };
+    state.zoom = { s: 1, x: 0, y: 0, r: 0 };
     state.panning = false;
     if (w) {
         w.style.transition = 'none';
-        w.style.transform = 'translate(0,0) scale(1)';
+        w.style.transformOrigin = '50% 50%';
+        w.style.transform = 'translate(0,0) scale(1) rotate(0deg)';
         w.style.opacity = 1;
     }
 
@@ -2109,16 +2102,17 @@ function resetGestures() {
     });
 }
 
-/* ---- Lightbox 缩放 / 平移（统一作用到 lbMediaWrap 容器，img/video 同步被变换）---- */
+/* ---- Lightbox 缩放 / 平移 / 旋转（统一作用到 lbMediaWrap 容器，img/video 同步被变换）---- */
 function lbWrap() { return $('#lbMediaWrap'); }
 function applyZoomTransform() {
     const w = lbWrap(); if (!w) return;
-    w.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s})`;
+    w.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s}) rotate(${(state.zoom.r || 0).toFixed(2)}deg)`;
 }
 function clampPan() {
     const w = lbWrap(); if (!w) return;
     const sr = stage.getBoundingClientRect();
     const r = w.getBoundingClientRect();
+    // scale<=1 时 translate 归零，但**不重置旋转**（用户显式旋转过就保留）
     if (state.zoom.s <= 1) { state.zoom.x = 0; state.zoom.y = 0; applyZoomTransform(); return; }
     if (r.left > sr.left + 1) state.zoom.x += (sr.left + 1 - r.left);
     if (r.right < sr.right - 1) state.zoom.x += (sr.right - 1 - r.right);
@@ -2138,8 +2132,11 @@ function zoomTo(ns, sx, sy) {
     clampPan();
 }
 function resetZoom() {
-    state.zoom = { s: 1, x: 0, y: 0 };
-    const w = lbWrap(); if (w) { w.style.transition = 'transform .2s ease'; }
+    state.zoom = { s: 1, x: 0, y: 0, r: 0 };
+    const w = lbWrap(); if (w) {
+        w.style.transition = 'transform .2s ease';
+        w.style.transformOrigin = '50% 50%';
+    }
     applyZoomTransform();
     setTimeout(() => { if (w) w.style.transition = 'none'; }, 200);
 }
@@ -2147,21 +2144,50 @@ let pinch = null;
 function startPinch(e) {
     const t0 = e.touches[0], t1 = e.touches[1];
     const sr = stage.getBoundingClientRect();
+    const dx = t0.clientX - t1.clientX, dy = t0.clientY - t1.clientY;
+    // 记录初始：双指距离 + 向量角度（度）+ 两指中心（stage 坐标）+ 当前缩放/旋转
+    const dist = Math.hypot(dx, dy) || 1;
+    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    const cxStage = (t0.clientX + t1.clientX) / 2 - sr.left;
+    const cyStage = (t0.clientY + t1.clientY) / 2 - sr.top;
+    // 把两指中心换算成 wrap 相对百分位，作为 transform-origin 让旋转/缩放围绕两指中心（仿 iOS/Google Photos）
+    const w = lbWrap();
+    if (w) {
+        const wr = w.getBoundingClientRect();
+        const oxPct = wr.width ? ((cxStage + sr.left - wr.left) / wr.width * 100) : 50;
+        const oyPct = wr.height ? ((cyStage + sr.top - wr.top) / wr.height * 100) : 50;
+        w.style.transition = 'none';
+        w.style.transformOrigin = `${oxPct.toFixed(2)}% ${oyPct.toFixed(2)}%`;
+    }
     pinch = {
-        dist: Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY) || 1,
+        dist, angle,
+        cx: cxStage, cy: cyStage,
         s: state.zoom.s,
-        cx: (t0.clientX + t1.clientX) / 2 - sr.left,
-        cy: (t0.clientY + t1.clientY) / 2 - sr.top,
+        r: state.zoom.r || 0,
     };
 }
 
+// 归一化角度差（返回 (-180, +180]，避免 179°→-179° 时旋转突然转 358°）
+function _normAngleDelta(d) {
+    while (d > 180) d -= 360;
+    while (d <= -180) d += 360;
+    return d;
+}
+
+function _isRotated() {
+    // 吸附后 0/180/360° 视为"水平"，其他任何角度（含 90/270°）都视为"旋转了，应该走平移"
+    // 注意 90° / 270° 时图片是竖图横放，主流相册依然允许用户 pan 调整位置看图
+    const r = Math.abs(state.zoom.r || 0) % 360;
+    const TOL = 0.5;
+    return !(r <= TOL || Math.abs(r - 180) <= TOL || Math.abs(r - 360) <= TOL);
+}
 function onGs(e) {
     if (!state.lightboxOpen || state.menuOpen) return;
     if (e.target.closest('#lbMoreBtn,#lbCloseBtn,.audio-toggle')) return;
     // 双指捏合缩放
     if (e.touches && e.touches.length === 2) { startPinch(e); state.dragging = true; _setAudioBtnsVisible(false); return; }
-    // 已放大：单指/鼠标拖动 = 平移看图（不做投票手势）
-    if (state.zoom.s > 1.01) {
+    // 已放大 / 或图片被旋转过：单指/鼠标拖动 = 平移看图（不做投票手势，避免碰一下就翻页）
+    if (state.zoom.s > 1.01 || _isRotated()) {
         state.dragging = true; state.panning = true;
         const pt = e.touches ? e.touches[0] : e;
         state.dragStart = { x: pt.clientX, y: pt.clientY };
@@ -2180,15 +2206,28 @@ function onGs(e) {
 }
 function onGm(e) {
     if (!state.dragging) return;
-    // 捏合缩放
+    // 捏合缩放 + 双指旋转（与缩放同 anchor，归一化角度差避免 179↔-179 跨零跳变）
     if (e.touches && e.touches.length === 2) {
         if (!pinch) startPinch(e);
         const t0 = e.touches[0], t1 = e.touches[1];
         const sr = stage.getBoundingClientRect();
-        const d = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+        const dx = t0.clientX - t1.clientX, dy = t0.clientY - t1.clientY;
+        const d = Math.hypot(dx, dy) || 1;
+        const curAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+        const rotDelta = _normAngleDelta(curAngle - pinch.angle);
         const cx = (t0.clientX + t1.clientX) / 2 - sr.left;
         const cy = (t0.clientY + t1.clientY) / 2 - sr.top;
-        zoomTo(pinch.s * (d / pinch.dist), pinch.cx, pinch.cy);
+
+        // 1) 先把 zoom 按双指锚点缩放（沿用 zoomTo 的锚点计算，不做 clampPan 因为拖动中）
+        const ns = Math.min(8, Math.max(1, pinch.s * (d / pinch.dist)));
+        const Sx = sr.width / 2, Sy = sr.height / 2;
+        const s = pinch.s, x = state.zoom.x, y = state.zoom.y;
+        state.zoom.s = ns;
+        state.zoom.x = (cx - Sx) - ns * (cx - Sx - x) / s;
+        state.zoom.y = (cy - Sy) - ns * (cy - Sy - y) / s;
+        // 2) 叠加旋转相对增量（以 pinch 起始为基准，避免累积浮点漂移）
+        state.zoom.r = pinch.r + rotDelta;
+        applyZoomTransform();
         if (e.cancelable) e.preventDefault();
         return;
     }
@@ -2228,8 +2267,32 @@ function onGm(e) {
 }
 function onGe(e) {
     if (!state.dragging) return;
-    // 捏合结束
-    if (pinch) { pinch = null; state.dragging = false; _setAudioBtnsVisible(true); return; }
+    // 捏合结束：吸附到最近的 90°（iOS / Google Photos 主流行为），动画结束后再把 transform-origin 切回中心
+    if (pinch) {
+        const w = lbWrap();
+        let r = (state.zoom.r || 0);
+        const snapped = Math.round(r / 90) * 90;
+        // 归一化到 [0, 360)，避免累积到几千度
+        r = snapped % 360; if (r < 0) r += 360;
+        state.zoom.r = r;
+        if (state.zoom.s <= 1.01) { state.zoom.x = 0; state.zoom.y = 0; }
+        else clampPan();
+        if (w) {
+            w.style.transition = 'transform .2s ease';
+            applyZoomTransform();
+            setTimeout(() => {
+                try {
+                    w.style.transition = 'none';
+                    w.style.transformOrigin = '50% 50%';
+                    applyZoomTransform();
+                } catch (_) { }
+            }, 210);
+        } else {
+            applyZoomTransform();
+        }
+        pinch = null; state.dragging = false; _setAudioBtnsVisible(true);
+        return;
+    }
     // 平移结束
     if (state.panning) {
         state.dragging = false; state.panning = false;

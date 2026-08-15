@@ -14,7 +14,7 @@
  *   sha:<hash>    → 对应 photoId（查重反向索引）
  *   votes:<id>    → { likes:[ip...], dislikes:[ip...] }（投票真值源）
  *
- * 上传由浏览器直连图床（cdeaa OSS），本服务端只接收最终直链；大文件分片经 tc 中转，
+ * 上传统一由浏览器经 /api/upload-proxy 中转 tc 图床（Worker 可访问 tc，故 /api/file 能 200 直出字节，外部抓取可用）；
  * 取图时由本服务端合并还原。图片压缩（WebP）在浏览器端完成，服务端不做转码。
  */
 
@@ -137,7 +137,7 @@ export default {
     }
 
     /* ---------- 上传中转：POST /api/upload-proxy（大文件分片走 tc 图床） ---------- */
-    // 浏览器直传 cdeaa 有 ~600KB 上限；大文件分片后经本接口中转 tc 图床（Worker 可访问 tc）
+    // 浏览器经本接口中转 tc 图床（Worker 可访问 tc）：小文件整文件、大文件分片后均经此上传。
     // 服务端不落盘、不二次处理，只转发并原样返回直链。
     if (path === '/api/upload-proxy' && request.method === 'POST') {
       // 仅服务端用密钥签发 tc token，前端不再持有密钥（防止泄露被滥用上传/托管恶意文件）
@@ -172,8 +172,8 @@ export default {
     }
 
     /* ---------- 取图 / 分片还原：GET /api/file/<id> ---------- */
-    // 照片以多个分片直链（cdeaa / tc OSS）存储在 KV，本接口动态拉取各分片拼接还原为完整文件。
-    // 单分片 → 302 直连图床；多分片（tc）在 Worker 内合并后原样回传。不做转码（浏览器已存 WebP/原图）。
+    // 照片分片直链存于 tc 图床（KV 记 parts），本接口动态拉取各分片拼接还原为完整文件。
+    // 单分片：Worker 拉 tc 字节 200 直出（外部抓取可用）；多分片：Worker 内合并回传。不做转码（浏览器已存 WebP/原图）。
     if (path.startsWith('/api/file/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const id = path.slice('/api/file/'.length);
@@ -182,20 +182,42 @@ export default {
       const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : (p.url ? [p.url] : []);
       if (!parts.length) return json(cors, { error: 'no parts' }, 404);
       const forceDownload = url.searchParams.has('dl');
+      if (!p.ext) return json(cors, { error: 'photo missing ext' }, 500);
+      const ext = String(p.ext).toLowerCase();
+      const dlName = p.id + '.' + ext;
+      const ct = mimeFromExt(ext);
+      const isSafe = ct.startsWith('image/') || ct.startsWith('video/');
+      const fhdrs = {
+        ...cors,
+        'Content-Type': ct,
+        'Cache-Control': 'public, max-age=86400',
+      };
+      if (forceDownload || !isSafe) {
+        fhdrs['Content-Disposition'] = safeDisposition(dlName, forceDownload || !isSafe);
+      }
+      // tc 图床公开可读（仅需伪 UA），Worker 拉取后 200 直出，外部抓取（谷歌搜图等）可拿到字节
+      const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+      const tcHeaders = { 'User-Agent': ua, 'Referer': 'https://inf.prom.cc.cd/', 'Accept': '*/*' };
 
-      // 单分片（小/中文件，存于 cdeaa）：Worker 出口被 EdgeOne 封，无法直连，只能 302 让浏览器取
+      // 单分片：Worker 流式转发 tc 字节（200）；legacy cdeaa 不可达时回退 302（浏览器仍能显示，仅外部搜图不可用）
       if (parts.length === 1) {
+        try {
+          const r = await fetch(parts[0], { headers: tcHeaders, redirect: 'follow' });
+          if (r.ok) {
+            const cl = r.headers.get('Content-Length');
+            if (cl) fhdrs['Content-Length'] = cl;
+            return new Response(r.body, { status: 200, headers: fhdrs });
+          }
+        } catch (_) { /* 落到下方 302 回退 */ }
         return Response.redirect(parts[0], 302);
       }
 
+      // 多分片（tc）：逐片拉取合并回传
       try {
-        // 多分片（大文件，分片存于 tc，Worker 可访问）：逐片拉取拼接
-        // EdgeOne 会拦截无 UA/数据中心 UA 的请求，伪装浏览器 UA 绕过
         const chunks = [];
         let total = 0;
-        const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
         for (const u of parts) {
-          const r = await fetch(u, { headers: { 'User-Agent': ua, 'Referer': 'https://inf.prom.cc.cd/', 'Accept': '*/*' } });
+          const r = await fetch(u, { headers: tcHeaders });
           if (!r.ok) return json(cors, { error: 'part fetch failed ' + r.status }, 502);
           const ab = await r.arrayBuffer();
           chunks.push(new Uint8Array(ab));
@@ -204,22 +226,8 @@ export default {
         const merged = new Uint8Array(total);
         let off = 0;
         for (const c of chunks) { merged.set(c, off); off += c.length; }
-
-        if (!p.ext) return json(cors, { error: 'photo missing ext' }, 500);
-        const ext = String(p.ext).toLowerCase();
-        const dlName = p.id + '.' + ext;
-        const ct = mimeFromExt(ext);
-        const isSafe = ct.startsWith('image/') || ct.startsWith('video/');
-        const fhdrs = {
-          ...cors,
-          'Content-Type': ct,
-          'Content-Length': String(total),
-          'Cache-Control': 'public, max-age=86400',
-        };
-        if (forceDownload || !isSafe) {
-          fhdrs['Content-Disposition'] = safeDisposition(dlName, forceDownload || !isSafe);
-        }
-        return new Response(merged, { headers: fhdrs });
+        fhdrs['Content-Length'] = String(total);
+        return new Response(merged, { status: 200, headers: fhdrs });
       } catch (e) {
         return json(cors, { error: 'merge error: ' + e.message }, 502);
       }
