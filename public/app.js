@@ -2368,10 +2368,6 @@ $('#menuGoogle').addEventListener('click', () => {
     toast('即将打开 Google 搜图', 'info');
     closeMenu();
 });
-$('#menuAdmin').addEventListener('click', () => {
-    window.open('/admin', '_blank', 'noopener');
-    closeMenu();
-});
 
 function downloadUrl(url, name) {
     const a = el('a');
