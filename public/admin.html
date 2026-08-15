@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0a0e1a" />
   <meta name="robots" content="noindex" />
-  <title>Infoto · 管理</title>
+  <title>Infoto 管理后台</title>
   <style>
     :root {
       --bg: #0a0e1a;
@@ -171,6 +171,9 @@
       <input id="pw" type="password" placeholder="请输入密码" autocomplete="current-password" />
       <button id="btnLogin">登录</button>
       <div class="msg" id="mLogin"></div>
+      <div class="row">
+        <button class="ghost" onclick="location.href='/'">返回</button>
+      </div>
     </div>
 
     <div class="panel" id="pSetup">
@@ -181,6 +184,9 @@
       <input id="spw2" type="password" placeholder="再次输入" autocomplete="new-password" />
       <button id="btnSetup">设置</button>
       <div class="msg" id="mSetup"></div>
+      <div class="row">
+        <button class="ghost" onclick="location.href='/'">返回</button>
+      </div>
     </div>
 
     <div class="panel" id="pChange">
@@ -193,10 +199,9 @@
       <div class="msg" id="mChange"></div>
       <div class="row">
         <button class="ghost" id="btnLogout">退出</button>
+        <button class="ghost" onclick="location.href='/'">返回</button>
       </div>
     </div>
-
-    <a class="back" href="/">← 返回</a>
   </div>
 
   <script>
