@@ -102,15 +102,6 @@ button:focus-visible {
   height: 1.75em;
 }
 
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;
-}
-
-.scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
 @keyframes shimmer {
   0% {
     background-position: -400px 0
@@ -138,10 +129,6 @@ button:focus-visible {
     opacity: 1;
     transform: scale(1)
   }
-}
-
-.img-fade {
-  animation: fadeIn .4s ease forwards;
 }
 
 /* ============ 顶部导航 ============ */
@@ -1148,13 +1135,6 @@ video.ph-img {
 
 .hidden {
   display: none !important;
-}
-
-/* 无限滚动哨兵：高度 1px，进入视口即加载下一批 */
-.scroll-sentinel {
-  height: 1px;
-  width: 100%;
-  pointer-events: none;
 }
 
 /* Lightbox 缩放：放大后裁切溢出，拖动用 transform 平移（作用在 lbMediaWrap 容器上） */
