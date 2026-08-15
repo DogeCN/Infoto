@@ -360,19 +360,19 @@ export default {
   },
 };
 
-// 静态资源统一走这里：ASSETS 返回后覆盖 Cache-Control 为 no-cache。
-// 原因：部署切换瞬间 ASSETS 可能短暂返回空 200，被 Cloudflare 边缘按请求特征缓存成"空 HTML/CSS"，
-// 导致用户拿到无样式页面（瀑布流塌成单列、lightbox 失去 touch-action 缩放被浏览器原生抢走）且刷新无效。
-// no-cache + must-revalidate 让每次请求回源校验，污染条目会在下一次访问时自动用真实内容覆盖。
+// 静态资源统一走这里：ASSETS 返回后覆盖 Cache-Control 为 no-store。
+// 原因：Cloudflare 面板存在 Cache Everything 规则（Edge TTL 覆盖源站、缓存 key 不含 query），
+// 部署切换后旧条目会长期 HIT，用户刷新也拿不到新代码（曾致"单列/无样式/缩放异常"且刷新无效）。
+// no-store 让边缘不再缓存这些资源，每次回源拿到最新内容；配合部署后 purge 清除存量旧条目。
 async function serveAsset(env, request) {
   const res = await env.ASSETS.fetch(request);
   const h = new Headers(res.headers);
-  if (res.ok) h.set('Cache-Control', 'no-cache, must-revalidate');
+  if (res.ok) h.set('Cache-Control', 'no-store');
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
 }
 
 function html(body) {
-  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, must-revalidate' } });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 }
 
 function json(headers, data, status = 200) {
