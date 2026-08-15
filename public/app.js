@@ -81,13 +81,13 @@ async function makeJwt(sha) {
     return `${header}.${payload}.${sig}`;
 }
 
-/* ---- 无损压缩（WebP，全浏览器兼容） ---- */
-let webpEncode = null;
-async function loadWebp() {
-    if (webpEncode) return webpEncode;
-    const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/webp@1.3.0/+esm');
-    webpEncode = mod.encode;
-    return webpEncode;
+/* ---- 无损压缩（JXL，libjxl WASM；压缩率实测优于 WebP，effort=7 最快） ---- */
+let jxlEncode = null;
+async function loadJxlEncode() {
+    if (jxlEncode) return jxlEncode;
+    const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/jxl@1.2.0/+esm');
+    jxlEncode = mod.encode;
+    return jxlEncode;
 }
 
 async function fileToImageData(file) {
@@ -102,12 +102,12 @@ async function fileToImageData(file) {
 
 async function compressLossless(file) {
     try {
-        const encode = await loadWebp();
+        const encode = await loadJxlEncode();
         const data = await fileToImageData(file);
-        const buf = await encode(data, { quality: 100, effort: 5 });   // quality=100 ≈ 无损
-        return new Blob([buf], { type: 'image/webp' });
+        const buf = await encode(data, { lossless: true, effort: 7 });
+        return new Blob([buf], { type: 'image/jxl' });
     } catch (e) {
-        console.warn('[infoto] WebP 压缩失败，使用原文件', e);
+        console.warn('[infoto] JXL 压缩失败，使用原文件', e);
         return null;
     }
 }
@@ -618,16 +618,16 @@ async function uploadFiles(files) {
     let done = 0, failed = 0, skipped = 0;
     for (const file of files) {
         fname.textContent = file.name;
-        step.textContent = 'WebP 无损压缩…';
+        step.textContent = 'JXL 无损压缩…';
         bar.style.width = '0%'; pct.textContent = '0%';
         try {
             let upBlob = file;
             let upName = file.name;
             if (file.type.startsWith('image/') && !/gif|svg/.test(file.type)) {
-                const webp = await compressLossless(file);
-                if (webp && webp.size < file.size * 0.9) {
-                    upBlob = webp;
-                    upName = file.name.replace(/\.[^.]+$/, '') + '.webp';
+                const jxl = await compressLossless(file);
+                if (jxl && jxl.size < file.size * 0.9) {
+                    upBlob = jxl;
+                    upName = file.name.replace(/\.[^.]+$/, '') + '.jxl';
                 }
             }
             const sha = await sha256Hex(await upBlob.arrayBuffer());
