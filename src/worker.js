@@ -60,11 +60,8 @@ export default {
       return new Response(null, { status: 204, headers: cors });
     }
 
-    // 写接口同源校验（防御 CSRF + 跨域滥用刷票/上传）
-    const isWrite = request.method === 'POST' || request.method === 'DELETE' || request.method === 'PUT' || request.method === 'PATCH';
-    if (isWrite && !isSameOriginOrSafe(request, url)) {
-      return json(cors, { error: 'cross-origin write denied' }, 403);
-    }
+    // 注：写接口不设同源校验——CORS * 的设计意图就是"前端可部署到其它域名"，
+    // 匿名上传/投票本身接受公开写入，速率限制（rlCheck）已兜底防滥用。
 
     /* ---------- 照片元数据 API ---------- */
     if (path === '/api/photos') {
@@ -343,7 +340,7 @@ export default {
       const fhdrs = {
         ...cors,
         'Content-Type': ct,
-        'Cache-Control': 'public, max-age=86400, stale-while-revalidate=604800',
+        'Cache-Control': 'public, max-age=86400', // 不设 stale-while-revalidate：删除照片后边缘缓存须在 max-age 内过期，避免已删内容继续被服务
       };
       if (forceDownload || !isSafe) {
         fhdrs['Content-Disposition'] = safeDisposition(dlName, forceDownload || !isSafe);
@@ -394,16 +391,6 @@ function json(headers, data, status = 200) {
     status,
     headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' },
   });
-}
-
-// 写接口 Origin/Referer 校验：允许同源 + 无 Origin 的直接导航（浏览器地址栏 POST 基本不存在，但 keep 兼容）
-function isSameOriginOrSafe(request, url) {
-  const origin = request.headers.get('Origin');
-  if (origin) return origin === url.origin;
-  const referer = request.headers.get('Referer');
-  if (!referer) return true; // 无 Referer（某些浏览器隐私模式、curl）；信任但速率限制兜底
-  try { return new URL(referer).origin === url.origin; }
-  catch { return false; }
 }
 
 // 前端统一格式：只有 webp / webm；其他 ext 一律按二进制下载
