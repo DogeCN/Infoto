@@ -42,6 +42,28 @@ export default {
       return json(cors, { error: 'method not allowed' }, 405);
     }
 
+    /* ---------- 临时管理：清理投票记录（部署后即移除） ---------- */
+    if (path === '/api/vote-clear' && request.method === 'POST') {
+      const token = request.headers.get('X-Admin-Token') || '';
+      if (token !== 'infoto-admin-tmp-8f3k') return json(cors, { error: 'forbidden' }, 403);
+      try {
+        const body = await request.json();
+        const id = body && body.id;
+        if (!id) return json(cors, { error: 'bad payload' }, 400);
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+        const vkey = 'vote:' + id + ':' + ip;
+        const data = await env.PHOTOS.get('photos', 'json');
+        const arr = Array.isArray(data) ? data : [];
+        const p = arr.find(x => x.id === id);
+        if (p && (p.likes || 0) > 0) p.likes = (p.likes || 0) - 1;
+        await env.PHOTOS.put('photos', JSON.stringify(arr));
+        await env.PHOTOS.delete(vkey);
+        return json(cors, { ok: true });
+      } catch (e) {
+        return json(cors, { error: 'bad json' }, 400);
+      }
+    }
+
     /* ---------- 投票：POST /api/vote {id, delta} ---------- */
     // 按 IP 防重：每个 IP 对同一张照片只能投一次（喜欢+1 / 不喜欢-1）
     if (path === '/api/vote' && request.method === 'POST') {
