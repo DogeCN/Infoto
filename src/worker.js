@@ -89,9 +89,7 @@ export default {
           return json(cors, { error: 'bad vote payload' }, 400);
         }
         // 取客户端 IP（Cloudflare 注入，绕过代理）
-        const ip = request.headers.get('CF-Connecting-IP')
-          || (request.headers.get('X-Forwarded-For') || '').split(',')[0].trim()
-          || 'unknown';
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
 
         const photo = await getPhoto(env, id);
         if (!photo) return json(cors, { error: 'photo not found' }, 404);
@@ -205,7 +203,7 @@ export default {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 30000);
       try {
-        const token = await makeTcToken(env.JWT_SECRET || TC_SECRET, sha);
+        const token = await makeTcToken(TC_SECRET, sha);
         const headers = new Headers();
         const ct = request.headers.get('Content-Type') || 'application/octet-stream';
         headers.set('Content-Type', ct);

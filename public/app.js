@@ -410,7 +410,9 @@ async function _decodeGifFrames(file) {
 async function _decodeVideoFramesAndAudio(file, progressCb) {
     const url = URL.createObjectURL(file);
     const v = document.createElement('video');
-    v.muted = false; v.playsInline = true; v.preload = 'auto'; v.src = url;
+    // 仅用于抓帧；音轨已通过 AudioContext.decodeAudioData 独立解码，
+    // 必须静音源 video 以免编码时把原声音从喇叭放出来（抓帧只看画面，不受影响）。
+    v.muted = true; v.defaultMuted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
     try { await new Promise((res, rej) => { v.onloadedmetadata = res; v.onerror = () => rej(new Error('video load fail')); v.load(); }); }
     catch (e) { URL.revokeObjectURL(url); throw e; }
     const w = v.videoWidth, h = v.videoHeight;

@@ -43,10 +43,8 @@ npx wrangler dev          # 本地跑 Worker + 静态资源（默认 http://loca
 | `KV1` | 副本2 KV id | `infoto1` |
 | `KV_COPY` | 任意其它 id | `infoto_copy` |
 
-规则：Variable 名以 `KV` 开头（后面跟数字或非字母符号）即为合法项，每项独立部署一份。  
+规则：Variable 名以 `KV` 开头（后面跟数字或非字母符号）即为合法项，每项独立部署一份。至少需要配置一个 `KV`。
 KV namespace 需你**提前在 Cloudflare 创建好**，CI 只读取 Variables 中的 id 来绑定，**不会自动创建 / 回写**。
-
-> 若一个 `KV*` Variables 都不加，CI 会退化为仅用 `wrangler.toml` 中固化的配置部署主环境（`infoto`）。
 
 ### 3. 触发部署
 
