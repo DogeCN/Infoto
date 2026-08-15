@@ -193,6 +193,18 @@ function fileUrl(id) {
     return base + '/api/file/' + id;
 }
 
+// 统一文件名生成：不再存 filename/originalName，只使用 id + ext
+// 历史老数据（没有 ext）兜底用 webp
+function dlName(p) {
+    const ext = (p && p.ext) ? String(p.ext).toLowerCase() : 'webp';
+    return (p && p.id ? p.id : 'image') + '.' + ext;
+}
+function extFromNameFn(name) {
+    if (!name) return '';
+    const i = String(name).lastIndexOf('.');
+    return i >= 0 ? String(name).slice(i + 1).toLowerCase() : '';
+}
+
 /* =========================================================
    数据层：Cloudflare Worker 同源 API
    ========================================================= */
@@ -201,15 +213,25 @@ const Store = {
     _loaded: false,
     myVotes: Object.create(null),
 
-    async load() {
-        if (this._loaded) return this.photos;
+    async load(force = false) {
+        if (this._loaded && !force) return this.photos;
         this._loaded = true;
-        try {
-            const r = await fetch(apiBase() + '/api/photos', { cache: 'no-store' });
-            if (r.ok) { this.photos = await r.json(); return this.photos; }
-        } catch (e) { console.warn('[infoto] 加载失败', e); }
-        this.photos = [];
-        return this.photos;
+        // 防抖：同一时刻的多次 force load 合并成一次请求（批量上传时避免雪崩）
+        if (force && this._loadPromise) return this._loadPromise;
+        const doFetch = async () => {
+            try {
+                const r = await fetch(apiBase() + '/api/photos', { cache: 'no-store' });
+                if (r.ok) {
+                    const fresh = await r.json();
+                    // 保持 myVotes 本地状态（不替换），只刷新照片数组与计数
+                    this.photos = fresh.map(p => ({ ...p, likes: p.likes ?? 0, dislikes: p.dislikes ?? 0 }));
+                    return this.photos;
+                }
+            } catch (e) { console.warn('[infoto] 加载失败', e); }
+            return this.photos;
+        };
+        this._loadPromise = doFetch().finally(() => { this._loadPromise = null; });
+        return this._loadPromise;
     },
 
     getMyVote(id) { return this.myVotes[id] || 0; },
@@ -265,18 +287,17 @@ const Store = {
                     return { ok: true, already: false, delta };
                 }
                 if (j.already) {
-                    // 服务器拒绝：重复投票（这个 IP 之前已经投过票，方向=j.delta）
-                    // 不 rollback（服务器没写入也没修改计数，回滚会把本地之前的正确状态清掉）
+                    // 服务器拒绝：重复投票（这个 IP 之前已经投过票，方向=j.delta）。
+                    // 先无条件回滚到乐观更新前的干净值，再按服务器说的历史方向补一次，
+                    // 避免和上面"乐观更新"的增减重复计算导致本地计数越算越飘。
                     const serverDelta = typeof j.delta === 'number' ? j.delta : delta;
-                    this.myVotes[id] = serverDelta;
-                    // 如果服务器说的"历史方向"和我们本地乐观更新的方向不一致，修正本地数字
-                    if (p && serverDelta !== delta) {
-                        // 撤回刚才本地乐观改的数字（服务器拒绝写入），但保持原来可能的历史投票对应的数字
-                        const srvLikes = (p.likes || 0) - (delta === 1 ? 1 : 0) + (serverDelta === 1 ? 1 : 0);
-                        const srvDislikes = (p.dislikes || 0) - (delta === -1 ? 1 : 0) + (serverDelta === -1 ? 1 : 0);
-                        p.likes = Math.max(0, srvLikes);
-                        p.dislikes = Math.max(0, srvDislikes);
+                    if (p) {
+                        p.likes = prevLikes;
+                        p.dislikes = prevDislikes;
+                        if (serverDelta === 1 && prevMy !== 1) p.likes++;
+                        if (serverDelta === -1 && prevMy !== -1) p.dislikes++;
                     }
+                    this.myVotes[id] = serverDelta;
                     return { ok: false, already: true, delta: serverDelta };
                 }
                 rollback();
@@ -300,7 +321,11 @@ const state = {
     lightboxOpen: false, currentIndex: 0,
     boxSelecting: false, boxStart: null, boxArm: false, suppressClick: false,
     menuOpen: false,
-    dragging: false, dragStart: null, dragCurrent: null
+    dragging: false, dragStart: null, dragCurrent: null,
+    batchSize: 60, loadedCount: 60,
+    zoom: { s: 1, x: 0, y: 0 },
+    panning: false,
+    _lastTap: null
 };
 
 const $ = s => document.querySelector(s);
@@ -338,15 +363,27 @@ function updateSortUI() {
     $('#sortLatest').querySelector('.icon').setAttribute('data-i', ic);
     renderIcons();
 }
+// 切换排序时，若 Lightbox 开着，保持当前正在看的照片不跳页
+function safeResortAndKeepCurrent() {
+    const oldSorted = getSorted();
+    const curId = state.lightboxOpen && oldSorted[state.currentIndex] ? oldSorted[state.currentIndex].id : null;
+    updateSortUI();
+    if (state.lightboxOpen && curId) {
+        const newIdx = getSorted().findIndex(p => p.id === curId);
+        state.currentIndex = newIdx >= 0 ? newIdx : 0;
+        updateLightbox(); // 重新渲染 counter / dots / 高亮
+    }
+    renderMasonry();
+}
 $('#sortLatest').addEventListener('click', () => {
     if (state.sortBy === 'latest') state.latestDir = state.latestDir === 'desc' ? 'asc' : 'desc';
     else state.sortBy = 'latest';
-    updateSortUI(); renderMasonry();
+    safeResortAndKeepCurrent();
 });
 $('#sortHotest').addEventListener('click', () => {
     if (state.sortBy === 'hotest') state.hotestDir = state.hotestDir === 'desc' ? 'asc' : 'desc';
     else state.sortBy = 'hotest';
-    updateSortUI(); renderMasonry();
+    safeResortAndKeepCurrent();
 });
 
 /* =========================================================
@@ -357,6 +394,7 @@ function colCount() {
     if (w >= 1536) return 6; if (w >= 1280) return 5; if (w >= 1024) return 4; if (w >= 768) return 3; return 2;
 }
 let cols = [];
+let renderedCount = 0;
 
 function buildColumns() {
     const m = $('#masonry');
@@ -444,18 +482,78 @@ function renderMasonry() {
     $('#emptyState').classList.add('hidden');
     m.classList.remove('hidden');
     buildColumns();
+    renderedCount = 0;
+    // 首屏只渲染前 loadedCount 张，其余由无限滚动按需 append
+    appendVisible();
+}
 
-    const heights = new Array(cols.length).fill(0);
-    list.forEach((photo, i) => {
+// 把尚未渲染的前 loadedCount 张追加到最短列（不重建已有 DOM，避免滚动跳动 / 图片重载）
+function appendVisible() {
+    const list = getSorted();
+    const visible = list.slice(0, state.loadedCount);
+    if (visible.length <= renderedCount) {
+        if (state.multiMode) applySelectUI();
+        return;
+    }
+    const heights = cols.map(c => c._h || 0);
+    for (let i = renderedCount; i < visible.length; i++) {
+        const photo = visible[i];
         const card = makeCard(photo, i);
         let minCol = 0;
         for (let j = 1; j < cols.length; j++) if (heights[j] < heights[minCol]) minCol = j;
         cols[minCol].appendChild(card);
         const ratio = (photo.height && photo.width) ? photo.height / photo.width : 1;
         heights[minCol] += ratio * 100 + 12;
-    });
-
+        cols[minCol]._h = heights[minCol];
+    }
+    renderedCount = visible.length;
     if (state.multiMode) applySelectUI();
+}
+
+// 无限滚动：底部哨兵进入视口时多加载一批
+function installInfiniteScroll() {
+    const sentinel = el('div', 'scroll-sentinel');
+    sentinel.id = 'scrollSentinel';
+    $('#masonry').after(sentinel);
+    const io = new IntersectionObserver((entries) => {
+        entries.forEach(en => {
+            if (en.isIntersecting && state.loadedCount < getSorted().length) {
+                state.loadedCount = Math.min(getSorted().length, state.loadedCount + state.batchSize);
+                appendVisible();
+            }
+        });
+    }, { rootMargin: '1200px' });
+    io.observe(sentinel);
+}
+
+// 只更新每张卡片的投票数/高亮（轻量 DOM patch），不重建整列瀑布流。
+// 投票、异步 load 收尾时调用，避免图片重新加载、滚动跳动、框选状态丢失。
+function updateMasonryStatsOnly() {
+    $$('.photo-card').forEach(card => {
+        const id = card.dataset.id;
+        const p = Store.photos.find(x => x.id === id);
+        if (!p) return;
+        const myVote = Store.getMyVote(id);
+        const likes = p.likes || 0, dislikes = p.dislikes || 0;
+        const stats = card.querySelector('.card-stats');
+        const haveVotes = likes > 0 || dislikes > 0;
+        if (!stats && !haveVotes) return;
+        const html = haveVotes
+            ? `${likes > 0 ? `<div class="card-badge card-badge-like${myVote === 1 ? ' active' : ''}"><svg class="icon" data-i="heart"></svg><span>${likes}</span></div>` : ''}`
+            + `${dislikes > 0 ? `<div class="card-badge card-badge-dislike${myVote === -1 ? ' active' : ''}"><svg class="icon" data-i="x-circle"></svg><span>${dislikes}</span></div>` : ''}`
+            : '';
+        if (!stats) {
+            if (html === '') return;
+            const s = el('div', 'card-stats', html);
+            card.appendChild(s);
+            renderIcons(s);
+        } else if (html === '') {
+            stats.remove();
+        } else {
+            stats.innerHTML = html;
+            renderIcons(stats);
+        }
+    });
 }
 
 let resizeTimer;
@@ -574,11 +672,53 @@ document.addEventListener('mouseup', () => {
 });
 
 /* ---- 批量操作 ---- */
+// JSZip 用动态 import（项目零 npm 依赖），首次用到才加载
+let _jszip = null;
+async function getZipLib() {
+    if (_jszip) return _jszip;
+    const JSZip = (await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm')).default;
+    _jszip = JSZip;
+    return _jszip;
+}
 $('#batchDownloadBtn').addEventListener('click', async () => {
     const list = getSorted().filter(p => state.selected.has(p.id));
     if (list.length === 0) { toast('请先选择照片'); return; }
-    toast(`开始下载 ${list.length} 张图片`, 'download');
-    list.forEach(p => downloadUrl(p.url + '?dl=1', p.filename || 'image.jpg'));
+    // 单张直接下（不打包）
+    if (list.length === 1) {
+        return downloadUrl(list[0].url + '?dl=1', list[0].filename || 'image.jpg');
+    }
+    // 多张打包成单个 zip：只触发 1 次浏览器下载框，不被并发限制拦截
+    const JSZip = await getZipLib();
+    const zip = new JSZip();
+    const total = list.length;
+    const runId = Date.now().toString(36);
+    _uploadTotal = total;
+    toast(`正在打包 ${total} 张图片…`, 'download');
+    let done = 0;
+    for (let i = 0; i < total; i++) {
+        const p = list[i];
+        try {
+            const r = await fetch(p.url, { cache: 'force-cache' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const blob = await r.blob();
+            done++;
+            const idx = String(done).padStart(3, '0');
+            const base = String(p.originalName || p.filename || 'image').replace(/[\\/:*?"<>|]/g, '_');
+            zip.file(`${idx}_${base}`, blob, { binary: true });
+            setUploadProgress(done / total, base, '打包 zip…');
+        } catch (e) {
+            toast(`下载失败: ${p.filename || '?'}`, 'alert');
+        }
+    }
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
+        setUploadProgress(meta.percent / 100, `生成 zip ${meta.percent.toFixed(0)}%`, '打包 zip…');
+    });
+    const url = URL.createObjectURL(zipBlob);
+    downloadUrl(url, `infoto_${total}张_${runId}.zip`);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast(`下载完成：共 ${total} 张 → zip`, 'success');
+    setUploadProgress(1, null, '完成');
+    setTimeout(resetUploadUI, 2500);
 });
 
 /* =========================================================
@@ -625,84 +765,101 @@ async function uploadFiles(files) {
     _uploadTotal = total;
     let done = 0, failed = 0, skipped = 0;
     _uploadDoneLike = 0;
-    for (let i = 0; i < total; i++) {
-        const file = files[i];
-        let finished = false;
-        if (file.type === 'image/svg+xml') {
-            skipped++;
-            _uploadDoneLike = i + 1;
-            $('#upSkipped').textContent = String(skipped);
-            toast(`「${file.name}」SVG 暂不支持`, 'alert');
-            finished = true;
-        } else {
-            const base = i / total;
-            const span = 1 / total;
-            const canCompress = file.type.startsWith('image/') && !/gif|svg|webp/.test(file.type);
-            let stepMsg = canCompress ? 'WebP 压缩…' : '直传原图';
-            setUploadProgress(base, file.name, stepMsg);
-            try {
-                let upBlob = file;
-                let upName = file.name;
-                if (canCompress) {
-                    const webp = await compressToWebp(file, WEBP_QUALITY);
-                    if (webp && webp.size < file.size) {
-                        upBlob = webp;
-                        upName = file.name.replace(/\.[^.]+$/, '') + '.webp';
-                    }
+
+    // 阶段 1：并发 3 路做【压缩 + SHA】（纯 CPU/哈希，无副作用，可安全并发）
+    setUploadProgress(0.01, null, '预处理中…');
+    const prepTasks = files.map((file, idx) => async () => {
+        const base = { idx, file, err: null, blob: null, ext: extFromNameFn(file.name) || 'bin', sha: null };
+        if (file.type === 'image/svg+xml') { base.err = new Error('SVG 暂不支持'); return base; }
+        try {
+            const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi)$/i.test(file.name);
+            const isGif = file.type === 'image/gif' || /\.gif$/i.test(file.name);
+            const isPic = file.type.startsWith('image/') && !isGif;
+            let blob = file;
+            if (isPic && file.type !== 'image/webp') {
+                const webp = await compressToWebp(file, WEBP_QUALITY);
+                // 压缩后只要不增大就采用（包括等大）
+                if (webp && webp.size <= file.size) {
+                    blob = webp;
+                    base.ext = 'webp';
                 }
-                const sha = await sha256Hex(await upBlob.arrayBuffer());
-                stepMsg = '查重…';
-                setUploadProgress(base, file.name, stepMsg);
-                const dup = await checkHashExists(sha);
-                if (dup) {
-                    skipped++;
-                    _uploadDoneLike = i + 1;
-                    $('#upSkipped').textContent = String(skipped);
-                    setUploadProgress(base + span, file.name, '已存在，跳过');
-                    toast(`「${file.name}」已存在，跳过`, 'info');
-                } else {
-                    const parts = await uploadToBed(upBlob, upName, p => {
-                        setUploadProgress(base + p * span, file.name, p < 1 ? '直链上传' : '获取直链');
-                    });
-                    stepMsg = '获取尺寸…';
-                    setUploadProgress(base + span * 0.95, file.name, stepMsg);
-                    const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-                    const photo = {
-                        id, url: fileUrl(id), parts, sha256: sha,
-                        width: 0, height: 0, createdAt: Date.now(),
-                        filename: upName, originalName: file.name
-                    };
-                    await loadDims(photo);
-                    await Store.add(photo);
-                    done++;
-                    _uploadDoneLike = i + 1;
-                    $('#upDone').textContent = String(done);
-                }
-                finished = true;
-            } catch (err) {
-                console.error('upload failed:', file.name, err);
-                failed++;
-                _uploadDoneLike = i + 1;
-                $('#upFailed').textContent = String(failed);
-                toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
-                finished = true;
+            } else if (isGif || isVideo) {
+                // GIF/视频统一标注为 webm（实际转码在前端转换后再写入 blob，这里先占位 ext）
+                base.ext = 'webm';
+            } else if (!base.ext) {
+                base.ext = 'webp';
             }
+            base.blob = blob;
+            base.sha = await sha256Hex(await blob.arrayBuffer());
+        } catch (e) { base.err = e; }
+        return base;
+    });
+    const prepared = await runWithConcurrency(prepTasks, CONFIG.CONCURRENCY);
+    prepared.sort((a, b) => a.idx - b.idx);
+
+    // 阶段 2：逐张顺序查重 + 上传（保证进度条意义与上传顺序）
+    const refresh = async () => {
+        try { await Store.load(true); } catch (_) { }
+        renderMasonry();
+        if (state.lightboxOpen) { updateLightbox(); renderDots(); }
+    };
+    for (let i = 0; i < total; i++) {
+        const pr = prepared[i];
+        const file = pr.file;
+        if (pr.err) {
+            failed++;
+            _uploadDoneLike = i + 1;
+            $('#upFailed').textContent = String(failed);
+            toast(`「${file.name}」${pr.err.message}`, 'alert');
+            await refresh();
+            continue;
         }
-        if (finished) {
-            try { await Store.load(); } catch (_) { }
-            renderMasonry();
-            if (state.lightboxOpen) { updateLightbox(); renderDots(); }
+        const base = i / total;
+        const span = 1 / total;
+        setUploadProgress(base, file.name, '查重…');
+        try {
+            const dup = await checkHashExists(pr.sha);
+            if (dup) {
+                skipped++;
+                _uploadDoneLike = i + 1;
+                $('#upSkipped').textContent = String(skipped);
+                setUploadProgress(base + span, file.name, '已存在，跳过');
+                toast(`「${file.name}」已存在，跳过`, 'info');
+            } else {
+                const parts = await uploadToBed(pr.blob, pr.name, p => {
+                    setUploadProgress(base + p * span, file.name, p < 1 ? '直链上传' : '获取直链');
+                });
+                setUploadProgress(base + span * 0.95, file.name, '获取尺寸…');
+                const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+                const photo = {
+                    id, url: fileUrl(id), parts, sha256: pr.sha,
+                    width: 0, height: 0, createdAt: Date.now(),
+                    filename: pr.name, originalName: file.name
+                };
+                await loadDims(photo);
+                await Store.add(photo);
+                done++;
+                _uploadDoneLike = i + 1;
+                $('#upDone').textContent = String(done);
+            }
+        } catch (err) {
+            console.error('upload failed:', file.name, err);
+            failed++;
+            _uploadDoneLike = i + 1;
+            $('#upFailed').textContent = String(failed);
+            toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
         }
+        await refresh();
     }
     setUploadProgress(1, null, '完成');
-    try { await Store.load(); } catch (_) { }
+    try { await Store.load(true); } catch (_) { }
     renderMasonry();
     if (state.lightboxOpen) { updateLightbox(); renderDots(); }
-    const parts = [];
-    if (done > 0) parts.push(`成功 ${done}`);
-    if (skipped > 0) parts.push(`跳过重复 ${skipped}`);
-    if (failed > 0) parts.push(`失败 ${failed}`);
-    if (parts.length) toast(`上传完成：${parts.join('，')}`, done > 0 || skipped > 0 ? 'success' : 'alert');
+    const summary = [];
+    if (done > 0) summary.push(`成功 ${done}`);
+    if (skipped > 0) summary.push(`跳过重复 ${skipped}`);
+    if (failed > 0) summary.push(`失败 ${failed}`);
+    if (summary.length) toast(`上传完成：${summary.join('，')}`, done > 0 || skipped > 0 ? 'success' : 'alert');
     setTimeout(resetUploadUI, 2500);
 }
 
@@ -773,6 +930,8 @@ function updateLightbox() {
     const p = curPhoto();
     if (!p) return;
     const img = $('#lbImg');
+    state.zoom = { s: 1, x: 0, y: 0 };
+    state.panning = false;
     img.style.transition = 'none';
     img.style.transform = 'translate(0,0) scale(1)';
     img.style.opacity = 1;
@@ -785,12 +944,14 @@ function updateLightbox() {
 }
 function renderDots() {
     const d = $('#lbDots');
-    d.innerHTML = '';
     const list = getSorted();
     const max = Math.min(list.length, 20);
+    // 1) 保证 dot 数量正确（不够补、多了删），不重建已有 dot
+    while (d.children.length < max) d.appendChild(el('span', 'dot'));
+    while (d.children.length > max) d.removeChild(d.lastChild);
+    // 2) 只切换 active class
     for (let i = 0; i < max; i++) {
-        const dot = el('span', 'dot' + (i === state.currentIndex ? ' active' : ''));
-        d.appendChild(dot);
+        d.children[i].classList.toggle('active', i === state.currentIndex);
     }
 }
 function prevPhoto() { state.currentIndex = (state.currentIndex - 1 + getSorted().length) % getSorted().length; updateLightbox(); }
@@ -823,9 +984,67 @@ function resetGestures() {
         g.style.opacity = 0; g.style.transform = '';
     });
 }
+
+/* ---- Lightbox 缩放 / 平移 ---- */
+function applyZoomTransform() {
+    const img = $('#lbImg');
+    img.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s})`;
+}
+function clampPan() {
+    const img = $('#lbImg');
+    const sr = stage.getBoundingClientRect();
+    const r = img.getBoundingClientRect();
+    if (r.left > sr.left + 1) state.zoom.x += (sr.left + 1 - r.left);
+    if (r.right < sr.right - 1) state.zoom.x += (sr.right - 1 - r.right);
+    if (r.top > sr.top + 1) state.zoom.y += (sr.top + 1 - r.top);
+    if (r.bottom < sr.bottom - 1) state.zoom.y += (sr.bottom - 1 - r.bottom);
+}
+// 以 stage 内坐标 (sx,sy) 为锚点缩放到 ns（图片由 flex 居中，transform-origin 默认 center）
+function zoomTo(ns, sx, sy) {
+    ns = Math.min(5, Math.max(1, ns));
+    const sr = stage.getBoundingClientRect();
+    const Sx = sr.width / 2, Sy = sr.height / 2;
+    const s = state.zoom.s, x = state.zoom.x, y = state.zoom.y;
+    state.zoom.s = ns;
+    // 保持锚点在原内容位置不变：P = S + t + s*q  →  t' = (P-S) - ns*(P-S - t)/s
+    state.zoom.x = (sx - Sx) - ns * (sx - Sx - x) / s;
+    state.zoom.y = (sy - Sy) - ns * (sy - Sy - y) / s;
+    applyZoomTransform();
+    clampPan();
+}
+function resetZoom() {
+    state.zoom = { s: 1, x: 0, y: 0 };
+    const img = $('#lbImg');
+    img.style.transition = 'transform .2s ease';
+    applyZoomTransform();
+    setTimeout(() => { img.style.transition = 'none'; }, 200);
+}
+let pinch = null;
+function startPinch(e) {
+    const t0 = e.touches[0], t1 = e.touches[1];
+    const sr = stage.getBoundingClientRect();
+    pinch = {
+        dist: Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY) || 1,
+        s: state.zoom.s,
+        cx: (t0.clientX + t1.clientX) / 2 - sr.left,
+        cy: (t0.clientY + t1.clientY) / 2 - sr.top,
+    };
+}
+
 function onGs(e) {
     if (!state.lightboxOpen || state.menuOpen) return;
     if (e.target.closest('#lbMoreBtn,#lbCloseBtn')) return;
+    // 双指捏合缩放
+    if (e.touches && e.touches.length === 2) { startPinch(e); state.dragging = true; return; }
+    // 已放大：单指/鼠标拖动 = 平移看图（不做投票手势）
+    if (state.zoom.s > 1.01) {
+        state.dragging = true; state.panning = true;
+        const pt = e.touches ? e.touches[0] : e;
+        state.dragStart = { x: pt.clientX, y: pt.clientY };
+        state.dragCurrent = { x: pt.clientX, y: pt.clientY };
+        $('#lbImg').style.transition = 'none';
+        return;
+    }
     state.dragging = true;
     const pt = e.touches ? e.touches[0] : e;
     state.dragStart = { x: pt.clientX, y: pt.clientY };
@@ -835,6 +1054,30 @@ function onGs(e) {
 }
 function onGm(e) {
     if (!state.dragging) return;
+    // 捏合缩放
+    if (e.touches && e.touches.length === 2) {
+        if (!pinch) startPinch(e);
+        const t0 = e.touches[0], t1 = e.touches[1];
+        const sr = stage.getBoundingClientRect();
+        const d = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+        const cx = (t0.clientX + t1.clientX) / 2 - sr.left;
+        const cy = (t0.clientY + t1.clientY) / 2 - sr.top;
+        zoomTo(pinch.s * (d / pinch.dist), pinch.cx, pinch.cy);
+        if (e.cancelable) e.preventDefault();
+        return;
+    }
+    // 放大状态下平移
+    if (state.panning) {
+        const pt = e.touches ? e.touches[0] : e;
+        const dx = pt.clientX - state.dragStart.x;
+        const dy = pt.clientY - state.dragStart.y;
+        state.dragCurrent = { x: pt.clientX, y: pt.clientY };
+        state.zoom.x += dx; state.zoom.y += dy;
+        state.dragStart = { x: pt.clientX, y: pt.clientY };
+        applyZoomTransform();
+        if (e.cancelable) e.preventDefault();
+        return;
+    }
     const pt = e.touches ? e.touches[0] : e;
     const dx = pt.clientX - state.dragStart.x;
     const dy = pt.clientY - state.dragStart.y;
@@ -857,6 +1100,49 @@ function onGm(e) {
     }
     if (e.cancelable) e.preventDefault();
 }
+function onGe(e) {
+    if (!state.dragging) return;
+    // 捏合结束
+    if (pinch) { pinch = null; state.dragging = false; return; }
+    // 平移结束
+    if (state.panning) {
+        state.dragging = false; state.panning = false;
+        clampPan();
+        return;
+    }
+    // 触摸双击：放大 / 复位
+    if (e && e.changedTouches && e.changedTouches.length) {
+        const t = e.changedTouches[0];
+        const moved = Math.hypot(state.dragCurrent.x - state.dragStart.x, state.dragCurrent.y - state.dragStart.y);
+        if (moved < 12) {
+            const now = Date.now();
+            if (state._lastTap && (now - state._lastTap.t) < 300 && Math.hypot(t.clientX - state._lastTap.x, t.clientY - state._lastTap.y) < 40) {
+                const sr = stage.getBoundingClientRect();
+                if (state.zoom.s > 1.01) resetZoom();
+                else zoomTo(2.5, t.clientX - sr.left, t.clientY - sr.top);
+                state._lastTap = null;
+                state.dragging = false;
+                return;
+            }
+            state._lastTap = { t: now, x: t.clientX, y: t.clientY };
+        }
+    }
+    state.dragging = false;
+    const dx = state.dragCurrent.x - state.dragStart.x;
+    const dy = state.dragCurrent.y - state.dragStart.y;
+    const ax = Math.abs(dx), ay = Math.abs(dy);
+    const img = $('#lbImg');
+    img.style.transition = 'transform .3s ease, opacity .3s ease';
+
+    if (ax > ay) {
+        if (ax > THRESHOLD) triggerGesture(dx > 0 ? 'right' : 'left');
+    } else {
+        if (ay > THRESHOLD) triggerGesture(dy > 0 ? 'down' : 'up');
+    }
+    img.style.transform = 'translate(0,0)';
+    resetGestures();
+}
+
 function triggerGesture(dir) {
     if (!state.lightboxOpen || state.menuOpen) return;
     const p = curPhoto();
@@ -881,7 +1167,7 @@ function triggerGesture(dir) {
             delta === 1 ? 'heart' : 'alert');
 
         updateLightboxVotes(p);
-        renderMasonry();
+        updateMasonryStatsOnly();
 
         // 异步收尾：服务器回来后 → 刷新全局数据（更新其他图的最新投票、新增图等）
         rPromise.then(() => {
@@ -889,7 +1175,7 @@ function triggerGesture(dir) {
         }).then(() => {
             const cp = curPhoto();
             if (cp) updateLightboxVotes(cp);
-            renderMasonry();
+            updateMasonryStatsOnly();
             if (state.lightboxOpen) renderDots();
         }).catch(() => { });
 
@@ -929,6 +1215,21 @@ document.addEventListener('mouseup', () => { if (state.dragging) onGe(); });
 stage.addEventListener('touchstart', onGs, { passive: false });
 stage.addEventListener('touchmove', onGm, { passive: false });
 stage.addEventListener('touchend', onGe);
+// 缩放：滚轮 / 双击
+stage.addEventListener('wheel', (e) => {
+    if (!state.lightboxOpen) return;
+    e.preventDefault();
+    const sr = stage.getBoundingClientRect();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    zoomTo(state.zoom.s * factor, e.clientX - sr.left, e.clientY - sr.top);
+}, { passive: false });
+stage.addEventListener('dblclick', (e) => {
+    if (!state.lightboxOpen) return;
+    e.preventDefault();
+    const sr = stage.getBoundingClientRect();
+    if (state.zoom.s > 1.01) resetZoom();
+    else zoomTo(2.5, e.clientX - sr.left, e.clientY - sr.top);
+});
 
 /* =========================================================
    更多菜单
@@ -1000,4 +1301,5 @@ function downloadUrl(url, name) {
     updateSortUI();
     await Store.load();
     renderMasonry();
+    installInfiniteScroll();
 })();

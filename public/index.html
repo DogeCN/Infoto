@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0a0e1a" />
   <title>Infoto</title>
+  <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2322d3ee%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><circle cx=%2212%22 cy=%2212%22 r=%2210%22/><line x1=%2214.31%22 y1=%228%22 x2=%2220.05%22 y2=%2217.94%22/><line x1=%229.69%22 y1=%228%22 x2=%2221.17%22 y2=%228%22/><line x1=%227.38%22 y1=%2212%22 x2=%2213.12%22 y2=%222.06%22/><line x1=%229.69%22 y1=%2216%22 x2=%223.95%22 y2=%226.06%22/><line x1=%2214.31%22 y1=%2216%22 x2=%222.83%22 y2=%2216%22/><line x1=%2216.62%22 y1=%2212%22 x2=%2210.88%22 y2=%2221.94%22/></svg>" />
   <link rel="stylesheet" href="styles.css" />
@@ -139,6 +140,9 @@
   <div class="toasts" id="toasts"></div>
 
   <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => { }));
+  </script>
 </body>
 
 </html>
