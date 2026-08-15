@@ -1,0 +1,14 @@
+{
+  "name": "infoto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Infoto - 桌面/移动端通用共享相册（Cloudflare Worker 部署）",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check src/worker.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.19.0"
+  }
+}
