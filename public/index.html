@@ -253,15 +253,6 @@ main { padding:4.5rem .75rem 4rem; min-height:100vh; }
   box-shadow:0 0 40px rgba(34,211,238,.2);
   will-change:transform;
 }
-.lb-prev,.lb-next {
-  position:absolute; top:50%; transform:translateY(-50%); z-index:10;
-  padding:.5rem .75rem; border-radius:9999px;
-  background:rgba(255,255,255,.1); backdrop-filter:blur(4px);
-  color:rgba(255,255,255,.8); transition:all .2s; display:flex;
-}
-.lb-prev { left:.75rem; } .lb-next { right:.75rem; }
-@media(min-width:768px){ .lb-prev{ left:1.5rem; } .lb-next{ right:1.5rem; } .lb-prev,.lb-next{ padding:.75rem 1rem; } }
-.lb-prev:hover,.lb-next:hover { background:rgba(255,255,255,.2); color:#fff; }
 
 /* 手势提示图标 */
 .gesture-icon {
@@ -432,9 +423,6 @@ main { padding:4.5rem .75rem 4rem; min-height:100vh; }
       </button>
     </div>
   </div>
-
-  <button class="lb-prev" id="lbPrev"><svg class="icon-lg" data-i="chevron-left"></svg></button>
-  <button class="lb-next" id="lbNext"><svg class="icon-lg" data-i="chevron-right"></svg></button>
 
   <div class="lb-stage" id="lbStage">
     <img class="lb-img" id="lbImg" alt="预览图片" draggable="false" />
@@ -1108,23 +1096,28 @@ function prevPhoto(){ state.currentIndex=(state.currentIndex-1+getSorted().lengt
 function nextPhoto(){ state.currentIndex=(state.currentIndex+1)%getSorted().length; updateLightbox(); }
 
 $('#lbCloseBtn').addEventListener('click', closeLightbox);
-$('#lbPrev').addEventListener('click', e=>{ e.stopPropagation(); prevPhoto(); });
-$('#lbNext').addEventListener('click', e=>{ e.stopPropagation(); nextPhoto(); });
 $('#lightbox').addEventListener('click', e=>{ if(e.target.id==='lightbox') closeLightbox(); });
 
 /* 方向键与滑动手势统一：同一套四向语义
    左=支持(喜欢) 右=反对(不喜欢) 上=更多菜单 下=下载
-   喜欢/不喜欢触发后自动切到下一张 */
+   喜欢/不喜欢触发后自动切到下一张
+   在 keyup 触发（避免 keydown 长按 repeat 连发一路闪过去） */
 document.addEventListener('keydown', e=>{
+  // keydown 只做拦截，防止页面滚动/长按重复，实际动作放 keyup
   if(!state.lightboxOpen) return;
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+});
+document.addEventListener('keyup', e=>{
+  if(!state.lightboxOpen) return;
+  if(e.repeat) return;                      // 长按只算最后一次松开
   if(state.menuOpen){
     if(e.key==='Escape') closeMenu();
     return;
   }
-  if(e.key==='ArrowLeft'){ e.preventDefault(); triggerGesture('left'); }
-  else if(e.key==='ArrowRight'){ e.preventDefault(); triggerGesture('right'); }
-  else if(e.key==='ArrowUp'){ e.preventDefault(); triggerGesture('up'); }
-  else if(e.key==='ArrowDown'){ e.preventDefault(); triggerGesture('down'); }
+  if(e.key==='ArrowLeft') triggerGesture('left');
+  else if(e.key==='ArrowRight') triggerGesture('right');
+  else if(e.key==='ArrowUp') triggerGesture('up');
+  else if(e.key==='ArrowDown') triggerGesture('down');
   else if(e.key==='Escape') closeLightbox();
 });
 
@@ -1137,7 +1130,7 @@ function resetGestures(){
 }
 function onGs(e){
   if(!state.lightboxOpen || state.menuOpen) return;
-  if(e.target.closest('#lbMoreBtn,#lbCloseBtn,#lbPrev,#lbNext')) return;
+  if(e.target.closest('#lbMoreBtn,#lbCloseBtn')) return;
   state.dragging = true;
   const pt = e.touches ? e.touches[0] : e;
   state.dragStart = {x:pt.clientX, y:pt.clientY};
