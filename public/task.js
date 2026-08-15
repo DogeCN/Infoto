@@ -4,54 +4,7 @@
  * 通过 onconnect 接收多个页面的 port，任务进度广播给所有页面
  * ========================================================= */
 
-const CONFIG = {
-    SINGLE_PART_LIMIT: 600 * 1024,
-    CHUNK_SIZE: 1024 * 1024,
-    CONCURRENCY: 3,
-    MAX_RETRY: 3,
-};
-
-/* ============ 工具函数 ============ */
-function formatSize(bytes) {
-    if (!bytes) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let i = 0, v = bytes;
-    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-    return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
-}
-
-async function sha256Hex(buf) {
-    const d = await crypto.subtle.digest('SHA-256', buf);
-    return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function runWithConcurrency(tasks, concurrency) {
-    const results = new Array(tasks.length);
-    let next = 0;
-    const workers = [];
-    for (let w = 0; w < Math.min(concurrency, tasks.length); w++) {
-        workers.push((async () => {
-            while (next < tasks.length) {
-                const i = next++;
-                results[i] = await tasks[i]();
-            }
-        })());
-    }
-    await Promise.all(workers);
-    return results;
-}
-
-async function withRetry(fn, retries) {
-    let lastErr;
-    for (let i = 0; i < retries; i++) {
-        try { return await fn(); }
-        catch (e) {
-            lastErr = e;
-            if (i < retries - 1) await new Promise(r => setTimeout(r, 500 * (i + 1)));
-        }
-    }
-    throw lastErr;
-}
+importScripts('./shared.js'); // 加载 CONFIG / formatSize / sha256Hex / withRetry / runWithConcurrency / uploadViaXhr / uploadPartToTcProgressive / uploadToBed
 
 /* ============ 状态管理 ============ */
 const clients = new Set();
@@ -61,9 +14,33 @@ const tasks = {
     delete: null,
 };
 
+let bc = null;
+try {
+    bc = new BroadcastChannel('infoto-task-bc');
+    bc.onmessage = (ev) => {
+        const msg = ev.data || {};
+        if (msg.type === 'bc-ping') return;
+        handleIncomingMessage(msg, null);
+    };
+} catch (e) { bc = null; }
+
+let keepAliveTimer = null;
+const KEEP_ALIVE_MS = 30000;
+
+function scheduleGracePeriod() {
+    if (keepAliveTimer) clearTimeout(keepAliveTimer);
+    keepAliveTimer = setTimeout(() => {
+        if (clients.size === 0 && !hasActiveTask()) {
+        }
+    }, KEEP_ALIVE_MS);
+}
+
 function broadcast(msg) {
     for (const port of clients) {
-        try { port.postMessage(msg); } catch (_) { }
+        try { port.postMessage(msg); } catch (e) { console.warn('[task-worker] broadcast fail:', e && e.message); }
+    }
+    if (bc) {
+        try { bc.postMessage(msg); } catch (e) { }
     }
 }
 
@@ -84,23 +61,31 @@ function getCurrentStatus() {
 
 /* ============ 上传任务 ============ */
 class UploadTask {
-    constructor(jobId, files, apiBase) {
+    constructor(jobId, input, apiBase, mode) {
         this.id = jobId;
         this.type = 'upload';
-        this.files = files;
         this.apiBase = apiBase;
         this.startedAt = Date.now();
-        this.status = 'running'; // running | done
+        this.status = 'running';
         this.progress = 0;
         this.step = '准备中';
-        this.curFile = files.length > 1 ? `${files.length} 个文件` : (files[0]?.name || '');
-        this.done = 0; this.skipped = 0; this.failed = 0; this.total = files.length;
+        this.done = 0; this.skipped = 0; this.failed = 0;
         this.extraStat = '';
         this._prepBytes = { total: 0, done: 0 };
         this._uploadBytes = { total: 0, done: 0 };
         this._rawBytes = 0;
         this.PHASE_WEIGHT = { PREP: 0.20, UPLOAD: 0.75 };
         this.SUB = { CHECK: 0.05, UPLOAD: 0.90, DIMS: 0.05 };
+        this.mode = mode || 'raw';
+        if (this.mode === 'prepared') {
+            this.prepared = input;
+            this.files = input.map(p => ({ name: p.fileName || 'upload', size: p.blob?.size || 0 }));
+        } else {
+            this.files = input;
+            this.prepared = null;
+        }
+        this.total = this.files.length;
+        this.curFile = this.files.length > 1 ? `${this.files.length} 个文件` : (this.files[0]?.name || '');
         this._promise = this._run();
     }
 
@@ -149,68 +134,6 @@ class UploadTask {
         this._emitUpdate();
     }
 
-    _uploadViaXhr(url, fd, headers, onProgress) {
-        return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', url, true);
-            for (const k in headers) xhr.setRequestHeader(k, headers[k]);
-            xhr.timeout = 30000;
-            xhr.ontimeout = () => reject(new Error('上传超时（30s）'));
-            xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
-            xhr.onload = () => { xhr.status === 200 ? resolve(xhr.responseText) : reject(new Error('HTTP ' + xhr.status)); };
-            xhr.onerror = () => reject(new Error('网络错误'));
-            xhr.send(fd);
-        });
-    }
-
-    async _uploadPartToTcProgressive(blob, name, onProgress) {
-        return withRetry(async () => {
-            const sha = await sha256Hex(await blob.arrayBuffer());
-            const fd = new FormData();
-            fd.append('file', blob, name);
-            const txt = await this._uploadViaXhr(this.apiBase + '/api/upload-proxy', fd, { 'X-File-Sha256': sha }, onProgress);
-            const json = JSON.parse(txt);
-            if (!json.data) throw new Error('上传响应缺少 data');
-            return json.data;
-        }, CONFIG.MAX_RETRY);
-    }
-
-    async _uploadToBed(blob, name, onProgress) {
-        onProgress(0.05);
-        const parts = [];
-        if (blob.size <= CONFIG.SINGLE_PART_LIMIT) {
-            const link = await this._uploadPartToTcProgressive(blob, name, p => onProgress(0.05 + p * 0.9));
-            onProgress(1);
-            return [link];
-        }
-        const total = Math.ceil(blob.size / CONFIG.CHUNK_SIZE);
-        const chunkProgress = new Array(total).fill(0);
-        const updateOverall = () => {
-            const avg = chunkProgress.reduce((a, b) => a + b, 0) / total;
-            onProgress(0.05 + avg * 0.9);
-        };
-        const tasks = [];
-        for (let i = 0; i < total; i++) {
-            const idx = i;
-            const chunk = blob.slice(idx * CONFIG.CHUNK_SIZE, Math.min((idx + 1) * CONFIG.CHUNK_SIZE, blob.size));
-            const chunkName = `${name}.part${idx + 1}`;
-            tasks.push(async () => {
-                const link = await this._uploadPartToTcProgressive(chunk, chunkName, p => {
-                    chunkProgress[idx] = p;
-                    updateOverall();
-                });
-                chunkProgress[idx] = 1;
-                updateOverall();
-                return { idx, link };
-            });
-        }
-        const results = await runWithConcurrency(tasks, CONFIG.CONCURRENCY);
-        results.sort((a, b) => a.idx - b.idx);
-        for (const r of results) parts.push(r.link);
-        onProgress(1);
-        return parts;
-    }
-
     async _checkHashExists(sha) {
         try {
             const r = await fetch(this.apiBase + '/api/photos/hash/' + sha, { cache: 'no-store' });
@@ -218,7 +141,7 @@ class UploadTask {
                 const j = await r.json();
                 if (j && j.exists) return j.photo || true;
             }
-        } catch (_) { }
+        } catch (e) { console.warn('[task-worker] hash check fail:', e && e.message); }
         return false;
     }
 
@@ -232,7 +155,7 @@ class UploadTask {
                 bmp.close();
                 const blob = await canvas.convertToBlob({ type: 'image/webp', quality });
                 resolve(blob);
-            } catch (e) { resolve(null); }
+            } catch (e) { console.warn('[task-worker] webp compress fail, fallback null:', e && e.message); resolve(null); }
         });
     }
 
@@ -243,37 +166,54 @@ class UploadTask {
     }
 
     async _run() {
-        const files = this.files;
         const t0 = this.startedAt;
-        const total = files.length;
+        const total = this.total;
+        const files = this.files;
+        let prepared;
 
-        const rawBytes = files.reduce((a, f) => a + (f.size || 0), 0) || 1;
-        this._rawBytes = rawBytes;
-        this._prepBytes.total = rawBytes;
-        this._uploadBytes.total = rawBytes;
-
-        this._setOverall(files.length > 1 ? `${files.length} 个文件` : files[0].name, '预处理中…');
-
-        const prepared = [];
-        // 简化：不做 VP9 转码（那需要大量 DOM/Video API，留在主页面执行预处理然后交给 Worker 上传）
-        // 这里处理的是页面已预处理好的 blob，直接查重 + 上传
-        for (let i = 0; i < total; i++) {
-            const file = files[i];
-            const base = { idx: i, file, err: null, blob: file, ext: file.name?.split('.').pop()?.toLowerCase() || 'webp', sha: null, hasAudio: false, width: 0, height: 0 };
-            try {
-                base.sha = await sha256Hex(await file.arrayBuffer());
-            } catch (e) { base.err = e; }
-            this._prepBytes.done = Math.min(this._prepBytes.total, this._prepBytes.done + (file.size || 0));
-            prepared.push(base);
-            this._setOverall(null, '预处理中…');
+        if (this.mode === 'prepared' && this.prepared) {
+            prepared = this.prepared.map((p, i) => ({
+                idx: i,
+                file: { name: p.fileName || 'upload', size: p.blob?.size || 0 },
+                err: null,
+                blob: p.blob,
+                ext: p.ext || 'webp',
+                sha: p.sha || null,
+                hasAudio: !!p.hasAudio,
+                width: p.width || 0,
+                height: p.height || 0,
+            }));
+            const blobBytes = prepared.reduce((a, p) => a + (p.blob?.size || 0), 0) || 1;
+            this._rawBytes = blobBytes;
+            this._prepBytes.total = blobBytes;
+            this._prepBytes.done = blobBytes;
+            this._uploadBytes.total = blobBytes;
+            this._setOverall(files.length > 1 ? `${files.length} 个文件` : files[0]?.name, '上传中…');
+        } else {
+            const rawBytes = files.reduce((a, f) => a + (f.size || 0), 0) || 1;
+            this._rawBytes = rawBytes;
+            this._prepBytes.total = rawBytes;
+            this._uploadBytes.total = rawBytes;
+            this._setOverall(files.length > 1 ? `${files.length} 个文件` : files[0].name, '预处理中…');
+            prepared = [];
+            for (let i = 0; i < total; i++) {
+                const file = files[i];
+                const base = { idx: i, file, err: null, blob: file, ext: file.name?.split('.').pop()?.toLowerCase() || 'webp', sha: null, hasAudio: false, width: 0, height: 0 };
+                try {
+                    base.sha = await sha256Hex(await file.arrayBuffer());
+                } catch (e) { base.err = e; console.warn('[task-worker] sha256 fail:', e && e.message); }
+                this._prepBytes.done = Math.min(this._prepBytes.total, this._prepBytes.done + (file.size || 0));
+                prepared.push(base);
+                this._setOverall(null, '预处理中…');
+            }
+            this._prepBytes.done = this._prepBytes.total;
         }
-        this._prepBytes.done = this._prepBytes.total;
 
         const results = [];
         for (let i = 0; i < total; i++) {
             const pr = prepared[i];
             const file = pr.file;
-            const fileWeightBytes = file.size || 0;
+            const fileWeightBytes = pr.blob?.size || file.size || 0;
             const uploadBaseBefore = this._uploadBytes.done;
             const addSubProgress = (subP) => {
                 this._uploadBytes.done = Math.min(
@@ -293,6 +233,7 @@ class UploadTask {
             addSubProgress(this.SUB.CHECK * 0.1);
             this._setOverall(file.name, '查重…');
             try {
+                if (!pr.sha) pr.sha = await sha256Hex(await pr.blob.arrayBuffer());
                 addSubProgress(this.SUB.CHECK);
                 const dup = await this._checkHashExists(pr.sha);
                 if (dup) {
@@ -304,10 +245,10 @@ class UploadTask {
                 }
                 const upStart = this.SUB.CHECK;
                 const upSpan = this.SUB.UPLOAD;
-                const parts = await this._uploadToBed(pr.blob, upName, p => {
+                const parts = await uploadToBed(pr.blob, upName, p => {
                     addSubProgress(upStart + p * upSpan);
                     this._setOverall(file.name, p < 1 ? '上传到图床' : '上传完成');
-                });
+                }, this.apiBase);
                 addSubProgress(this.SUB.CHECK + this.SUB.UPLOAD + this.SUB.DIMS);
                 const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
                 const photo = {
@@ -320,7 +261,6 @@ class UploadTask {
                     ext: pr.ext,
                     hasAudio: !!pr.hasAudio,
                 };
-                // 写库
                 await fetch(this.apiBase + '/api/photos', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -332,6 +272,7 @@ class UploadTask {
                 results.push({ ok: true, photo, fileName: file.name });
                 this._setOverall(file.name, `已完成 ${this.done}/${total}`);
             } catch (err) {
+                console.warn('[task-worker] upload item fail:', err && err.message);
                 this.failed++;
                 addSubProgress(1);
                 this._setOverall(file.name, '失败', err.message);
@@ -340,7 +281,6 @@ class UploadTask {
         }
         this._uploadBytes.done = this._uploadBytes.total;
 
-        // 完成
         this.progress = 1;
         this.status = 'done';
         this.step = '完成';
@@ -400,18 +340,18 @@ class DeleteTask {
         const total = ids.length;
         this._emitUpdate();
 
-        const tasks = ids.map(id => async () => {
+        const tasksArr = ids.map(id => async () => {
             try {
                 const r = await fetch(this.apiBase + '/api/photos/' + encodeURIComponent(id), { method: 'DELETE' });
                 if (r.ok) this.done++; else this.failed++;
-            } catch (e) { this.failed++; }
+            } catch (e) { console.warn('[task-worker] delete fail:', e && e.message); this.failed++; }
             const finished = this.done + this.failed;
             this.progress = total ? finished / total : 1;
             this.curFile = `${finished} / ${total} 张`;
             this._emitUpdate();
         });
 
-        await runWithConcurrency(tasks, CONFIG.CONCURRENCY);
+        await runWithConcurrency(tasksArr, CONFIG.CONCURRENCY);
 
         this.progress = 1;
         this.status = 'done';
@@ -512,7 +452,7 @@ class DownloadTask {
                     this.zipBlobUrl = URL.createObjectURL(blob);
                     this.finalName = p.id + '.' + String(p.ext || 'webp').toLowerCase();
                 }
-            } catch (_) { }
+            } catch (e) { console.warn('[task-worker] single dl fail:', e && e.message); }
             this.progress = 1;
             this.status = 'done';
             this.step = '完成';
@@ -570,6 +510,7 @@ class DownloadTask {
                 recomputeOverall();
                 return { ok: true };
             } catch (e) {
+                console.warn('[task-worker] dl item fail:', e && e.message);
                 perItemDone[i] = true;
                 this.failed++;
                 return { ok: false, err: e };
@@ -614,80 +555,105 @@ class DownloadTask {
 }
 
 /* ============ 连接管理 ============ */
+function handleIncomingMessage(msg, replyPort) {
+    const reply = (obj) => {
+        if (replyPort) {
+            try { replyPort.postMessage(obj); } catch (_) { }
+        } else if (bc) {
+            try { bc.postMessage({ ...obj, _replyId: msg._replyId }); } catch (_) { }
+        }
+    };
+    switch (msg.type) {
+        case 'ping':
+            reply({ type: 'pong' });
+            break;
+
+        case 'get-status':
+            reply(getCurrentStatus());
+            break;
+
+        case 'start-upload':
+        case 'start-upload-prepared': {
+            if (tasks.upload) {
+                reply({ type: 'error', error: '已有上传任务进行中' });
+                return;
+            }
+            try {
+                const mode = msg.type === 'start-upload-prepared' ? 'prepared' : 'raw';
+                const input = mode === 'prepared' ? (msg.items || []) : (msg.files || []);
+                tasks.upload = new UploadTask(
+                    'up_' + Date.now().toString(36),
+                    input,
+                    msg.apiBase || '',
+                    mode
+                );
+                reply({ type: 'task-started', taskType: 'upload', taskId: tasks.upload.id });
+            } catch (err) {
+                console.warn('[task-worker] start-upload err:', err && err.message);
+                reply({ type: 'error', error: err.message });
+            }
+            break;
+        }
+
+        case 'start-delete':
+            if (tasks.delete) {
+                reply({ type: 'error', error: '已有删除任务进行中' });
+                return;
+            }
+            try {
+                tasks.delete = new DeleteTask(
+                    'del_' + Date.now().toString(36),
+                    msg.ids || [],
+                    msg.apiBase || ''
+                );
+                reply({ type: 'task-started', taskType: 'delete', taskId: tasks.delete.id });
+            } catch (err) {
+                console.warn('[task-worker] start-delete err:', err && err.message);
+                reply({ type: 'error', error: err.message });
+            }
+            break;
+
+        case 'start-download':
+            if (tasks.download) {
+                reply({ type: 'error', error: '已有下载任务进行中' });
+                return;
+            }
+            try {
+                tasks.download = new DownloadTask(
+                    'dl_' + Date.now().toString(36),
+                    msg.list || [],
+                    msg.apiBase || ''
+                );
+                reply({ type: 'task-started', taskType: 'download', taskId: tasks.download.id });
+            } catch (err) {
+                console.warn('[task-worker] start-download err:', err && err.message);
+                reply({ type: 'error', error: err.message });
+            }
+            break;
+
+        case 'disconnect':
+            if (replyPort) clients.delete(replyPort);
+            break;
+    }
+}
+
 self.onconnect = (e) => {
     const port = e.ports[0];
     clients.add(port);
+    if (keepAliveTimer) { clearTimeout(keepAliveTimer); keepAliveTimer = null; }
 
     port.onmessage = (ev) => {
         const msg = ev.data || {};
-        switch (msg.type) {
-            case 'ping':
-                port.postMessage({ type: 'pong' });
-                break;
-
-            case 'get-status':
-                port.postMessage(getCurrentStatus());
-                break;
-
-            case 'start-upload':
-                if (tasks.upload) {
-                    port.postMessage({ type: 'error', error: '已有上传任务进行中' });
-                    return;
-                }
-                try {
-                    tasks.upload = new UploadTask(
-                        'up_' + Date.now().toString(36),
-                        msg.files || [],
-                        msg.apiBase || ''
-                    );
-                    port.postMessage({ type: 'task-started', taskType: 'upload', taskId: tasks.upload.id });
-                } catch (err) {
-                    port.postMessage({ type: 'error', error: err.message });
-                }
-                break;
-
-            case 'start-delete':
-                if (tasks.delete) {
-                    port.postMessage({ type: 'error', error: '已有删除任务进行中' });
-                    return;
-                }
-                try {
-                    tasks.delete = new DeleteTask(
-                        'del_' + Date.now().toString(36),
-                        msg.ids || [],
-                        msg.apiBase || ''
-                    );
-                    port.postMessage({ type: 'task-started', taskType: 'delete', taskId: tasks.delete.id });
-                } catch (err) {
-                    port.postMessage({ type: 'error', error: err.message });
-                }
-                break;
-
-            case 'start-download':
-                if (tasks.download) {
-                    port.postMessage({ type: 'error', error: '已有下载任务进行中' });
-                    return;
-                }
-                try {
-                    tasks.download = new DownloadTask(
-                        'dl_' + Date.now().toString(36),
-                        msg.list || [],
-                        msg.apiBase || ''
-                    );
-                    port.postMessage({ type: 'task-started', taskType: 'download', taskId: tasks.download.id });
-                } catch (err) {
-                    port.postMessage({ type: 'error', error: err.message });
-                }
-                break;
-
-            case 'disconnect':
-                clients.delete(port);
-                break;
-        }
+        handleIncomingMessage(msg, port);
     };
 
     port.start();
 
-    // 新连接立即发送当前状态
-    try { port.postMessage(getCurrentStatus()); } catch (_) { }
+    try { port.postMessage(getCurrentStatus()); } catch (e) { console.warn('[task-worker] init status fail:', e && e.message); }
 };
+
+setInterval(() => {
+    if (hasActiveTask() && bc) {
+        try { bc.postMessage({ type: 'bc-keepalive', ts: Date.now() }); } catch (_) { }
+    }
+}, 5000);

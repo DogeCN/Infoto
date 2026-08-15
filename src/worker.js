@@ -13,10 +13,23 @@
  *   photo_ids     → 有序 id 列表 [id...]（最新在前）
  *   sha:<hash>    → 对应 photoId（查重反向索引）
  *   votes:<id>    → { likes:[ip...], dislikes:[ip...] }（投票真值源）
+ *   admin_pw      → <saltHex>$<pbkdf2Hex>（新版）或 64hex SHA-256（旧版，首次登录自动升级）
+ *   sess:<token>  → { adminHash, exp }（随机 Session Token，带过期）
  *
  * 上传统一由浏览器经 /api/upload-proxy 中转 tc 图床（Worker 可访问 tc，/api/file 200 直出字节供外部抓取）；
  * 取图时由本服务端合并还原。图片统一 WebP/WebM 格式，压缩在浏览器端完成，服务端不做转码。
  */
+
+// 速率限制桶（单 Worker 实例内存；Cloudflare 无共享内存，单实例内有效）
+const rlBuckets = new Map();
+function rlCheck(key, windowMs, max) {
+  const now = Date.now();
+  let b = rlBuckets.get(key);
+  if (!b) { b = { t: now, e: [] }; rlBuckets.set(key, b); }
+  if (now - b.t > windowMs) { b.e = b.e.filter(t => now - t < windowMs); b.t = now; }
+  if (b.e.length >= max) return false;
+  b.e.push(now); return true;
+}
 
 export default {
   async fetch(request, env) {
@@ -35,10 +48,18 @@ export default {
       return new Response(null, { status: 204, headers: cors });
     }
 
+    // 写接口同源校验（防御 CSRF + 跨域滥用刷票/上传）
+    const isWrite = request.method === 'POST' || request.method === 'DELETE' || request.method === 'PUT' || request.method === 'PATCH';
+    if (isWrite && !isSameOriginOrSafe(request, url)) {
+      return json(cors, { error: 'cross-origin write denied' }, 403);
+    }
+
     /* ---------- 照片元数据 API ---------- */
     if (path === '/api/photos') {
       if (request.method === 'GET') {
-        const arr = await getAllPhotos(env);
+        const limit = Math.max(0, Math.min(100000, Number(url.searchParams.get('limit') || 'Infinity')));
+        const offset = Math.max(0, Number(url.searchParams.get('offset') || '0'));
+        const arr = await getAllPhotos(env, { limit, offset });
         return json(cors, arr);
       }
       if (request.method === 'POST') {
@@ -77,19 +98,48 @@ export default {
       return json(cors, { error: 'method not allowed' }, 405);
     }
 
+    // 批量回写尺寸（N 张图片 onload 聚合一次请求，避免 N 次单独 POST）
+    // 请求体：{ updates: [ {id, width, height}, ... ] }
+    if (path === '/api/photos/dims' && request.method === 'PATCH') {
+      try {
+        const body = await request.json();
+        const updates = Array.isArray(body && body.updates) ? body.updates : [];
+        if (updates.length === 0) return json(cors, { ok: true, updated: 0 });
+        if (updates.length > 200) return json(cors, { error: 'too many updates (>200)' }, 400);
+        let updated = 0;
+        for (const u of updates) {
+          if (!u || !u.id) continue;
+          const id = String(u.id);
+          const w = Number(u.width) | 0;
+          const h = Number(u.height) | 0;
+          if (!w || !h || w <= 0 || w > 16384 || h <= 0 || h > 16384) continue;
+          const key = 'p:' + id;
+          const existing = await env.Infoto.get(key, 'json');
+          if (!existing) continue;
+          if (existing.width === w && existing.height === h) continue;
+          existing.width = w; existing.height = h;
+          await env.Infoto.put(key, JSON.stringify(existing));
+          updated++;
+        }
+        return json(cors, { ok: true, updated });
+      } catch (e) {
+        return json(cors, { error: 'bad json' }, 400);
+      }
+    }
+
     /* ---------- 投票：POST /api/vote {id, delta} ---------- */
-    // 真值来源：votes:<photoId> = { likes: [ip...], dislikes: [ip...] }
-    // 动态计算数量，不再写冗余计数器到 photos；从集合内查找做 IP 防重
     if (path === '/api/vote' && request.method === 'POST') {
       try {
+        const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+        // 每 IP 每 10 秒最多 10 票（防脚本刷）
+        if (!rlCheck('vote:' + ip, 10 * 1000, 10)) return json(cors, { error: 'too many votes' }, 429);
+
         const body = await request.json();
         const id = body && body.id;
         const delta = body && body.delta;
         if (!id || (delta !== 1 && delta !== -1)) {
           return json(cors, { error: 'bad vote payload' }, 400);
         }
-        // 取客户端 IP（Cloudflare 注入，绕过代理）
-        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
 
         const photo = await getPhoto(env, id);
         if (!photo) return json(cors, { error: 'photo not found' }, 404);
@@ -100,8 +150,6 @@ export default {
           ? { likes: Array.isArray(raw.likes) ? raw.likes : [], dislikes: Array.isArray(raw.dislikes) ? raw.dislikes : [] }
           : { likes: [], dislikes: [] };
 
-        // 直接按最新操作方向写入：同方向=保持，反方向=切换；不做取消/拒绝
-        // 先从对侧集合移除（若有），再保证本侧集合包含该 IP
         if (delta > 0) {
           votes.dislikes = votes.dislikes.filter(x => x !== ip);
           if (!votes.likes.includes(ip)) votes.likes.push(ip);
@@ -112,7 +160,6 @@ export default {
         await env.Infoto.put(vkey, JSON.stringify(votes));
         const likes = votes.likes.length;
         const dislikes = votes.dislikes.length;
-        // 同步写回照片对象，使 GET /api/photos 不再需要 N+1 读 votes
         const cur = (await getPhoto(env, id)) || { id };
         await env.Infoto.put('p:' + id, JSON.stringify({ ...cur, likes, dislikes }));
         return json(cors, { ok: true, delta, likes, dislikes });
@@ -126,7 +173,6 @@ export default {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const sha = path.slice('/api/photos/hash/'.length).toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(sha)) return json(cors, { error: 'bad hash' }, 400);
-      // O(1)：先查反向索引 → 再取照片对象
       const pid = await env.Infoto.get('sha:' + sha);
       if (!pid) return json(cors, { exists: false });
       const photo = await env.Infoto.get('p:' + pid, 'json');
@@ -134,9 +180,6 @@ export default {
     }
 
     /* ---------- 管理员认证 + 删除 ---------- */
-    // 密码以 SHA-256 存 KV（key: admin_pw）。登录成功下发 admin_session Cookie（HttpOnly）。
-    // 首次使用（KV 无密码）进入"设置密码"模式：提交的密码即成为管理员密码；
-    // 也可通过环境变量 ADMIN_PASSWORD 预设（防止被他人抢先设置）。
     if (path === '/api/admin/check' && request.method === 'GET') {
       const hash = await getAdminHash(env);
       if (!hash) return json(cors, { ok: false, setup: true });
@@ -144,32 +187,53 @@ export default {
     }
 
     if (path === '/api/admin/login' && request.method === 'POST') {
+      const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+      // 登录速率限制：每 IP 每分钟最多 5 次（防暴力破解）
+      if (!rlCheck('admin-login:' + ip, 60 * 1000, 5)) {
+        return json(cors, { error: 'too many attempts, try again later' }, 429);
+      }
       let body;
       try { body = await request.json(); } catch (e) { body = {}; }
       const pw = body && body.password;
       if (!pw) return json(cors, { error: 'missing password' }, 400);
-      let hash = await getAdminHash(env);
-      if (!hash) {
-        // 设置模式：优先用环境变量预设，否则以本次提交为准
-        hash = env.ADMIN_PASSWORD ? await sha256Hex(env.ADMIN_PASSWORD) : await sha256Hex(pw);
-        await env.Infoto.put('admin_pw', hash);
+      let stored = await getAdminHash(env);
+      if (!stored) {
+        // 设置模式：优先用环境变量预设，否则以本次提交为准（直接存 PBKDF2）
+        const preset = env.ADMIN_PASSWORD;
+        const toHash = preset || pw;
+        stored = await hashPasswordForStorage(toHash);
+        await env.Infoto.put('admin_pw', stored);
+        // 如果是预设 env 密码，则需要验证输入是否等于预设
+        if (preset && preset !== pw) return json(cors, { error: 'wrong password' }, 401);
+      } else {
+        const vr = await verifyPasswordAndUpgrade(env, pw, stored);
+        if (!vr.ok) return json(cors, { error: 'wrong password' }, 401);
+        // verifyPasswordAndUpgrade 内部已把旧 SHA-256 升级为 PBKDF2，重新读取最新
+        stored = (await getAdminHash(env)) || stored;
       }
-      if (await sha256Hex(pw) !== hash) return json(cors, { error: 'wrong password' }, 401);
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(hash, cors) });
+      const token = await createSession(env, stored);
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(token, cors) });
     }
 
     if (path === '/api/admin/change' && request.method === 'POST') {
       if (!(await isAdmin(request, env))) return json(cors, { error: 'unauthorized' }, 401);
+      // 退出旧 Session（密码改动后，把当前的 Session 也标记掉）
+      const oldToken = parseCookies(request)['admin_session'];
       let body;
       try { body = await request.json(); } catch (e) { body = {}; }
       const pw = body && body.password;
       if (!pw || String(pw).length < 4) return json(cors, { error: 'password too short' }, 400);
-      const hash = await sha256Hex(pw);
+      const hash = await hashPasswordForStorage(pw);
       await env.Infoto.put('admin_pw', hash);
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(hash, cors) });
+      // 密码改动后：当前 Session 绑定的是旧 adminHash，新的请求走到 isAdmin 时比对失败 → 自动失效
+      if (oldToken) destroySession(env, oldToken).catch(() => { });
+      const newToken = await createSession(env, hash);
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(newToken, cors) });
     }
 
     if (path === '/api/admin/logout' && request.method === 'POST') {
+      const tok = parseCookies(request)['admin_session'];
+      if (tok) destroySession(env, tok).catch(() => { });
       const h = new Headers(cors);
       h.set('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0');
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: h });
@@ -183,6 +247,7 @@ export default {
       if (p) {
         if (p.sha256) await env.Infoto.delete('sha:' + p.sha256);
         await env.Infoto.delete('p:' + id);
+        await env.Infoto.delete('votes:' + id);
       }
       const ids = await env.Infoto.get('photo_ids', 'json');
       const list = Array.isArray(ids) ? ids : [];
@@ -192,18 +257,17 @@ export default {
     }
 
     /* ---------- 上传中转：POST /api/upload-proxy（大文件分片走 tc 图床） ---------- */
-    // 浏览器经本接口中转 tc 图床（Worker 可访问 tc）：小文件整文件、大文件分片后均经此上传。
-    // 服务端不落盘、不二次处理，只转发并原样返回直链。
     if (path === '/api/upload-proxy' && request.method === 'POST') {
-      // 仅服务端用密钥签发 tc token，前端不再持有密钥（防止泄露被滥用上传/托管恶意文件）
-      const cl = Number(request.headers.get('Content-Length') || 0);
-      if (cl > 25 * 1024 * 1024) return json(cors, { error: 'payload too large' }, 413);
+      // 优先读取密钥：Secret > 环境变量 > 内置回退值（内置默认仅开发兜底，生产请用 wrangler secret put）
+      const tcSecret = env.TC_SECRET || env.TC_SECRET_DEV || '9a31f2e82617e4b4b482110f8c928b9b2734d809f060c30f12e8b2574a84c122';
+      const MAX_PAYLOAD = 25 * 1024 * 1024;
+      // 不信任 Content-Length 头（可伪造），用 TransformStream 按实际字节限流
+      const limitedBody = request.body ? limitBodySize(request.body, MAX_PAYLOAD) : null;
       const sha = request.headers.get('X-File-Sha256') || '';
-      // 兜底超时：tc 不可达/过慢时不能让请求永久挂起（否则浏览器侧也无超时、静默卡死）
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 30000);
       try {
-        const token = await makeTcToken(TC_SECRET, sha);
+        const token = await makeTcToken(tcSecret, sha);
         const headers = new Headers();
         const ct = request.headers.get('Content-Type') || 'application/octet-stream';
         headers.set('Content-Type', ct);
@@ -211,7 +275,7 @@ export default {
         const upstream = await fetch('https://tc.0147258.xyz/upload', {
           method: 'POST',
           headers,
-          body: request.body,
+          body: limitedBody,
           duplex: 'half',
           signal: ac.signal,
         });
@@ -222,13 +286,12 @@ export default {
       } catch (e) {
         clearTimeout(timer);
         const timedOut = ac.signal.aborted;
+        if (e && e.code === 'PAYLOAD_TOO_LARGE') return json(cors, { error: 'payload too large' }, 413);
         return json(cors, { error: timedOut ? 'proxy upstream timeout' : 'proxy upstream error: ' + e.message }, timedOut ? 504 : 502);
       }
     }
 
     /* ---------- 取图 / 分片还原：GET /api/file/<id> ---------- */
-    // 照片分片直链存于 tc 图床（KV 记 parts），本接口动态拉取各分片拼接还原为完整文件。
-    // 单分片：Worker 流式转发 tc 字节（200）；多分片：Worker 内合并回传。不做转码（浏览器已统一 WebP/WebM 格式）。
     if (path.startsWith('/api/file/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const id = path.slice('/api/file/'.length);
@@ -245,16 +308,15 @@ export default {
       const fhdrs = {
         ...cors,
         'Content-Type': ct,
-        'Cache-Control': 'public, max-age=86400',
+        'Cache-Control': 'public, max-age=86400, stale-while-revalidate=604800',
       };
       if (forceDownload || !isSafe) {
         fhdrs['Content-Disposition'] = safeDisposition(dlName, forceDownload || !isSafe);
       }
-      // tc 图床公开可读（仅需伪 UA），Worker 拉取后 200 直出，外部抓取（谷歌搜图等）可拿到字节
       const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
       const tcHeaders = { 'User-Agent': ua, 'Referer': 'https://inf.prom.cc.cd/', 'Accept': '*/*' };
 
-      // 单分片：Worker 流式转发 tc 字节（200），统一 200 直出（保证谷歌搜图等外部抓取可直接读取字节 / CORS 正常）
+      // 单分片：Worker 流式转发 tc 字节（200）
       if (parts.length === 1) {
         try {
           const r = await fetch(parts[0], { headers: tcHeaders, redirect: 'follow' });
@@ -269,22 +331,10 @@ export default {
         }
       }
 
-      // 多分片（tc）：逐片拉取合并回传
+      // 多分片：流式合并（TransformStream pipeline，不把所有分片加载到内存）
       try {
-        const chunks = [];
-        let total = 0;
-        for (const u of parts) {
-          const r = await fetch(u, { headers: tcHeaders });
-          if (!r.ok) return json(cors, { error: 'part fetch failed ' + r.status }, 502);
-          const ab = await r.arrayBuffer();
-          chunks.push(new Uint8Array(ab));
-          total += ab.byteLength;
-        }
-        const merged = new Uint8Array(total);
-        let off = 0;
-        for (const c of chunks) { merged.set(c, off); off += c.length; }
-        fhdrs['Content-Length'] = String(total);
-        return new Response(merged, { status: 200, headers: fhdrs });
+        const readable = mergePartsAsStream(parts, tcHeaders);
+        return new Response(readable, { status: 200, headers: fhdrs });
       } catch (e) {
         return json(cors, { error: 'merge error: ' + e.message }, 502);
       }
@@ -307,7 +357,17 @@ function json(headers, data, status = 200) {
   });
 }
 
-// 前端统一格式：只有 webp / webm；其他 ext 一律按二进制下载（防御性编程）
+// 写接口 Origin/Referer 校验：允许同源 + 无 Origin 的直接导航（浏览器地址栏 POST 基本不存在，但 keep 兼容）
+function isSameOriginOrSafe(request, url) {
+  const origin = request.headers.get('Origin');
+  if (origin) return origin === url.origin;
+  const referer = request.headers.get('Referer');
+  if (!referer) return true; // 无 Referer（某些浏览器隐私模式、curl）；信任但速率限制兜底
+  try { return new URL(referer).origin === url.origin; }
+  catch { return false; }
+}
+
+// 前端统一格式：只有 webp / webm；其他 ext 一律按二进制下载
 const SAFE_MIME = {
   webp: 'image/webp',
   webm: 'video/webm',
@@ -325,11 +385,157 @@ function safeDisposition(filename, forceDownload = true) {
   return `${type}; filename="${ascii.replace(/"/g, '')}"; filename*=UTF-8''${encoded}`;
 }
 
-// ===== 管理员辅助 =====
+// 按实际传输字节限流（防止 Content-Length 伪造）
+function limitBodySize(readable, maxBytes) {
+  let read = 0;
+  const ts = new TransformStream({
+    transform(chunk, controller) {
+      read += chunk.byteLength;
+      if (read > maxBytes) {
+        const err = new Error('payload too large');
+        err.code = 'PAYLOAD_TOO_LARGE';
+        controller.error(err);
+        return;
+      }
+      controller.enqueue(chunk);
+    }
+  });
+  return readable.pipeThrough(ts);
+}
+
+// 多分片流式合并（串行逐片：保证拼接顺序正确，同时任意时刻内存只保存 1 个分片的流 chunk）
+function mergePartsAsStream(parts, tcHeaders) {
+  let idx = 0;
+  let currentReader = null;
+  const ts = new TransformStream({
+    async start() { },
+    async transform(_, __) { /* unused：通过 pull 拉取 */ },
+    async pull(controller) {
+      while (idx < parts.length) {
+        if (!currentReader) {
+          const r = await fetch(parts[idx], { headers: tcHeaders });
+          if (!r.ok || !r.body) {
+            controller.error(new Error('part fetch failed ' + r.status));
+            return;
+          }
+          currentReader = r.body.getReader();
+        }
+        const { done, value } = await currentReader.read();
+        if (done) {
+          currentReader.releaseLock();
+          currentReader = null;
+          idx++;
+          continue;
+        }
+        controller.enqueue(value);
+        return;
+      }
+      controller.close();
+    },
+    cancel() {
+      if (currentReader) try { currentReader.cancel(); } catch { }
+    }
+  });
+  // 创建一个"启动流"：给 pull 一个触发点
+  const startSource = new ReadableStream({
+    start(ctrl) { ctrl.enqueue(new Uint8Array(0)); ctrl.close(); }
+  });
+  return startSource.pipeThrough(ts);
+}
+
+// ===== 密码哈希（PBKDF2 + 随机 salt，兼容旧版 SHA-256 自动升级）=====
+const PBKDF2_ITER = 120000;
+const SESS_TTL_MS = 7 * 24 * 3600 * 1000;
+const SESS_TTL_SEC = 7 * 24 * 3600;
+
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function hexToBytes(hex) {
+  const out = new Uint8Array(Math.max(0, Math.floor(hex.length / 2)));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16) || 0;
+  return out;
+}
+function randomTokenHex(n = 32) {
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(n)));
+}
+
 async function sha256Hex(str) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(str)));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(new Uint8Array(buf));
 }
+
+async function pbkdf2Hex(password, saltBytes, iterations) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  const derived = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations, hash: 'SHA-256' },
+    keyMaterial,
+    256
+  );
+  return bytesToHex(new Uint8Array(derived));
+}
+
+async function hashPasswordForStorage(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await pbkdf2Hex(password, salt, PBKDF2_ITER);
+  return bytesToHex(salt) + '$' + hash;
+}
+
+async function verifyPasswordAndUpgrade(env, input, stored) {
+  const sepIdx = stored.indexOf('$');
+  if (sepIdx > 0) {
+    // 新版：salt$hash
+    try {
+      const salt = hexToBytes(stored.slice(0, sepIdx));
+      const expected = stored.slice(sepIdx + 1);
+      const actual = await pbkdf2Hex(input, salt, PBKDF2_ITER);
+      return { ok: actual === expected };
+    } catch { return { ok: false }; }
+  }
+  // 旧版：64 hex 单次 SHA-256（无 salt）
+  if (/^[0-9a-f]{64}$/.test(stored)) {
+    const inputHash = await sha256Hex(input);
+    if (inputHash === stored) {
+      // 登录成功时自动升级为 PBKDF2
+      try {
+        const upgraded = await hashPasswordForStorage(input);
+        await env.Infoto.put('admin_pw', upgraded);
+      } catch { }
+      return { ok: true };
+    }
+    return { ok: false };
+  }
+  return { ok: false };
+}
+
+// ===== Session 机制：随机 Token 存 KV（sess:<token>），7 天过期 =====
+async function createSession(env, adminHash) {
+  const token = randomTokenHex(32);
+  const sess = { adminHash, exp: Date.now() + SESS_TTL_MS };
+  await env.Infoto.put('sess:' + token, JSON.stringify(sess), { expirationTtl: SESS_TTL_SEC });
+  return token;
+}
+async function verifySessionToken(env, token) {
+  if (!token) return false;
+  const raw = await env.Infoto.get('sess:' + token);
+  if (!raw) return false;
+  try {
+    const sess = JSON.parse(raw);
+    if (sess.exp < Date.now()) return false;
+    const curHash = await env.Infoto.get('admin_pw');
+    return curHash && sess.adminHash === curHash; // 密码改动后旧 Session 自动失效
+  } catch { return false; }
+}
+async function destroySession(env, token) {
+  if (token) await env.Infoto.delete('sess:' + token);
+}
+
 function parseCookies(req) {
   const c = req.headers.get('Cookie');
   const out = {};
@@ -344,14 +550,13 @@ async function getAdminHash(env) {
   return (await env.Infoto.get('admin_pw')) || '';
 }
 async function isAdmin(req, env) {
-  const cookie = parseCookies(req)['admin_session'];
-  if (!cookie) return false;
-  const hash = await getAdminHash(env);
-  return !!hash && cookie === hash;
+  const token = parseCookies(req)['admin_session'];
+  if (!token) return false;
+  return await verifySessionToken(env, token);
 }
-function sessionCookieHeaders(value, cors) {
+function sessionCookieHeaders(token, cors) {
   const h = new Headers(cors);
-  h.set('Set-Cookie', `admin_session=${value}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${60 * 60 * 24 * 30}`);
+  h.set('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${SESS_TTL_SEC}`);
   return h;
 }
 
@@ -361,10 +566,12 @@ async function getPhoto(env, id) {
   return await env.Infoto.get('p:' + id, 'json');
 }
 
-async function getAllPhotos(env) {
+async function getAllPhotos(env, { limit = Infinity, offset = 0 } = {}) {
   const ids = await env.Infoto.get('photo_ids', 'json');
   if (!Array.isArray(ids) || ids.length === 0) return [];
-  const photos = await Promise.all(ids.map(async id => {
+  const end = isFinite(limit) ? offset + limit : ids.length;
+  const sliced = ids.slice(offset, end);
+  const photos = await Promise.all(sliced.map(async id => {
     const p = await env.Infoto.get('p:' + id, 'json');
     return p || null;
   }));
@@ -372,7 +579,6 @@ async function getAllPhotos(env) {
 }
 
 // 只保留受信任字段，剥离客户端传入的 likes/dislikes / 派生值 url 等
-// 文件名不再存储，统一用 <id>.<ext>；ext 只允许 webp / webm（前端统一压缩转换后确定）
 function sanitizePhoto(p) {
   const out = {};
   for (const k of ['id', 'parts', 'sha256', 'width', 'height', 'createdAt', 'ext', 'hasAudio']) {
@@ -381,9 +587,7 @@ function sanitizePhoto(p) {
   return out;
 }
 
-// tc 图床上传签名密钥（仅服务端使用，切勿暴露到前端）
-const TC_SECRET = '9a31f2e82617e4b4b482110f8c928b9b2734d809f060c30f12e8b2574a84c122';
-
+// tc 图床上传签名（仅服务端使用，切勿暴露到前端）
 async function makeTcToken(secret, sha) {
   const enc = new TextEncoder();
   const b64u = (bytes) => {

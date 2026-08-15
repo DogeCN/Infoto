@@ -50,18 +50,6 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const el = (tag, cls, html) => { const d = document.createElement(tag); if (cls) d.className = cls; if (html != null) d.innerHTML = html; return d; };
 
 /* =========================================================
-   配置
-   ========================================================= */
-const CONFIG = {
-    API_BASE: '',
-    SINGLE_PART_LIMIT: 600 * 1024,
-    CHUNK_SIZE: 1024 * 1024,
-    CONCURRENCY: 3,
-    MAX_RETRY: 3
-    ,
-};
-
-/* =========================================================
    TaskWorker 适配层：跨页面保持上传/下载/删除推进
    - 支持 SharedWorker 的浏览器：任务在 Worker 中执行，页面切换不中断
    - 不支持的浏览器：降级为页面内执行（原有逻辑）
@@ -72,6 +60,30 @@ const TaskWorker = (() => {
     let listeners = new Set();
     let currentTasks = { upload: null, download: null, delete: null };
     let reconnectTimer = null;
+    let bc = null;
+    let _bcInstalled = false;
+
+    function _installBC() {
+        if (_bcInstalled) return;
+        _bcInstalled = true;
+        try {
+            bc = new BroadcastChannel('infoto-task-bc');
+            bc.onmessage = (ev) => {
+                const msg = ev.data || {};
+                if (msg.type === 'bc-keepalive' || msg.type === 'bc-ping') return;
+                if (msg.type === 'task-update' && msg.task) {
+                    currentTasks[msg.task.type] = msg.task;
+                }
+                if (msg.type === 'task-clear') {
+                    currentTasks[msg.taskType] = null;
+                }
+                if (msg.type === 'status' && msg.tasks) {
+                    currentTasks = { ...currentTasks, ...msg.tasks };
+                }
+                _emit(msg);
+            };
+        } catch (e) { bc = null; }
+    }
 
     function _port() {
         return sw ? sw.port : null;
@@ -86,7 +98,13 @@ const TaskWorker = (() => {
         for (const fn of listeners) try { fn(msg); } catch (e) { console.warn('[TaskWorker] listener error', e); }
     }
 
+    function _syncFromBC() {
+        if (!bc) return;
+        try { bc.postMessage({ type: 'get-status' }); } catch (_) { }
+    }
+
     function connect() {
+        _installBC();
         if (!supported) return false;
         if (sw) return true;
         try {
@@ -106,6 +124,7 @@ const TaskWorker = (() => {
             };
             sw.port.start();
             try { sw.port.postMessage({ type: 'get-status' }); } catch (_) { }
+            _syncFromBC();
             if (reconnectTimer) clearInterval(reconnectTimer);
             reconnectTimer = setInterval(() => {
                 try { sw.port.postMessage({ type: 'ping' }); } catch (_) { sw = null; connect(); }
@@ -147,16 +166,26 @@ const TaskWorker = (() => {
         } catch (e) { return false; }
     }
 
-    // 页面加载时尝试连接
-    try { connect(); } catch (_) { }
+    function startUploadPrepared(items, apiBase) {
+        if (!connect()) return false;
+        try {
+            sw.port.postMessage({ type: 'start-upload-prepared', items, apiBase });
+            return true;
+        } catch (e) { return false; }
+    }
 
-    return { connect, isSupported, onMessage, getTask, hasAnyTask, startDelete, startDownload, startUpload };
+    try {
+        connect();
+        window.addEventListener('beforeunload', () => {
+            try { if (sw) sw.port.postMessage({ type: 'disconnect' }); } catch (_) { }
+        }, { once: true });
+    } catch (e) { console.warn('[TaskWorker] init connect fail:', e && e.message); }
+
+    return { connect, isSupported, onMessage, getTask, hasAnyTask, startDelete, startDownload, startUpload, startUploadPrepared };
 })();
 
 /* =========================================================
    WebCodecs VP9 支持探测 & 文件类型白名单
-   - VP9 WebCodecs 支持（Chrome/Edge/Firefox 等）→ 允许 图片/GIF/视频，GIF/视频转 VP9 WebM；不支持则文件选择框静默去掉视频/GIF
-   - 不支持（Safari 全系、老 Chrome/Firefox）→ 仅允许 图片，文件选择器自动排除视频/GIF
    ========================================================= */
 const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|flv|wmv|ogv|ogg)$/i;
 const GIF_EXT_RE = /\.gif$/i;
@@ -172,34 +201,22 @@ async function supportsVp9WebCodecs() {
     if (_vp9Support !== null) return _vp9Support;
     if (typeof VideoEncoder !== 'function') { _vp9Support = false; return false; }
     try {
-        // 用 level 1.0 的小尺寸配置探测“浏览器是否具备 VP9 编码能力”，与具体分辨率无关
         const cfg = { codec: 'vp09.00.10.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' };
         const r = await VideoEncoder.isConfigSupported(cfg);
         _vp9Support = !!(r && r.supported);
-    } catch (_) { _vp9Support = false; }
+    } catch (e) { console.warn('[infoto] VP9 support probe fail', e); _vp9Support = false; }
     return _vp9Support;
 }
-// 根据 VP9 编码支持情况动态调整文件选择框的可选格式：
-// 支持 → 图片/GIF/视频全开；不支持 → 静默仅保留静态图格式（去掉 video/* 与 GIF，二者都依赖 VP9 编码）
 function applyFileInputAccept() {
     const inp = $('#fileInput');
     if (!inp) return;
     if (_vp9Support === true) inp.setAttribute('accept', 'image/*,video/*,.gif');
     else if (_vp9Support === false) inp.setAttribute('accept', 'image/png,image/jpeg,image/webp');
-    // _vp9Support === null（探测未完成）：保持初始全格式，探测完成后再回调本函数收紧
 }
-// 初始全开；页面加载即探测浏览器 VP9 支持，完成后静默调整（避免不支持的浏览器还能选到视频/GIF）
 $('#fileInput')?.setAttribute('accept', 'image/*,video/*,.gif');
 supportsVp9WebCodecs().then(applyFileInputAccept);
 
-async function sha256Hex(buf) {
-    const d = await crypto.subtle.digest('SHA-256', buf);
-    return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-/* ---- 客户端有损压缩为 WebP（canvas.toBlob 原生编码，零 WASM、秒级） ----
- * 实测（用户 Favourite 图库 190 张）：quality=0.8 时 97% 照片压到原图 ~46% 且都比原图小，
- * 观感近无损；少数高细节图压不赢原图，按"比原来小才采用"规则回退原图。 */
+/* ---- 客户端有损压缩为 WebP ---- */
 const WEBP_QUALITY = 0.8;
 
 async function compressToWebp(file, quality = WEBP_QUALITY) {
@@ -219,10 +236,7 @@ async function compressToWebp(file, quality = WEBP_QUALITY) {
 }
 
 /* =========================================================
-   轻量 WebM（EBML + SimpleBlock） muxer：支持多 Track
-   - Track 1 = 视频（V_VP9）
-   - Track 2 = 音频（A_OPUS / A_VORBIS ...）可选
-   零依赖 ~6KB，不写 SeekHead/Cues（播放 ok，拖动精度低）
+   轻量 WebM muxer：EBML + SimpleBlock
    ========================================================= */
 function _vint(n, length = 0) {
     if (n < 0 || !isFinite(n)) throw new Error('bad vint');
@@ -274,9 +288,9 @@ function _ebmlStr(id, s) {
 }
 
 class SimpleWebMMuxer {
-    constructor({ width, height, timeDen = 1000, videoCodec = 'V_VP9', audio = null /* {sampleRate, channels, codecId:'A_OPUS', codecPrivate:Uint8Array|null} */ }) {
+    constructor({ width, height, timeDen = 1000, videoCodec = 'V_VP9', audio = null }) {
         this.w = width; this.h = height;
-        this.tDen = timeDen;  // Cluster/SimpleBlock 用的 timecode 单位：1/timeDen 秒（默认 1ms）
+        this.tDen = timeDen;
         this.videoCodec = videoCodec;
         this.audio = audio ? { sampleRate: 48000, channels: 2, codecId: 'A_OPUS', codecPrivate: null, ...audio } : null;
         this.clusters = [];
@@ -289,21 +303,18 @@ class SimpleWebMMuxer {
     }
     _closeCluster() { this._curCluster = null; }
     _trackNumVint(trackNum) {
-        // vint 单字节 track 1=0x81，track 2=0x82 ...
         const b = new Uint8Array(1);
         b[0] = (0x80) | (trackNum & 0x7f);
         return b;
     }
-    // timestampSec: 秒（float）；trackNum: 1=视频，2=音频；keyframe 只对视频有效
     addChunk(data, { timestampSec, trackNum = 1, keyframe = false }) {
         const tc = Math.max(0, Math.round(timestampSec * this.tDen));
         if (!this._curCluster) this._openCluster(tc);
         else if (tc - this._curCluster.timecode > 30000) { this._closeCluster(); this._openCluster(tc); }
         const relTc = tc - this._curCluster.timecode;
-        // SimpleBlock: TrackNum(vint) + RelativeTimecode(int16 BE) + Flags(1B) + frame bytes
         const tcBytes = new Uint8Array(2);
         new DataView(tcBytes.buffer).setInt16(0, Math.max(-32768, Math.min(32767, relTc)), false);
-        const flags = (keyframe && trackNum === 1) ? 0x80 : 0x00; // Keyframe bit only for video
+        const flags = (keyframe && trackNum === 1) ? 0x80 : 0x00;
         const body = _concat([this._trackNumVint(trackNum), tcBytes, new Uint8Array([flags]), new Uint8Array(data)]);
         this._curCluster.blocks.push(_ebml(0xa3, body));
         this.maxDurationSec = Math.max(this.maxDurationSec, timestampSec);
@@ -319,7 +330,7 @@ class SimpleWebMMuxer {
             const srBytes = new Uint8Array(8);
             new DataView(srBytes.buffer).setFloat64(0, sampleRate, false);
             inner.push(_ebml(0xe1, _concat([
-                new Uint8Array(_ebmlFloat(0xb5, sampleRate).slice(1)),  // SamplingFrequency(float) —— 直接拼 ebmlFloat
+                new Uint8Array(_ebmlFloat(0xb5, sampleRate).slice(1)),
                 _ebmlU(0x9f, channels),
             ])));
             if (opts.codecPrivate) inner.push(_ebml(0x63a2, opts.codecPrivate));
@@ -330,24 +341,20 @@ class SimpleWebMMuxer {
     }
     finalize() {
         if (this._curCluster) this._closeCluster();
-        const durationUs = Math.round(this.maxDurationSec * 1e6); // 微秒，对应 TimecodeScale=1e6 ns
-        // --- Cluster 序列化 ---
+        const durationUs = Math.round(this.maxDurationSec * 1e6);
         const clusterParts = [];
         for (const c of this.clusters) {
             const inner = _concat([_ebmlU(0xe7, c.timecode), ...c.blocks]);
             clusterParts.push(_ebml(0x1f43b675, inner));
         }
-        // --- Segment 顶层 ---
         const segmentInner = [];
-        // Info
         const infoInner = _concat([
-            _ebmlU(0x2ad7b1, 1e6),                     // TimecodeScale = 1,000,000 ns = 1ms
-            _ebmlFloat(0x4489, this.maxDurationSec),   // Duration (秒，float)
+            _ebmlU(0x2ad7b1, 1e6),
+            _ebmlFloat(0x4489, this.maxDurationSec),
             _ebmlStr(0x4d80, 'Infoto WebCodecs'),
             _ebmlStr(0x5741, 'Infoto WebCodecs'),
         ]);
         segmentInner.push(_ebml(0x1549a966, infoInner));
-        // Tracks
         const tracks = [
             this._trackEntry(1, 1, 1, this.videoCodec, { video: { width: this.w, height: this.h } })
         ];
@@ -372,14 +379,10 @@ class SimpleWebMMuxer {
     }
 }
 
-/* ---- GIF / 视频 → VP9 WebM（WebCodecs VideoEncoder + 上文 SimpleWebMMuxer） ----
- * - GIF：用 createImageBitmap 逐帧解码（浏览器原生支持 GIF ImageBitmap），按帧 delay 时间轴推进
- * - 视频：<video> + requestVideoFrameCallback 逐帧取 VideoFrame（无法原生 demux 的折中方案）
- * 两种路径输出 VP9 profile 0、按分辨率选 level 的 WebM。 */
-const VP9_BITRATE_PER_PIXEL = 0.35; // 每个像素 0.35 bps，约 1080p ≈ 7 Mbps
-const OPUS_BITRATE_PER_CHANNEL = 64000; // 每声道 64 kbps Opus（128kbps stereo）
+/* ---- GIF / 视频 → VP9 WebM ---- */
+const VP9_BITRATE_PER_PIXEL = 0.35;
+const OPUS_BITRATE_PER_CHANNEL = 64000;
 function _vp9Codec(w, h) {
-    // VP9 codec string: vp09.PP.LL.DD  (profile 00, level LL, 8-bit)
     let level = '10';
     if (h > 2160) level = '51';
     else if (h > 1440) level = '50';
@@ -422,183 +425,270 @@ async function _decodeGifFrames(file) {
     return { width: w, height: h, frames, durationSec: t / 1000, hasAudio: false };
 }
 
-// 视频 → 同时抓：①视频帧（createImageBitmap，FPS 上限 30）②音频帧（WebAudio ScriptProcessor 抽 AudioData，再编码 Opus）
-async function _decodeVideoFramesAndAudio(file, progressCb) {
+const FPS_CAP = 30;
+
+function resamplePCM(buf, dstSr) {
+    if (!buf) return null;
+    const srcSr = buf.sr;
+    if (Math.abs(srcSr - dstSr) < 1) {
+        const n = buf.length, ch = buf.channels.length;
+        const out = new Float32Array(n * ch);
+        for (let s = 0, o = 0; s < n; s++) for (let c = 0; c < ch; c++, o++) out[o] = buf.channels[c][s];
+        return { interleaved: out, samples: n, sr: dstSr, channels: ch };
+    }
+    const ratio = srcSr / dstSr;
+    const dstN = Math.max(1, Math.round(buf.length * dstSr / srcSr));
+    const ch = buf.channels.length;
+    const out = new Float32Array(dstN * ch);
+    const src = buf.channels;
+    for (let i = 0; i < dstN; i++) {
+        const s = i * ratio;
+        const s0 = Math.floor(s); const s1 = Math.min(buf.length - 1, s0 + 1);
+        const f = s - s0;
+        for (let c = 0; c < ch; c++) out[i * ch + c] = src[c][s0] * (1 - f) + src[c][s1] * f;
+    }
+    return { interleaved: out, samples: dstN, sr: dstSr, channels: ch };
+}
+
+async function _decodeAudioOnly(file) {
+    if (typeof AudioContext === 'undefined') return { hasAudio: false, audio: null };
+    let audioCtx = null;
+    try {
+        audioCtx = new AudioContext({ sampleRate: 48000 });
+        const ab = await file.arrayBuffer();
+        const decoded = await audioCtx.decodeAudioData(ab.slice(0));
+        const hasAudio = decoded.numberOfChannels > 0 && decoded.length > 0;
+        let audioResampled = null;
+        if (hasAudio) {
+            const ch = Math.min(2, decoded.numberOfChannels);
+            const stereo = { sr: decoded.sampleRate, length: decoded.length, channels: Array.from({ length: ch }, (_, c) => decoded.getChannelData(c).slice()) };
+            audioResampled = resamplePCM(stereo, 48000);
+        }
+        return { hasAudio: !!audioResampled, audio: audioResampled };
+    } catch (err) {
+        console.warn('[infoto] audio decode fail', err);
+        return { hasAudio: false, audio: null };
+    } finally {
+        if (audioCtx) try { audioCtx.close(); } catch (e) { console.warn('[infoto] audioCtx close fail', e); }
+    }
+}
+
+function _isMp4(file) { return /\.(mp4|m4v|mov|3gp|f4v)$/i.test(file.name || ''); }
+
+let _mp4boxMod = null;
+async function _loadMp4Box() {
+    if (_mp4boxMod) return _mp4boxMod;
+    const mod = await import('https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm');
+    _mp4boxMod = mod.MP4Box || (mod.default && (mod.default.MP4Box || mod.default)) || (typeof window !== 'undefined' ? window.MP4Box : null);
+    if (!_mp4boxMod) throw new Error('mp4box load fail');
+    return _mp4boxMod;
+}
+
+async function _mp4VideoMeta(file) {
+    const MP4Box = await _loadMp4Box();
+    const buf = await file.arrayBuffer();
+    return await new Promise((resolve, reject) => {
+        const mp4 = MP4Box.createFile(buf);
+        mp4.onError = (e) => reject(new Error('mp4 parse error: ' + e));
+        mp4.onReady = (info) => {
+            const track = info.videoTracks && info.videoTracks[0];
+            if (!track) return reject(new Error('mp4 无视频轨道'));
+            const w = track.video.width, h = track.video.height;
+            const fps = track.video.frameRate || 30;
+            let description = null;
+            const codec = (track.codec || '').toLowerCase();
+            if (codec.startsWith('avc') || codec.startsWith('hvc') || codec.startsWith('hev')) {
+                try { description = MP4Box.getTrackSpecificInfo(mp4, track.id); } catch (e) { console.warn('[infoto] mp4 codec info fail', e); }
+            }
+            resolve({
+                width: w, height: h,
+                durationSec: info.timescale ? info.duration / info.timescale : (track.track_duration / track.timescale),
+                codec: track.codec, description,
+                trackId: track.id, timescale: track.timescale,
+                nbSamples: track.nb_samples || 0,
+                fps: fps || 30,
+            });
+        };
+    });
+}
+
+async function _decodeEncodeMp4(file, meta, sink, report) {
+    const MP4Box = await _loadMp4Box();
+    const buf = await file.arrayBuffer();
+    const mp4 = MP4Box.createFile(buf);
+    const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
+    const avgStep = 1 / targetFps;
+    const totalApprox = Math.max(1, Math.round((meta.durationSec || 1) * targetFps));
+    let nextOut = 0, outIndex = 0, fed = 0;
+    const decoder = new VideoDecoder({
+        output: (frame) => {
+            const tSec = (frame.timestamp || 0) / 1e6;
+            if (tSec + 1e-3 >= nextOut) { sink.push(frame); outIndex++; nextOut += avgStep; }
+            else frame.close();
+            if ((outIndex & 7) === 0) report(0.01 + 0.49 * Math.min(1, outIndex / totalApprox));
+        },
+        error: (e) => console.error('[infoto] VideoDecoder error', e),
+    });
+    const cfg = { codec: meta.codec, codedWidth: meta.width, codedHeight: meta.height };
+    if (meta.description) cfg.description = meta.description;
+    decoder.configure(cfg);
+
+    await new Promise((resolve, reject) => {
+        let done = false;
+        const finish = () => { if (done) return; done = true; decoder.flush().then(() => resolve()).catch(reject); };
+        mp4.onError = (e) => { if (!done) { done = true; reject(new Error('mp4 demux error: ' + e)); } };
+        mp4.onSamples = (id, user, samples) => {
+            for (const s of samples) {
+                const timestampUs = Math.round((s.cts / meta.timescale) * 1e6);
+                const durationUs = s.duration ? Math.round((s.duration / meta.timescale) * 1e6) : Math.round(avgStep * 1e6);
+                decoder.decode(new EncodedVideoChunk({ type: s.is_sync ? 'key' : 'delta', timestamp: timestampUs, duration: durationUs, data: s.data }));
+                fed++;
+            }
+            if (meta.nbSamples && fed >= meta.nbSamples) finish();
+        };
+        mp4.setExtractionOptions(meta.trackId, null, { nbSamples: Infinity });
+        mp4.start();
+        if (!meta.nbSamples) setTimeout(finish, 200);
+    });
+    try { decoder.close(); } catch (e) { console.warn('[infoto] decoder close fail', e); }
+}
+
+function _videoMetaViaVideoEl(file) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const v = document.createElement('video');
+        v.muted = true; v.playsInline = true; v.preload = 'metadata'; v.src = url;
+        v.onloadedmetadata = () => { const m = { width: v.videoWidth, height: v.videoHeight, durationSec: Math.max(0.001, isFinite(v.duration) ? v.duration : 1), fps: FPS_CAP }; URL.revokeObjectURL(url); resolve(m); };
+        v.onerror = () => { URL.revokeObjectURL(url); reject(new Error('video load fail')); };
+        v.load();
+    });
+}
+async function _decodeEncodeVideoElSeek(file, meta, sink, report) {
     const url = URL.createObjectURL(file);
     const v = document.createElement('video');
-    // 仅用于抓帧；音轨已通过 AudioContext.decodeAudioData 独立解码，
-    // 必须静音源 video 以免编码时把原声音从喇叭放出来（抓帧只看画面，不受影响）。
     v.muted = true; v.defaultMuted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
     try { await new Promise((res, rej) => { v.onloadedmetadata = res; v.onerror = () => rej(new Error('video load fail')); v.load(); }); }
     catch (e) { URL.revokeObjectURL(url); throw e; }
-    const w = v.videoWidth, h = v.videoHeight;
-    const duration = Math.max(0.001, isFinite(v.duration) ? v.duration : 1);
-    // --- 音频探测 & 解码 ---
-    let hasAudio = false;
-    try { hasAudio = !!(v.audioTracks && v.audioTracks.length > 0); } catch (_) { }
-    let audioCtx = null, stereoBuffers = null, audioSr = 48000, audioCh = 2;
-    if (hasAudio && typeof AudioContext !== 'undefined') {
-        try {
-            audioCtx = new AudioContext({ sampleRate: 48000 });
-            const ab = await file.arrayBuffer();
-            const decoded = await audioCtx.decodeAudioData(ab.slice(0));
-            hasAudio = decoded.numberOfChannels > 0 && decoded.length > 0;
-            if (hasAudio) {
-                audioSr = decoded.sampleRate;
-                audioCh = Math.min(2, decoded.numberOfChannels);
-                stereoBuffers = {
-                    sr: decoded.sampleRate,
-                    length: decoded.length,
-                    channels: Array.from({ length: audioCh }, (_, c) => decoded.getChannelData(c).slice()),
-                };
-            }
-        } catch (err) {
-            console.warn('[infoto] audio decode fail', err);
-            hasAudio = false;
-        }
-    }
-    // 采样率转换：把 src PCM 从 stereoBuffers.sr 转成 48000
-    function resamplePCM(buf, dstSr) {
-        if (!buf) return null;
-        const srcSr = buf.sr;
-        if (Math.abs(srcSr - dstSr) < 1) {
-            // 同采样率，直接交错
-            const n = buf.length, ch = buf.channels.length;
-            const out = new Float32Array(n * ch);
-            for (let s = 0, o = 0; s < n; s++) for (let c = 0; c < ch; c++, o++) out[o] = buf.channels[c][s];
-            return { interleaved: out, samples: n, sr: dstSr, channels: ch };
-        }
-        const ratio = srcSr / dstSr;
-        const dstN = Math.max(1, Math.round(buf.length * dstSr / srcSr));
-        const ch = buf.channels.length;
-        const out = new Float32Array(dstN * ch);
-        const src = buf.channels;
-        for (let i = 0; i < dstN; i++) {
-            const s = i * ratio;
-            const s0 = Math.floor(s); const s1 = Math.min(buf.length - 1, s0 + 1);
-            const f = s - s0;
-            for (let c = 0; c < ch; c++) {
-                out[i * ch + c] = src[c][s0] * (1 - f) + src[c][s1] * f;
-            }
-        }
-        return { interleaved: out, samples: dstN, sr: dstSr, channels: ch };
-    }
-    let audioResampled = hasAudio ? resamplePCM(stereoBuffers, 48000) : null;
-    audioSr = 48000;
-
-    // --- 视频抓帧 ---
-    const frames = [];
-    let lastTs = -1;
-    const FPS_CAP = 30;
-    const minInterval = 1 / FPS_CAP;
-    const grabFrame = async () => {
-        try {
-            const ts = v.currentTime;
-            if (ts - lastTs >= minInterval) {
-                const bmp = await createImageBitmap(v);
-                frames.push({ bitmap: bmp, ts });
-                lastTs = ts;
-            }
-        } catch (_) { }
-    };
-    v.playbackRate = 1.0;
-    await v.play().catch(() => { });
-    await new Promise(resolve => {
-        const tick = async () => {
-            await grabFrame();
-            if (progressCb) progressCb(0.01 + 0.49 * Math.min(1, v.currentTime / Math.max(0.001, duration)));
-            if (v.ended || v.readyState === 0) { resolve(); return; }
-            requestAnimationFrame(tick);
-        };
-        v.onerror = () => resolve();
-        tick();
+    const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
+    const nOut = Math.max(1, Math.round((meta.durationSec || v.duration || 1) * targetFps));
+    const seekTo = (t) => new Promise((res) => {
+        const onSeeked = () => { v.removeEventListener('seeked', onSeeked); res(); };
+        v.addEventListener('seeked', onSeeked);
+        v.currentTime = Math.min(t, v.duration || t);
     });
+    for (let i = 0; i < nOut; i++) {
+        await seekTo(i / targetFps);
+        await new Promise(r => requestAnimationFrame(r));
+        const bmp = await createImageBitmap(v);
+        sink.push(bmp);
+        if ((i & 3) === 0) report(0.01 + 0.49 * Math.min(1, (i + 1) / nOut));
+    }
     v.pause();
-    try { v.currentTime = 0; } catch (_) { }
+    try { v.currentTime = 0; } catch (e) { console.warn('[infoto] video reset fail', e); }
     URL.revokeObjectURL(url);
-    if (audioCtx) try { audioCtx.close(); } catch (_) { }
-    return {
-        width: w, height: h,
-        frames, durationSec: Math.max(duration, lastTs || 0),
-        hasAudio: !!audioResampled,
-        audio: audioResampled || null,
-    };
 }
 
-// 统一入口：GIF/视频 → 强制转 VP9 WebM（不管体积），返回 blob + hasAudio
+function withTimeout(p, ms) {
+    return new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('mp4 pipeline timeout')), ms); p.then(v => { clearTimeout(t); res(v); }, e => { clearTimeout(t); rej(e); }); });
+}
+
 async function transcodeToVp9Webm(file, progressCb) {
     const report = (p, label) => { if (progressCb) progressCb(p, label); };
     const isGif = isGifFile(file);
-    const decoded = isGif
-        ? await _decodeGifFrames(file)
-        : await _decodeVideoFramesAndAudio(file, (p) => report(Math.min(0.5, p), isGif ? 'GIF 解码' : '视频解码+抓帧'));
-    const { width, height, frames, durationSec, hasAudio, audio } = decoded;
-    if (!frames.length) throw new Error('no frames decoded');
-    const ew = (width + 1) & ~1;
-    const eh = (height + 1) & ~1;
-    const codec = _vp9Codec(ew, eh);
-    const support = await VideoEncoder.isConfigSupported({ codec, width: ew, height: eh });
-    if (!support.supported) throw new Error('VP9 not supported: ' + codec);
 
-    // --- 音频 Opus 编码支持探测 ---
-    const opusConfig = hasAudio && (typeof AudioEncoder === 'function') ? {
-        codec: 'opus', sampleRate: audio.sr, numberOfChannels: audio.channels,
-        bitrate: Math.max(32000, audio.channels * OPUS_BITRATE_PER_CHANNEL),
+    const audioInfo = isGif ? { hasAudio: false, audio: null } : await _decodeAudioOnly(file);
+    const srcAudio = audioInfo ? audioInfo.audio : null;
+    const hasAudioSrc = !!srcAudio;
+
+    const opusConfig = hasAudioSrc && (typeof AudioEncoder === 'function') ? {
+        codec: 'opus', sampleRate: srcAudio.sr, numberOfChannels: srcAudio.channels,
+        bitrate: Math.max(32000, srcAudio.channels * OPUS_BITRATE_PER_CHANNEL),
     } : null;
-    let opusSupported = false;
-    let audioCodecPrivate = null;
-    if (opusConfig) try { opusSupported = (await AudioEncoder.isConfigSupported(opusConfig)).supported; } catch (_) { opusSupported = false; }
-    if (!opusSupported) { /* 降级无音频 */ hasAudio = false; opusConfig = null; }
+    let opusSupported = false, audioCodecPrivate = null;
+    if (opusConfig) try { opusSupported = (await AudioEncoder.isConfigSupported(opusConfig)).supported; } catch (e) { console.warn('[infoto] opus probe fail', e); opusSupported = false; }
+    if (!opusSupported) opusConfig = null;
 
     const muxer = new SimpleWebMMuxer({
-        width: ew, height: eh, timeDen: 1000, videoCodec: 'V_VP9',
+        width: 0, height: 0, timeDen: 1000, videoCodec: 'V_VP9',
         audio: opusSupported ? { sampleRate: opusConfig.sampleRate, channels: opusConfig.numberOfChannels, codecId: 'A_OPUS', codecPrivate: audioCodecPrivate } : null,
     });
-    report(0.52, 'VP9 编码中…');
-    const nFrames = frames.length;
-    let videoProgress = 0;
-    let audioProgress = 0;
-    function updateProgress() {
-        const videoW = opusSupported ? 0.7 : 1.0;
-        const audioW = opusSupported ? 0.3 : 0.0;
-        report(0.52 + 0.48 * (videoProgress * videoW + audioProgress * audioW), opusSupported && audioProgress < 1 ? '音频 Opus 编码中…' : '合成 WebM…');
-    }
-    const enc = new VideoEncoder({
-        output: (chunk) => {
-            const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
-            muxer.addChunk(buf, { timestampSec: chunk.timestamp / 1e6, trackNum: 1, keyframe: chunk.type === 'key' });
-        },
-        error: e => { console.error(e); },
-    });
-    enc.configure({
-        codec, width: ew, height: eh,
-        bitrate: Math.max(250_000, ew * eh * VP9_BITRATE_PER_PIXEL),
-        latencyMode: 'quality',
-    });
-    const cv = new OffscreenCanvas(ew, eh);
-    const cx = cv.getContext('2d');
-    let avgStepSec = (nFrames > 1) ? (durationSec / (nFrames - 1)) : (1 / 30);
-    if (avgStepSec <= 0 || !isFinite(avgStepSec)) avgStepSec = 1 / 30;
-    let outTs = 0;
-    const durUs = Math.max(1, Math.round(avgStepSec * 1e6));
-    for (let i = 0; i < nFrames; i++) {
-        const f = frames[i];
-        cx.clearRect(0, 0, ew, eh);
-        cx.drawImage(f.bitmap, 0, 0, ew, eh);
-        f.bitmap.close();
-        const vf = new VideoFrame(cv, { timestamp: Math.round(outTs * 1e6), duration: durUs });
-        enc.encode(vf);
-        vf.close();
-        outTs += avgStepSec;
-        videoProgress = (i + 1) / nFrames;
-        if ((i & 3) === 0) updateProgress();
-    }
-    await enc.flush();
-    enc.close();
-    videoProgress = 1;
 
-    // --- 音频 Opus 编码（分 20ms 帧：960 samples@48kHz）---
-    if (opusSupported && audio) {
+    function makeEncoder(ew, eh) {
+        const codec = _vp9Codec(ew, eh);
+        return VideoEncoder.isConfigSupported({ codec, width: ew, height: eh }).then(support => {
+            if (!support.supported) throw new Error('VP9 not supported: ' + codec);
+            const cv = new OffscreenCanvas(ew, eh);
+            const cx = cv.getContext('2d');
+            let outTs = 0;
+            const enc = new VideoEncoder({
+                output: (chunk) => {
+                    const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
+                    muxer.addChunk(buf, { timestampSec: chunk.timestamp / 1e6, trackNum: 1, keyframe: chunk.type === 'key' });
+                },
+                error: e => console.error(e),
+            });
+            enc.configure({ codec, width: ew, height: eh, bitrate: Math.max(250_000, ew * eh * VP9_BITRATE_PER_PIXEL), latencyMode: 'quality' });
+            return {
+                enc,
+                sink(avgStepSec) {
+                    const dUs = Math.max(1, Math.round(avgStepSec * 1e6));
+                    return {
+                        push(src) {
+                            cx.drawImage(src, 0, 0, ew, eh);
+                            if (src.close) src.close();
+                            const vf = new VideoFrame(cv, { timestamp: Math.round(outTs * 1e6), duration: dUs });
+                            enc.encode(vf); vf.close();
+                            outTs += avgStepSec;
+                        }
+                    };
+                }
+            };
+        });
+    }
+
+    if (isGif) {
+        const decoded = await _decodeGifFrames(file);
+        if (!decoded.frames.length) throw new Error('no frames decoded');
+        const ew = (decoded.width + 1) & ~1, eh = (decoded.height + 1) & ~1;
+        const { enc, sink } = await makeEncoder(ew, eh);
+        muxer.w = ew; muxer.h = eh;
+        const avgStepSec = decoded.frames.length > 1 ? decoded.durationSec / (decoded.frames.length - 1) : 1 / 30;
+        const s = sink(avgStepSec);
+        for (let i = 0; i < decoded.frames.length; i++) {
+            s.push(decoded.frames[i].bitmap);
+            if ((i & 3) === 0) report(0.01 + 0.49 * Math.min(1, (i + 1) / decoded.frames.length));
+        }
+        await enc.flush(); enc.close();
+    } else {
+        let meta = null;
+        if (_isMp4(file)) {
+            try { meta = await _mp4VideoMeta(file); } catch (e) { console.warn('[infoto] mp4 open fail, fallback <video>', e); meta = null; }
+        }
+        if (meta) {
+            try {
+                const ew = (meta.width + 1) & ~1, eh = (meta.height + 1) & ~1;
+                const { enc, sink } = await makeEncoder(ew, eh);
+                muxer.w = ew; muxer.h = eh;
+                const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
+                const s = sink(1 / targetFps);
+                await withTimeout(_decodeEncodeMp4(file, meta, s, report), 180000);
+                await enc.flush(); enc.close();
+            } catch (e) { console.warn('[infoto] mp4 pipeline fail, fallback <video>', e); meta = null; }
+        }
+        if (!meta) {
+            const vmeta = await _videoMetaViaVideoEl(file);
+            const ew = (vmeta.width + 1) & ~1, eh = (vmeta.height + 1) & ~1;
+            const { enc, sink } = await makeEncoder(ew, eh);
+            muxer.w = ew; muxer.h = eh;
+            const targetFps = Math.min(vmeta.fps || FPS_CAP, FPS_CAP);
+            const s = sink(1 / targetFps);
+            await _decodeEncodeVideoElSeek(file, vmeta, s, report);
+            await enc.flush(); enc.close();
+        }
+    }
+
+    report(0.52, opusSupported ? '音频 Opus 编码中…' : '合成 WebM…');
+    if (opusSupported && srcAudio) {
         const frameSamples = 960;
         const enc2 = new AudioEncoder({
             output: (chunk, meta) => {
@@ -612,134 +702,33 @@ async function transcodeToVp9Webm(file, progressCb) {
             error: e => console.error(e),
         });
         enc2.configure(opusConfig);
-        const il = audio.interleaved; // float32 interleaved
-        const totalFrames = Math.ceil(audio.samples / frameSamples);
+        const il = srcAudio.interleaved;
+        const totalFrames = Math.ceil(srcAudio.samples / frameSamples);
         for (let fi = 0; fi < totalFrames; fi++) {
             const s0 = fi * frameSamples;
-            const n = Math.min(frameSamples, audio.samples - s0);
-            // 构造 AudioData 需要平面，n < frameSamples 时末尾用静默填充
-            const planes = [];
-            const data = new Float32Array(frameSamples * audio.channels);
-            for (let c = 0, co = 0; c < audio.channels; c++, co += frameSamples) {
-                for (let s = 0; s < n; s++) data[co + s] = il[(s0 + s) * audio.channels + c];
-                planes.push(data.subarray(co, co + frameSamples));
+            const n = Math.min(frameSamples, srcAudio.samples - s0);
+            const data = new Float32Array(frameSamples * srcAudio.channels);
+            for (let c = 0, co = 0; c < srcAudio.channels; c++, co += frameSamples) {
+                for (let smp = 0; smp < n; smp++) data[co + smp] = il[(s0 + smp) * srcAudio.channels + c];
             }
-            const format = audio.channels === 1 ? 'f32-planar' : 'f32-planar';
             const ad = new AudioData({
-                format, sampleRate: audio.sr, numberOfFrames: frameSamples,
-                numberOfChannels: audio.channels, timestamp: Math.round((s0 / audio.sr) * 1e6),
-                data: data,
+                format: 'f32-planar', sampleRate: srcAudio.sr, numberOfFrames: frameSamples,
+                numberOfChannels: srcAudio.channels, timestamp: Math.round((s0 / srcAudio.sr) * 1e6),
+                data,
             });
             enc2.encode(ad);
             ad.close();
-            audioProgress = (fi + 1) / totalFrames;
-            if ((fi & 31) === 0) updateProgress();
+            if ((fi & 31) === 0) report(0.52 + 0.48 * Math.min(1, (fi + 1) / totalFrames));
         }
         await enc2.flush();
         enc2.close();
-        audioProgress = 1;
     }
-    updateProgress();
+    report(1, '完成');
     const blob = muxer.finalize();
-    return { blob, ext: 'webm', hasAudio: opusSupported && !!audio };
+    return { blob, ext: 'webm', hasAudio: opusSupported && !!srcAudio };
 }
 
 function _safeForWebp(file) { return isPicFile(file); }
-
-/* ---- 图床上传 ---- */
-function uploadViaXhr(url, fd, headers, onProgress) {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', url, true);
-        for (const k in headers) xhr.setRequestHeader(k, headers[k]);
-        // 防止网络停滞导致永久挂起：超时即失败，让上层弹出错误提示而不是静默卡死
-        xhr.timeout = 30000;
-        xhr.ontimeout = () => reject(new Error('上传超时（30s）'));
-        xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
-        xhr.onload = () => { xhr.status === 200 ? resolve(xhr.responseText) : reject(new Error('HTTP ' + xhr.status)); };
-        xhr.onerror = () => reject(new Error('网络错误'));
-        xhr.send(fd);
-    });
-}
-
-async function withRetry(fn, retries) {
-    let lastErr;
-    for (let i = 0; i < retries; i++) {
-        try { return await fn(); }
-        catch (e) {
-            lastErr = e;
-            if (i < retries - 1) await new Promise(r => setTimeout(r, 500 * (i + 1)));
-        }
-    }
-    throw lastErr;
-}
-
-async function runWithConcurrency(tasks, concurrency) {
-    const results = new Array(tasks.length);
-    let next = 0;
-    const workers = [];
-    for (let w = 0; w < Math.min(concurrency, tasks.length); w++) {
-        workers.push((async () => {
-            while (next < tasks.length) {
-                const i = next++;
-                results[i] = await tasks[i]();
-            }
-        })());
-    }
-    await Promise.all(workers);
-    return results;
-}
-
-async function uploadToBed(blob, name, onProgress) {
-    onProgress(0.05);
-    const parts = [];
-    // 统一走 tc 图床（经 Worker /api/upload-proxy 中转）
-    if (blob.size <= CONFIG.SINGLE_PART_LIMIT) {
-        const link = await uploadPartToTcProgressive(blob, name, p => onProgress(0.05 + p * 0.9));
-        onProgress(1);
-        return [link];
-    }
-    const total = Math.ceil(blob.size / CONFIG.CHUNK_SIZE);
-    const chunkProgress = new Array(total).fill(0);
-    function updateOverall() {
-        const avg = chunkProgress.reduce((a, b) => a + b, 0) / total;
-        onProgress(0.05 + avg * 0.9);
-    }
-    const tasks = [];
-    for (let i = 0; i < total; i++) {
-        const idx = i;
-        const chunk = blob.slice(idx * CONFIG.CHUNK_SIZE, Math.min((idx + 1) * CONFIG.CHUNK_SIZE, blob.size));
-        const chunkName = `${name}.part${idx + 1}`;
-        tasks.push(async () => {
-            let lastP = 0;
-            const link = await uploadPartToTcProgressive(chunk, chunkName, p => {
-                chunkProgress[idx] = lastP = p;
-                updateOverall();
-            });
-            chunkProgress[idx] = 1;
-            updateOverall();
-            return { idx, link };
-        });
-    }
-    const results = await runWithConcurrency(tasks, CONFIG.CONCURRENCY);
-    results.sort((a, b) => a.idx - b.idx);
-    for (const r of results) parts.push(r.link);
-    onProgress(1);
-    return parts;
-}
-
-async function uploadPartToTcProgressive(blob, name, onProgress) {
-    return withRetry(async () => {
-        const sha = await sha256Hex(await blob.arrayBuffer());
-        const fd = new FormData();
-        fd.append('file', blob, name);
-        // 不再前端签名：由 Worker 用服务端密钥签发 tc token（见 /api/upload-proxy）
-        const txt = await uploadViaXhr(apiBase() + '/api/upload-proxy', fd, { 'X-File-Sha256': sha }, onProgress);
-        const json = JSON.parse(txt);
-        if (!json.data) throw new Error('上传响应缺少 data');
-        return json.data;
-    }, CONFIG.MAX_RETRY);
-}
 
 function apiBase() { return CONFIG.API_BASE || ''; }
 
@@ -748,7 +737,6 @@ function fileUrl(id) {
     return base + '/api/file/' + id;
 }
 
-// 统一文件名生成：不再存 filename/originalName，只使用 id + ext
 function dlName(p) {
     return p.id + '.' + String(p.ext).toLowerCase();
 }
@@ -765,7 +753,11 @@ const Store = {
     _loaded: false,
     myVotes: Object.create(null),
 
-    // 给从服务端拉回的精简对象补全前端派生字段（url 永远由 id 拼，KV 不再存冗余 url）
+    // 批量尺寸回写：防抖 + 聚合 PATCH（一次 HTTP 请求代替 N 次单独 POST 回写尺寸）
+    _pendingDims: Object.create(null), // id -> {width, height}
+    _dimsTimer: null,
+    _dimFlushRunning: false,
+
     _hydrate(p) {
         if (!p) return p;
         if (!p.url) p.url = fileUrl(p.id);
@@ -776,14 +768,12 @@ const Store = {
     async load(force = false) {
         if (this._loaded && !force) return this.photos;
         this._loaded = true;
-        // 防抖：同一时刻的多次 force load 合并成一次请求（批量上传时避免雪崩）
         if (force && this._loadPromise) return this._loadPromise;
         const doFetch = async () => {
             try {
                 const r = await fetch(apiBase() + '/api/photos', { cache: 'no-store' });
                 if (r.ok) {
                     const fresh = await r.json();
-                    // 保持 myVotes 本地状态（不替换），只刷新照片数组与计数；补全派生字段
                     this.photos = fresh
                         .map(p => this._hydrate({ ...p, likes: p.likes ?? 0, dislikes: p.dislikes ?? 0 }));
                     return this.photos;
@@ -797,8 +787,48 @@ const Store = {
 
     getMyVote(id) { return this.myVotes[id] || 0; },
 
+    // 标记一张照片的尺寸已拿到 → 推入待批队列
+    markDimsDirty(photo, w, h) {
+        if (!photo || !photo.id) return;
+        if (!w || !h) return;
+        if (photo.width === w && photo.height === h) return;
+        photo.width = w;
+        photo.height = h;
+        this._pendingDims[photo.id] = { id: photo.id, width: w, height: h };
+        this._scheduleDimsFlush();
+    },
+
+    _scheduleDimsFlush() {
+        if (this._dimsTimer) return;
+        this._dimsTimer = setTimeout(() => this._flushDims(), 500);
+    },
+
+    async _flushDims() {
+        this._dimsTimer = null;
+        if (this._dimFlushRunning) { this._scheduleDimsFlush(); return; }
+        const pending = this._pendingDims;
+        const ids = Object.keys(pending);
+        if (ids.length === 0) return;
+        this._pendingDims = Object.create(null);
+        this._dimFlushRunning = true;
+        const updates = ids.map(id => pending[id]);
+        try {
+            const r = await fetch(apiBase() + '/api/photos/dims', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ updates })
+            });
+            if (!r.ok) console.warn('[infoto] dims batch patch non-2xx:', r.status);
+        } catch (e) {
+            console.warn('[infoto] dims flush fail:', e && e.message);
+        } finally {
+            this._dimFlushRunning = false;
+            // flush 过程中可能又有新的 pending 进来
+            if (Object.keys(this._pendingDims).length > 0) this._scheduleDimsFlush();
+        }
+    },
+
     async save(photo) {
-        // 剥离前端派生字段 url，服务端 sanitize 本来就会过滤；这里提前剥离减小 payload
         const { url, ...payload } = photo;
         void url;
         await fetch(apiBase() + '/api/photos', {
@@ -808,23 +838,18 @@ const Store = {
 
     async add(photo) {
         photo.id = photo.id || 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-        // url 只在前端内存里存在：save 会剥离，服务端不存；下次 load 由 _hydrate 重新拼出
         if (!photo.url) photo.url = fileUrl(photo.id);
         this.photos.unshift(photo);
         await this.save(photo);
         return photo;
     },
-    /**
-     * 投票：先本地乐观更新，再异步请求服务器（不阻塞浏览翻页）
-     * @returns {Promise<{ok:boolean, already:boolean, delta:number}>} 最终服务器结果
-     */
+
     setLike(id, delta) {
         const p = this.photos.find(x => x.id === id);
         if (!p) return Promise.resolve({ ok: false, already: false, delta: 0 });
         const prevLikes = p.likes || 0;
         const prevDislikes = p.dislikes || 0;
         const prevMy = this.myVotes[id] || 0;
-        // 1) 本地乐观更新（立即生效，让 UI 无感知）
         if (prevMy !== delta) {
             if (prevMy === 1) p.likes = Math.max(0, prevLikes - 1);
             else if (prevMy === -1) p.dislikes = Math.max(0, prevDislikes - 1);
@@ -832,7 +857,6 @@ const Store = {
             else if (delta === -1) p.dislikes = (p.dislikes || 0) + 1;
             this.myVotes[id] = delta;
         }
-        // 2) 异步走服务器，不阻塞 UI；最后对齐真实值
         const rollback = () => {
             if (!p) return;
             p.likes = prevLikes; p.dislikes = prevDislikes;
@@ -847,15 +871,11 @@ const Store = {
                 if (!r.ok) throw new Error('http ' + r.status);
                 const j = await r.json();
                 if (j.ok) {
-                    // 服务器成功：以服务器返回的精确长度为准（防并发偏差）
                     if (p) { p.likes = j.likes; p.dislikes = j.dislikes; }
                     this.myVotes[id] = delta;
                     return { ok: true, already: false, delta };
                 }
                 if (j.already) {
-                    // 服务器拒绝：重复投票（这个 IP 之前已经投过票，方向=j.delta）。
-                    // 先无条件回滚到乐观更新前的干净值，再按服务器说的历史方向补一次，
-                    // 避免和上面"乐观更新"的增减重复计算导致本地计数越算越飘。
                     const serverDelta = typeof j.delta === 'number' ? j.delta : delta;
                     if (p) {
                         p.likes = prevLikes;
@@ -927,7 +947,6 @@ function updateSortUI() {
     $('#sortLatest').querySelector('.icon').setAttribute('data-i', ic);
     renderIcons();
 }
-// 切换排序时，若 Lightbox 开着，保持当前正在看的照片不跳页
 function safeResortAndKeepCurrent() {
     const oldSorted = getSorted();
     const curId = state.lightboxOpen && oldSorted[state.currentIndex] ? oldSorted[state.currentIndex].id : null;
@@ -935,7 +954,7 @@ function safeResortAndKeepCurrent() {
     if (state.lightboxOpen && curId) {
         const newIdx = getSorted().findIndex(p => p.id === curId);
         state.currentIndex = newIdx >= 0 ? newIdx : 0;
-        updateLightbox(); // 重新渲染 counter / dots / 高亮
+        updateLightbox();
     }
     renderMasonry();
 }
@@ -951,7 +970,7 @@ $('#sortHotest').addEventListener('click', () => {
 });
 
 /* =========================================================
-   瀑布流（列容器法：动态列数 + 最短列优先）
+   瀑布流
    ========================================================= */
 function colCount() {
     const w = window.innerWidth;
@@ -970,7 +989,7 @@ function buildColumns() {
     }
 }
 
-/* ---------- 音量按钮（共享 SVG icon 创建） ---------- */
+/* ---------- 音量按钮 ---------- */
 function volumeSVG() {
     return `<svg class="icon" data-i="volume-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:1rem;height:1rem"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
 }
@@ -978,7 +997,6 @@ function muteSVG() {
     return `<svg class="icon" data-i="volume-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:1rem;height:1rem"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
 }
 function makeVolumeBtn({ initiallyMuted = true } = {}) {
-    // 两个 icon 都输出，CSS 根据 .is-muted 切换显隐，避免点击时重建 DOM
     const b = el('button', 'audio-toggle' + (initiallyMuted ? ' is-muted' : ''), volumeSVG() + muteSVG());
     b.type = 'button';
     b.title = initiallyMuted ? '点按取消静音' : '点按静音';
@@ -989,11 +1007,23 @@ function makeVolumeBtn({ initiallyMuted = true } = {}) {
         if (!v) return;
         const nowMuted = v.muted ? false : true;
         v.muted = nowMuted;
-        if (!nowMuted) { try { v.play().catch(() => { }); } catch (_) { } }
+        if (!nowMuted) { try { v.play().catch(e => console.warn('[infoto] volume play fail', e)); } catch (e) { console.warn('[infoto] volume play fail', e); } }
         b.classList.toggle('is-muted', nowMuted);
         b.title = nowMuted ? '点按取消静音' : '点按静音';
     });
     return b;
+}
+
+/* ---- 投票 badges 公共渲染（updateCardStatsById + updateMasonryStatsOnly 共用，去重）---- */
+function renderCardStatsBadges(p, myVote) {
+    const likes = p.likes || 0;
+    const dislikes = p.dislikes || 0;
+    const haveVotes = likes > 0 || dislikes > 0;
+    if (!haveVotes) return { html: '', haveVotes: false };
+    const html =
+        `${likes > 0 ? `<div class="card-badge card-badge-like${myVote === 1 ? ' active' : ''}"><svg class="icon" data-i="heart"></svg><span>${likes}</span></div>` : ''}` +
+        `${dislikes > 0 ? `<div class="card-badge card-badge-dislike${myVote === -1 ? ' active' : ''}"><svg class="icon" data-i="x-circle"></svg><span>${dislikes}</span></div>` : ''}`;
+    return { html, haveVotes: true };
 }
 
 function makeCard(photo, index) {
@@ -1021,22 +1051,20 @@ function makeCard(photo, index) {
         media.draggable = false;
         media.onloadedmetadata = () => {
             const nw = media.videoWidth, nh = media.videoHeight;
-            let dirty = false;
             if (nw && nh) {
                 if (photo.width !== nw || photo.height !== nh) {
                     photo.width = nw; photo.height = nh;
                     holder.style.paddingBottom = (nh / nw * 100) + '%';
-                    dirty = true;
+                    Store.markDimsDirty(photo, nw, nh);
                 }
             }
-            if (dirty) Store.save(photo).catch(() => { });
             if (photo.hasAudio && !card.querySelector('.audio-toggle')) {
                 const vbtn = makeVolumeBtn({ initiallyMuted: true });
                 holder.appendChild(vbtn);
             }
             media.classList.add('loaded');
             skel.remove();
-            try { media.play().catch(() => { }); } catch (_) { }
+            try { media.play().catch(e => console.warn('[infoto] card video autoplay fail', e)); } catch (e) { console.warn('[infoto] card video autoplay fail', e); }
         };
         media.onerror = () => {
             skel.remove(); media.classList.add('loaded'); media.style.opacity = '.4';
@@ -1054,7 +1082,7 @@ function makeCard(photo, index) {
                 if (photo.width !== nw || photo.height !== nh) {
                     photo.width = nw; photo.height = nh;
                     holder.style.paddingBottom = (nh / nw * 100) + '%';
-                    Store.save(photo).catch(() => { });
+                    Store.markDimsDirty(photo, nw, nh);
                 }
             }
             media.classList.add('loaded');
@@ -1068,28 +1096,15 @@ function makeCard(photo, index) {
     holder.appendChild(media);
     card.appendChild(holder);
 
-    // ---------- 音频按钮（静态已知 hasAudio=true 的直接挂；否则等 metadata 后补）----------
     if (animated && photo.hasAudio) {
         const vbtn = makeVolumeBtn({ initiallyMuted: true });
         holder.appendChild(vbtn);
     }
 
-    const likes = photo.likes || 0;
-    const dislikes = photo.dislikes || 0;
     const myVote = Store.getMyVote(photo.id);
-
-    const stats = el('div', 'card-stats');
-    if (likes > 0) {
-        const likeBadge = el('div', 'card-badge card-badge-like' + (myVote === 1 ? ' active' : ''),
-            `<svg class="icon" data-i="heart"></svg><span>${likes}</span>`);
-        stats.appendChild(likeBadge);
-    }
-    if (dislikes > 0) {
-        const dislikeBadge = el('div', 'card-badge card-badge-dislike' + (myVote === -1 ? ' active' : ''),
-            `<svg class="icon" data-i="x-circle"></svg><span>${dislikes}</span>`);
-        stats.appendChild(dislikeBadge);
-    }
-    if (stats.childNodes.length) {
+    const { html, haveVotes } = renderCardStatsBadges(photo, myVote);
+    if (haveVotes) {
+        const stats = el('div', 'card-stats', html);
         renderIcons(stats);
         card.appendChild(stats);
     }
@@ -1103,173 +1118,100 @@ function applySelectUI() {
     $$('.photo-card').forEach(c => {
         const sel = state.selected.has(c.dataset.id);
         c.classList.toggle('selected', sel);
-        c.querySelector('.multi-check').style.display = state.multiMode ? 'flex' : 'none';
+        const m = c.querySelector('.multi-check'); if (m) m.classList.toggle('on', sel);
     });
 }
 
-function renderMasonry() {
-    const list = getSorted();
-    const m = $('#masonry');
-    if (list.length === 0) {
-        m.classList.add('hidden');
-        $('#emptyState').classList.remove('hidden');
-        return;
+function _shortestCol() {
+    let best = cols[0], bestH = best.scrollHeight;
+    for (let i = 1; i < cols.length; i++) {
+        if (cols[i].scrollHeight < bestH) { best = cols[i]; bestH = best.scrollHeight; }
     }
-    $('#emptyState').classList.add('hidden');
-    m.classList.remove('hidden');
-    buildColumns();
-    renderedCount = 0;
-    // 首屏只渲染前 loadedCount 张，其余由无限滚动按需 append
-    appendVisible();
+    return best;
 }
 
-// 把尚未渲染的前 loadedCount 张追加到最短列（不重建已有 DOM，避免滚动跳动 / 图片重载）
-function appendVisible() {
-    const list = getSorted();
-    const visible = list.slice(0, state.loadedCount);
-    if (visible.length <= renderedCount) {
-        if (state.multiMode) applySelectUI();
-        return;
-    }
-    const heights = cols.map(c => c._h || 0);
-    for (let i = renderedCount; i < visible.length; i++) {
-        const photo = visible[i];
-        const card = makeCard(photo, i);
-        let minCol = 0;
-        for (let j = 1; j < cols.length; j++) if (heights[j] < heights[minCol]) minCol = j;
-        cols[minCol].appendChild(card);
-        const ratio = (photo.height && photo.width) ? photo.height / photo.width : 1;
-        heights[minCol] += ratio * 100 + 12;
-        cols[minCol]._h = heights[minCol];
-    }
-    renderedCount = visible.length;
-    if (state.multiMode) applySelectUI();
+function renderMasonry(reset = true) {
+    if (reset) { buildColumns(); renderedCount = 0; }
+    const sorted = getSorted();
+    const n = Math.min(sorted.length, state.loadedCount);
+    for (let i = renderedCount; i < n; i++) _shortestCol().appendChild(makeCard(sorted[i], i));
+    renderedCount = n;
+    applySelectUI();
+    updateMasonryStatsOnly();
+    $('#emptyState').classList.toggle('hidden', sorted.length > 0);
+    $('#masonry').classList.toggle('hidden', sorted.length === 0);
 }
 
-// 增量：把新照片插入到瀑布流最前面（"最新"排序下排在第 0 位），不重建已有卡片
 function prependCardToMasonry(photo) {
-    const list = getSorted();
-    const idxInSorted = list.findIndex(p => p.id === photo.id);
-    if (idxInSorted < 0) return;
-
-    // 如果新照片不在当前可见窗口内（比如按"最热"排序，新上传的没投票排很后面），就不处理
-    if (idxInSorted >= state.loadedCount) {
-        // 但要保证 loadedCount 至少能容纳它（否则用户滚到那里时 appendVisible 会补上）
-        return;
-    }
-
+    const card = makeCard(photo, 0);
+    // 放在当前"第一张卡片"之前（即最矮列的最前面；若还没有列就放第一列）
+    const firstCol = cols[0];
+    if (!firstCol) return;
+    if (firstCol.firstChild) firstCol.insertBefore(card, firstCol.firstChild);
+    else firstCol.appendChild(card);
+    applySelectUI();
+    updateCardStatsById(photo.id);
     $('#emptyState').classList.add('hidden');
     $('#masonry').classList.remove('hidden');
-
-    // 列可能还没初始化（空状态首次上传）
-    if (cols.length === 0) {
-        buildColumns();
-    }
-
-    const card = makeCard(photo, idxInSorted);
-    const heights = cols.map(c => c._h || 0);
-    let minCol = 0;
-    for (let j = 1; j < cols.length; j++) if (heights[j] < heights[minCol]) minCol = j;
-
-    // 插入到最短列的顶部，这样视觉上是"新的在最上面"
-    if (cols[minCol].firstChild) {
-        cols[minCol].insertBefore(card, cols[minCol].firstChild);
-    } else {
-        cols[minCol].appendChild(card);
-    }
-    const ratio = (photo.height && photo.width) ? photo.height / photo.width : 1;
-    const addedH = ratio * 100 + 12;
-    heights[minCol] += addedH;
-    cols[minCol]._h = heights[minCol];
-    renderedCount++;
-
-    // 如果在 Lightbox 开着的情况下上传，保持当前浏览的索引位置不变（新照片插入到前面，要 +1）
-    if (state.lightboxOpen) {
-        const listAfter = getSorted();
-        const cur = listAfter[state.currentIndex];
-        // 如果当前照片在列表中还存在且没变，无需额外操作；index 变化的话需要修正
-        const newIdx = listAfter.findIndex(p => p && cur && p.id === cur.id);
-        if (newIdx >= 0 && newIdx !== state.currentIndex) {
-            state.currentIndex = newIdx;
-            $('#lbCounter').textContent = `${state.currentIndex + 1} / ${listAfter.length}`;
-        }
-        renderDots();
-    }
-
-    if (state.multiMode) applySelectUI();
 }
 
-// 增量：更新单张卡片的投票/统计（比 updateMasonryStatsOnly 更高效，只查一张）
+function installInfiniteScroll() {
+    const handler = () => {
+        const sorted = getSorted();
+        if (state.loadedCount >= sorted.length) return;
+        const scrolled = window.scrollY + window.innerHeight;
+        const threshold = document.body.scrollHeight - 2.5 * window.innerHeight;
+        if (scrolled >= threshold) {
+            state.loadedCount = Math.min(sorted.length, state.loadedCount + state.batchSize);
+            renderMasonry(false);
+        }
+    };
+    window.addEventListener('scroll', handler, { passive: true });
+    window.addEventListener('resize', handler, { passive: true });
+    let safety = 0;
+    const fill = () => {
+        const sorted = getSorted();
+        if (state.loadedCount >= sorted.length || safety++ > 10) return;
+        if (document.body.scrollHeight <= window.innerHeight + 100) {
+            state.loadedCount = Math.min(sorted.length, state.loadedCount + state.batchSize);
+            renderMasonry(false);
+            setTimeout(fill, 50);
+        }
+    };
+    setTimeout(fill, 150);
+}
+
 function updateCardStatsById(id) {
-    const card = document.querySelector(`.photo-card[data-id="${CSS.escape(id)}"]`);
-    if (!card) return;
     const p = Store.photos.find(x => x.id === id);
     if (!p) return;
     const myVote = Store.getMyVote(id);
-    const likes = p.likes || 0, dislikes = p.dislikes || 0;
-    const stats = card.querySelector('.card-stats');
-    const haveVotes = likes > 0 || dislikes > 0;
-    if (!stats && !haveVotes) return;
-    const html = haveVotes
-        ? `${likes > 0 ? `<div class="card-badge card-badge-like${myVote === 1 ? ' active' : ''}"><svg class="icon" data-i="heart"></svg><span>${likes}</span></div>` : ''}`
-        + `${dislikes > 0 ? `<div class="card-badge card-badge-dislike${myVote === -1 ? ' active' : ''}"><svg class="icon" data-i="x-circle"></svg><span>${dislikes}</span></div>` : ''}`
-        : '';
-    if (!stats) {
-        if (html === '') return;
-        const s = el('div', 'card-stats', html);
-        card.appendChild(s);
-        renderIcons(s);
-    } else if (html === '') {
-        stats.remove();
-    } else {
-        stats.innerHTML = html;
-        renderIcons(stats);
+    $$(`.photo-card[data-id="${id}"]`).forEach(c => {
+        const oldStats = c.querySelector('.card-stats');
+        const { html, haveVotes } = renderCardStatsBadges(p, myVote);
+        if (!haveVotes) { if (oldStats) oldStats.remove(); return; }
+        if (oldStats) { oldStats.innerHTML = html; renderIcons(oldStats); }
+        else { const s = el('div', 'card-stats', html); renderIcons(s); c.appendChild(s); }
+    });
+    if (state.lightboxOpen) {
+        const likes = p.likes || 0, dislikes = p.dislikes || 0;
+        const lbLikes = document.querySelector('#lbLikes');
+        const lbDislikes = document.querySelector('#lbDislikes');
+        if (lbLikes) { lbLikes.classList.toggle('active', myVote === 1); lbLikes.querySelector('span').textContent = likes; lbLikes.style.display = likes > 0 ? '' : 'none'; }
+        if (lbDislikes) { lbDislikes.classList.toggle('active', myVote === -1); lbDislikes.querySelector('span').textContent = dislikes; lbDislikes.style.display = dislikes > 0 ? '' : 'none'; }
     }
 }
 
-// 无限滚动：底部哨兵进入视口时多加载一批
-function installInfiniteScroll() {
-    const sentinel = el('div', 'scroll-sentinel');
-    sentinel.id = 'scrollSentinel';
-    $('#masonry').after(sentinel);
-    const io = new IntersectionObserver((entries) => {
-        entries.forEach(en => {
-            if (en.isIntersecting && state.loadedCount < getSorted().length) {
-                state.loadedCount = Math.min(getSorted().length, state.loadedCount + state.batchSize);
-                appendVisible();
-            }
-        });
-    }, { rootMargin: '1200px' });
-    io.observe(sentinel);
-}
-
-// 只更新每张卡片的投票数/高亮（轻量 DOM patch），不重建整列瀑布流。
-// 投票、异步 load 收尾时调用，避免图片重新加载、滚动跳动、框选状态丢失。
 function updateMasonryStatsOnly() {
-    $$('.photo-card').forEach(card => {
-        const id = card.dataset.id;
+    $$('.photo-card').forEach(c => {
+        const id = c.dataset.id;
         const p = Store.photos.find(x => x.id === id);
         if (!p) return;
         const myVote = Store.getMyVote(id);
-        const likes = p.likes || 0, dislikes = p.dislikes || 0;
-        const stats = card.querySelector('.card-stats');
-        const haveVotes = likes > 0 || dislikes > 0;
-        if (!stats && !haveVotes) return;
-        const html = haveVotes
-            ? `${likes > 0 ? `<div class="card-badge card-badge-like${myVote === 1 ? ' active' : ''}"><svg class="icon" data-i="heart"></svg><span>${likes}</span></div>` : ''}`
-            + `${dislikes > 0 ? `<div class="card-badge card-badge-dislike${myVote === -1 ? ' active' : ''}"><svg class="icon" data-i="x-circle"></svg><span>${dislikes}</span></div>` : ''}`
-            : '';
-        if (!stats) {
-            if (html === '') return;
-            const s = el('div', 'card-stats', html);
-            card.appendChild(s);
-            renderIcons(s);
-        } else if (html === '') {
-            stats.remove();
-        } else {
-            stats.innerHTML = html;
-            renderIcons(stats);
-        }
+        const { html, haveVotes } = renderCardStatsBadges(p, myVote);
+        const oldStats = c.querySelector('.card-stats');
+        if (!haveVotes) { if (oldStats) oldStats.remove(); return; }
+        if (oldStats) { oldStats.innerHTML = html; renderIcons(oldStats); }
+        else { const s = el('div', 'card-stats', html); renderIcons(s); c.appendChild(s); }
     });
 }
 
@@ -1286,6 +1228,7 @@ window.addEventListener('resize', () => {
    ========================================================= */
 function enterMulti(initialId) {
     state.multiMode = true;
+    state.longPressTriggered = false; // 复位：避免历次长按残留阻断多选单击
     state.selected.clear();
     if (initialId) state.selected.add(initialId);
     $('#multiSelectBtn').querySelector('svg').setAttribute('data-i', 'x');
@@ -1298,6 +1241,7 @@ function enterMulti(initialId) {
 }
 function exitMulti() {
     state.multiMode = false;
+    state.longPressTriggered = false; // 复位：退出后普通模式单击不受影响
     state.selected.clear();
     $('#multiSelectBtn').querySelector('svg').setAttribute('data-i', 'check-square');
     $('#uploadBtn').classList.remove('hidden');
@@ -1429,7 +1373,7 @@ $('#masonry').addEventListener('click', (e) => {
     if (state.suppressClick) { state.suppressClick = false; return; }
     const card = e.target.closest('.photo-card');
     if (!card) return;
-    if (state.longPressTriggered) return;
+    if (state.longPressTriggered) { state.longPressTriggered = false; return; }
     const id = card.dataset.id;
     if (state.multiMode) { toggleSelect(id); return; }
     openLightbox(getSorted().findIndex(p => p.id === id));
@@ -1515,14 +1459,6 @@ function fetchWithProgress(url, opts, onProgress) {
         xhr.ontimeout = () => reject(new Error('下载超时（60s）'));
         xhr.send();
     });
-}
-
-function formatSize(bytes) {
-    if (!bytes) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let i = 0, v = bytes;
-    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-    return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
 }
 
 let _downloadWorkerListener = null;
@@ -1794,13 +1730,11 @@ async function uploadFiles(files) {
                 let blob = file;
                 let ext = 'webp';
                 if (isP) {
-                    if (file.type !== 'image/webp') {
-                        const webp = await compressToWebp(file, WEBP_QUALITY);
-                        if (!webp) { base.err = new Error('图片 WebP 压缩失败'); return base; }
-                        blob = webp; ext = 'webp';
-                    } else {
-                        blob = file; ext = 'webp';
-                    }
+                    // 即使是 webp 也重新编码，防止上传奇奇怪怪/恶意的 webp（统一规范化为干净静态 webp）
+                    recomputeUploadOverall(file.name, '压缩中…');
+                    const webp = await compressToWebp(file, WEBP_QUALITY);
+                    if (!webp) { base.err = new Error('图片 WebP 压缩失败'); return base; }
+                    blob = webp; ext = 'webp';
                 }
                 if (isV || isG) {
                     if (!vp9Ok) {
@@ -1843,38 +1777,98 @@ async function uploadFiles(files) {
     ]);
     clearInterval(prepTick);
     const prepared = [...preparedPic, ...preparedVp9].sort((a, b) => a.idx - b.idx);
-    _prepBytes.done = _prepBytes.total; // 保证预处理阶段显示为完成
+    _prepBytes.done = _prepBytes.total;
 
-    // 阶段 2：逐张查重 + 上传（增量渲染，不再全量重建瀑布流）占总进度 75%
-    // - 每张内部：查重 5% → 上传 90%（含分片字节级进度） → 获取尺寸 5%
-    for (let i = 0; i < total; i++) {
+    const errCount = prepared.filter(p => p.err).length;
+    const validItems = prepared.filter(p => !p.err);
+
+    if (errCount > 0) {
+        prepared.forEach(p => {
+            if (p.err) toast(`「${p.file?.name || ''}」${p.err.message}`, 'alert');
+        });
+    }
+
+    if (validItems.length === 0) {
+        setUploadProgress(1, null, '完成', { stat: '所有文件预处理失败' });
+        setTimeout(resetUploadUI, 2000);
+        return;
+    }
+
+    if (TaskWorker.isSupported()) {
+        const items = validItems.map(p => ({
+            blob: p.blob,
+            ext: p.ext,
+            sha: p.sha,
+            hasAudio: !!p.hasAudio,
+            width: 0,
+            height: 0,
+            fileName: p.file?.name || 'upload',
+        }));
+        const ok = TaskWorker.startUploadPrepared(items, apiBase());
+        if (ok) {
+            let uploadLsn = null;
+            const cleanup = () => { if (uploadLsn) { uploadLsn(); uploadLsn = null; } };
+            uploadLsn = TaskWorker.onMessage((msg) => {
+                if (msg.type === 'task-update' && msg.task && msg.task.type === 'upload') {
+                    const t = msg.task;
+                    $('#upDone').textContent = String(t.done);
+                    $('#upSkipped').textContent = String(t.skipped);
+                    $('#upFailed').textContent = String(t.failed);
+                    setProgress(t.progress, t.curFile, t.step, {
+                        stat: t.extraStat || '',
+                        remaining: Math.max(0, t.total - t.done - t.skipped - t.failed),
+                    });
+                }
+                if (msg.type === 'task-clear' && msg.taskType === 'upload') {
+                    setTimeout(() => { resetUploadUI(); _mode = 'upload'; }, 2500);
+                    cleanup();
+                }
+                if (msg.type === 'upload-complete') {
+                    (async () => {
+                        const beforeIds = new Set(Store.photos.map(p => p.id));
+                        const fresh = await Store.load(true);
+                        for (const p of fresh) {
+                            if (!beforeIds.has(p.id)) {
+                                const idx = getSorted().findIndex(x => x.id === p.id);
+                                if (idx >= 0 && idx < state.loadedCount && !document.querySelector(`.photo-card[data-id="${CSS.escape(p.id)}"]`)) {
+                                    prependCardToMasonry(p);
+                                }
+                            }
+                        }
+                        updateMasonryStatsOnly();
+                        const s = msg.summary || {};
+                        const summary = [];
+                        if (s.done > 0) summary.push(`成功 ${s.done}`);
+                        if (s.skipped > 0) summary.push(`跳过重复 ${s.skipped}`);
+                        if (s.failed > 0) summary.push(`失败 ${s.failed}`);
+                        if (summary.length) toast(`上传完成：${summary.join('，')}`, s.done > 0 || s.skipped > 0 ? 'success' : 'alert');
+                    })();
+                }
+            });
+            recomputeUploadOverall(validItems.length > 1 ? `${validItems.length} 个文件` : validItems[0].file?.name || '', '排队上传…');
+            return;
+        }
+    }
+
+    // 降级：TaskWorker 不可用 → 页面内执行（原有逻辑）
+    done = 0; failed = errCount; skipped = 0;
+    const SUB_X = { CHECK: 0.05, UPLOAD: 0.90, DIMS: 0.05 };
+
+    for (let i = 0; i < prepared.length; i++) {
         const pr = prepared[i];
         const file = pr.file;
         const fileWeightBytes = file.size || 0;
-        const _uploadBaseBefore = _uploadBytes.done; // 当前这张在总上传字节区间的起点
-
+        const _uploadBaseBefore = _uploadBytes.done;
         const addSubProgress = (subP) => {
-            // subP ∈ [0,1]：该文件在上传大阶段里的内部子进度
-            _uploadBytes.done = Math.min(
-                _uploadBytes.total,
-                _uploadBaseBefore + fileWeightBytes * subP
-            );
+            _uploadBytes.done = Math.min(_uploadBytes.total, _uploadBaseBefore + fileWeightBytes * subP);
         };
-        if (pr.err) {
-            failed++;
-            addSubProgress(1); // 失败也算"处理完了"，推进进度
-            $('#upFailed').textContent = String(failed);
-            recomputeUploadOverall(file.name, '失败', `错误: ${pr.err.message}`);
-            toast(`「${file.name}」${pr.err.message}`, 'alert');
-            continue;
-        }
+        if (pr.err) continue;
         const upName = 'upload.' + pr.ext;
 
-        // 子阶段 2a：查重（占该张的 5%）
-        addSubProgress(SUB.CHECK * 0.1);
+        addSubProgress(SUB_X.CHECK * 0.1);
         recomputeUploadOverall(file.name, '查重…');
         try {
-            addSubProgress(SUB.CHECK);
+            addSubProgress(SUB_X.CHECK);
             const dup = await checkHashExists(pr.sha);
             if (dup) {
                 skipped++;
@@ -1884,15 +1878,13 @@ async function uploadFiles(files) {
                 toast(`「${file.name}」已存在，跳过`, 'info');
                 continue;
             }
-            // 子阶段 2b：上传到 tc 图床（占该张的 90%，内部按字节级 onProgress）
-            const upStart = SUB.CHECK;
-            const upSpan = SUB.UPLOAD;
+            const upStart = SUB_X.CHECK;
+            const upSpan = SUB_X.UPLOAD;
             const parts = await uploadToBed(pr.blob, upName, p => {
                 addSubProgress(upStart + p * upSpan);
                 recomputeUploadOverall(file.name, p < 1 ? '上传到图床' : '上传完成');
             });
-            // 子阶段 2c：获取尺寸 + 写库（占该张的 5%）
-            addSubProgress(SUB.CHECK + SUB.UPLOAD + SUB.DIMS * 0.2);
+            addSubProgress(SUB_X.CHECK + SUB_X.UPLOAD + SUB_X.DIMS * 0.2);
             recomputeUploadOverall(file.name, '获取尺寸…');
             const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
             const photo = {
@@ -1901,18 +1893,14 @@ async function uploadFiles(files) {
                 ext: pr.ext, hasAudio: !!pr.hasAudio
             };
             await loadDims(photo);
-            addSubProgress(SUB.CHECK + SUB.UPLOAD + SUB.DIMS * 0.7);
+            addSubProgress(SUB_X.CHECK + SUB_X.UPLOAD + SUB_X.DIMS * 0.7);
             await Store.add(photo);
-            addSubProgress(1); // 这张完成 100%
+            addSubProgress(1);
             done++;
             $('#upDone').textContent = String(done);
             recomputeUploadOverall(file.name, `已完成 ${done}/${total}`);
-            // 关键：增量插入这张新卡片到瀑布流顶部，不重建已有 DOM
             prependCardToMasonry(photo);
-            // 尺寸异步回写（图片 onload 触发时也会保存），不阻塞当前流程
-            if (photo.width && photo.height) {
-                Store.save(photo).catch(() => { });
-            }
+            if (photo.width && photo.height) Store.save(photo).catch(() => { });
         } catch (err) {
             console.error('upload failed:', file.name, err);
             failed++;
@@ -2236,11 +2224,11 @@ function startPinch(e) {
     // 把两指中心换算成 wrap 相对百分位，作为 transform-origin 让旋转/缩放围绕两指中心（仿 iOS/Google Photos）
     const w = lbWrap();
     if (w) {
-        const wr = w.getBoundingClientRect();
-        const oxPct = wr.width ? ((cxStage + sr.left - wr.left) / wr.width * 100) : 50;
-        const oyPct = wr.height ? ((cyStage + sr.top - wr.top) / wr.height * 100) : 50;
+        // transform-origin 必须始终钉在元素中心(50% 50%)。
+        // 若按「已变换后的 getBoundingClientRect」反算 origin 百分比，scale/rotate 后 wr.width/wr.left 已是形变值，
+        // 算出的 origin 严重错位 → 缩放/旋转围绕错误支点，图片直接飞走。onGm 里的锚点数学(zoomTo 同款)正是假设中心 origin。
         w.style.transition = 'none';
-        w.style.transformOrigin = `${oxPct.toFixed(2)}% ${oyPct.toFixed(2)}%`;
+        w.style.transformOrigin = '50% 50%';
     }
     pinch = {
         dist, angle,
@@ -2267,6 +2255,11 @@ function _isRotated() {
 function onGs(e) {
     if (!state.lightboxOpen || state.menuOpen) return;
     if (e.target.closest('#lbMoreBtn,#lbCloseBtn,.audio-toggle')) return;
+    // 阻止触摸产生的「兼容鼠标事件」(synthetic mousedown/move/up)：
+    // 否则一次触摸滑动会先由 touchend(onGe) 触发一次手势，随后浏览器再合成一套 mouse 事件
+    // 在 document 上触发 onGeMouse，导致同一滑动被判定两次（如同时「打开菜单 + 标记喜欢」）。
+    // 按钮区域已在上面 return（不 preventDefault，保留点击）；其余触摸一律掐断合成链。
+    if (e.touches && e.cancelable) e.preventDefault();
     // 双指捏合缩放
     if (e.touches && e.touches.length === 2) { startPinch(e); state.dragging = true; _setAudioBtnsVisible(false); return; }
     // 已放大 / 或图片被旋转过：单指/鼠标拖动 = 平移看图（不做投票手势，避免碰一下就翻页）
@@ -2350,26 +2343,29 @@ function onGm(e) {
 }
 function onGe(e) {
     if (!state.dragging || state.menuOpen) return;
-    // 捏合结束：吸附到最近的 90°（iOS / Google Photos 主流行为），动画结束后再把 transform-origin 切回中心
+    // 触摸结束：掐断随后浏览器合成的 click/mouse 事件（见 onGs 注释），避免同一滑动被判定两次；
+    // 同时设一个防御窗口，即便仍有 stray mouse 事件也直接忽略（见 onGeMouse）。
+    if (e.changedTouches) {
+        if (e.cancelable) e.preventDefault();
+        state._suppressMouseUntil = Date.now() + 600;
+    }
+    // 捏合结束：吸附到最近的 90°（iOS / Google Photos 主流行为）
     if (pinch) {
         const w = lbWrap();
+        // 吸附到最近的 90°（iOS / Google Photos 主流行为）。
+        // 关键：保留为「连续的有符号值」——Math.round(r/90)*90 的结果本就在当前角度 ±45° 内，
+        // 不要强行取模到 [0,360)（如把手势中渲染的 -90° 变成 270°），
+        // 否则 CSS transition 在 rotate(-90deg)→rotate(270deg) 间会插值出 360° 整圈旋转，
+        // 用户感知就是「逆时针转 90° 却多转了一大圈」。
         let r = (state.zoom.r || 0);
         const snapped = Math.round(r / 90) * 90;
-        // 归一化到 [0, 360)，避免累积到几千度
-        r = snapped % 360; if (r < 0) r += 360;
-        state.zoom.r = r;
+        state.zoom.r = snapped;
         if (state.zoom.s <= 1.01) { state.zoom.x = 0; state.zoom.y = 0; }
         else clampPan();
         if (w) {
             w.style.transition = 'transform .2s ease';
             applyZoomTransform();
-            setTimeout(() => {
-                try {
-                    w.style.transition = 'none';
-                    w.style.transformOrigin = '50% 50%';
-                    applyZoomTransform();
-                } catch (_) { }
-            }, 210);
+            setTimeout(() => { try { w.style.transition = 'none'; } catch (_) { } }, 210);
         } else {
             applyZoomTransform();
         }
@@ -2458,6 +2454,11 @@ function triggerGesture(dir) {
 }
 function onGeMouse() {
     if (!state.dragging || state.menuOpen) return;
+    // 防御：触摸刚结束的窗口内（state._suppressMouseUntil）忽略合成 mouse 手势，避免同一滑动被判定两次
+    if (state._suppressMouseUntil && Date.now() < state._suppressMouseUntil) {
+        state.dragging = false;
+        return;
+    }
     state.dragging = false;
     const dx = state.dragCurrent.x - state.dragStart.x;
     const dy = state.dragCurrent.y - state.dragStart.y;
@@ -2472,6 +2473,13 @@ document.addEventListener('mouseup', () => { if (state.dragging) onGeMouse(); })
 stage.addEventListener('touchstart', onGs, { passive: false });
 stage.addEventListener('touchmove', onGm, { passive: false });
 stage.addEventListener('touchend', onGe);
+// 触摸被系统手势/边缘中断（touchcancel 代替 touchend）时，必须复位拖拽状态并归位，否则会卡住 dragging 导致后续误触发
+stage.addEventListener('touchcancel', () => {
+    if (!state.lightboxOpen) return;
+    state.dragging = false; state.panning = false;
+    if (pinch) pinch = null;
+    _resetLbWrapAndGestures(true);
+});
 // 缩放：滚轮 / 双击
 stage.addEventListener('wheel', (e) => {
     if (!state.lightboxOpen) return;
@@ -2602,6 +2610,12 @@ function resumeRunningTask() {
                             }
                         }
                         updateMasonryStatsOnly();
+                        const s = msg.summary || {};
+                        const summary = [];
+                        if (s.done > 0) summary.push(`成功 ${s.done}`);
+                        if (s.skipped > 0) summary.push(`跳过重复 ${s.skipped}`);
+                        if (s.failed > 0) summary.push(`失败 ${s.failed}`);
+                        if (summary.length) toast(`上传完成：${summary.join('，')}`, s.done > 0 || s.skipped > 0 ? 'success' : 'alert');
                     })();
                 }
             });
