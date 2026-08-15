@@ -1576,9 +1576,15 @@ function _setAudioBtnsVisible(v) {
 /* ---------- 轻量通用收尾：Lightbox 手势结束时把 lbWrap 复位 + 图标复位 + 音量按钮恢复 ---------- */
 function _resetLbWrapAndGestures(animatedBack = true) {
     const w = lbWrap();
+    // 视觉归位 translate(0,0) 即 scale(1)；必须同步 state，否则滚轮缩放后（s≠1）拖动松手
+    // 视觉回原大小而 state.zoom.s 残留旧值，下次拖动又按残留值跳变（"恢复原大小↔跳回缩放大小"）。
+    if (state.zoom.s !== 1 || state.zoom.x !== 0 || state.zoom.y !== 0) {
+        state.zoom = { s: 1, x: 0, y: 0, r: 0 };
+    }
     if (w) {
         if (animatedBack) w.style.transition = 'transform .3s ease, opacity .3s ease';
         w.style.transform = 'translate(0,0)';
+        w.style.willChange = 'auto';
     }
     resetGestures();
     _setAudioBtnsVisible(true);
@@ -1719,9 +1725,20 @@ function resetGestures() {
 
 /* ---- Lightbox 缩放 / 平移 / 旋转（统一作用到 lbMediaWrap 容器，img/video 同步被变换）---- */
 function lbWrap() { return $('#lbMediaWrap'); }
+let _zoomRaf = null;
+function scheduleZoomRender() {
+    // 高频 touchmove 下用 rAF 合并渲染：一次帧内多次 state 更新只写一次 style，
+    // 避免真机高刷屏（120Hz）掉帧/卡顿。wheel/双击等低频路径仍可直接 applyZoomTransform。
+    if (_zoomRaf) return;
+    _zoomRaf = requestAnimationFrame(() => { _zoomRaf = null; applyZoomTransform(); });
+}
 function applyZoomTransform() {
     const w = lbWrap(); if (!w) return;
     w.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s}) rotate(${(state.zoom.r || 0).toFixed(2)}deg)`;
+}
+function setWillChange(on) {
+    const w = lbWrap(); if (!w) return;
+    w.style.willChange = on ? 'transform' : 'auto';
 }
 function clampPan() {
     const w = lbWrap(); if (!w || !stage) return;
@@ -1779,6 +1796,8 @@ function startPinch(e) {
         // 算出的 origin 严重错位 → 缩放/旋转围绕错误支点，图片直接飞走。onGm 里的锚点数学(zoomTo 同款)正是假设中心 origin。
         w.style.transition = 'none';
         w.style.transformOrigin = '50% 50%';
+        // 捏合期间提示浏览器把元素提升到合成层（真机高刷屏更跟手，松手后还原）
+        w.style.willChange = 'transform';
     }
     pinch = {
         dist, angle,
@@ -1816,8 +1835,10 @@ function onGs(e) {
     if (e.touches && e.cancelable) e.preventDefault();
     // 双指捏合缩放
     if (e.touches && e.touches.length === 2) { startPinch(e); state.dragging = true; _setAudioBtnsVisible(false); return; }
-    // 已放大 / 或图片被旋转过：单指/鼠标拖动 = 平移看图（不做投票手势，避免碰一下就翻页）
-    if (state.zoom.s > 1.01 || _isRotated()) {
+    // 已缩放（放大或缩小）/ 旋转过：单指/鼠标拖动 = 平移看图（不做投票/翻页手势）。
+    // 注意必须覆盖 s<1 的缩小态：此前只判 s>1.01，缩小后拖动走普通手势分支，
+    // 超过 THRESHOLD 会触发翻页并把缩放重置为 1（"拖动到边缘直接重置大小"）。
+    if (Math.abs(state.zoom.s - 1) > 0.01 || _isRotated()) {
         state.dragging = true; state.panning = true;
         const pt = e.touches ? e.touches[0] : e;
         state.dragStart = { x: pt.clientX, y: pt.clientY };
@@ -1862,7 +1883,7 @@ function onGm(e) {
         state.zoom.y = (ay - Sy) - ns * (ay - Sy - y) / s;
         // 2) 叠加旋转相对增量（以 pinch 起始为基准，避免累积浮点漂移）
         state.zoom.r = pinch.r + rotDelta;
-        applyZoomTransform();
+        scheduleZoomRender();
         if (e.cancelable) e.preventDefault();
         return;
     }
@@ -1874,7 +1895,7 @@ function onGm(e) {
         state.dragCurrent = { x: pt.clientX, y: pt.clientY };
         state.zoom.x += dx; state.zoom.y += dy;
         state.dragStart = { x: pt.clientX, y: pt.clientY };
-        applyZoomTransform();
+        scheduleZoomRender();
         if (e.cancelable) e.preventDefault();
         return;
     }
@@ -1883,7 +1904,9 @@ function onGm(e) {
     const dy = pt.clientY - state.dragStart.y;
     state.dragCurrent = { x: pt.clientX, y: pt.clientY };
     const w = lbWrap();
-    if (w) w.style.transform = `translate(${dx}px, ${dy}px) scale(1)`;
+    // 拖动预览必须保留当前缩放/旋转（滚轮缩放后 s≠1 时，写死 scale(1) 会让视觉瞬间回到原始大小，
+    // 与 state.zoom.s 不一致 → 松手后 transform 复位、再次拖动却按 state 突然跳回缩放大小）
+    if (w) w.style.transform = `translate(${dx}px, ${dy}px) scale(${state.zoom.s}) rotate(${(state.zoom.r || 0).toFixed(2)}deg)`;
 
     const ax = Math.abs(dx), ay = Math.abs(dy);
     let dir = null, dist = 0;
@@ -1924,6 +1947,7 @@ function onGe(e) {
         if (w) {
             w.style.transition = 'transform .2s ease';
             applyZoomTransform();
+            w.style.willChange = 'auto';
             setTimeout(() => { try { w.style.transition = 'none'; } catch (_) { } }, 210);
         } else {
             applyZoomTransform();
@@ -2019,6 +2043,16 @@ function onGeMouse() {
         return;
     }
     state.dragging = false;
+    // 平移结束：保留缩放/旋转（与触摸 onGe 的 panning 分支一致）。
+    // 此前缺此分支——滚轮缩放后鼠标拖动松手会走 _resetLbWrapAndGestures 把 transform 清成
+    // translate(0,0)（视觉 scale 1），但 state.zoom.s 仍保留滚轮值；再次 mousedown 时 onGs
+    // 按 s>1.01 进 panning，applyZoomTransform 又把 scale 突然加回来（"恢复原大小↔跳回缩放大小"）。
+    if (state.panning) {
+        state.panning = false;
+        clampPan();
+        _setAudioBtnsVisible(true);
+        return;
+    }
     const dx = state.dragCurrent.x - state.dragStart.x;
     const dy = state.dragCurrent.y - state.dragStart.y;
     _triggerGestureByDrag(dx, dy);
