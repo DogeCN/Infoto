@@ -4,8 +4,10 @@
  * 职责：
  *   1. 托管静态前端（public/，经 ASSETS 绑定）
  *   2. /api/photos  —— 照片元数据读写（KV 持久化）
- *   3. /api/upload-proxy —— 上传透明代理（浏览器按逆向协议生成 JWT+multipart，
- *      因图床 CORS 拒绝自定义头 X-Auth-Token，由本 Worker 同源转发）
+ *   3. /api/vote    —— 按 IP 防重的喜欢/不喜欢投票
+ *   4. /api/photos/hash —— SHA-256 查重
+ *
+ * 上传由浏览器直连图床（cdeaa OSS），本服务端只接收最终直链，不做文件中转。
  */
 export default {
   async fetch(request, env) {
@@ -16,7 +18,7 @@ export default {
     const cors = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
+      'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age': '86400',
     };
     if (request.method === 'OPTIONS') {
@@ -87,38 +89,6 @@ export default {
       const arr = Array.isArray(data) ? data : [];
       const hit = arr.find(p => p.sha256 === sha);
       return json(cors, hit ? { exists: true, photo: hit } : { exists: false });
-    }
-
-    /* ---------- 上传兜底代理：?target=cdeaa|tc（默认 cdeaa） ---------- */
-    // 主路径是浏览器直连图床；此接口仅在图床直连失败（网络波动等）时兜底，
-    // 服务端不落盘、不二次处理，只转发并原样返回直链。
-    if (path.startsWith('/api/upload-proxy') && request.method === 'POST') {
-      const target = url.searchParams.get('target') || 'cdeaa';
-      const upstreamUrl = target === 'tc'
-        ? 'https://tc.0147258.xyz/upload'
-        : 'https://cdeaa.qdqqd.com/public/resource/oss/put-file-attach';
-      const headers = new Headers();
-      const ct = request.headers.get('Content-Type') || 'application/octet-stream';
-      headers.set('Content-Type', ct);
-      // tc 图床需要 JWT 签名头；cdeaa 公共接口不需要
-      if (target === 'tc') {
-        const token = request.headers.get('X-Auth-Token') || '';
-        if (token) headers.set('X-Auth-Token', token);
-      }
-
-      try {
-        const upstream = await fetch(upstreamUrl, {
-          method: 'POST',
-          headers,
-          body: request.body,
-          duplex: 'half',
-        });
-        const outHeaders = new Headers(cors);
-        outHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json');
-        return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
-      } catch (e) {
-        return json(cors, { error: 'proxy upstream error: ' + e.message }, 502);
-      }
     }
 
     /* ---------- 静态资源（public/） ---------- */
