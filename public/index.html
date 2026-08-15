@@ -156,7 +156,11 @@ main { padding:4.5rem .75rem 4rem; min-height:100vh; }
   cursor:pointer; width:100%;
 }
 .photo-card:hover { transform:scale(1.02); box-shadow:var(--shadow-glow); border-color:rgba(34,211,238,.3); }
-.photo-card .ph-img { display:block; width:100%; height:auto; opacity:0; transition:opacity .3s; border-radius:var(--r-lg); }
+.photo-card .ph-img {
+  position:absolute; inset:0; width:100%; height:100%;
+  object-fit:contain;                 /* 不裁剪，保持原比例完整显示 */
+  opacity:0; transition:opacity .3s; border-radius:var(--r-lg);
+}
 .photo-card .ph-img.loaded { opacity:1; }
 .photo-card .ratio-holder { position:relative; width:100%; }
 .photo-card .ratio-holder .skeleton { position:absolute; inset:0; border-radius:var(--r-lg); }
@@ -510,7 +514,16 @@ const ICONS = {
 function renderIcons(root){
   (root||document).querySelectorAll('[data-i]').forEach(el=>{
     const name = el.getAttribute('data-i');
-    if(ICONS[name]) el.innerHTML = ICONS[name];
+    if(ICONS[name]){
+      // lucide 风格 SVG 必需属性：fill=none + stroke=currentColor（否则暗底下不可见）
+      el.setAttribute('viewBox','0 0 24 24');
+      el.setAttribute('fill','none');
+      el.setAttribute('stroke','currentColor');
+      el.setAttribute('stroke-width','2');
+      el.setAttribute('stroke-linecap','round');
+      el.setAttribute('stroke-linejoin','round');
+      el.innerHTML = ICONS[name];
+    }
   });
 }
 </script>
@@ -766,10 +779,14 @@ function makeCard(photo, index){
   img.alt = photo.filename || 'photo';
   img.src = photo.url;
   img.onload = ()=>{
-    if(!photo.width){
-      photo.width = img.naturalWidth; photo.height = img.naturalHeight;
-      holder.style.paddingBottom = (photo.height/photo.width*100) + '%';
-      Store.save();
+    // 始终用真实尺寸修正占位比例（防止 loadDims 失败/超时导致所有图显示为正方形）
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+    if(nw && nh){
+      if(photo.width !== nw || photo.height !== nh){
+        photo.width = nw; photo.height = nh;
+        holder.style.paddingBottom = (nh/nw*100) + '%';
+        Store.save();
+      }
     }
     img.classList.add('loaded');
     skel.remove();
@@ -1128,29 +1145,34 @@ function onGe(){
 
   if(ax>ay){
     if(ax>THRESHOLD){
+      // 触发即复位（卡片弹回中心，图标高亮保持，稍后切图）
+      img.style.transition='transform .2s ease';
+      img.style.transform='translate(0,0)';
       if(dx<0){ // 左滑 → 支持(喜欢)
         toast('已标记为喜欢','heart');
         Store.setLike(p.id, +1);
         const gi=$('#giLeft'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
-        setTimeout(()=>{ resetGestures(); nextPhoto(); }, 250);
+        setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);
       }else{ // 右滑 → 反对(不喜欢)
         toast('已标记为不喜欢','alert');
         Store.setLike(p.id, -1);
         const gi=$('#giRight'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
-        setTimeout(()=>{ resetGestures(); nextPhoto(); }, 250);
+        setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);
       }
       return;
     }
   }else{
     if(ay>THRESHOLD){
+      img.style.transition='transform .2s ease';
+      img.style.transform='translate(0,0)';
       if(dy>0){ // 下滑 → 下载
         const gi=$('#giDown'); gi.style.opacity=1; gi.style.transform='translateX(-50%) scale(1.2)';
         downloadUrl(p.url, p.filename||'image.jpg');
         toast('开始下载','download');
-        setTimeout(()=>{ resetGestures(); }, 300);
+        setTimeout(()=>{ resetGestures(); }, 250);
       }else{ // 上滑 → 更多菜单
         const gi=$('#giUp'); gi.style.opacity=1; gi.style.transform='translateX(-50%) scale(1.2)';
-        setTimeout(()=>{ resetGestures(); openMenu(); }, 250);
+        setTimeout(()=>{ resetGestures(); openMenu(); }, 200);
       }
       return;
     }
