@@ -62,6 +62,14 @@ const TaskWorker = (() => {
     let reconnectTimer = null;
     let bc = null;
     let _bcInstalled = false;
+    // 双通道（SharedWorker port + BroadcastChannel）同一条广播会各投递一次，用 _seq 去重
+    let _lastSeq = 0;
+    function _dedupeMsg(msg) {
+        if (typeof msg._seq !== 'number') return true; // reply 类消息无 seq，幂等无需去重
+        if (msg._seq <= _lastSeq) return false;
+        _lastSeq = msg._seq;
+        return true;
+    }
 
     function _installBC() {
         if (_bcInstalled) return;
@@ -80,6 +88,7 @@ const TaskWorker = (() => {
                 if (msg.type === 'status' && msg.tasks) {
                     currentTasks = { ...currentTasks, ...msg.tasks };
                 }
+                if (!_dedupeMsg(msg)) return;
                 _emit(msg);
             };
         } catch (e) { bc = null; }
@@ -120,6 +129,7 @@ const TaskWorker = (() => {
                 if (msg.type === 'status' && msg.tasks) {
                     currentTasks = { ...currentTasks, ...msg.tasks };
                 }
+                if (!_dedupeMsg(msg)) return;
                 _emit(msg);
             };
             sw.port.start();
@@ -824,7 +834,8 @@ const Store = {
         photo.id = photo.id || 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
         if (!photo.url) photo.url = fileUrl(photo.id);
         this.photos.unshift(photo);
-        await this.save(photo);
+        // 元数据写库失败不抛出：图片已上传图床并本地展示，失败仅影响跨设备同步，不应把整张判为"上传失败"
+        try { await this.save(photo); } catch (e) { console.warn('[infoto] 元数据写库失败（不影响本地上传结果）', e); }
         return photo;
     },
 
@@ -971,6 +982,24 @@ function buildColumns() {
     for (let i = 0; i < need; i++) {
         const c = el('div', 'masonry-col');
         m.appendChild(c); cols.push(c);
+    }
+    // 显式设列宽，避免某些浏览器（X5/UC/旧 Safari）对 flex-basis:0% 的 0 宽塌陷
+    applyColWidths();
+}
+
+// 根据 .masonry 实际宽度与 gap 计算每列像素宽度并显式设置（绕开 flex 0 宽 bug）
+function applyColWidths() {
+    if (!cols.length) return;
+    const m = $('#masonry');
+    const cs = getComputedStyle(m);
+    const gap = parseFloat(cs.gap || cs.columnGap) || 0;
+    const containerW = m.clientWidth || m.getBoundingClientRect().width;
+    if (!containerW) return;
+    const n = cols.length;
+    const colW = Math.max(0, (containerW - gap * (n - 1)) / n);
+    for (const c of cols) {
+        c.style.width = colW + 'px';
+        c.style.flex = '0 0 ' + colW + 'px';
     }
 }
 
@@ -1210,6 +1239,8 @@ let resizeTimer;
 window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
+        // 宽度变化但列数不变时，也要更新显式列宽（applyColWidths 用像素值，需跟随容器）
+        applyColWidths();
         if (colCount() !== cols.length && !state.lightboxOpen) renderMasonry();
     }, 200);
 });
@@ -1778,10 +1809,9 @@ async function uploadFiles(files) {
             photo.url = fileUrl(photo.id);
             await loadDims(photo);
             st.upP = 0.98;
-            await Store.add(photo);
+            await Store.add(photo); // add 内部已带尺寸写库（loadDims 先于 add 执行）
             st.upP = 1; done++;
             markReady(idx, photo);
-            if (photo.width && photo.height) Store.save(photo).catch(() => { });
             blob = null; // 立即释放字节，降低内存峰值
         } catch (e) {
             console.error('upload failed:', file.name, e);
@@ -2113,6 +2143,10 @@ function startPinch(e) {
         cx: cxStage, cy: cyStage,
         s: state.zoom.s,
         r: state.zoom.r || 0,
+        // 关键：记录起始 x/y。onGm 双指分支每次 touchmove 都用 pinch 起始的 (s,x,y) 计算锚点，
+        // 不能用 state.zoom.x/y（那会被本帧更新，下一帧用更新后的 x 配起始 s 算锚点 → 位置累积漂移，图片飞走）。
+        x: state.zoom.x,
+        y: state.zoom.y,
     };
 }
 
@@ -2173,9 +2207,11 @@ function onGm(e) {
         const cy = (t0.clientY + t1.clientY) / 2 - sr.top;
 
         // 1) 先把 zoom 按双指锚点缩放（沿用 zoomTo 的锚点计算，不做 clampPan 因为拖动中）
+        //    锚点公式要求 (s,x,y) 同时刻：这里全部用 pinch 起始值，ns 只依赖 d/pinch.dist，
+        //    每帧从起始状态独立计算，避免累积漂移。
         const ns = Math.min(8, Math.max(1, pinch.s * (d / pinch.dist)));
         const Sx = sr.width / 2, Sy = sr.height / 2;
-        const s = pinch.s, x = state.zoom.x, y = state.zoom.y;
+        const s = pinch.s, x = pinch.x, y = pinch.y;
         state.zoom.s = ns;
         state.zoom.x = (cx - Sx) - ns * (cx - Sx - x) / s;
         state.zoom.y = (cy - Sy) - ns * (cy - Sy - y) / s;

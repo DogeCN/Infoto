@@ -1,5 +1,5 @@
 /* Infoto Service Worker —— 离线壳 + 图片 Stale-While-Revalidate 缓存 */
-const V = 'infoto-v3';
+const V = 'infoto-v4';
 const CORE = ['./', './index.html', './app.js', './styles.css', './shared.js', './manifest.webmanifest'];
 
 self.addEventListener('install', e => {
@@ -32,9 +32,11 @@ self.addEventListener('fetch', event => {
                     return network;
                 } catch (e) { return cached || Response.error(); }
             }
-            // JSON API（含 /api/photos 等）：网络优先、绝不缓存，保证删除/更新后立即生效
+            // JSON API：网络优先；仅照片列表写入缓存（离线可见），其余 JSON 不缓存（避免查重/管理员状态返回陈旧结果）
             try {
-                return await fetch(req);
+                const network = await fetch(req);
+                if (network.ok && url.pathname === '/api/photos') cache.put(req, network.clone());
+                return network;
             } catch (e) {
                 return cached || new Response('offline', { status: 503 });
             }

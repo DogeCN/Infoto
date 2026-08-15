@@ -25,13 +25,16 @@ try {
 } catch (e) { bc = null; }
 
 let keepAliveTimer = null;
+let _seq = 0;
 
 function broadcast(msg) {
+    // 每条广播带递增 _seq：页面同时经 port 与 BroadcastChannel 收到同一条消息，用 _seq 去重（防终态消息触发两次下载/toast）
+    const m = { ...msg, _seq: ++_seq };
     for (const port of clients) {
-        try { port.postMessage(msg); } catch (e) { console.warn('[task-worker] broadcast fail:', e && e.message); }
+        try { port.postMessage(m); } catch (e) { console.warn('[task-worker] broadcast fail:', e && e.message); }
     }
     if (bc) {
-        try { bc.postMessage(msg); } catch (e) { }
+        try { bc.postMessage(m); } catch (e) { }
     }
 }
 

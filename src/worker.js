@@ -22,13 +22,25 @@
 
 // 速率限制桶（单 Worker 实例内存；Cloudflare 无共享内存，单实例内有效）
 const rlBuckets = new Map();
+const RL_MAX_BUCKETS = 5000;
 function rlCheck(key, windowMs, max) {
+  // 防内存无限增长：桶数超上限时整体清空（低危：瞬时放开速率限制）
+  if (rlBuckets.size > RL_MAX_BUCKETS) rlBuckets.clear();
   const now = Date.now();
   let b = rlBuckets.get(key);
   if (!b) { b = { t: now, e: [] }; rlBuckets.set(key, b); }
   if (now - b.t > windowMs) { b.e = b.e.filter(t => now - t < windowMs); b.t = now; }
   if (b.e.length >= max) return false;
   b.e.push(now); return true;
+}
+
+// 进程内互斥（Promise 链）：KV 的 read-modify-write 非原子，并发写会丢更新（如 photo_ids 并发 unshift）
+const locks = new Map();
+function withLock(key, fn) {
+  const prev = locks.get(key) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  locks.set(key, next.catch(() => {}));
+  return next;
 }
 
 export default {
@@ -39,7 +51,7 @@ export default {
     // CORS（方便前端若部署到其它域名）
     const cors = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+      'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, X-File-Sha256',
       'Access-Control-Max-Age': '86400',
     };
@@ -65,12 +77,16 @@ export default {
       if (request.method === 'POST') {
         // 按 id upsert 单条（禁止整组覆盖，防止无鉴权清空/篡改整个相册）
         try {
+          // 元数据体很小，预检 Content-Length 防超大 JSON 撑爆内存
+          const cl = Number(request.headers.get('Content-Length') || 0);
+          if (cl > 512 * 1024) return json(cors, { error: 'payload too large' }, 413);
           const body = await request.json();
           if (!body || typeof body !== 'object' || Array.isArray(body)) {
             return json(cors, { error: 'expected photo object' }, 400);
           }
           if (!body.id) return json(cors, { error: 'missing id' }, 400);
           const clean = sanitizePhoto(body);
+          if (!clean.parts) return json(cors, { error: 'missing valid parts' }, 400);
           // 保留服务端权威计数（图片 onload 回写尺寸时也走这里，不能清掉投票数）
           const existing = await env.Infoto.get('p:' + clean.id, 'json');
           const merged = {
@@ -79,13 +95,16 @@ export default {
             dislikes: existing && typeof existing.dislikes === 'number' ? existing.dislikes : 0,
           };
           await env.Infoto.put('p:' + clean.id, JSON.stringify(merged));
-          // 更新有序 id 列表（幂等，不重复插入）
-          const ids = await env.Infoto.get('photo_ids', 'json');
-          const idList = Array.isArray(ids) ? ids : [];
-          if (!idList.includes(clean.id)) {
-            idList.unshift(clean.id);
-            await env.Infoto.put('photo_ids', JSON.stringify(idList));
-          }
+          // 更新有序 id 列表（幂等，不重复插入）；withLock 串行化 read-modify-write 防并发丢 id
+          const idList = await withLock('photo_ids', async () => {
+            const ids = await env.Infoto.get('photo_ids', 'json');
+            const list = Array.isArray(ids) ? ids : [];
+            if (!list.includes(clean.id)) {
+              list.unshift(clean.id);
+              await env.Infoto.put('photo_ids', JSON.stringify(list));
+            }
+            return list;
+          });
           // 建立 sha 反向索引（查重 O(1)）
           if (clean.sha256 && /^[0-9a-f]{64}$/.test(clean.sha256)) {
             await env.Infoto.put('sha:' + clean.sha256, clean.id);
@@ -101,7 +120,11 @@ export default {
     // 批量回写尺寸（N 张图片 onload 聚合一次请求，避免 N 次单独 POST）
     // 请求体：{ updates: [ {id, width, height}, ... ] }
     if (path === '/api/photos/dims' && request.method === 'PATCH') {
+      const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+      if (!rlCheck('dims:' + ip, 60 * 1000, 60)) return json(cors, { error: 'too many requests' }, 429);
       try {
+        const cl = Number(request.headers.get('Content-Length') || 0);
+        if (cl > 256 * 1024) return json(cors, { error: 'payload too large' }, 413);
         const body = await request.json();
         const updates = Array.isArray(body && body.updates) ? body.updates : [];
         if (updates.length === 0) return json(cors, { ok: true, updated: 0 });
@@ -160,8 +183,11 @@ export default {
         await env.Infoto.put(vkey, JSON.stringify(votes));
         const likes = votes.likes.length;
         const dislikes = votes.dislikes.length;
-        const cur = (await getPhoto(env, id)) || { id };
-        await env.Infoto.put('p:' + id, JSON.stringify({ ...cur, likes, dislikes }));
+        // withLock 串行化「读 p → 写 p 计数」，防并发投票时计数互相覆盖（votes 数组为权威）
+        await withLock('pcount:' + id, async () => {
+          const cur = (await getPhoto(env, id)) || { id };
+          await env.Infoto.put('p:' + id, JSON.stringify({ ...cur, likes, dislikes }));
+        });
         return json(cors, { ok: true, delta, likes, dislikes });
       } catch (e) {
         return json(cors, { error: 'bad json' }, 400);
@@ -200,11 +226,14 @@ export default {
       if (!stored) {
         // 设置模式：优先用环境变量预设，否则以本次提交为准（直接存 PBKDF2）
         const preset = env.ADMIN_PASSWORD;
-        const toHash = preset || pw;
-        stored = await hashPasswordForStorage(toHash);
+        if (preset) {
+          // 预设模式：先验证输入与预设一致，通过后才写库（避免错误密码也触发 KV 写入）
+          if (preset !== pw) return json(cors, { error: 'wrong password' }, 401);
+          stored = await hashPasswordForStorage(preset);
+        } else {
+          stored = await hashPasswordForStorage(pw);
+        }
         await env.Infoto.put('admin_pw', stored);
-        // 如果是预设 env 密码，则需要验证输入是否等于预设
-        if (preset && preset !== pw) return json(cors, { error: 'wrong password' }, 401);
       } else {
         const vr = await verifyPasswordAndUpgrade(env, pw, stored);
         if (!vr.ok) return json(cors, { error: 'wrong password' }, 401);
@@ -245,17 +274,19 @@ export default {
     if (path.startsWith('/api/photos/') && request.method === 'DELETE') {
       if (!(await isAdmin(request, env))) return json(cors, { error: 'unauthorized' }, 401);
       const id = path.slice('/api/photos/'.length);
-      if (!id || id.includes('/')) return json(cors, { error: 'invalid id' }, 400);
+      if (!isValidPhotoId(id)) return json(cors, { error: 'invalid id' }, 400);
       const p = await getPhoto(env, id);
       if (p) {
         if (p.sha256) await env.Infoto.delete('sha:' + p.sha256);
         await env.Infoto.delete('p:' + id);
         await env.Infoto.delete('votes:' + id);
       }
-      const ids = await env.Infoto.get('photo_ids', 'json');
-      const list = Array.isArray(ids) ? ids : [];
-      const idx = list.indexOf(id);
-      if (idx >= 0) { list.splice(idx, 1); await env.Infoto.put('photo_ids', JSON.stringify(list)); }
+      await withLock('photo_ids', async () => {
+        const ids = await env.Infoto.get('photo_ids', 'json');
+        const list = Array.isArray(ids) ? ids : [];
+        const idx = list.indexOf(id);
+        if (idx >= 0) { list.splice(idx, 1); await env.Infoto.put('photo_ids', JSON.stringify(list)); }
+      });
       return json(cors, { ok: true });
     }
 
@@ -298,6 +329,7 @@ export default {
     if (path.startsWith('/api/file/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const id = path.slice('/api/file/'.length);
+      if (!isValidPhotoId(id)) return json(cors, { error: 'invalid id' }, 400);
       const p = await getPhoto(env, id);
       if (!p) return json(cors, { error: 'not found' }, 404);
       const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : [];
@@ -321,8 +353,11 @@ export default {
 
       // 单分片：Worker 流式转发 tc 字节（200）
       if (parts.length === 1) {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 30000);
         try {
-          const r = await fetch(parts[0], { headers: tcHeaders, redirect: 'follow' });
+          const r = await fetch(parts[0], { headers: tcHeaders, redirect: 'follow', signal: ac.signal });
+          clearTimeout(timer);
           if (r.ok) {
             const cl = r.headers.get('Content-Length');
             if (cl) fhdrs['Content-Length'] = cl;
@@ -330,6 +365,7 @@ export default {
           }
           return json(cors, { error: 'upstream rejected ' + r.status }, 502);
         } catch (e) {
+          clearTimeout(timer);
           return json(cors, { error: 'upstream fetch failed: ' + e.message }, 502);
         }
       }
@@ -407,43 +443,41 @@ function limitBodySize(readable, maxBytes) {
 }
 
 // 多分片流式合并（串行逐片：保证拼接顺序正确，同时任意时刻内存只保存 1 个分片的流 chunk）
+async function* _partsBytes(parts, tcHeaders, timeoutMs = 30000) {
+  for (const part of parts) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    let r;
+    try {
+      r = await fetch(part, { headers: tcHeaders, redirect: 'follow', signal: ac.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!r.ok || !r.body) throw new Error('part fetch failed ' + r.status);
+    const br = r.body.getReader();
+    while (true) {
+      const { done, value } = await br.read();
+      if (done) break;
+      yield value;
+    }
+  }
+}
 function mergePartsAsStream(parts, tcHeaders) {
-  let idx = 0;
-  let currentReader = null;
-  const ts = new TransformStream({
-    async start() { },
-    async transform(_, __) { /* unused：通过 pull 拉取 */ },
+  const gen = _partsBytes(parts, tcHeaders);
+  return new ReadableStream({
     async pull(controller) {
-      while (idx < parts.length) {
-        if (!currentReader) {
-          const r = await fetch(parts[idx], { headers: tcHeaders });
-          if (!r.ok || !r.body) {
-            controller.error(new Error('part fetch failed ' + r.status));
-            return;
-          }
-          currentReader = r.body.getReader();
-        }
-        const { done, value } = await currentReader.read();
-        if (done) {
-          currentReader.releaseLock();
-          currentReader = null;
-          idx++;
-          continue;
-        }
-        controller.enqueue(value);
-        return;
+      try {
+        const { done, value } = await gen.next();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (e) {
+        controller.error(e);
       }
-      controller.close();
     },
     cancel() {
-      if (currentReader) try { currentReader.cancel(); } catch { }
+      if (gen && gen.return) { try { gen.return(); } catch { } }
     }
   });
-  // 创建一个"启动流"：给 pull 一个触发点
-  const startSource = new ReadableStream({
-    start(ctrl) { ctrl.enqueue(new Uint8Array(0)); ctrl.close(); }
-  });
-  return startSource.pipeThrough(ts);
 }
 
 // ===== 密码哈希（PBKDF2 + 随机 salt，兼容旧版 SHA-256 自动升级）=====
@@ -545,7 +579,12 @@ function parseCookies(req) {
   if (!c) return out;
   for (const part of c.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    const k = part.slice(0, i).trim();
+    const v = part.slice(i + 1).trim();
+    // 恶意/损坏 Cookie（非法 %xx 序列）会让 decodeURIComponent 抛 URIError → 整个请求 500
+    try { out[k] = decodeURIComponent(v); }
+    catch { out[k] = v; }
   }
   return out;
 }
@@ -568,20 +607,43 @@ function sessionCookieHeaders(token, request, cors) {
 
 // ===== KV 存储辅助 =====
 
+function isValidPhotoId(id) {
+  return typeof id === 'string' && id.length > 0 && id.length <= 200
+    && !id.includes('/') && !/[\x00-\x1F\x7F]/.test(id);
+}
+
 async function getPhoto(env, id) {
   return await env.Infoto.get('p:' + id, 'json');
 }
 
+const KV_BATCH = 40;
 async function getAllPhotos(env, { limit = Infinity, offset = 0 } = {}) {
   const ids = await env.Infoto.get('photo_ids', 'json');
   if (!Array.isArray(ids) || ids.length === 0) return [];
   const end = isFinite(limit) ? offset + limit : ids.length;
   const sliced = ids.slice(offset, end);
-  const photos = await Promise.all(sliced.map(async id => {
-    const p = await env.Infoto.get('p:' + id, 'json');
-    return p || null;
-  }));
-  return photos.filter(Boolean);
+  const photos = [];
+  // 分批串行读 KV（全量 Promise.all 并发在大相册下会触发 KV 限流导致整请求 429）
+  for (let i = 0; i < sliced.length; i += KV_BATCH) {
+    const batch = sliced.slice(i, i + KV_BATCH);
+    const resolved = await Promise.all(batch.map(async id => {
+      const p = await env.Infoto.get('p:' + id, 'json');
+      return p || null;
+    }));
+    for (const p of resolved) if (p) photos.push(p);
+  }
+  return photos;
+}
+
+// tc 图床允许的域名白名单（上传代理仅转发到这些域；取图时也只会 fetch 这些域，防 SSRF/投毒）
+const TC_HOST_SUFFIXES = ['0147258.xyz', 'yn12377.cn'];
+function isTcLink(u) {
+  if (typeof u !== 'string') return false;
+  let url;
+  try { url = new URL(u); } catch { return false; }
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  return TC_HOST_SUFFIXES.some(s => host === s || host.endsWith('.' + s));
 }
 
 // 只保留受信任字段，剥离客户端传入的 likes/dislikes / 派生值 url 等
@@ -590,6 +652,29 @@ function sanitizePhoto(p) {
   for (const k of ['id', 'parts', 'sha256', 'width', 'height', 'createdAt', 'ext', 'hasAudio']) {
     if (p[k] !== undefined) out[k] = p[k];
   }
+  // parts：必须是通过白名单校验的 https 直链数组（防 SSRF：/api/file 会 fetch 这些 URL）
+  if (Array.isArray(out.parts)) {
+    out.parts = out.parts.filter(isTcLink);
+    if (out.parts.length === 0 || out.parts.length > 512) delete out.parts;
+  } else {
+    delete out.parts;
+  }
+  // createdAt：必须是有限数字（防 NaN 破坏排序）
+  if (typeof out.createdAt === 'number' && isFinite(out.createdAt)) {
+    out.createdAt = Math.max(0, Math.floor(out.createdAt));
+  } else {
+    delete out.createdAt;
+  }
+  // width/height：必须是非负有限数字（前端用它算卡片比例）
+  for (const k of ['width', 'height']) {
+    if (typeof out[k] === 'number' && isFinite(out[k]) && out[k] >= 0) {
+      out[k] = Math.min(16384, Math.floor(out[k]));
+    } else {
+      delete out[k];
+    }
+  }
+  // ext：仅允许字母数字（≤12 字符），防 Content-Disposition 文件名注入
+  if (typeof out.ext !== 'string' || !/^[a-z0-9]{1,12}$/i.test(out.ext)) delete out.ext;
   return out;
 }
 
