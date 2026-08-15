@@ -439,11 +439,6 @@ main {
   gap: .5rem;
 }
 
-.multi-bar .nav-btn.danger:hover {
-  color: var(--error);
-  background: rgba(244, 63, 94, .1);
-}
-
 .selection-box {
   position: fixed;
   z-index: 30;
@@ -451,22 +446,6 @@ main {
   display: none;
   border: 1px dashed rgba(34, 211, 238, .5);
   background: rgba(34, 211, 238, .2);
-}
-
-/* ============ 上传浮层 ============ */
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: rgba(0, 0, 0, .6);
-  backdrop-filter: blur(4px);
-  display: none;
-  align-items: center;
-  justify-content: center;
-}
-
-.overlay.show {
-  display: flex;
 }
 
 /* ============ 上传进度：按钮右下角小圆圈 + 悬停详情 ============ */

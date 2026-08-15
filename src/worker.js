@@ -33,11 +33,19 @@ export default {
         return json(cors, Array.isArray(data) ? data : []);
       }
       if (request.method === 'POST') {
+        // 按 id upsert 单条，禁止整组覆盖（防止无鉴权清空/篡改整个相册）
         try {
           const body = await request.json();
-          if (!Array.isArray(body)) return json(cors, { error: 'expected array' }, 400);
-          await env.PHOTOS.put('photos', JSON.stringify(body));
-          return json(cors, { ok: true, count: body.length });
+          if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            return json(cors, { error: 'expected photo object' }, 400);
+          }
+          if (!body.id) return json(cors, { error: 'missing id' }, 400);
+          const data = await env.PHOTOS.get('photos', 'json');
+          const arr = Array.isArray(data) ? data : [];
+          const idx = arr.findIndex(x => x.id === body.id);
+          if (idx >= 0) arr[idx] = body; else arr.unshift(body);
+          await env.PHOTOS.put('photos', JSON.stringify(arr));
+          return json(cors, { ok: true, count: arr.length });
         } catch (e) {
           return json(cors, { error: 'bad json' }, 400);
         }
@@ -96,12 +104,16 @@ export default {
     // 浏览器直传 cdeaa 有 ~600KB 上限；大文件分片后经本接口中转 tc 图床（Worker 可访问 tc）
     // 服务端不落盘、不二次处理，只转发并原样返回直链。
     if (path === '/api/upload-proxy' && request.method === 'POST') {
-      const token = request.headers.get('X-Auth-Token') || '';
-      const headers = new Headers();
-      const ct = request.headers.get('Content-Type') || 'application/octet-stream';
-      headers.set('Content-Type', ct);
-      if (token) headers.set('X-Auth-Token', token);
+      // 仅服务端用密钥签发 tc token，前端不再持有密钥（防止泄露被滥用上传/托管恶意文件）
+      const cl = Number(request.headers.get('Content-Length') || 0);
+      if (cl > 25 * 1024 * 1024) return json(cors, { error: 'payload too large' }, 413);
+      const sha = request.headers.get('X-File-Sha256') || '';
       try {
+        const token = await makeTcToken(env.JWT_SECRET || TC_SECRET, sha);
+        const headers = new Headers();
+        const ct = request.headers.get('Content-Type') || 'application/octet-stream';
+        headers.set('Content-Type', ct);
+        headers.set('X-Auth-Token', token);
         const upstream = await fetch('https://tc.0147258.xyz/upload', {
           method: 'POST',
           headers,
@@ -148,14 +160,18 @@ export default {
         const merged = new Uint8Array(total);
         let off = 0;
         for (const c of chunks) { merged.set(c, off); off += c.length; }
-        return new Response(merged, {
-          headers: {
-            ...cors,
-            'Content-Type': mimeFromName(p.filename) || 'application/octet-stream',
-            'Content-Length': String(total),
-            'Cache-Control': 'public, max-age=86400',
-          },
-        });
+        const ct = mimeFromName(p.filename) || 'application/octet-stream';
+        const isSafe = ct.startsWith('image/') || ct.startsWith('video/');
+        const fhdrs = {
+          ...cors,
+          'Content-Type': ct,
+          'Content-Length': String(total),
+          'Cache-Control': 'public, max-age=86400',
+        };
+        if (!isSafe && p.filename) {
+          fhdrs['Content-Disposition'] = `attachment; filename="${p.filename.replace(/"/g, '')}"`;
+        }
+        return new Response(merged, { headers: fhdrs });
       } catch (e) {
         return json(cors, { error: 'merge error: ' + e.message }, 502);
       }
@@ -173,17 +189,34 @@ function json(headers, data, status = 200) {
   });
 }
 
-function mimeFromName(name){
-  if(!name) return 'application/octet-stream';
+// 仅放行安全的图像/视频类型；svg/html/pdf 等可渲染/含脚本类型一律按二进制下载，杜绝存储型 XSS
+const SAFE_MIME = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif', jxl: 'image/jxl',
+  heic: 'image/heic', ico: 'image/x-icon', tiff: 'image/tiff', tif: 'image/tiff',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+};
+function mimeFromName(name) {
+  if (!name) return 'application/octet-stream';
   const ext = name.split('.').pop().toLowerCase();
-  const map = {
-    jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif',
-    webp:'image/webp', bmp:'image/bmp', svg:'image/svg+xml', avif:'image/avif',
-    jxl:'image/jxl', heic:'image/heic', ico:'image/x-icon', tiff:'image/tiff', tif:'image/tiff',
-    mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime',
-    mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg',
-    pdf:'application/pdf', zip:'application/zip', json:'application/json',
-    txt:'text/plain', html:'text/html', css:'text/css', js:'application/javascript',
+  return SAFE_MIME[ext] || 'application/octet-stream';
+}
+
+// tc 图床上传签名密钥（仅服务端使用，切勿暴露到前端）
+const TC_SECRET = '9a31f2e82617e4b4b482110f8c928b9b2734d809f060c30f12e8b2574a84c122';
+
+async function makeTcToken(secret, sha) {
+  const enc = new TextEncoder();
+  const b64u = (bytes) => {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   };
-  return map[ext] || 'application/octet-stream';
+  const header = b64u(enc.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+  const claims = { timestamp: Date.now() };
+  if (sha) claims.sha256 = sha;
+  const payload = b64u(enc.encode(JSON.stringify(claims)));
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(header + '.' + payload)));
+  return `${header}.${payload}.${b64u(sig)}`;
 }

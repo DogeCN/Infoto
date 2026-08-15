@@ -47,7 +47,6 @@ function renderIcons(root) {
    配置
    ========================================================= */
 const CONFIG = {
-    JWT_SECRET: '9a31f2e82617e4b4b482110f8c928b9b2734d809f060c30f12e8b2574a84c122',
     API_BASE: '',
     CDEAA_LIMIT: 600 * 1024,
     CHUNK_SIZE: 1024 * 1024,
@@ -58,27 +57,6 @@ const CONFIG = {
 async function sha256Hex(buf) {
     const d = await crypto.subtle.digest('SHA-256', buf);
     return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function b64u(bytes) {
-    let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-async function hmacSign(secret, data) {
-    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
-        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
-    return b64u(new Uint8Array(sig));
-}
-
-async function makeJwt(sha) {
-    const header = b64u(new TextEncoder().encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
-    const claims = { timestamp: Date.now() };
-    if (sha) claims.sha256 = sha;
-    const payload = b64u(new TextEncoder().encode(JSON.stringify(claims)));
-    const sig = await hmacSign(CONFIG.JWT_SECRET, header + '.' + payload);
-    return `${header}.${payload}.${sig}`;
 }
 
 /* ---- 无损压缩（JXL，libjxl WASM；压缩率实测优于 WebP，effort=7 最快） ---- */
@@ -223,10 +201,10 @@ async function uploadToBed(blob, name, onProgress) {
 async function uploadPartToTcProgressive(blob, name, onProgress) {
     return withRetry(async () => {
         const sha = await sha256Hex(await blob.arrayBuffer());
-        const token = await makeJwt(sha);
         const fd = new FormData();
         fd.append('file', blob, name);
-        const txt = await uploadViaXhr(apiBase() + '/api/upload-proxy', fd, { 'X-Auth-Token': token }, onProgress);
+        // 不再前端签名：由 Worker 用服务端密钥签发 tc token（见 /api/upload-proxy）
+        const txt = await uploadViaXhr(apiBase() + '/api/upload-proxy', fd, { 'X-File-Sha256': sha }, onProgress);
         const json = JSON.parse(txt);
         if (!json.data) throw new Error('上传响应缺少 data');
         return json.data;
@@ -258,22 +236,17 @@ const Store = {
         return this.photos;
     },
 
-    async save() {
+    async save(photo) {
         await fetch(apiBase() + '/api/photos', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.photos)
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(photo)
         });
     },
 
     async add(photo) {
         photo.id = photo.id || 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
         this.photos.unshift(photo);
-        await this.save();
+        await this.save(photo);
         return photo;
-    },
-    async remove(ids) {
-        const set = new Set(ids);
-        this.photos = this.photos.filter(p => !set.has(p.id));
-        await this.save();
     },
     async setLike(id, delta) {
         const p = this.photos.find(x => x.id === id);
@@ -308,8 +281,7 @@ const state = {
     lightboxOpen: false, currentIndex: 0,
     boxSelecting: false, boxStart: null, boxArm: false, suppressClick: false,
     menuOpen: false,
-    dragging: false, dragStart: null, dragCurrent: null,
-    skeleton: true
+    dragging: false, dragStart: null, dragCurrent: null
 };
 
 const $ = s => document.querySelector(s);
@@ -398,7 +370,7 @@ function makeCard(photo, index) {
             if (photo.width !== nw || photo.height !== nh) {
                 photo.width = nw; photo.height = nh;
                 holder.style.paddingBottom = (nh / nw * 100) + '%';
-                Store.save();
+                Store.save(photo);
             }
         }
         img.classList.add('loaded');
@@ -626,6 +598,12 @@ async function uploadFiles(files) {
     let done = 0, failed = 0, skipped = 0;
     for (let i = 0; i < total; i++) {
         const file = files[i];
+        if (file.type === 'image/svg+xml') {
+            skipped++;
+            $('#upSkipped').textContent = String(skipped);
+            toast(`「${file.name}」SVG 暂不支持`, 'alert');
+            continue;
+        }
         // 整体进度 = 已处理 / 总数（单文件内部进度细化为当前文件的进度）
         const base = i / total;
         const span = 1 / total;
