@@ -205,7 +205,7 @@ export default {
         let off = 0;
         for (const c of chunks) { merged.set(c, off); off += c.length; }
 
-        const ext = p.ext || extFromName(p.filename) || extFromName(p.parts && p.parts[0]) || 'webp';
+        const ext = p.ext || extFromName(p.parts && p.parts[0]) || 'webp';
         const dlName = p.id + '.' + ext;
         const ct = mimeFromName(dlName);
         const isSafe = ct.startsWith('image/') || ct.startsWith('video/');
