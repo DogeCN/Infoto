@@ -81,13 +81,13 @@ async function makeJwt(sha) {
     return `${header}.${payload}.${sig}`;
 }
 
-/* ---- JXL 无损压缩 ---- */
-let jxlEncode = null;
-async function loadJxl() {
-    if (jxlEncode) return jxlEncode;
-    const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/jxl@1.2.0/+esm');
-    jxlEncode = mod.encode;
-    return jxlEncode;
+/* ---- 无损压缩（WebP，全浏览器兼容） ---- */
+let webpEncode = null;
+async function loadWebp() {
+    if (webpEncode) return webpEncode;
+    const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/webp@1.3.0/+esm');
+    webpEncode = mod.encode;
+    return webpEncode;
 }
 
 async function fileToImageData(file) {
@@ -100,16 +100,34 @@ async function fileToImageData(file) {
     return ctx.getImageData(0, 0, canvas.width, canvas.height);
 }
 
-async function compressJxl(file) {
+async function compressLossless(file) {
     try {
-        const encode = await loadJxl();
+        const encode = await loadWebp();
         const data = await fileToImageData(file);
-        const buf = await encode(data, { lossless: true, effort: 3 });
-        return new Blob([buf], { type: 'image/jxl' });
+        const buf = await encode(data, { quality: 100, effort: 5 });   // quality=100 ≈ 无损
+        return new Blob([buf], { type: 'image/webp' });
     } catch (e) {
-        console.warn('[infoto] JXL 压缩失败，使用原文件', e);
+        console.warn('[infoto] WebP 压缩失败，使用原文件', e);
         return null;
     }
+}
+
+/* ---- 旧 JXL 照片解码兜底（浏览器不支持 JXL 时转 PNG 显示） ---- */
+let jxlDecode = null;
+async function loadJxlDecode() {
+    if (jxlDecode) return jxlDecode;
+    const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/jxl@1.2.0/+esm');
+    jxlDecode = mod.decode;
+    return jxlDecode;
+}
+async function decodeJxlToPng(url) {
+    const decode = await loadJxlDecode();
+    const buf = await (await fetch(url)).arrayBuffer();
+    const data = await decode(buf);
+    const canvas = document.createElement('canvas');
+    canvas.width = data.width; canvas.height = data.height;
+    canvas.getContext('2d').putImageData(data, 0, 0);
+    return new Promise(res => canvas.toBlob(res, 'image/png'));
 }
 
 /* ---- 图床上传 ---- */
@@ -386,7 +404,17 @@ function makeCard(photo, index) {
         img.classList.add('loaded');
         skel.remove();
     };
-    img.onerror = () => { skel.remove(); img.classList.add('loaded'); img.style.opacity = '.4'; };
+    img.onerror = () => {
+        // JXL 兼容性兜底：浏览器不支持时解码转 PNG 显示
+        if ((photo.filename || '').endsWith('.jxl')) {
+            decodeJxlToPng(photo.url).then(blob => {
+                if (!blob) return;
+                img.src = URL.createObjectURL(blob);
+            }).catch(() => { skel.remove(); img.classList.add('loaded'); img.style.opacity = '.4'; });
+        } else {
+            skel.remove(); img.classList.add('loaded'); img.style.opacity = '.4';
+        }
+    };
 
     holder.appendChild(skel);
     holder.appendChild(img);
@@ -590,16 +618,16 @@ async function uploadFiles(files) {
     let done = 0, failed = 0, skipped = 0;
     for (const file of files) {
         fname.textContent = file.name;
-        step.textContent = 'JXL 无损压缩…';
+        step.textContent = 'WebP 无损压缩…';
         bar.style.width = '0%'; pct.textContent = '0%';
         try {
             let upBlob = file;
             let upName = file.name;
             if (file.type.startsWith('image/') && !/gif|svg/.test(file.type)) {
-                const jxl = await compressJxl(file);
-                if (jxl && jxl.size < file.size * 0.9) {
-                    upBlob = jxl;
-                    upName = file.name.replace(/\.[^.]+$/, '') + '.jxl';
+                const webp = await compressLossless(file);
+                if (webp && webp.size < file.size * 0.9) {
+                    upBlob = webp;
+                    upName = file.name.replace(/\.[^.]+$/, '') + '.webp';
                 }
             }
             const sha = await sha256Hex(await upBlob.arrayBuffer());
@@ -694,6 +722,13 @@ function updateLightbox() {
     img.style.opacity = 1;
     img.src = p.url;
     img.alt = p.filename || 'photo';
+    img.onerror = () => {
+        if ((p.filename || '').endsWith('.jxl')) {
+            decodeJxlToPng(p.url).then(blob => {
+                if (blob) img.src = URL.createObjectURL(blob);
+            }).catch(() => {});
+        }
+    };
     $('#lbCounter').textContent = `${state.currentIndex + 1} / ${getSorted().length}`;
     renderDots();
 }
