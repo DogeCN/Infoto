@@ -127,6 +127,11 @@ export default {
       if (!p) return json(cors, { error: 'not found' }, 404);
       const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : (p.url ? [p.url] : []);
       if (!parts.length) return json(cors, { error: 'no parts' }, 404);
+      // 单分片（小文件直传 cdeaa）：直接 302 到分片直链，由浏览器加载。
+      // Worker 出口访问 lnjubao.cn 会被 EdgeOne 封（522），但浏览器直连正常。
+      if (parts.length === 1) {
+        return Response.redirect(parts[0], 302);
+      }
       try {
         // 逐片拉取并拼接（小图数据量，Worker 内存可承受）
         // EdgeOne 会拦截无 UA/数据中心 UA 的请求，伪装浏览器 UA 绕过
