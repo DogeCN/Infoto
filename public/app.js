@@ -420,7 +420,7 @@ function makeCard(photo, index) {
     const img = el('img', 'ph-img');
     img.loading = 'lazy';
     img.draggable = false;
-    img.alt = photo.filename || 'photo';
+    img.alt = dlName(photo);
     img.src = photo.url;
     img.onload = () => {
         const nw = img.naturalWidth, nh = img.naturalHeight;
@@ -685,7 +685,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     if (list.length === 0) { toast('请先选择照片'); return; }
     // 单张直接下（不打包）
     if (list.length === 1) {
-        return downloadUrl(list[0].url + '?dl=1', list[0].filename || 'image.jpg');
+        return downloadUrl(list[0].url + '?dl=1', dlName(list[0]));
     }
     // 多张打包成单个 zip：只触发 1 次浏览器下载框，不被并发限制拦截
     const JSZip = await getZipLib();
@@ -703,11 +703,11 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
             const blob = await r.blob();
             done++;
             const idx = String(done).padStart(3, '0');
-            const base = String(p.originalName || p.filename || 'image').replace(/[\\/:*?"<>|]/g, '_');
+            const base = dlName(p);
             zip.file(`${idx}_${base}`, blob, { binary: true });
             setUploadProgress(done / total, base, '打包 zip…');
         } catch (e) {
-            toast(`下载失败: ${p.filename || '?'}`, 'alert');
+            toast(`下载失败: ${dlName(p)}`, 'alert');
         }
     }
     const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
@@ -816,6 +816,7 @@ async function uploadFiles(files) {
         }
         const base = i / total;
         const span = 1 / total;
+        const upName = 'upload.' + pr.ext;   // 传图床用的临时文件名，只用来走 API、不入库
         setUploadProgress(base, file.name, '查重…');
         try {
             const dup = await checkHashExists(pr.sha);
@@ -826,7 +827,7 @@ async function uploadFiles(files) {
                 setUploadProgress(base + span, file.name, '已存在，跳过');
                 toast(`「${file.name}」已存在，跳过`, 'info');
             } else {
-                const parts = await uploadToBed(pr.blob, pr.name, p => {
+                const parts = await uploadToBed(pr.blob, upName, p => {
                     setUploadProgress(base + p * span, file.name, p < 1 ? '直链上传' : '获取直链');
                 });
                 setUploadProgress(base + span * 0.95, file.name, '获取尺寸…');
@@ -834,7 +835,7 @@ async function uploadFiles(files) {
                 const photo = {
                     id, url: fileUrl(id), parts, sha256: pr.sha,
                     width: 0, height: 0, createdAt: Date.now(),
-                    filename: pr.name, originalName: file.name
+                    ext: pr.ext
                 };
                 await loadDims(photo);
                 await Store.add(photo);
@@ -936,7 +937,7 @@ function updateLightbox() {
     img.style.transform = 'translate(0,0) scale(1)';
     img.style.opacity = 1;
     img.src = p.url;
-    img.alt = p.filename || 'photo';
+    img.alt = dlName(p);
     img.onerror = () => { };
     $('#lbCounter').textContent = `${state.currentIndex + 1} / ${getSorted().length}`;
     updateLightboxVotes(p);
@@ -1182,7 +1183,7 @@ function triggerGesture(dir) {
         setTimeout(() => { resetGestures(); nextPhoto(); }, 200);
     } else if (dir === 'down') {
         const gi = $('#giDown'); gi.style.opacity = 1; gi.style.transform = 'translateX(-50%) scale(1.2)';
-        downloadUrl(p.url + '?dl=1', p.filename || 'image.jpg');
+        downloadUrl(p.url + '?dl=1', dlName(p));
         toast('开始下载', 'download');
         setTimeout(() => { resetGestures(); }, 250);
     } else if (dir === 'up') {
@@ -1269,7 +1270,7 @@ $('#menuCopyImage').addEventListener('click', async () => {
 $('#menuShare').addEventListener('click', async () => {
     const p = curPhoto();
     if (navigator.share) {
-        try { await navigator.share({ title: p.filename || 'Infoto 照片', url: p.url }); } catch (e) { }
+        try { await navigator.share({ title: dlName(p), url: p.url }); } catch (e) { }
     } else {
         await copyText(p.url);
         toast('已复制链接，去分享吧', 'success');
