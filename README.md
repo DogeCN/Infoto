@@ -32,14 +32,28 @@ npx wrangler dev          # 本地跑 Worker + 静态资源（默认 http://loca
 | `CLOUDFLARE_API_TOKEN` | Cloudflare 账户 API Token（权限含 `Workers Scripts: Edit`、`Workers KV Storage: Edit`、`Account Settings: Read`） |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID（右栏 Account ID） |
 
-### 2. 触发部署
+### 2. 配置 KV（Repository Variables）
+
+在 **Settings → Secrets and variables → Actions → Variables** 添加任意数量以下变量，每个变量对应一套独立部署（Worker + 独立 KV）：
+
+| Variable 名 | Value（Cloudflare KV namespace id） | 生成 Worker 名 |
+|---|---|---|
+| `KV` | 主 KV id | `infoto` |
+| `KV_1` | 副本1 KV id | `infoto_1` |
+| `KV1` | 副本2 KV id | `infoto1` |
+| `KV_COPY` | 任意其它 id | `infoto_copy` |
+
+规则：Variable 名以 `KV` 开头（后面跟数字或非字母符号）即为合法项，每项独立部署一份。  
+KV namespace 需你**提前在 Cloudflare 创建好**，CI 只读取 Variables 中的 id 来绑定，**不会自动创建 / 回写**。
+
+> 若一个 `KV*` Variables 都不加，CI 会退化为仅用 `wrangler.toml` 中固化的配置部署主环境（`infoto`）。
+
+### 3. 触发部署
 
 - push 到 `main` 自动部署；或
 - Actions 页手动 **Run workflow**
 
-首次部署 CI 会自动创建 `PHOTOS` KV namespace 并把 id 回填到 `wrangler.toml`（已幂等，之后跳过）。
-
-### 3. 自定义域名（可选）
+### 4. 自定义域名（可选）
 
 ```toml
 # wrangler.toml 增加
@@ -64,9 +78,10 @@ Worker : /api/upload-proxy  → 透明转发 tc.0147258.xyz/upload
 
 ```
 Infoto/
-├── public/index.html        # 前端单文件
-├── src/worker.js            # Cloudflare Worker（静态+API+上传代理）
-├── wrangler.toml            # Worker 配置（KV 绑定）
-├── .github/workflows/deploy.yml  # CI/CD
+├── public/index.html              # 前端单文件
+├── src/worker.js                  # Cloudflare Worker（静态+API+上传代理）
+├── wrangler.toml                  # Worker 配置（KV 绑定，主环境默认值）
+├── scripts/deploy-variants.js     # 多副本部署脚本（CI 调用）
+├── .github/workflows/deploy.yml   # CI/CD
 └── package.json
 ```

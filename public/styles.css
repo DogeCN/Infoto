@@ -510,6 +510,7 @@ main {
   align-items: center;
   justify-content: center;
   cursor: default;
+  transition: bottom .3s ease;
 }
 
 .up-ring {
@@ -567,6 +568,10 @@ main {
   display: block;
   animation: tip-in .18s ease-out;
 }
+
+/* 多选底栏出现时，进度环与左下通知统一上浮，避免与底栏按钮重叠 */
+.multi-bar.show ~ .up-indicator { bottom: 4.75rem; }
+.multi-bar.show ~ .toasts { bottom: 4.75rem; }
 
 @keyframes tip-in {
   from {
@@ -1079,6 +1084,7 @@ video.ph-img {
   flex-direction: column;
   gap: .5rem;
   pointer-events: none;
+  transition: bottom .3s ease;
 }
 
 @media(min-width:768px) {

@@ -1,5 +1,5 @@
 /* Infoto Service Worker —— 离线壳 + 图片 Stale-While-Revalidate 缓存 */
-const V = 'infoto-v1';
+const V = 'infoto-v2';
 const CORE = ['./', './index.html', './app.js', './styles.css', './manifest.webmanifest'];
 
 self.addEventListener('install', e => {
@@ -20,17 +20,27 @@ self.addEventListener('fetch', event => {
         const cache = await caches.open(V);
         const cached = await cache.match(req);
         if (url.pathname.startsWith('/api/')) {
+            if (url.pathname.startsWith('/api/file/')) {
+                // 图片字节：缓存优先秒开，后台静默刷新
+                if (cached) {
+                    fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); }).catch(() => { });
+                    return cached;
+                }
+                try {
+                    const network = await fetch(req);
+                    if (network.ok) cache.put(req, network.clone());
+                    return network;
+                } catch (e) { return cached || Response.error(); }
+            }
+            // JSON API（含 /api/photos 等）：网络优先、绝不缓存，保证删除/更新后立即生效
             try {
-                const network = await fetch(req);
-                if (network.ok) cache.put(req, network.clone());
-                return network;
+                return await fetch(req);
             } catch (e) {
                 return cached || new Response('offline', { status: 503 });
             }
         }
-        if (req.destination === 'image' || url.pathname.startsWith('/api/file/')) {
+        if (req.destination === 'image') {
             if (cached) {
-                // 后台悄悄刷新
                 fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); }).catch(() => { });
                 return cached;
             }

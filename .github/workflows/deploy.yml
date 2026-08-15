@@ -1,7 +1,7 @@
 name: Deploy Infoto to Cloudflare Workers
 
 on:
-  workflow_dispatch:   # 手动触发（配好 Secrets 后手动跑）
+  workflow_dispatch:   # 手动触发（配好 Variables 后手动跑）
   push:
     branches: [main]   # push 到 main 自动部署
 
@@ -16,7 +16,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -28,18 +28,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # KV namespace PHOTOS 已创建，id 固化在 wrangler.toml，无需动态创建/回写
-      - name: Verify KV namespace configured
+      - name: Deploy variants defined in Repository Variables (KV, KV_1, KV1...)
+        env:
+          VARS_JSON: ${{ toJson(vars) }}
         run: |
-          if grep -q 'REPLACE_WITH_KV_ID' wrangler.toml; then
-            echo "::error::wrangler.toml 中 KV id 仍是占位符，请先在 Cloudflare 创建 KV namespace 并回填 id"
-            exit 1
-          fi
-          echo "KV namespace PHOTOS configured: $(grep -A1 'binding = "PHOTOS"' wrangler.toml | grep 'id =' | tr -d ' ')"
-
-      - name: Deploy to Cloudflare Workers
-        run: npx wrangler deploy
-
-      - name: Output worker URL
-        run: |
-          echo "✅ Deployed. 访问你的 Worker 域名，或按 wrangler.toml 中配置的自定义域名。"
+          set -e
+          node scripts/deploy-variants.js

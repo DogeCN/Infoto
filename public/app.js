@@ -62,6 +62,98 @@ const CONFIG = {
 };
 
 /* =========================================================
+   TaskWorker 适配层：跨页面保持上传/下载/删除推进
+   - 支持 SharedWorker 的浏览器：任务在 Worker 中执行，页面切换不中断
+   - 不支持的浏览器：降级为页面内执行（原有逻辑）
+   ========================================================= */
+const TaskWorker = (() => {
+    let sw = null;
+    let supported = typeof SharedWorker !== 'undefined';
+    let listeners = new Set();
+    let currentTasks = { upload: null, download: null, delete: null };
+    let reconnectTimer = null;
+
+    function _port() {
+        return sw ? sw.port : null;
+    }
+
+    function onMessage(fn) {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+    }
+
+    function _emit(msg) {
+        for (const fn of listeners) try { fn(msg); } catch (e) { console.warn('[TaskWorker] listener error', e); }
+    }
+
+    function connect() {
+        if (!supported) return false;
+        if (sw) return true;
+        try {
+            sw = new SharedWorker('./task.js', { name: 'infoto-task-worker' });
+            sw.port.onmessage = (ev) => {
+                const msg = ev.data || {};
+                if (msg.type === 'task-update' && msg.task) {
+                    currentTasks[msg.task.type] = msg.task;
+                }
+                if (msg.type === 'task-clear') {
+                    currentTasks[msg.taskType] = null;
+                }
+                if (msg.type === 'status' && msg.tasks) {
+                    currentTasks = { ...currentTasks, ...msg.tasks };
+                }
+                _emit(msg);
+            };
+            sw.port.start();
+            try { sw.port.postMessage({ type: 'get-status' }); } catch (_) { }
+            if (reconnectTimer) clearInterval(reconnectTimer);
+            reconnectTimer = setInterval(() => {
+                try { sw.port.postMessage({ type: 'ping' }); } catch (_) { sw = null; connect(); }
+            }, 15000);
+            return true;
+        } catch (e) {
+            console.warn('[TaskWorker] SharedWorker 不可用，降级为页面内执行', e);
+            supported = false;
+            sw = null;
+            return false;
+        }
+    }
+
+    function isSupported() { return supported; }
+    function getTask(type) { return currentTasks[type] || null; }
+    function hasAnyTask() { return !!(currentTasks.upload || currentTasks.download || currentTasks.delete); }
+
+    function startDelete(ids, apiBase) {
+        if (!connect()) return false;
+        try {
+            sw.port.postMessage({ type: 'start-delete', ids, apiBase });
+            return true;
+        } catch (e) { return false; }
+    }
+
+    function startDownload(list, apiBase) {
+        if (!connect()) return false;
+        try {
+            sw.port.postMessage({ type: 'start-download', list, apiBase });
+            return true;
+        } catch (e) { return false; }
+    }
+
+    function startUpload(files, apiBase) {
+        if (!connect()) return false;
+        try {
+            sw.port.postMessage({ type: 'start-upload', files, apiBase });
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // 页面加载时尝试连接
+    try { connect(); } catch (_) { }
+
+    return { connect, isSupported, onMessage, getTask, hasAnyTask, startDelete, startDownload, startUpload };
+})();
+
+/* =========================================================
    WebCodecs AV1 支持探测 & 文件类型白名单
    - AV1 WebCodecs 支持（Chrome/Edge 115+ PC, Android 14+）→ 允许 图片/GIF/视频，GIF/视频转 AV1 WebM
    - 不支持（Safari 全系、老 Chrome/Firefox）→ 仅允许 图片，文件选择器自动排除视频/GIF
@@ -1219,16 +1311,43 @@ $('#multiSelectBtn').addEventListener('click', () => {
 });
 $('#batchDeleteBtn').addEventListener('click', deleteSelected);
 let _deleting = false;
+let _deleteWorkerListener = null;
 async function deleteSelected() {
     if (!state.isAdmin) return;
-    if (_deleting) return;                       // 防止重复点击叠加删除
+    if (_deleting) return;
     const ids = [...state.selected];
     if (ids.length === 0) { toast('请先选择照片'); return; }
     if (!confirm(`确定删除选中的 ${ids.length} 张照片吗？此操作不可撤销。`)) return;
 
     _deleting = true;
-    _mode = 'delete';                            // 复用上传/下载的进度指示器
+    _mode = 'delete';
     resetProgressUI();
+
+    if (TaskWorker.isSupported() && TaskWorker.startDelete(ids, apiBase())) {
+        toast('删除已在后台启动（切换页面不中断）', 'info');
+        if (_deleteWorkerListener) _deleteWorkerListener();
+        _deleteWorkerListener = TaskWorker.onMessage((msg) => {
+            if (msg.type === 'task-update' && msg.task && msg.task.type === 'delete') {
+                const t = msg.task;
+                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+            }
+            if (msg.type === 'delete-complete') {
+                const s = msg.summary || {};
+                setProgress(1, null, s.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${s.done || 0} · 失败 ${s.failed || 0}` });
+                toast(s.failed === 0 ? `已删除 ${s.done || 0} 张照片` : `删除完成：${s.done || 0} 成功 / ${s.failed || 0} 失败`, s.failed === 0 ? 'success' : 'alert');
+                (async () => {
+                    await Store.load(true);
+                    exitMulti();
+                    renderMasonry();
+                })();
+                setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
+                if (_deleteWorkerListener) { _deleteWorkerListener(); _deleteWorkerListener = null; }
+                _deleting = false;
+            }
+        });
+        return;
+    }
+
     const total = ids.length;
     let done = 0, fail = 0;
 
@@ -1242,7 +1361,7 @@ async function deleteSelected() {
             total ? finished / total : 1,
             `${finished} / ${total} 张`,
             '删除中…',
-            { stat: `成功 ${done} · 失败 ${fail}` }
+            { stat: `成功 ${done} · 失败 ${fail}`, remaining: total - finished }
         );
     });
 
@@ -1388,18 +1507,41 @@ function formatSize(bytes) {
     return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
 }
 
+let _downloadWorkerListener = null;
 $('#batchDownloadBtn').addEventListener('click', async () => {
     const list = getSorted().filter(p => state.selected.has(p.id));
     if (list.length === 0) { toast('请先选择照片'); return; }
     if (list.length === 1) {
         return downloadUrl(list[0].url + '?dl=1', dlName(list[0]));
     }
+
+    _mode = 'download';
+    resetProgressUI();
+
+    if (TaskWorker.isSupported() && TaskWorker.startDownload(list, apiBase())) {
+        toast('下载已在后台启动（切换页面不中断）', 'info');
+        if (_downloadWorkerListener) _downloadWorkerListener();
+        _downloadWorkerListener = TaskWorker.onMessage((msg) => {
+            if (msg.type === 'task-update' && msg.task && msg.task.type === 'download') {
+                const t = msg.task;
+                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+            }
+            if (msg.type === 'download-complete' && msg.zipUrl) {
+                downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
+                setTimeout(() => URL.revokeObjectURL(msg.zipUrl), 60000);
+                setProgress(1, msg.fileName || 'download.zip', '完成');
+                toast('下载完成', 'success');
+                setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
+                if (_downloadWorkerListener) { _downloadWorkerListener(); _downloadWorkerListener = null; }
+            }
+        });
+        return;
+    }
+
     const JSZip = await getZipLib();
     const zip = new JSZip();
     const total = list.length;
 
-    _mode = 'download';
-    resetProgressUI();
     toast(`正在打包 ${total} 张图片…`, 'download');
 
     const perItemProgress = new Array(total).fill(0);
@@ -1426,7 +1568,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
         downloadedBytes = sumCur;
         estimatedTotalBytes = sumTot;
         const stat = `下载 ${finishedItems}/${total} 张`;
-        setProgress(overall, `${finishedItems} / ${total} 张`, zipProgress > 0 ? '打包 zip 中' : '下载中…', { stat });
+        setProgress(overall, `${finishedItems} / ${total} 张`, zipProgress > 0 ? '打包 zip 中' : '下载中…', { stat, remaining: total - finishedItems });
     };
 
     const dlTasks = list.map((p, i) => async () => {
@@ -1472,7 +1614,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
             Math.min(1, (1 - ZIP_WEIGHT) + zipProgress * ZIP_WEIGHT),
             `生成 zip ${meta.percent.toFixed(0)}%`,
             failedCount ? `打包中（${successCount}/${total} 张成功）` : '打包 zip…',
-            { stat }
+            { stat, remaining: total - successCount }
         );
     });
     zipProgress = 1;
@@ -1547,32 +1689,20 @@ function setProgress(p, file, step, extra) {
     $('#upRing').style.strokeDashoffset = String(94.25 * (1 - clampedP));
     const pctEl = $('#upPct');
     if (clampedP >= 1) {
-        // 完成：统一显示对勾图标
-        pctEl.innerHTML = ICONS['check'];
-        // 尺寸样式对齐
-        const svg = pctEl.querySelector('svg');
-        if (svg) {
-            svg.setAttribute('viewBox', '0 0 24 24');
-            svg.setAttribute('fill', 'none');
-            svg.setAttribute('stroke', 'currentColor');
-            svg.setAttribute('stroke-width', '3');
-            svg.setAttribute('stroke-linecap', 'round');
-            svg.setAttribute('stroke-linejoin', 'round');
-            svg.style.width = '18px';
-            svg.style.height = '18px';
-            svg.style.display = 'block';
-        }
-    } else if (_mode === 'upload') {
-        // 上传精细化：显示百分比，而不是剩余张数（更符合直觉）
-        pctEl.innerHTML = String(Math.round(clampedP * 100));
+        // 完成：统一显示对勾图标（完整 svg，避免裸 <polyline> 不渲染）
+        pctEl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;display:block"><polyline points="20 6 9 17 4 12"/></svg>';
+    } else if (extra && extra.remaining !== undefined && extra.remaining !== null) {
+        // 未完成：统一显示剩余数目（不再百分比），上传/下载/删除一致
+        pctEl.textContent = String(extra.remaining);
         pctEl.style.fontSize = '';
     } else {
-        pctEl.innerHTML = Math.round(clampedP * 100) + '%';
+        // 兜底：百分比
+        pctEl.textContent = Math.round(clampedP * 100) + '%';
         pctEl.style.fontSize = '';
     }
     if (file) $('#upTipFile').textContent = file;
     if (step) $('#upTipStep').textContent = step;
-    if (extra && extra.stat !== undefined) {
+    if (extra && extra.stat !== undefined && extra.stat !== null) {
         $('#upTipStatExtra')?.remove();
         const s = document.createElement('div');
         s.id = 'upTipStatExtra';
@@ -1623,7 +1753,7 @@ async function uploadFiles(files) {
         const phasePrep = PHASE_WEIGHT.PREP * (_prepBytes.done / Math.max(1, _prepBytes.total));
         const phaseUp = PHASE_WEIGHT.UPLOAD * (_uploadBytes.done / Math.max(1, _uploadBytes.total));
         const overall = Math.min(1, phasePrep + phaseUp);
-        setUploadProgress(overall, curFile, curStep, { stat: buildStat(extraLabel) });
+        setUploadProgress(overall, curFile, curStep, { stat: buildStat(extraLabel), remaining: total - done - skipped - failed });
     }
 
     // 阶段 1：预处理（压缩 + SHA）占总进度 20%
@@ -1776,7 +1906,7 @@ async function uploadFiles(files) {
     _uploadBytes.done = _uploadBytes.total;
 
     // 阶段 3：服务器同步对齐（占总进度最后 5%）
-    setUploadProgress(PHASE_WEIGHT.PREP + PHASE_WEIGHT.UPLOAD + 0.01, null, '同步服务器…', { stat: buildStat('最终同步') });
+    setUploadProgress(PHASE_WEIGHT.PREP + PHASE_WEIGHT.UPLOAD + 0.01, null, '同步服务器…', { stat: buildStat('最终同步'), remaining: Math.max(0, total - done - skipped - failed) });
     const syncPromise = (async () => {
         try {
             const beforeIds = new Set(Store.photos.map(p => p.id));
@@ -1803,7 +1933,7 @@ async function uploadFiles(files) {
     const finalAnim = setInterval(() => {
         const t = Math.min(1, (Date.now() - finalStart) / finalDur);
         const p = PHASE_WEIGHT.PREP + PHASE_WEIGHT.UPLOAD + 0.01 + t * 0.03;
-        setUploadProgress(p, null, '同步服务器…');
+        setUploadProgress(p, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed) });
     }, 30);
     await syncPromise;
     clearInterval(finalAnim);
@@ -2407,6 +2537,60 @@ async function downloadUrl(url, name) {
 /* =========================================================
    初始化
    ========================================================= */
+let _resumeWorkerListener = null;
+function resumeRunningTask() {
+    if (!TaskWorker.isSupported()) return;
+    const types = ['delete', 'download', 'upload'];
+    for (const ttype of types) {
+        const t = TaskWorker.getTask(ttype);
+        if (t && t.status === 'running') {
+            _mode = ttype;
+            resetProgressUI();
+            setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+            toast(`检测到后台进行中的${ttype === 'delete' ? '删除' : ttype === 'download' ? '下载' : '上传'}任务，已恢复进度显示`, 'info');
+            if (_resumeWorkerListener) _resumeWorkerListener();
+            _resumeWorkerListener = TaskWorker.onMessage((msg) => {
+                if (msg.type === 'task-update' && msg.task && msg.task.type === ttype) {
+                    const tt = msg.task;
+                    setProgress(tt.progress, tt.curFile, tt.step, { stat: tt.extraStat || '', remaining: tt.total - tt.done - tt.skipped - tt.failed });
+                }
+                if (msg.type === 'task-clear' && msg.taskType === ttype) {
+                    setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 2500);
+                    if (_resumeWorkerListener) { _resumeWorkerListener(); _resumeWorkerListener = null; }
+                }
+                if (msg.type === 'delete-complete') {
+                    (async () => {
+                        await Store.load(true);
+                        exitMulti();
+                        renderMasonry();
+                    })();
+                }
+                if (msg.type === 'download-complete' && msg.zipUrl) {
+                    downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
+                    setTimeout(() => URL.revokeObjectURL(msg.zipUrl), 60000);
+                    toast('下载完成', 'success');
+                }
+                if (msg.type === 'upload-complete') {
+                    (async () => {
+                        const beforeIds = new Set(Store.photos.map(p => p.id));
+                        const fresh = await Store.load(true);
+                        for (const p of fresh) {
+                            if (!beforeIds.has(p.id)) {
+                                const idx = getSorted().findIndex(x => x.id === p.id);
+                                if (idx >= 0 && idx < state.loadedCount && !document.querySelector(`.photo-card[data-id="${CSS.escape(p.id)}"]`)) {
+                                    prependCardToMasonry(p);
+                                }
+                            }
+                        }
+                        updateMasonryStatsOnly();
+                    })();
+                }
+            });
+            return;
+        }
+    }
+}
+
 (async function init() {
     try {
         const q = new URLSearchParams(location.search).get('api');
@@ -2418,4 +2602,15 @@ async function downloadUrl(url, name) {
     try { await Store.load(); } catch (_) { /* 空状态也能渲染 empty */ }
     try { renderMasonry(); } catch (e) { console.error('[infoto] renderMasonry', e); }
     try { installInfiniteScroll(); } catch (_) { }
+
+    // 页面加载 / 重新可见时：尝试恢复后台正在进行的任务进度
+    try { resumeRunningTask(); } catch (_) { }
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            try { TaskWorker.connect(); resumeRunningTask(); } catch (_) { }
+        }
+    });
+    window.addEventListener('pageshow', () => {
+        try { TaskWorker.connect(); resumeRunningTask(); } catch (_) { }
+    });
 })();

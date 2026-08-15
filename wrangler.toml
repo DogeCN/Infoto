@@ -7,7 +7,7 @@ compatibility_date = "2026-07-15"
 directory = "./public"
 binding = "ASSETS"
 
-# 照片元数据 KV（已在 Cloudflare 创建，id 为首次 CI 部署自动创建）
+# 照片元数据 KV
 [[kv_namespaces]]
-binding = "PHOTOS"
+binding = "Infoto"
 id = "e68a923a087b4f47b392c454c31a702a"

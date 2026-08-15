@@ -51,23 +51,23 @@ export default {
           if (!body.id) return json(cors, { error: 'missing id' }, 400);
           const clean = sanitizePhoto(body);
           // 保留服务端权威计数（图片 onload 回写尺寸时也走这里，不能清掉投票数）
-          const existing = await env.PHOTOS.get('p:' + clean.id, 'json');
+          const existing = await env.Infoto.get('p:' + clean.id, 'json');
           const merged = {
             ...clean,
             likes: existing && typeof existing.likes === 'number' ? existing.likes : 0,
             dislikes: existing && typeof existing.dislikes === 'number' ? existing.dislikes : 0,
           };
-          await env.PHOTOS.put('p:' + clean.id, JSON.stringify(merged));
+          await env.Infoto.put('p:' + clean.id, JSON.stringify(merged));
           // 更新有序 id 列表（幂等，不重复插入）
-          const ids = await env.PHOTOS.get('photo_ids', 'json');
+          const ids = await env.Infoto.get('photo_ids', 'json');
           const idList = Array.isArray(ids) ? ids : [];
           if (!idList.includes(clean.id)) {
             idList.unshift(clean.id);
-            await env.PHOTOS.put('photo_ids', JSON.stringify(idList));
+            await env.Infoto.put('photo_ids', JSON.stringify(idList));
           }
           // 建立 sha 反向索引（查重 O(1)）
           if (clean.sha256 && /^[0-9a-f]{64}$/.test(clean.sha256)) {
-            await env.PHOTOS.put('sha:' + clean.sha256, clean.id);
+            await env.Infoto.put('sha:' + clean.sha256, clean.id);
           }
           return json(cors, { ok: true, count: idList.length });
         } catch (e) {
@@ -97,7 +97,7 @@ export default {
         if (!photo) return json(cors, { error: 'photo not found' }, 404);
 
         const vkey = 'votes:' + id;
-        const raw = await env.PHOTOS.get(vkey, 'json');
+        const raw = await env.Infoto.get(vkey, 'json');
         const votes = raw && typeof raw === 'object'
           ? { likes: Array.isArray(raw.likes) ? raw.likes : [], dislikes: Array.isArray(raw.dislikes) ? raw.dislikes : [] }
           : { likes: [], dislikes: [] };
@@ -111,12 +111,12 @@ export default {
           votes.likes = votes.likes.filter(x => x !== ip);
           if (!votes.dislikes.includes(ip)) votes.dislikes.push(ip);
         }
-        await env.PHOTOS.put(vkey, JSON.stringify(votes));
+        await env.Infoto.put(vkey, JSON.stringify(votes));
         const likes = votes.likes.length;
         const dislikes = votes.dislikes.length;
         // 同步写回照片对象，使 GET /api/photos 不再需要 N+1 读 votes
         const cur = (await getPhoto(env, id)) || { id };
-        await env.PHOTOS.put('p:' + id, JSON.stringify({ ...cur, likes, dislikes }));
+        await env.Infoto.put('p:' + id, JSON.stringify({ ...cur, likes, dislikes }));
         return json(cors, { ok: true, delta, likes, dislikes });
       } catch (e) {
         return json(cors, { error: 'bad json' }, 400);
@@ -129,9 +129,9 @@ export default {
       const sha = path.slice('/api/photos/hash/'.length).toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(sha)) return json(cors, { error: 'bad hash' }, 400);
       // O(1)：先查反向索引 → 再取照片对象
-      const pid = await env.PHOTOS.get('sha:' + sha);
+      const pid = await env.Infoto.get('sha:' + sha);
       if (!pid) return json(cors, { exists: false });
-      const photo = await env.PHOTOS.get('p:' + pid, 'json');
+      const photo = await env.Infoto.get('p:' + pid, 'json');
       return json(cors, photo ? { exists: true, photo } : { exists: false });
     }
 
@@ -154,7 +154,7 @@ export default {
       if (!hash) {
         // 设置模式：优先用环境变量预设，否则以本次提交为准
         hash = env.ADMIN_PASSWORD ? await sha256Hex(env.ADMIN_PASSWORD) : await sha256Hex(pw);
-        await env.PHOTOS.put('admin_pw', hash);
+        await env.Infoto.put('admin_pw', hash);
       }
       if (await sha256Hex(pw) !== hash) return json(cors, { error: 'wrong password' }, 401);
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(hash, cors) });
@@ -167,7 +167,7 @@ export default {
       const pw = body && body.password;
       if (!pw || String(pw).length < 4) return json(cors, { error: 'password too short' }, 400);
       const hash = await sha256Hex(pw);
-      await env.PHOTOS.put('admin_pw', hash);
+      await env.Infoto.put('admin_pw', hash);
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(hash, cors) });
     }
 
@@ -183,13 +183,13 @@ export default {
       if (!id || id.includes('/')) return json(cors, { error: 'invalid id' }, 400);
       const p = await getPhoto(env, id);
       if (p) {
-        if (p.sha256) await env.PHOTOS.delete('sha:' + p.sha256);
-        await env.PHOTOS.delete('p:' + id);
+        if (p.sha256) await env.Infoto.delete('sha:' + p.sha256);
+        await env.Infoto.delete('p:' + id);
       }
-      const ids = await env.PHOTOS.get('photo_ids', 'json');
+      const ids = await env.Infoto.get('photo_ids', 'json');
       const list = Array.isArray(ids) ? ids : [];
       const idx = list.indexOf(id);
-      if (idx >= 0) { list.splice(idx, 1); await env.PHOTOS.put('photo_ids', JSON.stringify(list)); }
+      if (idx >= 0) { list.splice(idx, 1); await env.Infoto.put('photo_ids', JSON.stringify(list)); }
       return json(cors, { ok: true });
     }
 
@@ -343,7 +343,7 @@ function parseCookies(req) {
   return out;
 }
 async function getAdminHash(env) {
-  return (await env.PHOTOS.get('admin_pw')) || '';
+  return (await env.Infoto.get('admin_pw')) || '';
 }
 async function isAdmin(req, env) {
   const cookie = parseCookies(req)['admin_session'];
@@ -360,14 +360,14 @@ function sessionCookieHeaders(value, cors) {
 // ===== KV 存储辅助 =====
 
 async function getPhoto(env, id) {
-  return await env.PHOTOS.get('p:' + id, 'json');
+  return await env.Infoto.get('p:' + id, 'json');
 }
 
 async function getAllPhotos(env) {
-  const ids = await env.PHOTOS.get('photo_ids', 'json');
+  const ids = await env.Infoto.get('photo_ids', 'json');
   if (!Array.isArray(ids) || ids.length === 0) return [];
   const photos = await Promise.all(ids.map(async id => {
-    const p = await env.PHOTOS.get('p:' + id, 'json');
+    const p = await env.Infoto.get('p:' + id, 'json');
     return p || null;
   }));
   return photos.filter(Boolean);
