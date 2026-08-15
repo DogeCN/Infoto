@@ -1181,7 +1181,7 @@ function enterMulti(initialId) {
     $('#multiSelectBtn').querySelector('svg').setAttribute('data-i', 'x');
     $('#uploadBtn').classList.add('hidden');
     $('#multiBar').classList.add('show');
-    if (state.isAdmin) $('#batchDeleteBtn').classList.remove('hidden');
+    $('#batchDeleteBtn').classList.toggle('hidden', !state.isAdmin);
     renderIcons();
     applySelectUI();
     updateCount();
@@ -1375,7 +1375,6 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const JSZip = await getZipLib();
     const zip = new JSZip();
     const total = list.length;
-    const runId = Date.now().toString(36);
 
     _mode = 'download';
     resetProgressUI();
@@ -1404,7 +1403,6 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
         const overall = Math.min(1, fetchPart + zipPart);
         downloadedBytes = sumCur;
         estimatedTotalBytes = sumTot;
-        // 以数量为主体（与上传 UI 统一），字节信息仅在打包阶段作为辅助
         const stat = `下载 ${finishedItems}/${total} 张`;
         setProgress(overall, `${finishedItems} / ${total} 张`, zipProgress > 0 ? '打包 zip 中' : '下载中…', { stat });
     };
@@ -1423,8 +1421,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
             );
             perItemProgress[i] = perItemTotal[i] = t || blob.size || 1;
             perItemDone[i] = true;
-            const idx = String(i + 1).padStart(3, '0');
-            zip.file(`${idx}_${base}`, blob, { binary: true });
+            zip.file(base, blob, { binary: true });
             recomputeOverall();
             return { ok: true };
         } catch (e) {
@@ -1444,12 +1441,9 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
         return;
     }
 
-    let lastZipPct = 0;
     const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
         zipProgress = meta.percent / 100;
-        lastZipPct = meta.percent;
         recomputeOverall();
-        // stat 以数量为主体：成功 X 张 / 共 Y 张 / 失败 Z（如果有）
         const failedCount = total - successCount;
         const stat = `${successCount}/${total} 张成功${failedCount ? ` · ${failedCount} 张跳过` : ''} · zip ${meta.percent.toFixed(0)}%`;
         setProgress(
@@ -1463,7 +1457,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     recomputeOverall();
 
     const url = URL.createObjectURL(zipBlob);
-    const finalName = `infoto_${successCount}张_${runId}.zip`;
+    const finalName = 'download.zip';
     downloadUrl(url, finalName);
     setTimeout(() => URL.revokeObjectURL(url), 60000);
 
@@ -1993,7 +1987,7 @@ function prevPhoto() { state.currentIndex = (state.currentIndex - 1 + getSorted(
 function nextPhoto() { state.currentIndex = (state.currentIndex + 1) % getSorted().length; updateLightbox(); }
 
 $('#lbCloseBtn').addEventListener('click', closeLightbox);
-$('#lightbox').addEventListener('click', e => { if (e.target.id === 'lightbox') closeLightbox(); });
+$('#lightbox').addEventListener('click', e => { if (state.menuOpen) return; if (e.target.id === 'lightbox') closeLightbox(); });
 
 document.addEventListener('keydown', e => {
     if (!state.lightboxOpen) return;
@@ -2123,7 +2117,7 @@ function onGs(e) {
     resetGestures();
 }
 function onGm(e) {
-    if (!state.dragging) return;
+    if (!state.dragging || state.menuOpen) return;
     // 捏合缩放 + 双指旋转（与缩放同 anchor，归一化角度差避免 179↔-179 跨零跳变）
     if (e.touches && e.touches.length === 2) {
         if (!pinch) startPinch(e);
@@ -2184,7 +2178,7 @@ function onGm(e) {
     if (e.cancelable) e.preventDefault();
 }
 function onGe(e) {
-    if (!state.dragging) return;
+    if (!state.dragging || state.menuOpen) return;
     // 捏合结束：吸附到最近的 90°（iOS / Google Photos 主流行为），动画结束后再把 transform-origin 切回中心
     if (pinch) {
         const w = lbWrap();
@@ -2292,7 +2286,7 @@ function triggerGesture(dir) {
     }
 }
 function onGeMouse() {
-    if (!state.dragging) return;
+    if (!state.dragging || state.menuOpen) return;
     state.dragging = false;
     const dx = state.dragCurrent.x - state.dragStart.x;
     const dy = state.dragCurrent.y - state.dragStart.y;
@@ -2369,13 +2363,23 @@ $('#menuGoogle').addEventListener('click', () => {
     closeMenu();
 });
 
-function downloadUrl(url, name) {
+async function downloadUrl(url, name) {
     const a = el('a');
-    a.href = url; a.download = name || 'image.jpg';
-    // 注意：不要加 target="_blank"。同源下载 download 属性会生效触发浏览器另存；
-    // 跨域（如 CDN）download 属性失效时由后端 ?dl=1 的 Content-Disposition 负责，
-    // 加了 target="_blank" 会额外开一个空白标签页 / 直接预览，用户感知为"下载失败且跳新标签"。
-    document.body.appendChild(a); a.click(); a.remove();
+    a.download = name || 'download';
+    try {
+        // 同源 fetch Blob 再触发下载：彻底避免 Safari / SW 拦截下"下载 + 新标签预览"同时发生，
+        // 也保证文件名不被后端 Content-Disposition 覆盖（download 属性在 blob: URL 上 100% 生效）。
+        const r = await fetch(url, { cache: 'force-cache' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const blob = await r.blob();
+        a.href = URL.createObjectURL(blob);
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    } catch (_) {
+        // 兜底：fetch 失败（如 CORS/离线）时回退为老的 <a href> 方式
+        a.href = url;
+        document.body.appendChild(a); a.click(); a.remove();
+    }
 }
 
 /* =========================================================
