@@ -60,12 +60,13 @@ async function sha256Hex(buf) {
 }
 
 /* ---- 无损压缩（JXL，libjxl WASM；压缩率实测优于 WebP，effort=7 最快） ---- */
-let jxlEncode = null;
-async function loadJxlEncode() {
-    if (jxlEncode) return jxlEncode;
-    const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/jxl@1.2.0/+esm');
-    jxlEncode = mod.encode;
-    return jxlEncode;
+// 编码是 CPU 密集的 WASM 运算，放在 Web Worker 里跑，避免阻塞主线程导致上传时界面卡顿
+let jxlWorker = null;
+function getJxlWorker() {
+    if (!jxlWorker) {
+        jxlWorker = new Worker('/jxl-worker.js', { type: 'module' });
+    }
+    return jxlWorker;
 }
 
 async function fileToImageData(file) {
@@ -80,9 +81,27 @@ async function fileToImageData(file) {
 
 async function compressLossless(file) {
     try {
-        const encode = await loadJxlEncode();
         const data = await fileToImageData(file);
-        const buf = await encode(data, { lossless: true, effort: 7 });
+        const worker = getJxlWorker();
+        const buf = await new Promise((resolve, reject) => {
+            const id = Math.random().toString(36).slice(2);
+            const onMsg = (e) => {
+                if (!e.data || e.data.id !== id) return;
+                worker.removeEventListener('message', onMsg);
+                if (e.data.ok) resolve(e.data.buf);
+                else reject(new Error(e.data.error || 'jxl encode failed'));
+            };
+            worker.addEventListener('message', onMsg);
+            worker.addEventListener('error', (ev) => {
+                worker.removeEventListener('message', onMsg);
+                reject(new Error(ev.message || 'jxl worker error'));
+            }, { once: true });
+            // 把像素缓冲转移（零拷贝）给 Worker 编码，避免大图在主线程额外复制
+            worker.postMessage(
+                { id, width: data.width, height: data.height, buffer: data.data.buffer },
+                [data.data.buffer]
+            );
+        });
         return new Blob([buf], { type: 'image/jxl' });
     } catch (e) {
         console.warn('[infoto] JXL 压缩失败，使用原文件', e);
@@ -114,6 +133,9 @@ function uploadViaXhr(url, fd, headers, onProgress) {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', url, true);
         for (const k in headers) xhr.setRequestHeader(k, headers[k]);
+        // 防止网络停滞导致永久挂起：超时即失败，让上层弹出错误提示而不是静默卡死
+        xhr.timeout = 30000;
+        xhr.ontimeout = () => reject(new Error('上传超时（30s）'));
         xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
         xhr.onload = () => { xhr.status === 200 ? resolve(xhr.responseText) : reject(new Error('HTTP ' + xhr.status)); };
         xhr.onerror = () => reject(new Error('网络错误'));

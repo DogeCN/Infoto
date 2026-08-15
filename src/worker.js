@@ -18,7 +18,7 @@ export default {
     const cors = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, X-File-Sha256',
       'Access-Control-Max-Age': '86400',
     };
     // 图片资源需要 CORS 放行（前端跨域取尺寸/复制图片），由 /api/file 单独追加
@@ -108,6 +108,9 @@ export default {
       const cl = Number(request.headers.get('Content-Length') || 0);
       if (cl > 25 * 1024 * 1024) return json(cors, { error: 'payload too large' }, 413);
       const sha = request.headers.get('X-File-Sha256') || '';
+      // 兜底超时：tc 不可达/过慢时不能让请求永久挂起（否则浏览器侧也无超时、静默卡死）
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 30000);
       try {
         const token = await makeTcToken(env.JWT_SECRET || TC_SECRET, sha);
         const headers = new Headers();
@@ -119,12 +122,16 @@ export default {
           headers,
           body: request.body,
           duplex: 'half',
+          signal: ac.signal,
         });
+        clearTimeout(timer);
         const outHeaders = new Headers(cors);
         outHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json');
         return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
       } catch (e) {
-        return json(cors, { error: 'proxy upstream error: ' + e.message }, 502);
+        clearTimeout(timer);
+        const timedOut = ac.signal.aborted;
+        return json(cors, { error: timedOut ? 'proxy upstream timeout' : 'proxy upstream error: ' + e.message }, timedOut ? 504 : 502);
       }
     }
 
