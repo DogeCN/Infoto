@@ -226,24 +226,67 @@ const Store = {
         await this.save(photo);
         return photo;
     },
-    async setLike(id, delta) {
+    /**
+     * 投票：先本地乐观更新，再异步请求服务器（不阻塞浏览翻页）
+     * @returns {Promise<{ok:boolean, already:boolean, delta:number}>} 最终服务器结果
+     */
+    setLike(id, delta) {
         const p = this.photos.find(x => x.id === id);
-        if (!p) return { ok: false };
-        try {
-            const r = await fetch(apiBase() + '/api/vote', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id, delta })
-            });
-            const j = await r.json();
-            if (j.ok) {
-                p.likes = j.likes; p.dislikes = j.dislikes;
-                this.myVotes[id] = j.delta || delta;
-                return { ok: true, delta: j.delta || delta };
-            }
-        } catch (e) {
-            console.warn('[infoto] 投票接口失败', e);
+        if (!p) return Promise.resolve({ ok: false, already: false, delta: 0 });
+        const prevLikes = p.likes || 0;
+        const prevDislikes = p.dislikes || 0;
+        const prevMy = this.myVotes[id] || 0;
+        // 1) 本地乐观更新（立即生效，让 UI 无感知）
+        if (prevMy !== delta) {
+            if (prevMy === 1) p.likes = Math.max(0, prevLikes - 1);
+            else if (prevMy === -1) p.dislikes = Math.max(0, prevDislikes - 1);
+            if (delta === 1) p.likes = (p.likes || 0) + 1;
+            else if (delta === -1) p.dislikes = (p.dislikes || 0) + 1;
+            this.myVotes[id] = delta;
         }
-        return { ok: false };
+        // 2) 异步走服务器，不阻塞 UI；最后对齐真实值
+        const rollback = () => {
+            if (!p) return;
+            p.likes = prevLikes; p.dislikes = prevDislikes;
+            if (prevMy) this.myVotes[id] = prevMy; else delete this.myVotes[id];
+        };
+        return (async () => {
+            try {
+                const r = await fetch(apiBase() + '/api/vote', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id, delta })
+                });
+                if (!r.ok) throw new Error('http ' + r.status);
+                const j = await r.json();
+                if (j.ok) {
+                    // 服务器成功：以服务器返回的精确长度为准（防并发偏差）
+                    if (p) { p.likes = j.likes; p.dislikes = j.dislikes; }
+                    this.myVotes[id] = delta;
+                    return { ok: true, already: false, delta };
+                }
+                if (j.already) {
+                    // 服务器拒绝：重复投票（这个 IP 之前已经投过票，方向=j.delta）
+                    // 不 rollback（服务器没写入也没修改计数，回滚会把本地之前的正确状态清掉）
+                    const serverDelta = typeof j.delta === 'number' ? j.delta : delta;
+                    this.myVotes[id] = serverDelta;
+                    // 如果服务器说的"历史方向"和我们本地乐观更新的方向不一致，修正本地数字
+                    if (p && serverDelta !== delta) {
+                        // 撤回刚才本地乐观改的数字（服务器拒绝写入），但保持原来可能的历史投票对应的数字
+                        const srvLikes = (p.likes || 0) - (delta === 1 ? 1 : 0) + (serverDelta === 1 ? 1 : 0);
+                        const srvDislikes = (p.dislikes || 0) - (delta === -1 ? 1 : 0) + (serverDelta === -1 ? 1 : 0);
+                        p.likes = Math.max(0, srvLikes);
+                        p.dislikes = Math.max(0, srvDislikes);
+                    }
+                    return { ok: false, already: true, delta: serverDelta };
+                }
+                rollback();
+                return { ok: false, already: false, delta: 0 };
+            } catch (e) {
+                console.warn('[infoto] 投票接口失败', e);
+                rollback();
+                return { ok: false, already: false, delta: 0 };
+            }
+        })();
     }
 };
 
@@ -584,74 +627,82 @@ async function uploadFiles(files) {
     _uploadDoneLike = 0;
     for (let i = 0; i < total; i++) {
         const file = files[i];
+        let finished = false;
         if (file.type === 'image/svg+xml') {
             skipped++;
             _uploadDoneLike = i + 1;
             $('#upSkipped').textContent = String(skipped);
             toast(`「${file.name}」SVG 暂不支持`, 'alert');
-            continue;
-        }
-        // 整体进度 = 已处理 / 总数（单文件内部进度细化为当前文件的进度）
-        const base = i / total;
-        const span = 1 / total;
-        // 先压缩为 WebP：只要比原图小就采用，再进入大小分流（≤600KB 直传 cdeaa，否则分片 tc）
-        const canCompress = file.type.startsWith('image/') && !/gif|svg|webp/.test(file.type);
-        let stepMsg = canCompress ? 'WebP 压缩…' : '直传原图';
-        setUploadProgress(base, file.name, stepMsg);
-        try {
-            let upBlob = file;
-            let upName = file.name;
-            if (canCompress) {
-                const webp = await compressToWebp(file, WEBP_QUALITY);
-                if (webp && webp.size < file.size) {
-                    upBlob = webp;
-                    upName = file.name.replace(/\.[^.]+$/, '') + '.webp';
-                }
-            }
-            const sha = await sha256Hex(await upBlob.arrayBuffer());
-            stepMsg = '查重…';
+            finished = true;
+        } else {
+            const base = i / total;
+            const span = 1 / total;
+            const canCompress = file.type.startsWith('image/') && !/gif|svg|webp/.test(file.type);
+            let stepMsg = canCompress ? 'WebP 压缩…' : '直传原图';
             setUploadProgress(base, file.name, stepMsg);
-            const dup = await checkHashExists(sha);
-            if (dup) {
-                skipped++;
+            try {
+                let upBlob = file;
+                let upName = file.name;
+                if (canCompress) {
+                    const webp = await compressToWebp(file, WEBP_QUALITY);
+                    if (webp && webp.size < file.size) {
+                        upBlob = webp;
+                        upName = file.name.replace(/\.[^.]+$/, '') + '.webp';
+                    }
+                }
+                const sha = await sha256Hex(await upBlob.arrayBuffer());
+                stepMsg = '查重…';
+                setUploadProgress(base, file.name, stepMsg);
+                const dup = await checkHashExists(sha);
+                if (dup) {
+                    skipped++;
+                    _uploadDoneLike = i + 1;
+                    $('#upSkipped').textContent = String(skipped);
+                    setUploadProgress(base + span, file.name, '已存在，跳过');
+                    toast(`「${file.name}」已存在，跳过`, 'info');
+                } else {
+                    const parts = await uploadToBed(upBlob, upName, p => {
+                        setUploadProgress(base + p * span, file.name, p < 1 ? '直链上传' : '获取直链');
+                    });
+                    stepMsg = '获取尺寸…';
+                    setUploadProgress(base + span * 0.95, file.name, stepMsg);
+                    const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+                    const photo = {
+                        id, url: fileUrl(id), parts, sha256: sha,
+                        width: 0, height: 0, createdAt: Date.now(),
+                        filename: upName, originalName: file.name
+                    };
+                    await loadDims(photo);
+                    await Store.add(photo);
+                    done++;
+                    _uploadDoneLike = i + 1;
+                    $('#upDone').textContent = String(done);
+                }
+                finished = true;
+            } catch (err) {
+                console.error('upload failed:', file.name, err);
+                failed++;
                 _uploadDoneLike = i + 1;
-                $('#upSkipped').textContent = String(skipped);
-                setUploadProgress(base + span, file.name, '已存在，跳过');
-                toast(`「${file.name}」已存在，跳过`, 'info');
-                continue;
+                $('#upFailed').textContent = String(failed);
+                toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
+                finished = true;
             }
-            const parts = await uploadToBed(upBlob, upName, p => {
-                setUploadProgress(base + p * span, file.name, p < 1 ? '直链上传' : '获取直链');
-            });
-            stepMsg = '获取尺寸…';
-            setUploadProgress(base + span * 0.95, file.name, stepMsg);
-            const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-            const photo = {
-                id, url: fileUrl(id), parts, sha256: sha,
-                width: 0, height: 0, createdAt: Date.now(),
-                filename: upName, originalName: file.name
-            };
-            await loadDims(photo);
-            await Store.add(photo);
-            done++;
-            _uploadDoneLike = i + 1;
-            $('#upDone').textContent = String(done);
-        } catch (err) {
-            console.error('upload failed:', file.name, err);
-            failed++;
-            _uploadDoneLike = i + 1;
-            $('#upFailed').textContent = String(failed);
-            toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
+        }
+        if (finished) {
+            try { await Store.load(); } catch (_) { }
+            renderMasonry();
+            if (state.lightboxOpen) { updateLightbox(); renderDots(); }
         }
     }
     setUploadProgress(1, null, '完成');
+    try { await Store.load(); } catch (_) { }
     renderMasonry();
+    if (state.lightboxOpen) { updateLightbox(); renderDots(); }
     const parts = [];
     if (done > 0) parts.push(`成功 ${done}`);
     if (skipped > 0) parts.push(`跳过重复 ${skipped}`);
     if (failed > 0) parts.push(`失败 ${failed}`);
     if (parts.length) toast(`上传完成：${parts.join('，')}`, done > 0 || skipped > 0 ? 'success' : 'alert');
-    // 完成后短暂展示结果，再隐藏
     setTimeout(resetUploadUI, 2500);
 }
 
@@ -806,26 +857,43 @@ function onGm(e) {
     }
     if (e.cancelable) e.preventDefault();
 }
-async function triggerGesture(dir) {
+function triggerGesture(dir) {
     if (!state.lightboxOpen || state.menuOpen) return;
     const p = curPhoto();
     if (!p) return;
     const img = $('#lbImg');
     img.style.transition = 'transform .2s ease';
     img.style.transform = 'translate(0,0)';
-    let updated = false;
-    if (dir === 'left') {
-        const gi = $('#giLeft'); gi.style.opacity = 1; gi.style.transform = 'translateY(-50%) scale(1.2)';
-        const r = await Store.setLike(p.id, +1);
-        toast(r.ok ? '已标记为喜欢' : '标记失败，请重试', r.ok ? 'heart' : 'alert');
-        updated = true;
-        setTimeout(() => { resetGestures(); updateLightboxVotes(p); renderMasonry(); nextPhoto(); }, 200);
-    } else if (dir === 'right') {
-        const gi = $('#giRight'); gi.style.opacity = 1; gi.style.transform = 'translateY(-50%) scale(1.2)';
-        const r = await Store.setLike(p.id, -1);
-        toast(r.ok ? '已标记为不喜欢' : '标记失败，请重试', r.ok ? 'alert' : 'alert');
-        updated = true;
-        setTimeout(() => { resetGestures(); updateLightboxVotes(p); renderMasonry(); nextPhoto(); }, 200);
+
+    if (dir === 'left' || dir === 'right') {
+        const delta = dir === 'left' ? +1 : -1;
+        const giId = dir === 'left' ? '#giLeft' : '#giRight';
+        const gi = $(giId); gi.style.opacity = 1; gi.style.transform = 'translateY(-50%) scale(1.2)';
+
+        // 先读本地是否已投过，再进行乐观更新（避免本地判断被新状态影响）
+        const alreadyLocal = Store.getMyVote(p.id) === delta;
+        const dirLabel = delta === 1 ? '喜欢' : '不喜欢';
+
+        // 本地乐观更新后立刻刷新 UI（不阻塞，不等服务器）
+        const rPromise = Store.setLike(p.id, delta);
+
+        toast(alreadyLocal ? `你已标记过${dirLabel}这张` : `已标记为${dirLabel}`,
+            delta === 1 ? 'heart' : 'alert');
+
+        updateLightboxVotes(p);
+        renderMasonry();
+
+        // 异步收尾：服务器回来后 → 刷新全局数据（更新其他图的最新投票、新增图等）
+        rPromise.then(() => {
+            try { return Store.load(); } catch (_) { return Store.photos; }
+        }).then(() => {
+            const cp = curPhoto();
+            if (cp) updateLightboxVotes(cp);
+            renderMasonry();
+            if (state.lightboxOpen) renderDots();
+        }).catch(() => { });
+
+        setTimeout(() => { resetGestures(); nextPhoto(); }, 200);
     } else if (dir === 'down') {
         const gi = $('#giDown'); gi.style.opacity = 1; gi.style.transform = 'translateX(-50%) scale(1.2)';
         downloadUrl(p.url + '?dl=1', p.filename || 'image.jpg');
