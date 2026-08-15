@@ -585,12 +585,12 @@ function uploadViaXhr(url, fd, headers, onProgress){
   });
 }
 
-async function uploadToBed(file, onProgress){
+async function uploadToBed(file, onProgress, precomputedSha){
   onProgress(0.05);
 
   // 小文件主路径
   if(!CONFIG.CDEAA_MIMES.includes(file.type) && file.size <= CONFIG.SIZE_MB_THRESHOLD*1024*1024){
-    const sha = await sha256Hex(await file.arrayBuffer());
+    const sha = precomputedSha || await sha256Hex(await file.arrayBuffer());
     const token = await makeJwt(sha);
     const fd = new FormData();
     fd.append('file', file);
@@ -994,19 +994,28 @@ async function uploadFiles(files){
   const fname = $('#uploadFileName');
   const step = $('#uploadStep');
 
-  let done=0, failed=0;
+  let done=0, failed=0, skipped=0;
   for(const file of files){
     fname.textContent = file.name;
     step.textContent = '计算哈希…';
     bar.style.width='0%'; pct.textContent='0%';
     try{
+      // 先算 SHA-256，交给服务端查重：已存在则跳过上传
+      const sha = await sha256Hex(await file.arrayBuffer());
+      step.textContent = '查重…';
+      const dup = await checkHashExists(sha);
+      if(dup){
+        skipped++;
+        toast(`「${file.name}」已存在，跳过`, 'info');
+        continue;
+      }
       const url = await uploadToBed(file, p=>{
         bar.style.width = Math.round(p*100)+'%';
         pct.textContent = Math.round(p*100)+'%';
         step.textContent = p<1 ? '直链上传' : '获取直链';
-      });
+      }, sha);
       step.textContent = '获取尺寸…';
-      const photo = {id:null, url, width:0, height:0, createdAt:Date.now(), likes:0, dislikes:0, filename:file.name};
+      const photo = {id:null, url, sha256: sha, width:0, height:0, createdAt:Date.now(), likes:0, dislikes:0, filename:file.name};
       await loadDims(photo);
       await Store.add(photo);
       done++;
@@ -1018,7 +1027,25 @@ async function uploadFiles(files){
   }
   overlay.classList.remove('show');
   renderMasonry();
-  if(done>0) toast(`上传成功 ${done} 张`, 'success');
+  const parts=[];
+  if(done>0) parts.push(`成功 ${done}`);
+  if(skipped>0) parts.push(`跳过重复 ${skipped}`);
+  if(failed>0) parts.push(`失败 ${failed}`);
+  if(parts.length) toast(`上传完成：${parts.join('，')}`, done>0||skipped>0?'success':'alert');
+}
+
+/* 哈希查重：优先问服务端，服务端不可达时用本地列表兜底 */
+async function checkHashExists(sha){
+  try{
+    const r = await fetch(apiBase() + '/api/photos/hash/' + sha, {cache:'no-store'});
+    if(r.ok){
+      const j = await r.json();
+      if(j && j.exists) return j.photo || true;
+    }
+  }catch(e){ /* 服务端不可达，走本地 */ }
+  // 本地兜底：localStorage 模式下也能去重
+  const local = Store.photos.find(p=>p.sha256===sha);
+  return local ? (local.url || true) : false;
 }
 
 /* 跨域取图片尺寸 */

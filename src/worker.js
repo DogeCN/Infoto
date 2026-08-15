@@ -42,6 +42,17 @@ export default {
       return json(cors, { error: 'method not allowed' }, 405);
     }
 
+    /* ---------- 哈希查重：GET /api/photos/hash/<sha256> ---------- */
+    if (path.startsWith('/api/photos/hash/')) {
+      if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
+      const sha = path.slice('/api/photos/hash/'.length).toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(sha)) return json(cors, { error: 'bad hash' }, 400);
+      const data = await env.PHOTOS.get('photos', 'json');
+      const arr = Array.isArray(data) ? data : [];
+      const hit = arr.find(p => p.sha256 === sha);
+      return json(cors, hit ? { exists: true, photo: hit } : { exists: false });
+    }
+
     /* ---------- 上传透明代理 ---------- */
     if (path === '/api/upload-proxy' && request.method === 'POST') {
       const token = request.headers.get('X-Auth-Token') || '';
