@@ -255,7 +255,7 @@ class UploadTask {
         this._setOverall(files.length > 1 ? `${files.length} 个文件` : files[0].name, '预处理中…');
 
         const prepared = [];
-        // 简化：不做 AV1 转码（那需要大量 DOM/Video API，留在主页面执行预处理然后交给 Worker 上传）
+        // 简化：不做 VP9 转码（那需要大量 DOM/Video API，留在主页面执行预处理然后交给 Worker 上传）
         // 这里处理的是页面已预处理好的 blob，直接查重 + 上传
         for (let i = 0; i < total; i++) {
             const file = files[i];

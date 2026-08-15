@@ -2,12 +2,6 @@ name = "infoto"
 main = "src/worker.js"
 compatibility_date = "2026-07-15"
 
-# 静态资源（前端 index.html）
 [assets]
 directory = "./public"
 binding = "ASSETS"
-
-# 照片元数据 KV
-[[kv_namespaces]]
-binding = "Infoto"
-id = "e68a923a087b4f47b392c454c31a702a"

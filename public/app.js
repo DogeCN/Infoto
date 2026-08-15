@@ -154,8 +154,8 @@ const TaskWorker = (() => {
 })();
 
 /* =========================================================
-   WebCodecs AV1 支持探测 & 文件类型白名单
-   - AV1 WebCodecs 支持（Chrome/Edge 115+ PC, Android 14+）→ 允许 图片/GIF/视频，GIF/视频转 AV1 WebM
+   WebCodecs VP9 支持探测 & 文件类型白名单
+   - VP9 WebCodecs 支持（Chrome/Edge/Firefox 等）→ 允许 图片/GIF/视频，GIF/视频转 VP9 WebM；不支持则文件选择框静默去掉视频/GIF
    - 不支持（Safari 全系、老 Chrome/Firefox）→ 仅允许 图片，文件选择器自动排除视频/GIF
    ========================================================= */
 const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|flv|wmv|ogv|ogg)$/i;
@@ -167,19 +167,30 @@ function isPicFile(f) { return !!(f && (f.type?.startsWith?.('image/') || PIC_EX
 function hasAnimatedMedia(p) { const e = String(p && p.ext || '').toLowerCase(); return e === 'webm'; }
 function picMediaType(p) { return hasAnimatedMedia(p) ? 'video' : 'image'; }
 
-let _av1Support = null;
-async function supportsAV1WebCodecs() {
-    if (_av1Support !== null) return _av1Support;
-    if (typeof VideoEncoder !== 'function') { _av1Support = false; return false; }
+let _vp9Support = null;
+async function supportsVp9WebCodecs() {
+    if (_vp9Support !== null) return _vp9Support;
+    if (typeof VideoEncoder !== 'function') { _vp9Support = false; return false; }
     try {
-        const cfg = { codec: 'av01.0.04M.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' };
+        // 用 level 1.0 的小尺寸配置探测“浏览器是否具备 VP9 编码能力”，与具体分辨率无关
+        const cfg = { codec: 'vp09.00.10.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' };
         const r = await VideoEncoder.isConfigSupported(cfg);
-        _av1Support = !!(r && r.supported);
-    } catch (_) { _av1Support = false; }
-    return _av1Support;
+        _vp9Support = !!(r && r.supported);
+    } catch (_) { _vp9Support = false; }
+    return _vp9Support;
 }
-// 统一接受所有媒体类型：GIF/视频在上传阶段报错提示
+// 根据 VP9 编码支持情况动态调整文件选择框的可选格式：
+// 支持 → 图片/GIF/视频全开；不支持 → 静默仅保留静态图格式（去掉 video/* 与 GIF，二者都依赖 VP9 编码）
+function applyFileInputAccept() {
+    const inp = $('#fileInput');
+    if (!inp) return;
+    if (_vp9Support === true) inp.setAttribute('accept', 'image/*,video/*,.gif');
+    else if (_vp9Support === false) inp.setAttribute('accept', 'image/png,image/jpeg,image/webp');
+    // _vp9Support === null（探测未完成）：保持初始全格式，探测完成后再回调本函数收紧
+}
+// 初始全开；页面加载即探测浏览器 VP9 支持，完成后静默调整（避免不支持的浏览器还能选到视频/GIF）
 $('#fileInput')?.setAttribute('accept', 'image/*,video/*,.gif');
+supportsVp9WebCodecs().then(applyFileInputAccept);
 
 async function sha256Hex(buf) {
     const d = await crypto.subtle.digest('SHA-256', buf);
@@ -209,7 +220,7 @@ async function compressToWebp(file, quality = WEBP_QUALITY) {
 
 /* =========================================================
    轻量 WebM（EBML + SimpleBlock） muxer：支持多 Track
-   - Track 1 = 视频（V_AV1 / VP9 ...）
+   - Track 1 = 视频（V_VP9）
    - Track 2 = 音频（A_OPUS / A_VORBIS ...）可选
    零依赖 ~6KB，不写 SeekHead/Cues（播放 ok，拖动精度低）
    ========================================================= */
@@ -263,7 +274,7 @@ function _ebmlStr(id, s) {
 }
 
 class SimpleWebMMuxer {
-    constructor({ width, height, timeDen = 1000, videoCodec = 'V_AV1', audio = null /* {sampleRate, channels, codecId:'A_OPUS', codecPrivate:Uint8Array|null} */ }) {
+    constructor({ width, height, timeDen = 1000, videoCodec = 'V_VP9', audio = null /* {sampleRate, channels, codecId:'A_OPUS', codecPrivate:Uint8Array|null} */ }) {
         this.w = width; this.h = height;
         this.tDen = timeDen;  // Cluster/SimpleBlock 用的 timecode 单位：1/timeDen 秒（默认 1ms）
         this.videoCodec = videoCodec;
@@ -361,17 +372,22 @@ class SimpleWebMMuxer {
     }
 }
 
-/* ---- GIF / 视频 → AV1 WebM（WebCodecs VideoEncoder + 上文 SimpleWebMMuxer） ----
+/* ---- GIF / 视频 → VP9 WebM（WebCodecs VideoEncoder + 上文 SimpleWebMMuxer） ----
  * - GIF：用 createImageBitmap 逐帧解码（浏览器原生支持 GIF ImageBitmap），按帧 delay 时间轴推进
  * - 视频：<video> + requestVideoFrameCallback 逐帧取 VideoFrame（无法原生 demux 的折中方案）
- * 两种路径输出无音频、平均 5 Mbps 以下的 AV1 main profile level 4 Main(0.0.04M.08)
- * 压缩后若不小于原文件则回退原 blob（保留原 ext 直接上传）。 */
-const AV1_BITRATE_PER_PIXEL = 0.35; // 每个像素 0.35 bps，约 1080p ≈ 7 Mbps
+ * 两种路径输出 VP9 profile 0、按分辨率选 level 的 WebM。 */
+const VP9_BITRATE_PER_PIXEL = 0.35; // 每个像素 0.35 bps，约 1080p ≈ 7 Mbps
 const OPUS_BITRATE_PER_CHANNEL = 64000; // 每声道 64 kbps Opus（128kbps stereo）
-function _av1Codec(w, h) {
-    const tier = 'M';
-    let level = '04'; if (h > 2304) level = '05';
-    return `av01.00.${level}${tier}.08`;
+function _vp9Codec(w, h) {
+    // VP9 codec string: vp09.PP.LL.DD  (profile 00, level LL, 8-bit)
+    let level = '10';
+    if (h > 2160) level = '51';
+    else if (h > 1440) level = '50';
+    else if (h > 1080) level = '40';
+    else if (h > 720) level = '31';
+    else if (h > 576) level = '30';
+    else if (h > 288) level = '20';
+    return `vp09.00.${level}.08`;
 }
 async function _decodeGifFrames(file) {
     const { default: GifReader } = await import('https://cdn.jsdelivr.net/npm/omggif@1.0.10/+esm');
@@ -509,8 +525,8 @@ async function _decodeVideoFramesAndAudio(file, progressCb) {
     };
 }
 
-// 统一入口：GIF/视频 → 强制转 AV1 WebM（不管体积），返回 blob + hasAudio
-async function transcodeToAv1Webm(file, progressCb) {
+// 统一入口：GIF/视频 → 强制转 VP9 WebM（不管体积），返回 blob + hasAudio
+async function transcodeToVp9Webm(file, progressCb) {
     const report = (p, label) => { if (progressCb) progressCb(p, label); };
     const isGif = isGifFile(file);
     const decoded = isGif
@@ -520,9 +536,9 @@ async function transcodeToAv1Webm(file, progressCb) {
     if (!frames.length) throw new Error('no frames decoded');
     const ew = (width + 1) & ~1;
     const eh = (height + 1) & ~1;
-    const codec = _av1Codec(ew, eh);
+    const codec = _vp9Codec(ew, eh);
     const support = await VideoEncoder.isConfigSupported({ codec, width: ew, height: eh });
-    if (!support.supported) throw new Error('AV1 not supported: ' + codec);
+    if (!support.supported) throw new Error('VP9 not supported: ' + codec);
 
     // --- 音频 Opus 编码支持探测 ---
     const opusConfig = hasAudio && (typeof AudioEncoder === 'function') ? {
@@ -535,10 +551,10 @@ async function transcodeToAv1Webm(file, progressCb) {
     if (!opusSupported) { /* 降级无音频 */ hasAudio = false; opusConfig = null; }
 
     const muxer = new SimpleWebMMuxer({
-        width: ew, height: eh, timeDen: 1000, videoCodec: 'V_AV1',
+        width: ew, height: eh, timeDen: 1000, videoCodec: 'V_VP9',
         audio: opusSupported ? { sampleRate: opusConfig.sampleRate, channels: opusConfig.numberOfChannels, codecId: 'A_OPUS', codecPrivate: audioCodecPrivate } : null,
     });
-    report(0.52, 'AV1 编码中…');
+    report(0.52, 'VP9 编码中…');
     const nFrames = frames.length;
     let videoProgress = 0;
     let audioProgress = 0;
@@ -556,7 +572,7 @@ async function transcodeToAv1Webm(file, progressCb) {
     });
     enc.configure({
         codec, width: ew, height: eh,
-        bitrate: Math.max(250_000, ew * eh * AV1_BITRATE_PER_PIXEL),
+        bitrate: Math.max(250_000, ew * eh * VP9_BITRATE_PER_PIXEL),
         latencyMode: 'quality',
     });
     const cv = new OffscreenCanvas(ew, eh);
@@ -1722,7 +1738,8 @@ async function uploadFiles(files) {
     resetUploadUI();
     _mode = 'upload';
     const t0 = Date.now();
-    const av1Supported = await supportsAV1WebCodecs();
+    const vp9Supported = await supportsVp9WebCodecs();
+    applyFileInputAccept(); // 确保探测完成后 accept 与实际支持情况一致
     const total = files.length;
     if (total === 0) return;
     let done = 0, failed = 0, skipped = 0;
@@ -1760,13 +1777,13 @@ async function uploadFiles(files) {
 
     // 阶段 1：预处理（压缩 + SHA）占总进度 20%
     // - 纯图片 WebP 压缩：CONFIG.CONCURRENCY 并发（默认 3）
-    // - GIF/视频 AV1 转码：单线程（WebCodecs 内部已是多线程并行；开多个同时编码极易 OOM / 掉驱动）
-    const av1Ok = _av1Support === true;
+    // - GIF/视频 VP9 转码：单线程（WebCodecs 内部已是多线程并行；开多个同时编码极易 OOM / 掉驱动）
+    const vp9Ok = _vp9Support === true;
     recomputeUploadOverall(files.length > 1 ? `${files.length} 个文件` : files[0].name, '预处理中…');
     const picTasks = [];
-    const av1Tasks = [];
+    const vp9Tasks = [];
     files.forEach((file, idx) => {
-        const heavy = av1Ok && (isVideoFile(file) || isGifFile(file));
+        const heavy = vp9Ok && (isVideoFile(file) || isGifFile(file));
         const run = async () => {
             const base = { idx, file, err: null, blob: null, ext: 'webp', sha: null, hasAudio: false };
             if (file.type === 'image/svg+xml') { base.err = new Error('SVG 暂不支持'); return base; }
@@ -1786,13 +1803,13 @@ async function uploadFiles(files) {
                     }
                 }
                 if (isV || isG) {
-                    if (!av1Ok) {
-                        base.err = new Error(isG ? 'GIF 需要支持 AV1 WebCodecs 的浏览器（Chrome/Edge 115+）' : '视频需要支持 AV1 WebCodecs 的浏览器（Chrome/Edge 115+）');
+                    if (!vp9Ok) {
+                        base.err = new Error(isG ? 'GIF 需要支持 VP9 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）' : '视频需要支持 VP9 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）');
                         return base;
                     }
                     const stepLabel = isG ? 'GIF 转码' : '视频转码';
                     try {
-                        const r = await transcodeToAv1Webm(file, (p, label) => {
+                        const r = await transcodeToVp9Webm(file, (p, label) => {
                             recomputeUploadOverall(file.name, label || stepLabel + '中…');
                         });
                         blob = r.blob; ext = 'webm'; base.hasAudio = !!r.hasAudio;
@@ -1810,7 +1827,7 @@ async function uploadFiles(files) {
             }
             return base;
         };
-        (heavy ? av1Tasks : picTasks).push(run);
+        (heavy ? vp9Tasks : picTasks).push(run);
     });
     // 预处理过程中：轻量刷新 UI（节流，约 150ms 一次）
     let prepLastPush = 0;
@@ -1820,12 +1837,12 @@ async function uploadFiles(files) {
         prepLastPush = now;
         recomputeUploadOverall(null, '预处理中…');
     }, 150);
-    const [preparedPic, preparedAv1] = await Promise.all([
+    const [preparedPic, preparedVp9] = await Promise.all([
         runWithConcurrency(picTasks, CONFIG.CONCURRENCY),
-        runWithConcurrency(av1Tasks, 1) // AV1 转码单线程防止 OOM
+        runWithConcurrency(vp9Tasks, 1) // VP9 转码单线程防止 OOM
     ]);
     clearInterval(prepTick);
-    const prepared = [...preparedPic, ...preparedAv1].sort((a, b) => a.idx - b.idx);
+    const prepared = [...preparedPic, ...preparedVp9].sort((a, b) => a.idx - b.idx);
     _prepBytes.done = _prepBytes.total; // 保证预处理阶段显示为完成
 
     // 阶段 2：逐张查重 + 上传（增量渲染，不再全量重建瀑布流）占总进度 75%
