@@ -1218,22 +1218,44 @@ $('#multiSelectBtn').addEventListener('click', () => {
     state.multiMode ? exitMulti() : enterMulti();
 });
 $('#batchDeleteBtn').addEventListener('click', deleteSelected);
+let _deleting = false;
 async function deleteSelected() {
     if (!state.isAdmin) return;
+    if (_deleting) return;                       // 防止重复点击叠加删除
     const ids = [...state.selected];
     if (ids.length === 0) { toast('请先选择照片'); return; }
     if (!confirm(`确定删除选中的 ${ids.length} 张照片吗？此操作不可撤销。`)) return;
+
+    _deleting = true;
+    _mode = 'delete';                            // 复用上传/下载的进度指示器
+    resetProgressUI();
+    const total = ids.length;
     let done = 0, fail = 0;
-    for (const id of ids) {
+
+    const tasks = ids.map(id => async () => {
         try {
             const r = await fetch(apiBase() + '/api/photos/' + encodeURIComponent(id), { method: 'DELETE' });
             if (r.ok) done++; else fail++;
         } catch (e) { fail++; }
-    }
+        const finished = done + fail;
+        setProgress(
+            total ? finished / total : 1,
+            `${finished} / ${total} 张`,
+            '删除中…',
+            { stat: `成功 ${done} · 失败 ${fail}` }
+        );
+    });
+
+    await runWithConcurrency(tasks, CONFIG.CONCURRENCY);
+
+    setProgress(1, null, fail === 0 ? '完成' : '部分失败', { stat: `成功 ${done} · 失败 ${fail}` });
     toast(fail === 0 ? `已删除 ${done} 张照片` : `删除完成：${done} 成功 / ${fail} 失败`, fail === 0 ? 'success' : 'alert');
+
     await Store.load(true);
     exitMulti();
     renderMasonry();
+    setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
+    _deleting = false;
 }
 
 $('#masonry').addEventListener('mousedown', onCardPress);
@@ -1512,8 +1534,8 @@ function resetProgressUI() {
     $('#upDone').textContent = '0';
     $('#upSkipped').textContent = '0';
     $('#upFailed').textContent = '0';
-    $('#upTipFile').textContent = _mode === 'download' ? '等待下载' : '待上传';
-    $('#upTipStep').textContent = _mode === 'download' ? '准备下载' : '准备中';
+    $('#upTipFile').textContent = _mode === 'download' ? '等待下载' : _mode === 'delete' ? '等待删除' : '待上传';
+    $('#upTipStep').textContent = _mode === 'download' ? '准备下载' : _mode === 'delete' ? '准备删除' : '准备中';
     _prepBytes = { total: 0, done: 0 };
     _uploadBytes = { total: 0, done: 0 };
     $('#upTipStatExtra')?.remove();
