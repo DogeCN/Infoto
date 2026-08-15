@@ -1,7 +1,9 @@
 /* =========================================================
  * Infoto Shared Task Worker
- * 跨页面保持下载/删除任务推进，页面切换不丢失进度
+ * 跨页面保持上传/下载/删除任务推进，页面切换不丢失进度
  * 通过 onconnect 接收多个页面的 port，任务进度广播给所有页面
+ * 上传：Worker 内完成 转码(OffscreenCanvas+WebCodecs)/查重/上图床/写库，
+ *       每张完成广播 photo-result，页面负责插卡与尺寸回写
  * ========================================================= */
 
 importScripts('./shared.js'); // 加载 CONFIG / formatSize / sha256Hex / withRetry / runWithConcurrency / uploadViaXhr / uploadPartToTcProgressive / uploadToBed
@@ -51,6 +53,162 @@ function getCurrentStatus() {
             delete: tasks.delete ? tasks.delete.snapshot() : null,
         }
     };
+}
+
+/* ============ 上传任务 ============ */
+class UploadTask {
+    constructor(jobId, files, apiBase) {
+        this.id = jobId;
+        this.type = 'upload';
+        this.files = files;      // File[]（页面 structured clone 传入）
+        this.apiBase = apiBase;
+        this.startedAt = Date.now();
+        this.status = 'running';
+        this.progress = 0;
+        this.step = '准备中…';
+        this.curFile = files.length > 1 ? `${files.length} 个文件` : (files[0]?.name || '');
+        this.done = 0; this.skipped = 0; this.failed = 0; this.total = files.length;
+        this.extraStat = '';
+        this._promise = this._run();
+    }
+
+    snapshot() {
+        return {
+            id: this.id,
+            type: this.type,
+            status: this.status,
+            progress: this.progress,
+            step: this.step,
+            curFile: this.curFile,
+            done: this.done, skipped: this.skipped, failed: this.failed, total: this.total,
+            extraStat: `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`,
+            startedAt: this.startedAt,
+        };
+    }
+
+    _emitUpdate() {
+        broadcast({ type: 'task-update', task: this.snapshot() });
+    }
+
+    async _run() {
+        const files = this.files;
+        const total = files.length;
+        const vp9Ok = await supportsVp9WebCodecs();
+        const PHASE = { PREP: 0.20, UPLOAD: 0.75, SYNC: 0.05 };
+
+        const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null }));
+        const prepTotal = fileStates.reduce((a, s) => a + s.size, 0) || 1;
+
+        const curOverall = () => {
+            let prepSum = 0, upSum = 0, upDen = 0;
+            for (const s of fileStates) {
+                prepSum += s.prepP * s.size;
+                const ub = s.uploadBytes || s.size || 1;
+                upSum += s.upP * ub; upDen += ub;
+            }
+            const prepP = prepSum / prepTotal;
+            const upP = upDen ? upSum / upDen : 0;
+            return Math.min(1, PHASE.PREP * prepP + PHASE.UPLOAD * upP);
+        };
+        const emit = (fileName, step) => {
+            this.curFile = fileName || (total > 1 ? `${total} 个文件` : (files[0]?.name || ''));
+            if (step) this.step = step;
+            this.progress = curOverall();
+            this.extraStat = `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`;
+            this._emitUpdate();
+        };
+        const result = (idx, name, photo, err, skipped) => {
+            broadcast({ type: 'photo-result', taskId: this.id, idx, name, photo: photo || null, err: err || null, skipped: !!skipped });
+        };
+
+        const processOne = async (file, idx) => {
+            const st = fileStates[idx];
+            let blob = null;
+            try {
+                if (file.type === 'image/svg+xml') {
+                    st.err = 'SVG 暂不支持'; this.failed++; result(idx, file.name, null, 'SVG 暂不支持'); return;
+                }
+                let ext = 'webp', hasAudio = false;
+                const isV = isVideoFile(file), isG = isGifFile(file), isP = isPicFile(file);
+                if (isP) {
+                    emit(file.name, '压缩中…');
+                    const webp = await compressToWebp(file, WEBP_QUALITY);
+                    if (!webp) { st.err = '图片 WebP 压缩失败'; this.failed++; result(idx, file.name, null, st.err); return; }
+                    blob = webp; ext = 'webp';
+                } else if (isV || isG) {
+                    if (!vp9Ok) {
+                        const msg = (isG ? 'GIF' : '视频') + '需要支持 VP9 WebCodecs 的浏览器';
+                        st.err = msg; this.failed++; result(idx, file.name, null, msg); return;
+                    }
+                    emit(file.name, (isG ? 'GIF 转码' : '视频转码') + '中…');
+                    // Worker 无 <video> 元素：非 MP4 容器由 transcodeToVp9Webm 抛错（页面已对含非 MP4 视频的批次降级主线程，正常到不了这里）
+                    const r = await transcodeToVp9Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); emit(file.name); });
+                    blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio;
+                }
+                st.prepP = 1;
+                st.uploadBytes = blob.size || st.size || 1;
+                const ab = await blob.arrayBuffer();
+                const sha = await sha256Hex(ab);
+                emit(file.name, '查重…'); st.upP = 0.02;
+                const dup = await checkHashExists(sha, this.apiBase);
+                if (dup) {
+                    this.skipped++; st.upP = 1; result(idx, file.name, null, null, true); return;
+                }
+                emit(file.name, '上传到图床');
+                const parts = await uploadToBed(blob, 'upload.' + ext, (p) => { st.upP = 0.02 + p * 0.93; emit(file.name); }, this.apiBase);
+                st.upP = 0.96;
+                const photo = {
+                    id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+                    parts, sha256: sha,
+                    width: 0, height: 0, createdAt: Date.now(),
+                    ext, hasAudio
+                };
+                emit(file.name, '写库…');
+                const saveR = await fetch((this.apiBase || '') + '/api/photos', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(photo)
+                });
+                if (!saveR.ok) throw new Error('写库失败 HTTP ' + saveR.status);
+                st.upP = 1; this.done++;
+                result(idx, file.name, photo);
+            } catch (e) {
+                console.error('[task-worker] upload fail:', file.name, e);
+                st.err = (e && e.message) ? e.message : String(e);
+                this.failed++;
+                result(idx, file.name, null, st.err);
+            } finally {
+                blob = null; // 转完即释放，内存只绑并发数
+                emit(file.name);
+            }
+        };
+
+        // 图片 CONCURRENCY 并发；视频/GIF 单线程（WebCodecs 内部已并行，多开易 OOM）
+        const picTasks = [], vp9Tasks = [];
+        files.forEach((file, idx) => {
+            const heavy = vp9Ok && (isVideoFile(file) || isGifFile(file));
+            (heavy ? vp9Tasks : picTasks).push(() => processOne(file, idx));
+        });
+
+        emit();
+        await Promise.all([
+            runWithConcurrency(picTasks, CONFIG.CONCURRENCY),
+            runWithConcurrency(vp9Tasks, 1)
+        ]);
+
+        this.progress = 1;
+        this.status = 'done';
+        this.step = this.failed === 0 ? '完成' : '部分失败';
+        this.extraStat = `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`;
+        this._emitUpdate();
+
+        broadcast({
+            type: 'upload-complete',
+            taskId: this.id,
+            summary: { done: this.done, skipped: this.skipped, failed: this.failed, total }
+        });
+
+        tasks.upload = null;
+        setTimeout(() => broadcast({ type: 'task-clear', taskType: 'upload' }), 3000);
+    }
 }
 
 /* ============ 删除任务 ============ */
@@ -326,6 +484,24 @@ function handleIncomingMessage(msg, replyPort) {
             reply(getCurrentStatus());
             break;
 
+        case 'start-upload':
+            if (tasks.upload) {
+                reply({ type: 'error', error: '已有上传任务进行中' });
+                return;
+            }
+            try {
+                tasks.upload = new UploadTask(
+                    'up_' + Date.now().toString(36),
+                    msg.files || [],
+                    msg.apiBase || ''
+                );
+                reply({ type: 'task-started', taskType: 'upload', taskId: tasks.upload.id });
+            } catch (err) {
+                console.warn('[task-worker] start-upload err:', err && err.message);
+                reply({ type: 'error', error: err.message });
+            }
+            break;
+
         case 'start-delete':
             if (tasks.delete) {
                 reply({ type: 'error', error: '已有删除任务进行中' });
@@ -364,6 +540,16 @@ function handleIncomingMessage(msg, replyPort) {
 
         case 'disconnect':
             if (replyPort) clients.delete(replyPort);
+            if (clients.size === 0 && !keepAliveTimer) {
+                keepAliveTimer = setTimeout(function () {
+                    keepAliveTimer = null;
+                    if (clients.size === 0 && typeof self.close === 'function') {
+                        var dt = tasks['delete'], dl = tasks['download'];
+                        var running = (dt && dt.status === 'running') || (dl && dl.status === 'running');
+                        if (!running) { try { self.close(); } catch (_) { } }
+                    }
+                }, 120000);
+            }
             break;
     }
 }

@@ -28,6 +28,8 @@ const ICONS = {
     'info': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
     'alert': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
     'success': '<circle cx="12" cy="12" r="10"/><polyline points="20 6 9 17 4 12"/>',
+    'volume-2': '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+    'volume-x': '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>',
 };
 
 function renderIcons(root) {
@@ -168,6 +170,15 @@ const TaskWorker = (() => {
         } catch (e) { return false; }
     }
 
+    function startUpload(files, apiBase) {
+        if (!connect()) return false;
+        try {
+            // File[] 经 structured clone 引用传递（不复制字节），Worker 内完成转码/查重/上传/写库
+            sw.port.postMessage({ type: 'start-upload', files, apiBase });
+            return true;
+        } catch (e) { return false; }
+    }
+
     try {
         connect();
         window.addEventListener('beforeunload', () => {
@@ -175,378 +186,37 @@ const TaskWorker = (() => {
         }, { once: true });
     } catch (e) { console.warn('[TaskWorker] init connect fail:', e && e.message); }
 
-    return { connect, isSupported, onMessage, getTask, hasAnyTask, startDelete, startDownload };
+    return { connect, isSupported, onMessage, getTask, hasAnyTask, startDelete, startDownload, startUpload };
 })();
 
 /* =========================================================
-   WebCodecs VP9 支持探测 & 文件类型白名单
+   WebCodecs VP9 探测 / 压缩 / 转码 已迁至 shared.js（页面与 SharedWorker 共用）
+   - isVideoFile/isGifFile/isPicFile/isMp4File/hasAnimatedMedia/picMediaType
+   - supportsVp9WebCodecs / compressToWebp / transcodeToVp9Webm / WEBP_QUALITY / FPS_CAP
+   shared.js 先于 app.js 加载（index.html），此处仅取引用并保留 DOM 专用兜底。
    ========================================================= */
-const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|flv|wmv|ogv|ogg)$/i;
-const GIF_EXT_RE = /\.gif$/i;
-const PIC_EXT_RE = /\.(png|jpe?g|webp|bmp|avif|jxl|heic|heif|tiff?|ico)$/i;
-function isVideoFile(f) { return !!(f && (f.type?.startsWith?.('video/') || VIDEO_EXT_RE.test(f.name || ''))); }
-function isGifFile(f) { return !!(f && (f.type === 'image/gif' || GIF_EXT_RE.test(f.name || ''))); }
-function isPicFile(f) { return !!(f && (f.type?.startsWith?.('image/') || PIC_EXT_RE.test(f.name || ''))) && !isGifFile(f); }
-function hasAnimatedMedia(p) { const e = String(p && p.ext || '').toLowerCase(); return e === 'webm'; }
-function picMediaType(p) { return hasAnimatedMedia(p) ? 'video' : 'image'; }
+const isVideoFile = window.isVideoFile;
+const isGifFile = window.isGifFile;
+const isPicFile = window.isPicFile;
+const isMp4File = window.isMp4File;
+const hasAnimatedMedia = window.hasAnimatedMedia;
+const picMediaType = window.picMediaType;
+const supportsVp9WebCodecs = window.supportsVp9WebCodecs;
+const compressToWebp = window.compressToWebp;
+const transcodeToVp9Webm = window.transcodeToVp9Webm;
+const WEBP_QUALITY = window.WEBP_QUALITY;
+const FPS_CAP = window.FPS_CAP;
 
-let _vp9Support = null;
-async function supportsVp9WebCodecs() {
-    if (_vp9Support !== null) return _vp9Support;
-    if (typeof VideoEncoder !== 'function') { _vp9Support = false; return false; }
-    try {
-        const cfg = { codec: 'vp09.00.10.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' };
-        const r = await VideoEncoder.isConfigSupported(cfg);
-        _vp9Support = !!(r && r.supported);
-    } catch (e) { console.warn('[infoto] VP9 support probe fail', e); _vp9Support = false; }
-    return _vp9Support;
-}
 function applyFileInputAccept() {
     const inp = $('#fileInput');
     if (!inp) return;
-    if (_vp9Support === true) inp.setAttribute('accept', 'image/*,video/*,.gif');
-    else if (_vp9Support === false) inp.setAttribute('accept', 'image/png,image/jpeg,image/webp');
+    if (window._vp9Support === true) inp.setAttribute('accept', 'image/*,video/*,.gif');
+    else if (window._vp9Support === false) inp.setAttribute('accept', 'image/png,image/jpeg,image/webp');
 }
 $('#fileInput')?.setAttribute('accept', 'image/*,video/*,.gif');
 supportsVp9WebCodecs().then(applyFileInputAccept);
 
-/* ---- 客户端有损压缩为 WebP ---- */
-const WEBP_QUALITY = 0.8;
-
-async function compressToWebp(file, quality = WEBP_QUALITY) {
-    try {
-        const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-        const canvas = document.createElement('canvas');
-        canvas.width = bmp.width; canvas.height = bmp.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(bmp, 0, 0);
-        bmp.close();
-        const blob = await new Promise(res => canvas.toBlob(res, 'image/webp', quality));
-        return blob;
-    } catch (e) {
-        console.warn('[infoto] WebP 压缩失败，使用原文件', e);
-        return null;
-    }
-}
-
-/* =========================================================
-   轻量 WebM muxer：EBML + SimpleBlock
-   ========================================================= */
-function _vint(n, length = 0) {
-    if (n < 0 || !isFinite(n)) throw new Error('bad vint');
-    if (!length) {
-        length = 1;
-        while ((n >= (1 << (7 * length))) && length < 8) length++;
-    }
-    const b = new Uint8Array(length);
-    let v = n;
-    for (let i = length - 1; i >= 0; i--) { b[i] = v & 0xff; v >>>= 8; }
-    b[0] |= (0x80 >>> (length - 1));
-    return b;
-}
-function _concat(arrays) {
-    let t = 0; for (const a of arrays) t += a.byteLength || a.length || 0;
-    const out = new Uint8Array(t); let o = 0;
-    for (const a of arrays) { const u = (a instanceof Uint8Array) ? a : new Uint8Array(a); out.set(u, o); o += u.length; }
-    return out;
-}
-function _ebml(id, body) {
-    const idBytes = (typeof id === 'number') ? (() => {
-        const a = []; let v = id;
-        while (v) { a.unshift(v & 0xff); v >>>= 8; }
-        while (!a.length || !(a[0] & 0x80)) a.unshift(0);
-        return new Uint8Array(a);
-    })() : id;
-    const bodyLen = (body instanceof Uint8Array) ? body.byteLength : 0;
-    return _concat([idBytes, _vint(bodyLen), body]);
-}
-function _ebmlU(id, value, bytes = 0) {
-    let b;
-    if (!bytes) {
-        if (value === 0) bytes = 1;
-        else { bytes = 0; let v = value; do { bytes++; v >>>= 8; } while (v); }
-    }
-    b = new Uint8Array(bytes);
-    let v = value;
-    for (let i = bytes - 1; i >= 0; i--) { b[i] = v & 0xff; v >>>= 8; }
-    return _ebml(id, b);
-}
-function _ebmlFloat(id, value) {
-    const dv = new DataView(new ArrayBuffer(8));
-    dv.setFloat64(0, value, false);
-    return _ebml(id, new Uint8Array(dv.buffer));
-}
-function _ebmlStr(id, s) {
-    const enc = new TextEncoder();
-    return _ebml(id, enc.encode(String(s)));
-}
-
-class SimpleWebMMuxer {
-    constructor({ width, height, timeDen = 1000, videoCodec = 'V_VP9', audio = null }) {
-        this.w = width; this.h = height;
-        this.tDen = timeDen;
-        this.videoCodec = videoCodec;
-        this.audio = audio ? { sampleRate: 48000, channels: 2, codecId: 'A_OPUS', codecPrivate: null, ...audio } : null;
-        this.clusters = [];
-        this._curCluster = null;
-        this.maxDurationSec = 0;
-    }
-    _openCluster(timecode) {
-        this._curCluster = { timecode, blocks: [] };
-        this.clusters.push(this._curCluster);
-    }
-    _closeCluster() { this._curCluster = null; }
-    _trackNumVint(trackNum) {
-        const b = new Uint8Array(1);
-        b[0] = (0x80) | (trackNum & 0x7f);
-        return b;
-    }
-    addChunk(data, { timestampSec, trackNum = 1, keyframe = false }) {
-        const tc = Math.max(0, Math.round(timestampSec * this.tDen));
-        if (!this._curCluster) this._openCluster(tc);
-        else if (tc - this._curCluster.timecode > 30000) { this._closeCluster(); this._openCluster(tc); }
-        const relTc = tc - this._curCluster.timecode;
-        const tcBytes = new Uint8Array(2);
-        new DataView(tcBytes.buffer).setInt16(0, Math.max(-32768, Math.min(32767, relTc)), false);
-        const flags = (keyframe && trackNum === 1) ? 0x80 : 0x00;
-        const body = _concat([this._trackNumVint(trackNum), tcBytes, new Uint8Array([flags]), new Uint8Array(data)]);
-        this._curCluster.blocks.push(_ebml(0xa3, body));
-        this.maxDurationSec = Math.max(this.maxDurationSec, timestampSec);
-    }
-    _trackEntry(num, uid, type, codecId, opts = {}) {
-        const inner = [_ebmlU(0xd7, num), _ebmlU(0x73c5, uid), _ebmlU(0x83, type), _ebmlStr(0x86, codecId)];
-        if (opts.video) {
-            const { width, height } = opts.video;
-            inner.push(_ebml(0xe0, _concat([_ebmlU(0xb0, width), _ebmlU(0xba, height)])));
-        }
-        if (opts.audio) {
-            const { sampleRate, channels } = opts.audio;
-            const srBytes = new Uint8Array(8);
-            new DataView(srBytes.buffer).setFloat64(0, sampleRate, false);
-            inner.push(_ebml(0xe1, _concat([
-                new Uint8Array(_ebmlFloat(0xb5, sampleRate).slice(1)),
-                _ebmlU(0x9f, channels),
-            ])));
-            if (opts.codecPrivate) inner.push(_ebml(0x63a2, opts.codecPrivate));
-        } else if (opts.codecPrivate) {
-            inner.push(_ebml(0x63a2, opts.codecPrivate));
-        }
-        return _ebml(0xae, _concat(inner));
-    }
-    finalize() {
-        if (this._curCluster) this._closeCluster();
-        const durationUs = Math.round(this.maxDurationSec * 1e6);
-        const clusterParts = [];
-        for (const c of this.clusters) {
-            const inner = _concat([_ebmlU(0xe7, c.timecode), ...c.blocks]);
-            clusterParts.push(_ebml(0x1f43b675, inner));
-        }
-        const segmentInner = [];
-        const infoInner = _concat([
-            _ebmlU(0x2ad7b1, 1e6),
-            _ebmlFloat(0x4489, this.maxDurationSec),
-            _ebmlStr(0x4d80, 'Infoto WebCodecs'),
-            _ebmlStr(0x5741, 'Infoto WebCodecs'),
-        ]);
-        segmentInner.push(_ebml(0x1549a966, infoInner));
-        const tracks = [
-            this._trackEntry(1, 1, 1, this.videoCodec, { video: { width: this.w, height: this.h } })
-        ];
-        if (this.audio) {
-            const cp = this.audio.codecPrivate ? new Uint8Array(this.audio.codecPrivate) : null;
-            tracks.push(this._trackEntry(2, 2, 2, this.audio.codecId, {
-                audio: { sampleRate: this.audio.sampleRate, channels: this.audio.channels },
-                codecPrivate: cp
-            }));
-        }
-        segmentInner.push(_ebml(0x1654ae6b, _concat(tracks)));
-        for (const cp of clusterParts) segmentInner.push(cp);
-
-        const segment = _ebml(0x18538067, _concat(segmentInner));
-        const ebmlHeader = _ebml(0x1a45dfa3, _concat([
-            _ebmlU(0x4286, 1), _ebmlU(0x42f7, 1),
-            _ebmlU(0x42f2, 4), _ebmlU(0x42f3, 8),
-            _ebmlStr(0x4282, 'webm'),
-            _ebmlU(0x4287, 4), _ebmlU(0x4285, 2),
-        ]));
-        return new Blob([_concat([ebmlHeader, segment])], { type: 'video/webm' });
-    }
-}
-
-/* ---- GIF / 视频 → VP9 WebM ---- */
-const VP9_BITRATE_PER_PIXEL = 0.35;
-const OPUS_BITRATE_PER_CHANNEL = 64000;
-function _vp9Codec(w, h) {
-    let level = '10';
-    if (h > 2160) level = '51';
-    else if (h > 1440) level = '50';
-    else if (h > 1080) level = '40';
-    else if (h > 720) level = '31';
-    else if (h > 576) level = '30';
-    else if (h > 288) level = '20';
-    return `vp09.00.${level}.08`;
-}
-async function _decodeGifFrames(file) {
-    const { default: GifReader } = await import('https://cdn.jsdelivr.net/npm/omggif@1.0.10/+esm');
-    const buf = new Uint8Array(await file.arrayBuffer());
-    const reader = new GifReader(buf);
-    const w = reader.width, h = reader.height;
-    const frames = [];
-    let t = 0;
-    const canvas = new OffscreenCanvas(w, h);
-    const ctx = canvas.getContext('2d');
-    let prev = ctx.createImageData(w, h);
-    for (let i = 0; i < reader.numFrames(); i++) {
-        const info = reader.frameInfo(i);
-        const delayMs = Math.max(20, (info.delay || 10) * 10);
-        const img = ctx.createImageData(w, h);
-        reader.decodeAndBlitFrameRGBA(i, img.data);
-        if (info.disposal === 3 && prev) {
-            ctx.putImageData(prev, 0, 0);
-            ctx.globalCompositeOperation = 'source-over';
-            const tmpC = new OffscreenCanvas(w, h);
-            const tmpX = tmpC.getContext('2d');
-            tmpX.putImageData(img, 0, 0);
-            ctx.drawImage(tmpC, info.x, info.y, info.width, info.height);
-        } else {
-            ctx.putImageData(img, 0, 0);
-        }
-        if (info.disposal !== 3) prev = ctx.getImageData(0, 0, w, h);
-        const bitmap = await createImageBitmap(canvas);
-        frames.push({ bitmap, delayMs, ts: t / 1000 });
-        t += delayMs;
-    }
-    return { width: w, height: h, frames, durationSec: t / 1000, hasAudio: false };
-}
-
-const FPS_CAP = 30;
-
-function resamplePCM(buf, dstSr) {
-    if (!buf) return null;
-    const srcSr = buf.sr;
-    if (Math.abs(srcSr - dstSr) < 1) {
-        const n = buf.length, ch = buf.channels.length;
-        const out = new Float32Array(n * ch);
-        for (let s = 0, o = 0; s < n; s++) for (let c = 0; c < ch; c++, o++) out[o] = buf.channels[c][s];
-        return { interleaved: out, samples: n, sr: dstSr, channels: ch };
-    }
-    const ratio = srcSr / dstSr;
-    const dstN = Math.max(1, Math.round(buf.length * dstSr / srcSr));
-    const ch = buf.channels.length;
-    const out = new Float32Array(dstN * ch);
-    const src = buf.channels;
-    for (let i = 0; i < dstN; i++) {
-        const s = i * ratio;
-        const s0 = Math.floor(s); const s1 = Math.min(buf.length - 1, s0 + 1);
-        const f = s - s0;
-        for (let c = 0; c < ch; c++) out[i * ch + c] = src[c][s0] * (1 - f) + src[c][s1] * f;
-    }
-    return { interleaved: out, samples: dstN, sr: dstSr, channels: ch };
-}
-
-async function _decodeAudioOnly(file) {
-    if (typeof AudioContext === 'undefined') return { hasAudio: false, audio: null };
-    let audioCtx = null;
-    try {
-        audioCtx = new AudioContext({ sampleRate: 48000 });
-        const ab = await file.arrayBuffer();
-        const decoded = await audioCtx.decodeAudioData(ab.slice(0));
-        const hasAudio = decoded.numberOfChannels > 0 && decoded.length > 0;
-        let audioResampled = null;
-        if (hasAudio) {
-            const ch = Math.min(2, decoded.numberOfChannels);
-            const stereo = { sr: decoded.sampleRate, length: decoded.length, channels: Array.from({ length: ch }, (_, c) => decoded.getChannelData(c).slice()) };
-            audioResampled = resamplePCM(stereo, 48000);
-        }
-        return { hasAudio: !!audioResampled, audio: audioResampled };
-    } catch (err) {
-        console.warn('[infoto] audio decode fail', err);
-        return { hasAudio: false, audio: null };
-    } finally {
-        if (audioCtx) try { audioCtx.close(); } catch (e) { console.warn('[infoto] audioCtx close fail', e); }
-    }
-}
-
-function _isMp4(file) { return /\.(mp4|m4v|mov|3gp|f4v)$/i.test(file.name || ''); }
-
-let _mp4boxMod = null;
-async function _loadMp4Box() {
-    if (_mp4boxMod) return _mp4boxMod;
-    const mod = await import('https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm');
-    _mp4boxMod = mod.MP4Box || (mod.default && (mod.default.MP4Box || mod.default)) || (typeof window !== 'undefined' ? window.MP4Box : null);
-    if (!_mp4boxMod) throw new Error('mp4box load fail');
-    return _mp4boxMod;
-}
-
-async function _mp4VideoMeta(file) {
-    const MP4Box = await _loadMp4Box();
-    const buf = await file.arrayBuffer();
-    return await new Promise((resolve, reject) => {
-        const mp4 = MP4Box.createFile(buf);
-        mp4.onError = (e) => reject(new Error('mp4 parse error: ' + e));
-        mp4.onReady = (info) => {
-            const track = info.videoTracks && info.videoTracks[0];
-            if (!track) return reject(new Error('mp4 无视频轨道'));
-            const w = track.video.width, h = track.video.height;
-            const fps = track.video.frameRate || 30;
-            let description = null;
-            const codec = (track.codec || '').toLowerCase();
-            if (codec.startsWith('avc') || codec.startsWith('hvc') || codec.startsWith('hev')) {
-                try { description = MP4Box.getTrackSpecificInfo(mp4, track.id); } catch (e) { console.warn('[infoto] mp4 codec info fail', e); }
-            }
-            resolve({
-                width: w, height: h,
-                durationSec: info.timescale ? info.duration / info.timescale : (track.track_duration / track.timescale),
-                codec: track.codec, description,
-                trackId: track.id, timescale: track.timescale,
-                nbSamples: track.nb_samples || 0,
-                fps: fps || 30,
-            });
-        };
-    });
-}
-
-async function _decodeEncodeMp4(file, meta, sink, report) {
-    const MP4Box = await _loadMp4Box();
-    const buf = await file.arrayBuffer();
-    const mp4 = MP4Box.createFile(buf);
-    const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
-    const avgStep = 1 / targetFps;
-    const totalApprox = Math.max(1, Math.round((meta.durationSec || 1) * targetFps));
-    let nextOut = 0, outIndex = 0, fed = 0;
-    const decoder = new VideoDecoder({
-        output: (frame) => {
-            const tSec = (frame.timestamp || 0) / 1e6;
-            if (tSec + 1e-3 >= nextOut) { sink.push(frame); outIndex++; nextOut += avgStep; }
-            else frame.close();
-            if ((outIndex & 7) === 0) report(0.01 + 0.49 * Math.min(1, outIndex / totalApprox));
-        },
-        error: (e) => console.error('[infoto] VideoDecoder error', e),
-    });
-    const cfg = { codec: meta.codec, codedWidth: meta.width, codedHeight: meta.height };
-    if (meta.description) cfg.description = meta.description;
-    decoder.configure(cfg);
-
-    await new Promise((resolve, reject) => {
-        let done = false;
-        const finish = () => { if (done) return; done = true; decoder.flush().then(() => resolve()).catch(reject); };
-        mp4.onError = (e) => { if (!done) { done = true; reject(new Error('mp4 demux error: ' + e)); } };
-        mp4.onSamples = (id, user, samples) => {
-            for (const s of samples) {
-                const timestampUs = Math.round((s.cts / meta.timescale) * 1e6);
-                const durationUs = s.duration ? Math.round((s.duration / meta.timescale) * 1e6) : Math.round(avgStep * 1e6);
-                decoder.decode(new EncodedVideoChunk({ type: s.is_sync ? 'key' : 'delta', timestamp: timestampUs, duration: durationUs, data: s.data }));
-                fed++;
-            }
-            if (meta.nbSamples && fed >= meta.nbSamples) finish();
-        };
-        mp4.setExtractionOptions(meta.trackId, null, { nbSamples: Infinity });
-        mp4.start();
-        if (!meta.nbSamples) setTimeout(finish, 200);
-    });
-    try { decoder.close(); } catch (e) { console.warn('[infoto] decoder close fail', e); }
-}
-
+/* ---- 主线程专用：非 MP4 视频的 <video> 元素解码兜底（SharedWorker 无 DOM，走不到这里） ---- */
 function _videoMetaViaVideoEl(file) {
     return new Promise((resolve, reject) => {
         const url = URL.createObjectURL(file);
@@ -581,145 +251,16 @@ async function _decodeEncodeVideoElSeek(file, meta, sink, report) {
     try { v.currentTime = 0; } catch (e) { console.warn('[infoto] video reset fail', e); }
     URL.revokeObjectURL(url);
 }
-
-function withTimeout(p, ms) {
-    return new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('mp4 pipeline timeout')), ms); p.then(v => { clearTimeout(t); res(v); }, e => { clearTimeout(t); rej(e); }); });
-}
-
-async function transcodeToVp9Webm(file, progressCb) {
-    const report = (p, label) => { if (progressCb) progressCb(p, label); };
-    const isGif = isGifFile(file);
-
-    const audioInfo = isGif ? { hasAudio: false, audio: null } : await _decodeAudioOnly(file);
-    const srcAudio = audioInfo ? audioInfo.audio : null;
-    const hasAudioSrc = !!srcAudio;
-
-    const opusConfig = hasAudioSrc && (typeof AudioEncoder === 'function') ? {
-        codec: 'opus', sampleRate: srcAudio.sr, numberOfChannels: srcAudio.channels,
-        bitrate: Math.max(32000, srcAudio.channels * OPUS_BITRATE_PER_CHANNEL),
-    } : null;
-    let opusSupported = false, audioCodecPrivate = null;
-    if (opusConfig) try { opusSupported = (await AudioEncoder.isConfigSupported(opusConfig)).supported; } catch (e) { console.warn('[infoto] opus probe fail', e); opusSupported = false; }
-    if (!opusSupported) opusConfig = null;
-
-    const muxer = new SimpleWebMMuxer({
-        width: 0, height: 0, timeDen: 1000, videoCodec: 'V_VP9',
-        audio: opusSupported ? { sampleRate: opusConfig.sampleRate, channels: opusConfig.numberOfChannels, codecId: 'A_OPUS', codecPrivate: audioCodecPrivate } : null,
-    });
-
-    function makeEncoder(ew, eh) {
-        const codec = _vp9Codec(ew, eh);
-        return VideoEncoder.isConfigSupported({ codec, width: ew, height: eh }).then(support => {
-            if (!support.supported) throw new Error('VP9 not supported: ' + codec);
-            const cv = new OffscreenCanvas(ew, eh);
-            const cx = cv.getContext('2d');
-            let outTs = 0;
-            const enc = new VideoEncoder({
-                output: (chunk) => {
-                    const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
-                    muxer.addChunk(buf, { timestampSec: chunk.timestamp / 1e6, trackNum: 1, keyframe: chunk.type === 'key' });
-                },
-                error: e => console.error(e),
-            });
-            enc.configure({ codec, width: ew, height: eh, bitrate: Math.max(250_000, ew * eh * VP9_BITRATE_PER_PIXEL), latencyMode: 'quality' });
-            return {
-                enc,
-                sink(avgStepSec) {
-                    const dUs = Math.max(1, Math.round(avgStepSec * 1e6));
-                    return {
-                        push(src) {
-                            cx.drawImage(src, 0, 0, ew, eh);
-                            if (src.close) src.close();
-                            const vf = new VideoFrame(cv, { timestamp: Math.round(outTs * 1e6), duration: dUs });
-                            enc.encode(vf); vf.close();
-                            outTs += avgStepSec;
-                        }
-                    };
-                }
-            };
-        });
-    }
-
-    if (isGif) {
-        const decoded = await _decodeGifFrames(file);
-        if (!decoded.frames.length) throw new Error('no frames decoded');
-        const ew = (decoded.width + 1) & ~1, eh = (decoded.height + 1) & ~1;
-        const { enc, sink } = await makeEncoder(ew, eh);
-        muxer.w = ew; muxer.h = eh;
-        const avgStepSec = decoded.frames.length > 1 ? decoded.durationSec / (decoded.frames.length - 1) : 1 / 30;
-        const s = sink(avgStepSec);
-        for (let i = 0; i < decoded.frames.length; i++) {
-            s.push(decoded.frames[i].bitmap);
-            if ((i & 3) === 0) report(0.01 + 0.49 * Math.min(1, (i + 1) / decoded.frames.length));
-        }
-        await enc.flush(); enc.close();
-    } else {
-        let meta = null;
-        if (_isMp4(file)) {
-            try { meta = await _mp4VideoMeta(file); } catch (e) { console.warn('[infoto] mp4 open fail, fallback <video>', e); meta = null; }
-        }
-        if (meta) {
-            try {
-                const ew = (meta.width + 1) & ~1, eh = (meta.height + 1) & ~1;
-                const { enc, sink } = await makeEncoder(ew, eh);
-                muxer.w = ew; muxer.h = eh;
-                const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
-                const s = sink(1 / targetFps);
-                await withTimeout(_decodeEncodeMp4(file, meta, s, report), 180000);
-                await enc.flush(); enc.close();
-            } catch (e) { console.warn('[infoto] mp4 pipeline fail, fallback <video>', e); meta = null; }
-        }
-        if (!meta) {
-            const vmeta = await _videoMetaViaVideoEl(file);
-            const ew = (vmeta.width + 1) & ~1, eh = (vmeta.height + 1) & ~1;
-            const { enc, sink } = await makeEncoder(ew, eh);
-            muxer.w = ew; muxer.h = eh;
-            const targetFps = Math.min(vmeta.fps || FPS_CAP, FPS_CAP);
-            const s = sink(1 / targetFps);
-            await _decodeEncodeVideoElSeek(file, vmeta, s, report);
-            await enc.flush(); enc.close();
-        }
-    }
-
-    report(0.52, opusSupported ? '音频 Opus 编码中…' : '合成 WebM…');
-    if (opusSupported && srcAudio) {
-        const frameSamples = 960;
-        const enc2 = new AudioEncoder({
-            output: (chunk, meta) => {
-                const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
-                if (meta && meta.decoderConfig && meta.decoderConfig.description && !audioCodecPrivate) {
-                    const d = meta.decoderConfig.description;
-                    audioCodecPrivate = (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) ? new Uint8Array(d) : null;
-                }
-                muxer.addChunk(buf, { timestampSec: chunk.timestamp / 1e6, trackNum: 2 });
-            },
-            error: e => console.error(e),
-        });
-        enc2.configure(opusConfig);
-        const il = srcAudio.interleaved;
-        const totalFrames = Math.ceil(srcAudio.samples / frameSamples);
-        for (let fi = 0; fi < totalFrames; fi++) {
-            const s0 = fi * frameSamples;
-            const n = Math.min(frameSamples, srcAudio.samples - s0);
-            const data = new Float32Array(frameSamples * srcAudio.channels);
-            for (let c = 0, co = 0; c < srcAudio.channels; c++, co += frameSamples) {
-                for (let smp = 0; smp < n; smp++) data[co + smp] = il[(s0 + smp) * srcAudio.channels + c];
-            }
-            const ad = new AudioData({
-                format: 'f32-planar', sampleRate: srcAudio.sr, numberOfFrames: frameSamples,
-                numberOfChannels: srcAudio.channels, timestamp: Math.round((s0 / srcAudio.sr) * 1e6),
-                data,
-            });
-            enc2.encode(ad);
-            ad.close();
-            if ((fi & 31) === 0) report(0.52 + 0.48 * Math.min(1, (fi + 1) / totalFrames));
-        }
-        await enc2.flush();
-        enc2.close();
-    }
-    report(1, '完成');
-    const blob = muxer.finalize();
-    return { blob, ext: 'webm', hasAudio: opusSupported && !!srcAudio };
+// 非 MP4 / MP4 解码失败兜底：注入 shared.js transcodeToVp9Webm 的 opts.videoFallback
+async function _transcodeVideoFallback(file, { makeEncoder, muxer, report }) {
+    const vmeta = await _videoMetaViaVideoEl(file);
+    const ew = (vmeta.width + 1) & ~1, eh = (vmeta.height + 1) & ~1;
+    const { enc, sink } = await makeEncoder(ew, eh);
+    muxer.w = ew; muxer.h = eh;
+    const targetFps = Math.min(vmeta.fps || FPS_CAP, FPS_CAP);
+    const s = sink(1 / targetFps);
+    await _decodeEncodeVideoElSeek(file, vmeta, s, report);
+    await enc.flush(); enc.close();
 }
 
 function _safeForWebp(file) { return isPicFile(file); }
@@ -761,8 +302,8 @@ const Store = {
 
     async load(force = false) {
         if (this._loaded && !force) return this.photos;
+        if (this._loadPromise) return this._loadPromise;
         this._loaded = true;
-        if (force && this._loadPromise) return this._loadPromise;
         const doFetch = async () => {
             try {
                 const r = await fetch(apiBase() + '/api/photos', { cache: 'no-store' });
@@ -895,6 +436,8 @@ const Store = {
 /* =========================================================
    UI 状态
    ========================================================= */
+// 提前声明 stage：clampPan / zoomTo 等函数会引用，定义在文件底部事件绑定处赋值
+let stage = null;
 const state = {
     sortBy: 'latest', latestDir: 'desc', hotestDir: 'desc',
     multiMode: false, selected: new Set(),
@@ -1139,10 +682,17 @@ function makeCard(photo, index) {
 }
 
 function applySelectUI() {
+    const show = state.multiMode;
     $$('.photo-card').forEach(c => {
         const sel = state.selected.has(c.dataset.id);
         c.classList.toggle('selected', sel);
-        const m = c.querySelector('.multi-check'); if (m) m.classList.toggle('on', sel);
+        const m = c.querySelector('.multi-check');
+        if (m) {
+            m.classList.toggle('on', sel);
+            // 勾勾显隐必须由 JS 控制：CSS .multi-check 默认 display:none，
+            // 仅靠 .selected 下换背景色不改变 display → 多选模式下勾勾会一直不可见（历史回归点）
+            m.style.display = show ? 'flex' : 'none';
+        }
     });
 }
 
@@ -1164,11 +714,29 @@ function renderMasonry(reset = true) {
 }
 
 function prependCardToMasonry(photo) {
-    const card = makeCard(photo, 0);
+    // 仅「最新」排序下新上传卡必在排序顶部，插入 DOM 语义正确；
+    // 其它排序（最热/最冷）下新卡（无投票）排在末尾，硬插顶部会造成排序与 DOM 错位，
+    // 且滚动增量渲染（renderMasonry(false) 按 sorted 续 append）时同一张卡会重复出现。
+    if (state.sortBy !== 'latest') return;
+    const list = getSorted();
+    const idxInSorted = list.findIndex(p => p.id === photo.id);
+    if (idxInSorted < 0 || idxInSorted >= state.loadedCount) return;
+    const card = makeCard(photo, idxInSorted);
     const targetCol = _shortestCol();
     if (!targetCol) return;
     if (targetCol.firstChild) targetCol.insertBefore(card, targetCol.firstChild);
     else targetCol.appendChild(card);
+    // 若 Lightbox 开着，新照片插入到列表前面会让当前浏览索引错位 → 按 id 重新定位
+    if (state.lightboxOpen) {
+        const cur = getSorted()[state.currentIndex];
+        const newIdx = cur ? getSorted().findIndex(p => p.id === cur.id) : -1;
+        if (newIdx >= 0 && newIdx !== state.currentIndex) {
+            state.currentIndex = newIdx;
+            const c = $('#lbCounter');
+            if (c) c.textContent = `${newIdx + 1} / ${getSorted().length}`;
+        }
+        renderDots();
+    }
     applySelectUI();
     updateCardStatsById(photo.id);
     $('#emptyState').classList.add('hidden');
@@ -1379,12 +947,18 @@ function onCardPress(e) {
         else toggleSelect(card.dataset.id);
     }, 500);
 }
-['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(ev => {
-    $('#masonry').addEventListener(ev, () => {
+['mouseup', 'touchend', 'touchcancel'].forEach(ev => {
+    $('#masonry').addEventListener(ev, function () {
         clearTimeout(state.longPressTimer);
-        // 恢复 masonry 内所有音量按钮（mouseleave / touchend 都可能是用户已离开某张的状态）
-        document.querySelectorAll('#masonry .audio-toggle.is-hidden').forEach(b => b.classList.remove('is-hidden'));
+        document.querySelectorAll('#masonry .audio-toggle.is-hidden').forEach(function (b) { b.classList.remove('is-hidden'); });
     });
+});
+$('#masonry').addEventListener('mouseleave', function (e) {
+    clearTimeout(state.longPressTimer);
+    var to = e.relatedTarget;
+    if (!to || !e.currentTarget.contains(to)) {
+        document.querySelectorAll('#masonry .audio-toggle.is-hidden').forEach(function (b) { b.classList.remove('is-hidden'); });
+    }
 });
 $('#masonry').addEventListener('touchmove', (e) => {
     clearTimeout(state.longPressTimer);
@@ -1695,12 +1269,89 @@ const setUploadProgress = (p, file, step, extra) => setProgress(p, file, step, e
 async function uploadFiles(files) {
     resetUploadUI();
     _mode = 'upload';
-    const t0 = Date.now();
     await supportsVp9WebCodecs();
     applyFileInputAccept();
     const total = files.length;
     if (total === 0) return;
-    const vp9Ok = _vp9Support === true;
+    // 后台任务路径（SharedWorker）：图片/GIF/MP4 视频均可后台转码、跨页面推进；
+    // 含非 MP4 视频（依赖 <video> 元素解码，Worker 无 DOM）时整批降级主线程流水线。
+    const hasNonMp4Video = files.some(f => isVideoFile(f) && !isMp4File(f));
+    if (TaskWorker.isSupported() && !hasNonMp4Video) {
+        uploadViaTaskWorker(files);
+        return;
+    }
+    runMainThreadUpload(files);
+}
+
+// 后台上传：任务在 SharedWorker 中执行（转码/查重/上传/写库），页面只收进度 + 按序插卡
+function uploadViaTaskWorker(files) {
+    const total = files.length;
+    const pendingPhotos = new Map();
+    let _nextInsertIdx = 0;
+    function flushCards() {
+        const run = [];
+        while (pendingPhotos.has(_nextInsertIdx)) {
+            run.push(pendingPhotos.get(_nextInsertIdx));
+            pendingPhotos.delete(_nextInsertIdx);
+            _nextInsertIdx++;
+        }
+        for (let k = run.length - 1; k >= 0; k--) {
+            if (run[k]) prependCardToMasonry(run[k]);
+        }
+    }
+    function markReady(idx, photo) {
+        pendingPhotos.set(idx, photo || null);
+        flushCards();
+    }
+
+    const summary = { done: 0, skipped: 0, failed: 0 };
+    const off = TaskWorker.onMessage((msg) => {
+        if (msg.type === 'task-update' && msg.task && msg.task.type === 'upload') {
+            const t = msg.task;
+            setUploadProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+        }
+        if (msg.type === 'photo-result') {
+            if (msg.photo) {
+                const p = msg.photo;
+                p.url = fileUrl(p.id);
+                p.hasAudio = !!p.hasAudio;
+                Store.photos.unshift(p);
+                summary.done++;
+                markReady(msg.idx, p);
+                loadDims(p).then(() => Store.markDimsDirty(p, p.width, p.height));
+            } else if (msg.skipped) {
+                summary.skipped++;
+                markReady(msg.idx, null);
+                toast(`「${msg.name || ''}」已存在，跳过`, 'info');
+            } else {
+                summary.failed++;
+                markReady(msg.idx, null);
+                toast(`「${msg.name || ''}」上传失败: ${msg.err || '未知错误'}`, 'alert');
+            }
+        }
+        if (msg.type === 'upload-complete') {
+            setUploadProgress(1, null, summary.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${summary.done} · 跳过 ${summary.skipped} · 失败 ${summary.failed}` });
+            const parts = [];
+            if (summary.done > 0) parts.push(`成功 ${summary.done}`);
+            if (summary.skipped > 0) parts.push(`跳过重复 ${summary.skipped}`);
+            if (summary.failed > 0) parts.push(`失败 ${summary.failed}`);
+            toast(`上传完成：${parts.join('，')}`, summary.done > 0 || summary.skipped > 0 ? 'success' : 'alert');
+            setTimeout(resetUploadUI, 2500);
+            off();
+        }
+    });
+
+    if (!TaskWorker.startUpload(files, apiBase())) {
+        off();
+        runMainThreadUpload(files); // 罕见兜底：消息通道异常时回退主线程
+        return;
+    }
+    toast(`上传已在后台启动（${total} 个文件，切换页面不中断）`, 'info');
+}
+
+async function runMainThreadUpload(files) {
+    const t0 = Date.now();
+    const vp9Ok = window._vp9Support === true;
     _prepBytes = { total: 0, done: 0 };
     _uploadBytes = { total: 0, done: 0 };
 
@@ -1759,9 +1410,11 @@ async function uploadFiles(files) {
         return parts.join(' · ');
     }
     let uiTick = null;
-    const startUiTick = () => { if (uiTick) return; uiTick = setInterval(() => {
-        setUploadProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed) });
-    }, 120); };
+    const startUiTick = () => {
+        if (uiTick) return; uiTick = setInterval(() => {
+            setUploadProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed) });
+        }, 120);
+    };
     const stopUiTick = () => { if (uiTick) { clearInterval(uiTick); uiTick = null; } };
 
     async function processOne(file, idx) {
@@ -1782,7 +1435,7 @@ async function uploadFiles(files) {
                 }
                 const label = isG ? 'GIF 转码' : '视频转码';
                 currentFile = file.name; currentStep = label + '中…';
-                const r = await transcodeToVp9Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); });
+                const r = await transcodeToVp9Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); }, { videoFallback: _transcodeVideoFallback });
                 blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio;
             }
             st.prepP = 1;
@@ -1863,15 +1516,9 @@ async function uploadFiles(files) {
     setTimeout(resetUploadUI, 2500);
 }
 
+// 查重：shared.js 统一实现，页面侧只需补 apiBase
 async function checkHashExists(sha) {
-    try {
-        const r = await fetch(apiBase() + '/api/photos/hash/' + sha, { cache: 'no-store' });
-        if (r.ok) {
-            const j = await r.json();
-            if (j && j.exists) return j.photo || true;
-        }
-    } catch (e) { /* ignore */ }
-    return false;
+    return window.checkHashExists(sha, apiBase());
 }
 
 function loadDims(photo) {
@@ -2088,7 +1735,7 @@ function applyZoomTransform() {
     w.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s}) rotate(${(state.zoom.r || 0).toFixed(2)}deg)`;
 }
 function clampPan() {
-    const w = lbWrap(); if (!w) return;
+    const w = lbWrap(); if (!w || !stage) return;
     const sr = stage.getBoundingClientRect();
     const r = w.getBoundingClientRect();
     // scale<=1 时 translate 归零，但**不重置旋转**（用户显式旋转过就保留）
@@ -2100,9 +1747,14 @@ function clampPan() {
 }
 // 以 stage 内坐标 (sx,sy) 为锚点缩放到 ns
 function zoomTo(ns, sx, sy) {
-    ns = Math.min(8, Math.max(1, ns));
+    if (!stage) return;
+    // 下限 0.5：允许双指/滚轮缩小到 0.5（原下限 1 导致缩小完全无效）
+    ns = Math.min(8, Math.max(0.5, ns));
     const sr = stage.getBoundingClientRect();
     const Sx = sr.width / 2, Sy = sr.height / 2;
+    // 旋转态（非 0/180/360 倍数）下，transform 含 rotate，锚点数学（假设纯 scale+translate）失效，
+    // 围绕手指锚点缩放会"飞走"→ 钉在中心缩放，稳定不飘
+    if (_isRotated()) { sx = Sx; sy = Sy; }
     const s = state.zoom.s, x = state.zoom.x, y = state.zoom.y;
     state.zoom.s = ns;
     state.zoom.x = (sx - Sx) - ns * (sx - Sx - x) / s;
@@ -2121,6 +1773,7 @@ function resetZoom() {
 }
 let pinch = null;
 function startPinch(e) {
+    if (!stage) return;
     const t0 = e.touches[0], t1 = e.touches[1];
     const sr = stage.getBoundingClientRect();
     const dx = t0.clientX - t1.clientX, dy = t0.clientY - t1.clientY;
@@ -2209,12 +1862,15 @@ function onGm(e) {
         // 1) 先把 zoom 按双指锚点缩放（沿用 zoomTo 的锚点计算，不做 clampPan 因为拖动中）
         //    锚点公式要求 (s,x,y) 同时刻：这里全部用 pinch 起始值，ns 只依赖 d/pinch.dist，
         //    每帧从起始状态独立计算，避免累积漂移。
-        const ns = Math.min(8, Math.max(1, pinch.s * (d / pinch.dist)));
+        //    下限 0.5 允许缩小；旋转态锚点钉中心（同 zoomTo，防 rotate 破坏锚点数学导致飞走）
+        const ns = Math.min(8, Math.max(0.5, pinch.s * (d / pinch.dist)));
         const Sx = sr.width / 2, Sy = sr.height / 2;
         const s = pinch.s, x = pinch.x, y = pinch.y;
+        const ax = _isRotated() ? Sx : cx;
+        const ay = _isRotated() ? Sy : cy;
         state.zoom.s = ns;
-        state.zoom.x = (cx - Sx) - ns * (cx - Sx - x) / s;
-        state.zoom.y = (cy - Sy) - ns * (cy - Sy - y) / s;
+        state.zoom.x = (ax - Sx) - ns * (ax - Sx - x) / s;
+        state.zoom.y = (ay - Sy) - ns * (ay - Sy - y) / s;
         // 2) 叠加旋转相对增量（以 pinch 起始为基准，避免累积浮点漂移）
         state.zoom.r = pinch.r + rotDelta;
         applyZoomTransform();
@@ -2380,7 +2036,7 @@ function onGeMouse() {
     _resetLbWrapAndGestures(true);
 }
 
-const stage = $('#lbStage');
+stage = $('#lbStage');
 stage.addEventListener('mousedown', onGs);
 document.addEventListener('mousemove', onGm);
 document.addEventListener('mouseup', () => { if (state.dragging) onGeMouse(); });
@@ -2481,47 +2137,61 @@ async function downloadUrl(url, name) {
 let _resumeWorkerListener = null;
 function resumeRunningTask() {
     if (!TaskWorker.isSupported()) return;
-    const types = ['delete', 'download'];
-    for (const ttype of types) {
-        const t = TaskWorker.getTask(ttype);
-        if (t && t.status === 'running') {
-            _mode = ttype;
-            resetProgressUI();
-            setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
-            toast(`检测到后台进行中的${ttype === 'delete' ? '删除' : ttype === 'download' ? '下载' : '上传'}任务，已恢复进度显示`, 'info');
-            if (_resumeWorkerListener) _resumeWorkerListener();
-            _resumeWorkerListener = TaskWorker.onMessage((msg) => {
-                if (msg.type === 'task-update' && msg.task && msg.task.type === ttype) {
-                    const tt = msg.task;
-                    setProgress(tt.progress, tt.curFile, tt.step, { stat: tt.extraStat || '', remaining: tt.total - tt.done - tt.skipped - tt.failed });
-                }
-                if (msg.type === 'task-clear' && msg.taskType === ttype) {
-                    setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 2500);
-                    if (_resumeWorkerListener) { _resumeWorkerListener(); _resumeWorkerListener = null; }
-                }
-                if (msg.type === 'delete-complete') {
-                    (async () => {
-                        await Store.load(true);
-                        exitMulti();
-                        renderMasonry();
-                    })();
-                }
-                if (msg.type === 'download-complete' && msg.zipUrl) {
-                    downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
-                    setTimeout(() => URL.revokeObjectURL(msg.zipUrl), 60000);
-                    toast('下载完成', 'success');
-                }
-            });
-            return;
-        }
+    const types = ['upload', 'delete', 'download'];
+    const activeTypes = [];
+    for (var ti = 0; ti < types.length; ti++) {
+        var tt = TaskWorker.getTask(types[ti]);
+        if (tt && tt.status === 'running') activeTypes.push(types[ti]);
     }
+    if (activeTypes.length === 0) return;
+    var resumedType = activeTypes[0];
+    var t = TaskWorker.getTask(resumedType);
+    _mode = resumedType;
+    resetProgressUI();
+    setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+    var msgMap = { delete: '删除', download: '下载', upload: '上传' };
+    var extraNote = activeTypes.length > 1 ? '（同时运行 ' + activeTypes.length + ' 个任务）' : '';
+    toast('检测到后台进行中的' + (msgMap[resumedType] || resumedType) + '任务' + extraNote + '，已恢复进度显示', 'info');
+    if (_resumeWorkerListener) _resumeWorkerListener();
+    _resumeWorkerListener = TaskWorker.onMessage(function (msg) {
+        if (msg.type === 'task-update' && msg.task && activeTypes.indexOf(msg.task.type) >= 0) {
+            var mt = msg.task;
+            if (mt.type === resumedType || !TaskWorker.getTask(resumedType) || TaskWorker.getTask(resumedType).status !== 'running') {
+                _mode = mt.type;
+                setProgress(mt.progress, mt.curFile, mt.step, { stat: mt.extraStat || '', remaining: mt.total - mt.done - mt.skipped - mt.failed });
+            }
+        }
+        if (msg.type === 'task-clear' && activeTypes.indexOf(msg.taskType) >= 0) {
+            var i2 = activeTypes.indexOf(msg.taskType);
+            if (i2 >= 0) activeTypes.splice(i2, 1);
+            if (activeTypes.length === 0) {
+                setTimeout(function () { resetProgressUI(); _mode = 'upload'; }, 2500);
+                if (_resumeWorkerListener) { var l = _resumeWorkerListener; _resumeWorkerListener = null; l(); }
+            }
+        }
+        if (msg.type === 'delete-complete') {
+            (async function () {
+                await Store.load(true);
+                exitMulti();
+                renderMasonry();
+            })();
+        }
+        if (msg.type === 'download-complete' && msg.zipUrl) {
+            downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
+            setTimeout(function () { URL.revokeObjectURL(msg.zipUrl); }, 60000);
+            toast('下载完成', 'success');
+        }
+        if (msg.type === 'upload-complete') {
+            (async function () {
+                await Store.load(true);
+                renderMasonry();
+            })();
+        }
+    });
 }
 
 (async function init() {
-    try {
-        const q = new URLSearchParams(location.search).get('api');
-        if (q) CONFIG.API_BASE = q;
-    } catch (e) { }
+    // 跨域部署支持（?api= 指定后端）已按需求移除：前端固定同源 Worker API
     renderIcons();
     updateSortUI();
     try { await checkAdmin(); } catch (_) { state.isAdmin = false; }
