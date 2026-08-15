@@ -28,36 +28,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 首次部署：自动创建 KV namespace 并回填 wrangler.toml（幂等，之后跳过）
-      - name: Ensure KV namespace (PHOTOS)
+      # KV namespace PHOTOS 已创建，id 固化在 wrangler.toml，无需动态创建/回写
+      - name: Verify KV namespace configured
         run: |
-          if grep -q 'id = "REPLACE_WITH_KV_ID"' wrangler.toml; then
-            echo "Creating KV namespace PHOTOS..."
-            # wrangler v4 的 kv namespace create 无 --json 标志，输出含 emoji/说明文字，
-            # KV namespace id 恒为 32 位十六进制，直接正则提取即可
-            KV_OUT=$(npx wrangler kv namespace create PHOTOS 2>&1)
-            echo "$KV_OUT"
-            KV_ID=$(echo "$KV_OUT" | grep -oE '[a-f0-9]{32}' | head -1)
-            if [ -z "$KV_ID" ]; then
-              # create 失败（如已存在）→ 从 namespace list 中查找同名 id
-              echo "create 未返回 id，尝试从已有 namespaces 查找..."
-              KV_OUT=$(npx wrangler kv namespace list 2>&1)
-              KV_ID=$(echo "$KV_OUT" | grep -oE '"title": *"PHOTOS"[^}]*"id": *"[a-f0-9]{32}"' | grep -oE '[a-f0-9]{32}' | head -1)
-            fi
-            if [ -z "$KV_ID" ]; then
-              echo "::error::无法获取 KV id。输出: $KV_OUT"
-              exit 1
-            fi
-            sed -i "s/id = \"REPLACE_WITH_KV_ID\"/id = \"$KV_ID\"/" wrangler.toml
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add wrangler.toml
-            git commit -m "chore: init KV namespace PHOTOS (id=$KV_ID)" || true
-            git push origin HEAD:main || true
-          else
-            echo "KV namespace already configured, skipping."
+          if grep -q 'REPLACE_WITH_KV_ID' wrangler.toml; then
+            echo "::error::wrangler.toml 中 KV id 仍是占位符，请先在 Cloudflare 创建 KV namespace 并回填 id"
+            exit 1
           fi
-        shell: bash
+          echo "KV namespace PHOTOS configured: $(grep -A1 'binding = "PHOTOS"' wrangler.toml | grep 'id =' | tr -d ' ')"
 
       - name: Deploy to Cloudflare Workers
         run: npx wrangler deploy
