@@ -206,7 +206,8 @@
         const idBytes = (typeof id === 'number') ? (() => {
             const a = []; let v = id;
             while (v) { a.unshift(v & 0xff); v >>>= 8; }
-            while (!a.length || !(a[0] & 0x80)) a.unshift(0);
+            // EBML ID 本身即 1-4 字节、首字节自带长度标记（0x1F43B675 等 4 字节 ID 首字节 0x1F 无 bit7 是合法的）。
+            // 不能补零到 bit7=1：对 0x1F 开头的 ID 会永远补不够 → 死循环（原实现 bug，视频/GIF 转码合成 WebM 时卡死）。
             return new Uint8Array(a);
         })() : id;
         const bodyLen = (body instanceof Uint8Array) ? body.byteLength : 0;
