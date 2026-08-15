@@ -1357,7 +1357,6 @@ function fetchWithProgress(url, opts, onProgress) {
         const xhr = new XMLHttpRequest();
         xhr.open('GET', url, true);
         xhr.responseType = 'blob';
-        if (opts?.cache) xhr.channel?.loadFlags;
         let knownTotal = 0;
         xhr.onprogress = (e) => {
             if (e.lengthComputable) {
