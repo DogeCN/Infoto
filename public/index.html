@@ -160,6 +160,7 @@ main { padding:4.5rem .75rem 4rem; min-height:100vh; }
   position:absolute; inset:0; width:100%; height:100%;
   object-fit:contain;                 /* 不裁剪，保持原比例完整显示 */
   opacity:0; transition:opacity .3s; border-radius:var(--r-lg);
+  -webkit-user-drag:none; user-select:none; -webkit-user-select:none;
 }
 .photo-card .ph-img.loaded { opacity:1; }
 .photo-card .ratio-holder { position:relative; width:100%; }
@@ -700,7 +701,7 @@ const state = {
   multiMode:false, selected:new Set(),
   longPressTimer:null, longPressTriggered:false,
   lightboxOpen:false, currentIndex:0,
-  boxSelecting:false, boxStart:null,
+  boxSelecting:false, boxStart:null, boxArm:false, suppressClick:false,
   menuOpen:false,
   dragging:false, dragStart:null, dragCurrent:null,
   skeleton:true
@@ -785,6 +786,7 @@ function makeCard(photo, index){
   const skel = el('div','skeleton');
   const img = el('img','ph-img');
   img.loading = 'lazy';
+  img.draggable = false;              // 禁止浏览器原生图片拖拽，保证框选可在图片上启动
   img.alt = photo.filename || 'photo';
   img.src = photo.url;
   img.onload = ()=>{
@@ -910,6 +912,7 @@ function onCardPress(e){
   const card = e.target.closest('.photo-card');
   if(!card) return;
   if(e.type==='mousedown' && e.button!==0) return;
+  if(state.multiMode) return;   // 多选模式下长按无意义（点击即选择），交给框选/点击
   state.longPressTriggered = false;
   clearTimeout(state.longPressTimer);
   state.longPressTimer = setTimeout(()=>{
@@ -924,6 +927,7 @@ function onCardPress(e){
   });
 });
 $('#masonry').addEventListener('click', (e)=>{
+  if(state.suppressClick){ state.suppressClick=false; return; }   // 刚拖完框选，不算点击
   const card = e.target.closest('.photo-card');
   if(!card) return;
   if(state.longPressTriggered) return;
@@ -932,25 +936,30 @@ $('#masonry').addEventListener('click', (e)=>{
   openLightbox(getSorted().findIndex(p=>p.id===id));
 });
 
-/* ---- 拖动框选（桌面端多选模式） ---- */
+/* ---- 拖动框选（桌面端多选模式，任意区域可拖，含图片上） ---- */
+const BOX_DRAG_THRESHOLD = 5;   // 移动超过该阈值才视为拖动框选，否则是点击
 document.addEventListener('mousedown', e=>{
   if(!state.multiMode) return;
   if(!e.target.closest('#masonry')) return;
-  if(e.target.closest('.photo-card')) return;
-  state.boxSelecting = true;
+  if(e.button!==0) return;
+  // 任意位置（含图片上）按下都开始框选待命；移动超阈值才真正框选
+  state.boxArm = true;
+  state.boxSelecting = false;
   state.boxStart = {x:e.clientX, y:e.clientY};
-  const b = $('#selectionBox');
-  b.style.display='block';
-  b.style.left=e.clientX+'px'; b.style.top=e.clientY+'px';
-  b.style.width='0'; b.style.height='0';
-  e.preventDefault();
+  state.suppressClick = false;   // 每次新按下先重置
 });
 document.addEventListener('mousemove', e=>{
-  if(!state.boxSelecting) return;
+  if(!state.boxArm) return;
   const s = state.boxStart;
+  const dx = e.clientX - s.x, dy = e.clientY - s.y;
+  if(!state.boxSelecting && Math.max(Math.abs(dx), Math.abs(dy)) < BOX_DRAG_THRESHOLD) return;
+  state.boxSelecting = true;
+  state.suppressClick = true;    // 已拖动，本次不算点击
+  e.preventDefault();            // 阻止文本选中等原生行为
   const x=Math.min(s.x,e.clientX), y=Math.min(s.y,e.clientY);
   const w=Math.abs(e.clientX-s.x), h=Math.abs(e.clientY-s.y);
   const b = $('#selectionBox');
+  b.style.display='block';
   b.style.left=x+'px'; b.style.top=y+'px'; b.style.width=w+'px'; b.style.height=h+'px';
   const box = {left:x, right:x+w, top:y, bottom:y+h};
   $$('.photo-card').forEach(c=>{
@@ -961,6 +970,7 @@ document.addEventListener('mousemove', e=>{
   applySelectUI(); updateCount();
 });
 document.addEventListener('mouseup', ()=>{
+  state.boxArm = false;
   if(state.boxSelecting){
     state.boxSelecting=false;
     $('#selectionBox').style.display='none';
