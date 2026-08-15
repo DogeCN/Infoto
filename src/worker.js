@@ -57,7 +57,9 @@ export default {
           delete clean.likes; delete clean.dislikes;
           const idx = arr.findIndex(x => x.id === clean.id);
           if (idx >= 0) arr[idx] = clean; else arr.unshift(clean);
-          await env.PHOTOS.put('photos', JSON.stringify(arr));
+          const value = JSON.stringify(arr);
+          if (!value) throw new Error('failed to serialize photos');
+          await env.PHOTOS.put('photos', value);
           return json(cors, { ok: true, count: arr.length });
         } catch (e) {
           return json(cors, { error: 'bad json' }, 400);
