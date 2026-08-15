@@ -205,9 +205,10 @@ export default {
         let off = 0;
         for (const c of chunks) { merged.set(c, off); off += c.length; }
 
-        const ext = p.ext || extFromName(p.parts && p.parts[0]) || 'webp';
+        if (!p.ext) return json(cors, { error: 'photo missing ext' }, 500);
+        const ext = String(p.ext).toLowerCase();
         const dlName = p.id + '.' + ext;
-        const ct = mimeFromName(dlName);
+        const ct = mimeFromExt(ext);
         const isSafe = ct.startsWith('image/') || ct.startsWith('video/');
         const fhdrs = {
           ...cors,
@@ -243,14 +244,12 @@ const SAFE_MIME = {
   heic: 'image/heic', ico: 'image/x-icon', tiff: 'image/tiff', tif: 'image/tiff',
   webm: 'video/webm', mp4: 'video/mp4', mov: 'video/quicktime',
 };
-function extFromName(name) {
-  if (!name) return '';
-  const i = String(name).lastIndexOf('.');
-  return i >= 0 ? String(name).slice(i + 1).toLowerCase() : '';
+function mimeFromExt(ext) {
+  return SAFE_MIME[String(ext || '').toLowerCase()] || 'application/octet-stream';
 }
 function mimeFromName(name) {
-  const ext = extFromName(name);
-  return SAFE_MIME[ext] || 'application/octet-stream';
+  const i = String(name || '').lastIndexOf('.');
+  return mimeFromExt(i >= 0 ? String(name).slice(i + 1) : '');
 }
 
 // 安全 Content-Disposition：过滤控制字符（含 \r\n\t），用 RFC 5987 filename*=UTF-8'' 支持中文

@@ -26,6 +26,7 @@ const ICONS = {
     'check': '<polyline points="20 6 9 17 4 12"/>',
     'info': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
     'alert': '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+    'success': '<circle cx="12" cy="12" r="10"/><polyline points="20 6 9 17 4 12"/>',
 };
 
 function renderIcons(root) {
@@ -51,8 +52,63 @@ const CONFIG = {
     CDEAA_LIMIT: 600 * 1024,
     CHUNK_SIZE: 1024 * 1024,
     CONCURRENCY: 3,
-    MAX_RETRY: 3,
+    MAX_RETRY: 3
+    ,
 };
+
+/* =========================================================
+   WebCodecs AV1 支持探测 & 文件类型白名单
+   - AV1 WebCodecs 支持（Chrome/Edge 115+ PC, Android 14+）→ 允许 图片/GIF/视频，GIF/视频转 AV1 WebM
+   - 不支持（Safari 全系、老 Chrome/Firefox）→ 仅允许 图片，文件选择器自动排除视频/GIF
+   ========================================================= */
+const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|flv|wmv|ogv|ogg)$/i;
+const GIF_EXT_RE = /\.gif$/i;
+const PIC_EXT_RE = /\.(png|jpe?g|webp|bmp|avif|jxl|heic|heif|tiff?|ico)$/i;
+function isVideoFile(f) { return !!(f && (f.type?.startsWith?.('video/') || VIDEO_EXT_RE.test(f.name || ''))); }
+function isGifFile(f) { return !!(f && (f.type === 'image/gif' || GIF_EXT_RE.test(f.name || ''))); }
+function isPicFile(f) { return !!(f && (f.type?.startsWith?.('image/') || PIC_EXT_RE.test(f.name || ''))) && !isGifFile(f); }
+function hasAnimatedMedia(p) { const e = String(p && p.ext || '').toLowerCase(); return e === 'webm'; }
+function picMediaType(p) { return hasAnimatedMedia(p) ? 'video' : 'image'; }
+
+let _av1Support = null;
+async function supportsAV1WebCodecs() {
+    if (_av1Support !== null) return _av1Support;
+    if (typeof VideoEncoder !== 'function') { _av1Support = false; return false; }
+    try {
+        const cfg = { codec: 'av01.0.04M.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' };
+        const r = await VideoEncoder.isConfigSupported(cfg);
+        _av1Support = !!(r && r.supported);
+    } catch (_) { _av1Support = false; }
+    return _av1Support;
+}
+function applyFileAcceptFilter(av1Supported) {
+    const input = $('#fileInput');
+    if (!input) return;
+    if (av1Supported) {
+        // 支持 AV1：图片 + 视频 + 显式 .gif（部分浏览器 image/* 包含 gif，单独写确保）
+        input.setAttribute('accept', 'image/*,video/*,.gif');
+    } else {
+        // 不支持（Safari 等）：仅接受图片，排除 GIF 与所有视频
+        input.setAttribute('accept', 'image/png,image/jpeg,image/webp,image/bmp,image/avif,image/jxl,image/heic,image/tiff,image/x-icon');
+    }
+}
+// 启动探测后立即设置 accept
+supportsAV1WebCodecs().then(ok => applyFileAcceptFilter(ok));
+
+// 文件名/类型兜底：拖拽、剪贴板可能绕过 accept，上传前再次过滤
+function filterUnsupportedFiles(files, av1Supported) {
+    const out = [];
+    const rejected = [];
+    for (const f of files) {
+        if (isGifFile(f) || isVideoFile(f)) {
+            if (av1Supported) out.push(f); else rejected.push(f);
+        } else {
+            // 图片 & 其他：一律通过，SVG/不支持格式后续在预处理里拒
+            out.push(f);
+        }
+    }
+    return { ok: out, rejected };
+}
 
 async function sha256Hex(buf) {
     const d = await crypto.subtle.digest('SHA-256', buf);
@@ -79,6 +135,449 @@ async function compressToWebp(file, quality = WEBP_QUALITY) {
         return null;
     }
 }
+
+/* =========================================================
+   轻量 WebM（EBML + SimpleBlock） muxer：支持多 Track
+   - Track 1 = 视频（V_AV1 / VP9 ...）
+   - Track 2 = 音频（A_OPUS / A_VORBIS ...）可选
+   零依赖 ~6KB，不写 SeekHead/Cues（播放 ok，拖动精度低）
+   ========================================================= */
+function _vint(n, length = 0) {
+    if (n < 0 || !isFinite(n)) throw new Error('bad vint');
+    if (!length) {
+        length = 1;
+        while ((n >= (1 << (7 * length))) && length < 8) length++;
+    }
+    const b = new Uint8Array(length);
+    let v = n;
+    for (let i = length - 1; i >= 0; i--) { b[i] = v & 0xff; v >>>= 8; }
+    b[0] |= (0x80 >>> (length - 1));
+    return b;
+}
+function _concat(arrays) {
+    let t = 0; for (const a of arrays) t += a.byteLength || a.length || 0;
+    const out = new Uint8Array(t); let o = 0;
+    for (const a of arrays) { const u = (a instanceof Uint8Array) ? a : new Uint8Array(a); out.set(u, o); o += u.length; }
+    return out;
+}
+function _ebml(id, body) {
+    const idBytes = (typeof id === 'number') ? (() => {
+        const a = []; let v = id;
+        while (v) { a.unshift(v & 0xff); v >>>= 8; }
+        while (!a.length || !(a[0] & 0x80)) a.unshift(0);
+        return new Uint8Array(a);
+    })() : id;
+    const bodyLen = (body instanceof Uint8Array) ? body.byteLength : 0;
+    return _concat([idBytes, _vint(bodyLen), body]);
+}
+function _ebmlU(id, value, bytes = 0) {
+    let b;
+    if (!bytes) {
+        if (value === 0) bytes = 1;
+        else { bytes = 0; let v = value; do { bytes++; v >>>= 8; } while (v); }
+    }
+    b = new Uint8Array(bytes);
+    let v = value;
+    for (let i = bytes - 1; i >= 0; i--) { b[i] = v & 0xff; v >>>= 8; }
+    return _ebml(id, b);
+}
+function _ebmlFloat(id, value) {
+    const dv = new DataView(new ArrayBuffer(8));
+    dv.setFloat64(0, value, false);
+    return _ebml(id, new Uint8Array(dv.buffer));
+}
+function _ebmlStr(id, s) {
+    const enc = new TextEncoder();
+    return _ebml(id, enc.encode(String(s)));
+}
+
+class SimpleWebMMuxer {
+    constructor({ width, height, timeDen = 1000, videoCodec = 'V_AV1', audio = null /* {sampleRate, channels, codecId:'A_OPUS', codecPrivate:Uint8Array|null} */ }) {
+        this.w = width; this.h = height;
+        this.tDen = timeDen;  // Cluster/SimpleBlock 用的 timecode 单位：1/timeDen 秒（默认 1ms）
+        this.videoCodec = videoCodec;
+        this.audio = audio ? { sampleRate: 48000, channels: 2, codecId: 'A_OPUS', codecPrivate: null, ...audio } : null;
+        this.clusters = [];
+        this._curCluster = null;
+        this.maxDurationSec = 0;
+    }
+    _openCluster(timecode) {
+        this._curCluster = { timecode, blocks: [] };
+        this.clusters.push(this._curCluster);
+    }
+    _closeCluster() { this._curCluster = null; }
+    _trackNumVint(trackNum) {
+        // vint 单字节 track 1=0x81，track 2=0x82 ...
+        const b = new Uint8Array(1);
+        b[0] = (0x80) | (trackNum & 0x7f);
+        return b;
+    }
+    // timestampSec: 秒（float）；trackNum: 1=视频，2=音频；keyframe 只对视频有效
+    addChunk(data, { timestampSec, trackNum = 1, keyframe = false }) {
+        const tc = Math.max(0, Math.round(timestampSec * this.tDen));
+        if (!this._curCluster) this._openCluster(tc);
+        else if (tc - this._curCluster.timecode > 30000) { this._closeCluster(); this._openCluster(tc); }
+        const relTc = tc - this._curCluster.timecode;
+        // SimpleBlock: TrackNum(vint) + RelativeTimecode(int16 BE) + Flags(1B) + frame bytes
+        const tcBytes = new Uint8Array(2);
+        new DataView(tcBytes.buffer).setInt16(0, Math.max(-32768, Math.min(32767, relTc)), false);
+        const flags = (keyframe && trackNum === 1) ? 0x80 : 0x00; // Keyframe bit only for video
+        const body = _concat([this._trackNumVint(trackNum), tcBytes, new Uint8Array([flags]), new Uint8Array(data)]);
+        this._curCluster.blocks.push(_ebml(0xa3, body));
+        this.maxDurationSec = Math.max(this.maxDurationSec, timestampSec);
+    }
+    _trackEntry(num, uid, type, codecId, opts = {}) {
+        const inner = [_ebmlU(0xd7, num), _ebmlU(0x73c5, uid), _ebmlU(0x83, type), _ebmlStr(0x86, codecId)];
+        if (opts.video) {
+            const { width, height } = opts.video;
+            inner.push(_ebml(0xe0, _concat([_ebmlU(0xb0, width), _ebmlU(0xba, height)])));
+        }
+        if (opts.audio) {
+            const { sampleRate, channels } = opts.audio;
+            const srBytes = new Uint8Array(8);
+            new DataView(srBytes.buffer).setFloat64(0, sampleRate, false);
+            inner.push(_ebml(0xe1, _concat([
+                new Uint8Array(_ebmlFloat(0xb5, sampleRate).slice(1)),  // SamplingFrequency(float) —— 直接拼 ebmlFloat
+                _ebmlU(0x9f, channels),
+            ])));
+            if (opts.codecPrivate) inner.push(_ebml(0x63a2, opts.codecPrivate));
+        } else if (opts.codecPrivate) {
+            inner.push(_ebml(0x63a2, opts.codecPrivate));
+        }
+        return _ebml(0xae, _concat(inner));
+    }
+    finalize() {
+        if (this._curCluster) this._closeCluster();
+        const durationUs = Math.round(this.maxDurationSec * 1e6); // 微秒，对应 TimecodeScale=1e6 ns
+        // --- Cluster 序列化 ---
+        const clusterParts = [];
+        for (const c of this.clusters) {
+            const inner = _concat([_ebmlU(0xe7, c.timecode), ...c.blocks]);
+            clusterParts.push(_ebml(0x1f43b675, inner));
+        }
+        // --- Segment 顶层 ---
+        const segmentInner = [];
+        // Info
+        const infoInner = _concat([
+            _ebmlU(0x2ad7b1, 1e6),                     // TimecodeScale = 1,000,000 ns = 1ms
+            _ebmlFloat(0x4489, this.maxDurationSec),   // Duration (秒，float)
+            _ebmlStr(0x4d80, 'Infoto WebCodecs'),
+            _ebmlStr(0x5741, 'Infoto WebCodecs'),
+        ]);
+        segmentInner.push(_ebml(0x1549a966, infoInner));
+        // Tracks
+        const tracks = [
+            this._trackEntry(1, 1, 1, this.videoCodec, { video: { width: this.w, height: this.h } })
+        ];
+        if (this.audio) {
+            const cp = this.audio.codecPrivate ? new Uint8Array(this.audio.codecPrivate) : null;
+            tracks.push(this._trackEntry(2, 2, 2, this.audio.codecId, {
+                audio: { sampleRate: this.audio.sampleRate, channels: this.audio.channels },
+                codecPrivate: cp
+            }));
+        }
+        segmentInner.push(_ebml(0x1654ae6b, _concat(tracks)));
+        for (const cp of clusterParts) segmentInner.push(cp);
+
+        const segment = _ebml(0x18538067, _concat(segmentInner));
+        const ebmlHeader = _ebml(0x1a45dfa3, _concat([
+            _ebmlU(0x4286, 1), _ebmlU(0x42f7, 1),
+            _ebmlU(0x42f2, 4), _ebmlU(0x42f3, 8),
+            _ebmlStr(0x4282, 'webm'),
+            _ebmlU(0x4287, 4), _ebmlU(0x4285, 2),
+        ]));
+        return new Blob([_concat([ebmlHeader, segment])], { type: 'video/webm' });
+    }
+}
+
+/* ---- GIF / 视频 → AV1 WebM（WebCodecs VideoEncoder + 上文 SimpleWebMMuxer） ----
+ * - GIF：用 createImageBitmap 逐帧解码（浏览器原生支持 GIF ImageBitmap），按帧 delay 时间轴推进
+ * - 视频：<video> + requestVideoFrameCallback 逐帧取 VideoFrame（无法原生 demux 的折中方案）
+ * 两种路径输出无音频、平均 5 Mbps 以下的 AV1 main profile level 4 Main(0.0.04M.08)
+ * 压缩后若不小于原文件则回退原 blob（保留原 ext 直接上传）。 */
+const AV1_BITRATE_PER_PIXEL = 0.35; // 每个像素 0.35 bps，约 1080p ≈ 7 Mbps
+const OPUS_BITRATE_PER_CHANNEL = 64000; // 每声道 64 kbps Opus（128kbps stereo）
+function _av1Codec(w, h) {
+    const tier = 'M';
+    let level = '04'; if (h > 2304) level = '05';
+    return `av01.00.${level}${tier}.08`;
+}
+async function _decodeGifFrames(file) {
+    const { default: GifReader } = await import('https://cdn.jsdelivr.net/npm/omggif@1.0.10/+esm');
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const reader = new GifReader(buf);
+    const w = reader.width, h = reader.height;
+    const frames = [];
+    let t = 0;
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    let prev = ctx.createImageData(w, h);
+    for (let i = 0; i < reader.numFrames(); i++) {
+        const info = reader.frameInfo(i);
+        const delayMs = Math.max(20, (info.delay || 10) * 10);
+        const img = ctx.createImageData(w, h);
+        reader.decodeAndBlitFrameRGBA(i, img.data);
+        if (info.disposal === 3 && prev) {
+            ctx.putImageData(prev, 0, 0);
+            ctx.globalCompositeOperation = 'source-over';
+            const tmpC = new OffscreenCanvas(w, h);
+            const tmpX = tmpC.getContext('2d');
+            tmpX.putImageData(img, 0, 0);
+            ctx.drawImage(tmpC, info.x, info.y, info.width, info.height);
+        } else {
+            ctx.putImageData(img, 0, 0);
+        }
+        if (info.disposal !== 3) prev = ctx.getImageData(0, 0, w, h);
+        const bitmap = await createImageBitmap(canvas);
+        frames.push({ bitmap, delayMs, ts: t / 1000 });
+        t += delayMs;
+    }
+    return { width: w, height: h, frames, durationSec: t / 1000, hasAudio: false };
+}
+
+// 视频 → 同时抓：①视频帧（createImageBitmap，FPS 上限 30）②音频帧（WebAudio ScriptProcessor 抽 AudioData，再编码 Opus）
+async function _decodeVideoFramesAndAudio(file, progressCb) {
+    const url = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.muted = false; v.playsInline = true; v.preload = 'auto'; v.src = url;
+    try { await new Promise((res, rej) => { v.onloadedmetadata = res; v.onerror = () => rej(new Error('video load fail')); v.load(); }); }
+    catch (e) { URL.revokeObjectURL(url); throw e; }
+    const w = v.videoWidth, h = v.videoHeight;
+    const duration = Math.max(0.001, isFinite(v.duration) ? v.duration : 1);
+    // --- 音频探测 & 解码 ---
+    let hasAudio = false;
+    try { hasAudio = !!((v.mozHasAudio || v.webkitAudioDecodedByteCount || v.audioTracks && v.audioTracks.length) || (v.played && v.played.length >= 0)); } catch (_) { }
+    let audioCtx = null, source = null, script = null, stereoBuffers = null, audioSr = 48000, audioCh = 2;
+    if (hasAudio && typeof AudioContext !== 'undefined') {
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+            const ab = await file.arrayBuffer();
+            const decoded = await audioCtx.decodeAudioData(ab.slice(0));
+            hasAudio = decoded.numberOfChannels > 0 && decoded.length > 0;
+            if (hasAudio) {
+                audioSr = decoded.sampleRate;
+                audioCh = Math.min(2, decoded.numberOfChannels);
+                // 把解码得到的 PCM 交错 float32，后续直接送 AudioEncoder（要求 48kHz Opus，这里重采样交给 audioCtx.decodeAudioData + 我们做线性插值）
+                stereoBuffers = {
+                    sr: decoded.sampleRate,
+                    length: decoded.length,
+                    channels: Array.from({ length: audioCh }, (_, c) => decoded.getChannelData(c).slice()),
+                };
+            }
+        } catch (err) {
+            console.warn('[infoto] audio decode fail, fallback no-audio', err);
+            hasAudio = false;
+        }
+    }
+    // 采样率转换：把 src PCM 从 stereoBuffers.sr 转成 48000
+    function resamplePCM(buf, dstSr) {
+        if (!buf) return null;
+        const srcSr = buf.sr;
+        if (Math.abs(srcSr - dstSr) < 1) {
+            // 同采样率，直接交错
+            const n = buf.length, ch = buf.channels.length;
+            const out = new Float32Array(n * ch);
+            for (let s = 0, o = 0; s < n; s++) for (let c = 0; c < ch; c++, o++) out[o] = buf.channels[c][s];
+            return { interleaved: out, samples: n, sr: dstSr, channels: ch };
+        }
+        const ratio = srcSr / dstSr;
+        const dstN = Math.max(1, Math.round(buf.length * dstSr / srcSr));
+        const ch = buf.channels.length;
+        const out = new Float32Array(dstN * ch);
+        const src = buf.channels;
+        for (let i = 0; i < dstN; i++) {
+            const s = i * ratio;
+            const s0 = Math.floor(s); const s1 = Math.min(buf.length - 1, s0 + 1);
+            const f = s - s0;
+            for (let c = 0; c < ch; c++) {
+                out[i * ch + c] = src[c][s0] * (1 - f) + src[c][s1] * f;
+            }
+        }
+        return { interleaved: out, samples: dstN, sr: dstSr, channels: ch };
+    }
+    let audioResampled = hasAudio ? resamplePCM(stereoBuffers, 48000) : null;
+    audioSr = 48000;
+
+    // --- 视频抓帧 ---
+    const frames = [];
+    let lastTs = -1;
+    const FPS_CAP = 30;
+    const minInterval = 1 / FPS_CAP;
+    const grabFrame = async () => {
+        try {
+            const ts = v.currentTime;
+            if (ts - lastTs >= minInterval) {
+                const bmp = await createImageBitmap(v);
+                frames.push({ bitmap: bmp, ts });
+                lastTs = ts;
+            }
+        } catch (_) { }
+    };
+    v.playbackRate = 1.0;
+    await v.play().catch(() => { });
+    await new Promise(resolve => {
+        const tick = async () => {
+            await grabFrame();
+            if (progressCb) progressCb(0.01 + 0.49 * Math.min(1, v.currentTime / Math.max(0.001, duration)));
+            if (v.ended || v.readyState === 0) { resolve(); return; }
+            requestAnimationFrame(tick);
+        };
+        v.onerror = () => resolve();
+        tick();
+    });
+    v.pause();
+    try { v.currentTime = 0; } catch (_) { }
+    URL.revokeObjectURL(url);
+    if (audioCtx) try { audioCtx.close(); } catch (_) { }
+    return {
+        width: w, height: h,
+        frames, durationSec: Math.max(duration, lastTs || 0),
+        hasAudio: !!audioResampled,
+        audio: audioResampled || null,
+    };
+}
+
+// 统一入口：GIF/视频 → 强制转 AV1 WebM（不管体积），返回 blob + hasAudio
+async function transcodeToAv1Webm(file, progressCb) {
+    const report = (p, label) => { if (progressCb) progressCb(p, label); };
+    const isGif = isGifFile(file);
+    const decoded = isGif
+        ? await _decodeGifFrames(file)
+        : await _decodeVideoFramesAndAudio(file, (p) => report(Math.min(0.5, p), isGif ? 'GIF 解码' : '视频解码+抓帧'));
+    const { width, height, frames, durationSec, hasAudio, audio } = decoded;
+    if (!frames.length) throw new Error('no frames decoded');
+    const ew = (width + 1) & ~1;
+    const eh = (height + 1) & ~1;
+    const codec = _av1Codec(ew, eh);
+    const support = await VideoEncoder.isConfigSupported({ codec, width: ew, height: eh });
+    if (!support.supported) throw new Error('AV1 not supported: ' + codec);
+
+    // --- 音频 Opus 编码支持探测 ---
+    const opusConfig = hasAudio && (typeof AudioEncoder === 'function') ? {
+        codec: 'opus', sampleRate: audio.sr, numberOfChannels: audio.channels,
+        bitrate: Math.max(32000, audio.channels * OPUS_BITRATE_PER_CHANNEL),
+    } : null;
+    let opusSupported = false;
+    let audioCodecPrivate = null;
+    if (opusConfig) try { opusSupported = (await AudioEncoder.isConfigSupported(opusConfig)).supported; } catch (_) { opusSupported = false; }
+    if (!opusSupported) { /* 降级无音频 */ hasAudio = false; opusConfig = null; }
+
+    const muxer = new SimpleWebMMuxer({
+        width: ew, height: eh, timeDen: 1000, videoCodec: 'V_AV1',
+        audio: opusSupported ? { sampleRate: opusConfig.sampleRate, channels: opusConfig.numberOfChannels, codecId: 'A_OPUS', codecPrivate: audioCodecPrivate } : null,
+    });
+    report(0.52, 'AV1 编码中…');
+    const nFrames = frames.length;
+    let videoProgress = 0;
+    let audioProgress = 0;
+    function updateProgress() {
+        const videoW = opusSupported ? 0.7 : 1.0;
+        const audioW = opusSupported ? 0.3 : 0.0;
+        report(0.52 + 0.48 * (videoProgress * videoW + audioProgress * audioW), opusSupported && audioProgress < 1 ? '音频 Opus 编码中…' : '合成 WebM…');
+    }
+    const enc = new VideoEncoder({
+        output: (chunk) => {
+            const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
+            muxer.addChunk(buf, { timestampSec: chunk.timestamp / 1e6, trackNum: 1, keyframe: chunk.type === 'key' });
+        },
+        error: e => { console.error(e); },
+    });
+    enc.configure({
+        codec, width: ew, height: eh,
+        bitrate: Math.max(250_000, ew * eh * AV1_BITRATE_PER_PIXEL),
+        latencyMode: 'quality',
+    });
+    const cv = new OffscreenCanvas(ew, eh);
+    const cx = cv.getContext('2d');
+    let avgStepSec = (nFrames > 1) ? (durationSec / (nFrames - 1)) : (1 / 30);
+    if (avgStepSec <= 0 || !isFinite(avgStepSec)) avgStepSec = 1 / 30;
+    let outTs = 0;
+    const durUs = Math.max(1, Math.round(avgStepSec * 1e6));
+    for (let i = 0; i < nFrames; i++) {
+        const f = frames[i];
+        cx.clearRect(0, 0, ew, eh);
+        cx.drawImage(f.bitmap, 0, 0, ew, eh);
+        f.bitmap.close();
+        const vf = new VideoFrame(cv, { timestamp: Math.round(outTs * 1e6), duration: durUs });
+        enc.encode(vf);
+        vf.close();
+        outTs += avgStepSec;
+        videoProgress = (i + 1) / nFrames;
+        if ((i & 3) === 0) updateProgress();
+    }
+    await enc.flush();
+    enc.close();
+    videoProgress = 1;
+
+    // --- 音频 Opus 编码（分 20ms 帧：960 samples@48kHz）---
+    if (opusSupported && audio) {
+        const frameSamples = 960;
+        const enc2 = new AudioEncoder({
+            output: (chunk, meta) => {
+                const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
+                if (meta && meta.decoderConfig && meta.decoderConfig.description && !audioCodecPrivate) {
+                    const d = meta.decoderConfig.description;
+                    audioCodecPrivate = (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) ? new Uint8Array(d) : null;
+                }
+                muxer.addChunk(buf, { timestampSec: chunk.timestamp / 1e6, trackNum: 2 });
+            },
+            error: e => console.error(e),
+        });
+        enc2.configure(opusConfig);
+        const il = audio.interleaved; // float32 interleaved
+        const totalFrames = Math.ceil(audio.samples / frameSamples);
+        for (let fi = 0; fi < totalFrames; fi++) {
+            const s0 = fi * frameSamples;
+            const n = Math.min(frameSamples, audio.samples - s0);
+            // 构造 AudioData 需要平面，n < frameSamples 时末尾用静默填充
+            const planes = [];
+            const data = new Float32Array(frameSamples * audio.channels);
+            for (let c = 0, co = 0; c < audio.channels; c++, co += frameSamples) {
+                for (let s = 0; s < n; s++) data[co + s] = il[(s0 + s) * audio.channels + c];
+                planes.push(data.subarray(co, co + frameSamples));
+            }
+            const format = audio.channels === 1 ? 'f32-planar' : 'f32-planar';
+            const ad = new AudioData({
+                format, sampleRate: audio.sr, numberOfFrames: frameSamples,
+                numberOfChannels: audio.channels, timestamp: Math.round((s0 / audio.sr) * 1e6),
+                data: data,
+            });
+            enc2.encode(ad);
+            ad.close();
+            audioProgress = (fi + 1) / totalFrames;
+            if ((fi & 31) === 0) updateProgress();
+        }
+        await enc2.flush();
+        enc2.close();
+        audioProgress = 1;
+    }
+    updateProgress();
+    const blob = muxer.finalize();
+    return { blob, ext: 'webm', hasAudio: opusSupported && !!audio };
+}
+
+// 转码前快速判断"原文件有无音轨"，用于不支持 AV1 WebCodecs 的浏览器（虽然这些浏览器在入口已被排除，但统一函数保险）
+async function probeHasAudio(file) {
+    if (isGifFile(file)) return false;
+    if (!isVideoFile(file)) return false;
+    const url = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.preload = 'metadata'; v.src = url;
+    try { await new Promise((res, rej) => { v.onloadedmetadata = () => res(); v.onerror = () => rej(new Error('probe fail')); setTimeout(res, 5000); }); }
+    catch (_) { URL.revokeObjectURL(url); return false; }
+    let has = false;
+    try {
+        has = (typeof v.mozHasAudio === 'boolean') ? v.mozHasAudio
+            : (typeof v.webkitAudioDecodedByteCount === 'number') ? v.webkitAudioDecodedByteCount > 0
+                : (v.audioTracks && v.audioTracks.length > 0);
+    } catch (_) { }
+    URL.revokeObjectURL(url);
+    return has;
+}
+
+// 图片→WebP 时明确排除 GIF（不再转成静态单帧 WebP 丢动画）
+// 注：isPicFile 内部已经排除 GIF，这里保留函数名以维持业务语义
+function _safeForWebp(file) { return isPicFile(file); }
 
 /* ---- 图床上传 ---- */
 function uploadViaXhr(url, fd, headers, onProgress) {
@@ -194,13 +693,10 @@ function fileUrl(id) {
 }
 
 // 统一文件名生成：不再存 filename/originalName，只使用 id + ext
-// 历史老数据（没有 ext）兜底用 webp
 function dlName(p) {
-    const ext = (p && p.ext) ? String(p.ext).toLowerCase() : 'webp';
-    return (p && p.id ? p.id : 'image') + '.' + ext;
+    return p.id + '.' + String(p.ext).toLowerCase();
 }
 function extFromNameFn(name) {
-    if (!name) return '';
     const i = String(name).lastIndexOf('.');
     return i >= 0 ? String(name).slice(i + 1).toLowerCase() : '';
 }
@@ -333,6 +829,7 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const el = (tag, cls, html) => { const d = document.createElement(tag); if (cls) d.className = cls; if (html != null) d.innerHTML = html; return d; };
 
 function toast(msg, icon = 'info') {
+    if (!ICONS[icon]) icon = 'info';
     const t = el('div', 'toast', `<svg class="icon" data-i="${icon}"></svg><span></span>`);
     renderIcons(t);
     t.querySelector('span').textContent = msg;
@@ -406,6 +903,32 @@ function buildColumns() {
     }
 }
 
+/* ---------- 音量按钮（共享 SVG icon 创建） ---------- */
+function volumeSVG() {
+    return `<svg class="icon" data-i="volume-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:1rem;height:1rem"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
+}
+function muteSVG() {
+    return `<svg class="icon" data-i="volume-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:1rem;height:1rem"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
+}
+function makeVolumeBtn({ initiallyMuted = true } = {}) {
+    const b = el('button', 'audio-toggle' + (initiallyMuted ? ' is-muted' : ''), initiallyMuted ? volumeSVG() + muteSVG() : volumeSVG() + muteSVG());
+    b.type = 'button';
+    b.title = initiallyMuted ? '点按取消静音' : '点按静音';
+    // pointer-events 让点击不触发 masonry 的 click/拖拽
+    b.style.pointerEvents = 'auto';
+    b.addEventListener('click', (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        const v = b.parentElement && b.parentElement.querySelector('video.ph-img,video.lb-img');
+        if (!v) return;
+        const nowMuted = v.muted ? false : true;
+        v.muted = nowMuted;
+        if (!nowMuted) { try { v.play().catch(() => { }); } catch (_) { } }
+        b.classList.toggle('is-muted', nowMuted);
+        b.title = nowMuted ? '点按取消静音' : '点按静音';
+    });
+    return b;
+}
+
 function makeCard(photo, index) {
     const card = el('div', 'photo-card');
     card.dataset.id = photo.id;
@@ -417,30 +940,84 @@ function makeCard(photo, index) {
         holder.style.paddingBottom = '100%';
     }
     const skel = el('div', 'skeleton');
-    const img = el('img', 'ph-img');
-    img.loading = 'lazy';
-    img.draggable = false;
-    img.alt = dlName(photo);
-    img.src = photo.url;
-    img.onload = () => {
-        const nw = img.naturalWidth, nh = img.naturalHeight;
-        if (nw && nh) {
-            if (photo.width !== nw || photo.height !== nh) {
-                photo.width = nw; photo.height = nh;
-                holder.style.paddingBottom = (nh / nw * 100) + '%';
-                Store.save(photo);
+    const animated = hasAnimatedMedia(photo);
+    let media;
+    if (animated) {
+        media = el('video', 'ph-img');
+        media.muted = true;          // 默认静音（用户要求）
+        media.loop = true;
+        media.playsInline = true;
+        media.autoplay = true;
+        media.controls = false;
+        media.preload = 'metadata';
+        media.setAttribute('playsinline', '');
+        media.setAttribute('webkit-playsinline', '');
+        media.setAttribute('disablepictureinpicture', '');
+        media.setAttribute('controlslist', 'nodownload nofullscreen noremoteplayback');
+        media.draggable = false;
+        media.onloadedmetadata = () => {
+            const nw = media.videoWidth, nh = media.videoHeight;
+            if (nw && nh) {
+                if (photo.width !== nw || photo.height !== nh) {
+                    photo.width = nw; photo.height = nh;
+                    holder.style.paddingBottom = (nh / nw * 100) + '%';
+                    if (typeof photo.hasAudio !== 'boolean') {
+                        // 自动检测音轨：videoWidth 有值后再看 audioTracks / mozHasAudio
+                        let has = false;
+                        try {
+                            has = (typeof media.mozHasAudio === 'boolean') ? media.mozHasAudio
+                                : (typeof media.webkitAudioDecodedByteCount === 'number') ? media.webkitAudioDecodedByteCount > 0
+                                    : (media.audioTracks && media.audioTracks.length > 0);
+                        } catch (_) { }
+                        photo.hasAudio = !!has;
+                    }
+                    Store.save(photo).catch(() => { });
+                }
             }
-        }
-        img.classList.add('loaded');
-        skel.remove();
-    };
-    img.onerror = () => {
-        skel.remove(); img.classList.add('loaded'); img.style.opacity = '.4';
-    };
-
+            // 首次渲染完成后，如果判定有音频 → 追加音量按钮
+            if (photo.hasAudio && !card.querySelector('.audio-toggle')) {
+                const vbtn = makeVolumeBtn({ initiallyMuted: true });
+                holder.appendChild(vbtn);
+            }
+            media.classList.add('loaded');
+            skel.remove();
+            try { media.play().catch(() => { }); } catch (_) { }
+        };
+        media.onerror = () => {
+            skel.remove(); media.classList.add('loaded'); media.style.opacity = '.4';
+        };
+        media.src = photo.url;
+    } else {
+        media = el('img', 'ph-img');
+        media.loading = 'lazy';
+        media.draggable = false;
+        media.alt = dlName(photo);
+        media.src = photo.url;
+        media.onload = () => {
+            const nw = media.naturalWidth, nh = media.naturalHeight;
+            if (nw && nh) {
+                if (photo.width !== nw || photo.height !== nh) {
+                    photo.width = nw; photo.height = nh;
+                    holder.style.paddingBottom = (nh / nw * 100) + '%';
+                    Store.save(photo).catch(() => { });
+                }
+            }
+            media.classList.add('loaded');
+            skel.remove();
+        };
+        media.onerror = () => {
+            skel.remove(); media.classList.add('loaded'); media.style.opacity = '.4';
+        };
+    }
     holder.appendChild(skel);
-    holder.appendChild(img);
+    holder.appendChild(media);
     card.appendChild(holder);
+
+    // ---------- 音频按钮（静态已知 hasAudio=true 的直接挂；否则等 metadata 后补）----------
+    if (animated && photo.hasAudio) {
+        const vbtn = makeVolumeBtn({ initiallyMuted: true });
+        holder.appendChild(vbtn);
+    }
 
     const likes = photo.likes || 0;
     const dislikes = photo.dislikes || 0;
@@ -508,6 +1085,87 @@ function appendVisible() {
     }
     renderedCount = visible.length;
     if (state.multiMode) applySelectUI();
+}
+
+// 增量：把新照片插入到瀑布流最前面（"最新"排序下排在第 0 位），不重建已有卡片
+function prependCardToMasonry(photo) {
+    const list = getSorted();
+    const idxInSorted = list.findIndex(p => p.id === photo.id);
+    if (idxInSorted < 0) return;
+
+    // 如果新照片不在当前可见窗口内（比如按"最热"排序，新上传的没投票排很后面），就不处理
+    if (idxInSorted >= state.loadedCount) {
+        // 但要保证 loadedCount 至少能容纳它（否则用户滚到那里时 appendVisible 会补上）
+        return;
+    }
+
+    $('#emptyState').classList.add('hidden');
+    $('#masonry').classList.remove('hidden');
+
+    // 列可能还没初始化（空状态首次上传）
+    if (cols.length === 0) {
+        buildColumns();
+    }
+
+    const card = makeCard(photo, idxInSorted);
+    const heights = cols.map(c => c._h || 0);
+    let minCol = 0;
+    for (let j = 1; j < cols.length; j++) if (heights[j] < heights[minCol]) minCol = j;
+
+    // 插入到最短列的顶部，这样视觉上是"新的在最上面"
+    if (cols[minCol].firstChild) {
+        cols[minCol].insertBefore(card, cols[minCol].firstChild);
+    } else {
+        cols[minCol].appendChild(card);
+    }
+    const ratio = (photo.height && photo.width) ? photo.height / photo.width : 1;
+    const addedH = ratio * 100 + 12;
+    heights[minCol] += addedH;
+    cols[minCol]._h = heights[minCol];
+    renderedCount++;
+
+    // 如果在 Lightbox 开着的情况下上传，保持当前浏览的索引位置不变（新照片插入到前面，要 +1）
+    if (state.lightboxOpen) {
+        const listAfter = getSorted();
+        const cur = listAfter[state.currentIndex];
+        // 如果当前照片在列表中还存在且没变，无需额外操作；index 变化的话需要修正
+        const newIdx = listAfter.findIndex(p => p && cur && p.id === cur.id);
+        if (newIdx >= 0 && newIdx !== state.currentIndex) {
+            state.currentIndex = newIdx;
+            $('#lbCounter').textContent = `${state.currentIndex + 1} / ${listAfter.length}`;
+        }
+        renderDots();
+    }
+
+    if (state.multiMode) applySelectUI();
+}
+
+// 增量：更新单张卡片的投票/统计（比 updateMasonryStatsOnly 更高效，只查一张）
+function updateCardStatsById(id) {
+    const card = document.querySelector(`.photo-card[data-id="${CSS.escape(id)}"]`);
+    if (!card) return;
+    const p = Store.photos.find(x => x.id === id);
+    if (!p) return;
+    const myVote = Store.getMyVote(id);
+    const likes = p.likes || 0, dislikes = p.dislikes || 0;
+    const stats = card.querySelector('.card-stats');
+    const haveVotes = likes > 0 || dislikes > 0;
+    if (!stats && !haveVotes) return;
+    const html = haveVotes
+        ? `${likes > 0 ? `<div class="card-badge card-badge-like${myVote === 1 ? ' active' : ''}"><svg class="icon" data-i="heart"></svg><span>${likes}</span></div>` : ''}`
+        + `${dislikes > 0 ? `<div class="card-badge card-badge-dislike${myVote === -1 ? ' active' : ''}"><svg class="icon" data-i="x-circle"></svg><span>${dislikes}</span></div>` : ''}`
+        : '';
+    if (!stats) {
+        if (html === '') return;
+        const s = el('div', 'card-stats', html);
+        card.appendChild(s);
+        renderIcons(s);
+    } else if (html === '') {
+        stats.remove();
+    } else {
+        stats.innerHTML = html;
+        renderIcons(stats);
+    }
 }
 
 // 无限滚动：底部哨兵进入视口时多加载一批
@@ -607,7 +1265,12 @@ function onCardPress(e) {
     const card = e.target.closest('.photo-card');
     if (!card) return;
     if (e.type === 'mousedown' && e.button !== 0) return;
+    if (e.target.closest('.audio-toggle')) return; // 音量按钮不触发长按/拖动
     if (state.multiMode) return;
+    // 有音量按钮的卡片：按下瞬间隐藏（符合"被拖动时隐藏"）
+    if (card.querySelector('.audio-toggle')) {
+        card.querySelectorAll('.audio-toggle').forEach(b => b.classList.add('is-hidden'));
+    }
     state.longPressTriggered = false;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = setTimeout(() => {
@@ -616,11 +1279,18 @@ function onCardPress(e) {
         else toggleSelect(card.dataset.id);
     }, 500);
 }
-['mouseup', 'mouseleave', 'touchend', 'touchmove', 'touchcancel', 'click'].forEach(ev => {
+['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(ev => {
     $('#masonry').addEventListener(ev, () => {
         clearTimeout(state.longPressTimer);
+        // 恢复音量按钮显示
+        document.querySelectorAll('#masonry .audio-toggle.is-hidden').forEach(b => b.classList.remove('is-hidden'));
     });
 });
+$('#masonry').addEventListener('touchmove', (e) => {
+    clearTimeout(state.longPressTimer);
+    // 手指滑动即视为"拖动" → 隐藏音量按钮
+    document.querySelectorAll('#masonry .audio-toggle').forEach(b => b.classList.add('is-hidden'));
+}, { passive: true });
 $('#masonry').addEventListener('click', (e) => {
     if (state.suppressClick) { state.suppressClick = false; return; }
     const card = e.target.closest('.photo-card');
@@ -680,45 +1350,152 @@ async function getZipLib() {
     _jszip = JSZip;
     return _jszip;
 }
+
+// 带字节级进度的 fetch（利用 XHR 读取 content-length，不支持则降级为整文件完成）
+function fetchWithProgress(url, opts, onProgress) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.responseType = 'blob';
+        if (opts?.cache) xhr.channel?.loadFlags;
+        let knownTotal = 0;
+        xhr.onprogress = (e) => {
+            if (e.lengthComputable) {
+                knownTotal = e.total;
+                onProgress?.(e.loaded, e.total);
+            } else if (knownTotal) {
+                onProgress?.(e.loaded, knownTotal);
+            }
+        };
+        xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                if (!knownTotal && xhr.response?.size) {
+                    onProgress?.(xhr.response.size, xhr.response.size);
+                }
+                resolve({ blob: xhr.response, total: knownTotal || xhr.response?.size || 0 });
+            } else {
+                reject(new Error('HTTP ' + xhr.status));
+            }
+        };
+        xhr.onerror = () => reject(new Error('网络错误'));
+        xhr.timeout = 60000;
+        xhr.ontimeout = () => reject(new Error('下载超时（60s）'));
+        xhr.send();
+    });
+}
+
+function formatSize(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0, v = bytes;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
 $('#batchDownloadBtn').addEventListener('click', async () => {
     const list = getSorted().filter(p => state.selected.has(p.id));
     if (list.length === 0) { toast('请先选择照片'); return; }
-    // 单张直接下（不打包）
     if (list.length === 1) {
         return downloadUrl(list[0].url + '?dl=1', dlName(list[0]));
     }
-    // 多张打包成单个 zip：只触发 1 次浏览器下载框，不被并发限制拦截
     const JSZip = await getZipLib();
     const zip = new JSZip();
     const total = list.length;
     const runId = Date.now().toString(36);
-    _uploadTotal = total;
+
+    _mode = 'download';
+    resetProgressUI();
     toast(`正在打包 ${total} 张图片…`, 'download');
-    let done = 0;
-    for (let i = 0; i < total; i++) {
-        const p = list[i];
-        try {
-            const r = await fetch(p.url, { cache: 'force-cache' });
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            const blob = await r.blob();
-            done++;
-            const idx = String(done).padStart(3, '0');
-            const base = dlName(p);
-            zip.file(`${idx}_${base}`, blob, { binary: true });
-            setUploadProgress(done / total, base, '打包 zip…');
-        } catch (e) {
-            toast(`下载失败: ${dlName(p)}`, 'alert');
+
+    const perItemProgress = new Array(total).fill(0);
+    const perItemTotal = new Array(total).fill(0);
+    const perItemDone = new Array(total).fill(false);
+    let downloadedBytes = 0;
+    let estimatedTotalBytes = 0;
+    let zipProgress = 0;
+    const ZIP_WEIGHT = 0.12;
+    const FETCH_WEIGHT = 1 - ZIP_WEIGHT;
+
+    const recomputeOverall = () => {
+        let sumCur = 0, sumTot = 0;
+        let finishedItems = 0;
+        for (let i = 0; i < total; i++) {
+            const t = perItemTotal[i] || 1;
+            sumCur += perItemProgress[i];
+            sumTot += t;
+            if (perItemDone[i]) finishedItems++;
         }
-    }
-    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
-        setUploadProgress(meta.percent / 100, `生成 zip ${meta.percent.toFixed(0)}%`, '打包 zip…');
+        const fetchPart = sumTot > 0 ? (sumCur / sumTot) * FETCH_WEIGHT : 0;
+        const zipPart = zipProgress * ZIP_WEIGHT;
+        const overall = Math.min(1, fetchPart + zipPart);
+        downloadedBytes = sumCur;
+        estimatedTotalBytes = sumTot;
+        const stat = `已下载 ${formatSize(downloadedBytes)}${estimatedTotalBytes ? ' / ' + formatSize(estimatedTotalBytes) : ''}  ·  ${finishedItems}/${total} 张`;
+        setProgress(overall, `${finishedItems} / ${total} 张`, estimatedTotalBytes ? '下载 + 打包' : '下载中…', { stat });
+    };
+
+    const dlTasks = list.map((p, i) => async () => {
+        try {
+            const base = dlName(p);
+            const { blob, total: t } = await fetchWithProgress(
+                p.url,
+                { cache: 'force-cache' },
+                (loaded, tot) => {
+                    perItemProgress[i] = loaded;
+                    if (tot > perItemTotal[i]) perItemTotal[i] = tot;
+                    recomputeOverall();
+                }
+            );
+            perItemProgress[i] = perItemTotal[i] = t || blob.size || 1;
+            perItemDone[i] = true;
+            const idx = String(i + 1).padStart(3, '0');
+            zip.file(`${idx}_${base}`, blob, { binary: true });
+            recomputeOverall();
+            return { ok: true };
+        } catch (e) {
+            perItemDone[i] = true;
+            toast(`下载失败: ${dlName(p)}`, 'alert');
+            return { ok: false, err: e };
+        }
     });
+
+    const results = await runWithConcurrency(dlTasks, CONFIG.CONCURRENCY);
+    const successCount = results.filter(r => r.ok).length;
+    if (successCount === 0) {
+        toast('所有图片下载失败', 'alert');
+        setProgress(1, null, '失败', { stat: null });
+        setTimeout(resetProgressUI, 2500);
+        _mode = 'upload';
+        return;
+    }
+
+    let lastZipPct = 0;
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
+        zipProgress = meta.percent / 100;
+        lastZipPct = meta.percent;
+        recomputeOverall();
+        setProgress(
+            Math.min(1, (1 - ZIP_WEIGHT) + zipProgress * ZIP_WEIGHT),
+            `生成 zip ${meta.percent.toFixed(0)}%`,
+            successCount < total ? `打包中（${successCount}/${total} 张成功）` : '打包 zip…',
+            { stat: `已下载 ${formatSize(downloadedBytes)}${estimatedTotalBytes ? ' / ' + formatSize(estimatedTotalBytes) : ''}  ·  zip ${lastZipPct.toFixed(0)}%` }
+        );
+    });
+    zipProgress = 1;
+    recomputeOverall();
+
     const url = URL.createObjectURL(zipBlob);
-    downloadUrl(url, `infoto_${total}张_${runId}.zip`);
+    const finalName = `infoto_${successCount}张_${runId}.zip`;
+    downloadUrl(url, finalName);
     setTimeout(() => URL.revokeObjectURL(url), 60000);
-    toast(`下载完成：共 ${total} 张 → zip`, 'success');
-    setUploadProgress(1, null, '完成');
-    setTimeout(resetUploadUI, 2500);
+
+    const skipMsg = successCount < total ? `（${total - successCount} 张失败跳过）` : '';
+    toast(`下载完成：共 ${successCount} 张${skipMsg} → zip`, 'success');
+    setProgress(1, finalName, '完成', { stat: `共 ${formatSize(downloadedBytes)} → zip ${formatSize(zipBlob.size)}` });
+    setTimeout(() => {
+        resetProgressUI();
+        _mode = 'upload';
+    }, 3000);
 });
 
 /* =========================================================
@@ -731,131 +1508,331 @@ $('#fileInput').addEventListener('change', async e => {
     if (files.length === 0) return;
     await uploadFiles(files);
 });
+document.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer) return;
+    const files = [...(e.dataTransfer.files || [])];
+    if (files.length === 0) return;
+    e.preventDefault();
+    await uploadFiles(files);
+});
+document.addEventListener('dragover', e => {
+    if (e.dataTransfer && e.dataTransfer.types.includes('Files')) e.preventDefault();
+});
 
-/* 上传进度 UI：按钮右下角小圆圈 + 悬停详情 */
-let _uploadTotal = 0;
-let _uploadDoneLike = 0;
-function resetUploadUI() {
+/* 上传/下载 进度 UI：按钮右下角小圆圈 + 悬停详情 */
+let _mode = 'upload';
+// 上传精细化进度：各子阶段字节进度跟踪（按"实际字节工作量"加权，而非文件数）
+let _prepBytes = { total: 0, done: 0 };
+let _uploadBytes = { total: 0, done: 0 };
+// 阶段权重（总和≈1）：预处理20% → 查重+上传75% → 收尾同步5%（收尾进度动画内联）
+const PHASE_WEIGHT = { PREP: 0.20, UPLOAD: 0.75 };
+
+function resetProgressUI() {
     const ind = $('#upIndicator');
     ind.classList.add('hidden');
     $('#upRing').style.strokeDashoffset = '94.25';
-    $('#upPct').textContent = '0';
+    // 重置：用数字 0，清空 check 图标
+    $('#upPct').innerHTML = '0';
+    $('#upPct').style.fontSize = '';
+    $('#upPct').style.color = '';
     $('#upDone').textContent = '0';
     $('#upSkipped').textContent = '0';
     $('#upFailed').textContent = '0';
-    $('#upTipFile').textContent = '待上传';
-    $('#upTipStep').textContent = '准备中';
-    _uploadTotal = 0;
-    _uploadDoneLike = 0;
+    $('#upTipFile').textContent = _mode === 'download' ? '等待下载' : '待上传';
+    $('#upTipStep').textContent = _mode === 'download' ? '准备下载' : '准备中';
+    _prepBytes = { total: 0, done: 0 };
+    _uploadBytes = { total: 0, done: 0 };
+    $('#upTipStatExtra')?.remove();
 }
-function setUploadProgress(p, file, step) {
+function setProgress(p, file, step, extra) {
     const ind = $('#upIndicator');
     ind.classList.remove('hidden');
-    $('#upRing').style.strokeDashoffset = String(94.25 * (1 - p));
-    const finishedExact = _uploadDoneLike + p;
-    const remaining = Math.max(0, Math.ceil(_uploadTotal - finishedExact));
-    $('#upPct').textContent = String(remaining);
+    const clampedP = Math.max(0, Math.min(1, p));
+    $('#upRing').style.strokeDashoffset = String(94.25 * (1 - clampedP));
+    const pctEl = $('#upPct');
+    if (clampedP >= 1) {
+        // 完成：统一显示对勾图标
+        pctEl.innerHTML = ICONS['check'];
+        // 尺寸样式对齐
+        const svg = pctEl.querySelector('svg');
+        if (svg) {
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('fill', 'none');
+            svg.setAttribute('stroke', 'currentColor');
+            svg.setAttribute('stroke-width', '3');
+            svg.setAttribute('stroke-linecap', 'round');
+            svg.setAttribute('stroke-linejoin', 'round');
+            svg.style.width = '18px';
+            svg.style.height = '18px';
+            svg.style.display = 'block';
+        }
+    } else if (_mode === 'upload') {
+        // 上传精细化：显示百分比，而不是剩余张数（更符合直觉）
+        pctEl.innerHTML = String(Math.round(clampedP * 100));
+        pctEl.style.fontSize = '';
+    } else {
+        pctEl.innerHTML = Math.round(clampedP * 100) + '%';
+        pctEl.style.fontSize = '';
+    }
     if (file) $('#upTipFile').textContent = file;
     if (step) $('#upTipStep').textContent = step;
+    if (extra && extra.stat !== undefined) {
+        $('#upTipStatExtra')?.remove();
+        const s = document.createElement('div');
+        s.id = 'upTipStatExtra';
+        s.style.cssText = 'margin-top:.6rem;padding-top:.6rem;border-top:1px solid rgba(123,133,160,.18);font-size:.72rem;color:var(--on-variant);letter-spacing:.03em';
+        s.textContent = extra.stat;
+        $('#upTip').appendChild(s);
+    } else if (extra && extra.stat === null) {
+        $('#upTipStatExtra')?.remove();
+    }
 }
+const resetUploadUI = resetProgressUI;
+const setUploadProgress = (p, file, step, extra) => setProgress(p, file, step, extra);
 
 async function uploadFiles(files) {
     resetUploadUI();
+    _mode = 'upload';
+    const t0 = Date.now();
+    // 入口过滤：拖拽/剪贴板可绕过 accept，这里再卡一次
+    const av1Supported = await supportsAV1WebCodecs();
+    const filtered = filterUnsupportedFiles(files, av1Supported);
+    if (filtered.rejected.length) {
+        toast(`此浏览器暂不支持视频/GIF，已跳过 ${filtered.rejected.length} 个文件`, 'alert');
+    }
+    files = filtered.ok;
     const total = files.length;
-    _uploadTotal = total;
+    if (total === 0) return;
     let done = 0, failed = 0, skipped = 0;
-    _uploadDoneLike = 0;
 
-    // 阶段 1：并发 3 路做【压缩 + SHA】（纯 CPU/哈希，无副作用，可安全并发）
-    setUploadProgress(0.01, null, '预处理中…');
-    const prepTasks = files.map((file, idx) => async () => {
-        const base = { idx, file, err: null, blob: null, ext: extFromNameFn(file.name) || 'bin', sha: null };
-        if (file.type === 'image/svg+xml') { base.err = new Error('SVG 暂不支持'); return base; }
-        try {
-            const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi)$/i.test(file.name);
-            const isGif = file.type === 'image/gif' || /\.gif$/i.test(file.name);
-            const isPic = file.type.startsWith('image/') && !isGif;
-            let blob = file;
-            if (isPic && file.type !== 'image/webp') {
-                const webp = await compressToWebp(file, WEBP_QUALITY);
-                // 压缩后只要不增大就采用（包括等大）
-                if (webp && webp.size <= file.size) {
-                    blob = webp;
-                    base.ext = 'webp';
+    // 按原始文件字节作为总工作量，阶段加权计算总进度
+    const rawBytes = files.reduce((a, f) => a + (f.size || 0), 0) || 1;
+    _prepBytes.total = rawBytes;
+    _uploadBytes.total = rawBytes;
+    // 单文件内部子阶段权重（在单文件的上传 75% 大阶段里拆分）
+    const SUB = { CHECK: 0.05, UPLOAD: 0.90, DIMS: 0.05 };
+
+    function buildStat(extraLabel) {
+        const elapsed = (Date.now() - t0) / 1000 || 0.001;
+        // 当前总已处理字节按进度大致换算（预处理 + 上传阶段分别估算）
+        const phasePrep = PHASE_WEIGHT.PREP * (_prepBytes.done / Math.max(1, _prepBytes.total));
+        const phaseUp = PHASE_WEIGHT.UPLOAD * (_uploadBytes.done / Math.max(1, _uploadBytes.total));
+        const overallPct = Math.min(1, phasePrep + phaseUp);
+        const processedEst = rawBytes * overallPct;
+        const speed = processedEst / elapsed;
+        const remain = overallPct > 0.02 ? (rawBytes - processedEst) / Math.max(0.0001, speed) : 0;
+        const mm = Math.floor(remain / 60), ss = Math.round(remain % 60).toString().padStart(2, '0');
+        const parts = [];
+        parts.push(`${formatSize(processedEst)} / ${formatSize(rawBytes)}`);
+        if (elapsed > 2) parts.push(`${formatSize(speed)}/s`);
+        if (elapsed > 4 && remain > 0 && remain < 3600 * 6) parts.push(`剩 ${mm ? mm + '分' : ''}${ss}秒`);
+        if (extraLabel) parts.push(extraLabel);
+        return parts.join(' · ');
+    }
+    function recomputeUploadOverall(curFile, curStep, extraLabel) {
+        const phasePrep = PHASE_WEIGHT.PREP * (_prepBytes.done / Math.max(1, _prepBytes.total));
+        const phaseUp = PHASE_WEIGHT.UPLOAD * (_uploadBytes.done / Math.max(1, _uploadBytes.total));
+        const overall = Math.min(1, phasePrep + phaseUp);
+        setUploadProgress(overall, curFile, curStep, { stat: buildStat(extraLabel) });
+    }
+
+    // 阶段 1：预处理（压缩 + SHA）占总进度 20%
+    // - 纯图片 WebP 压缩：CONFIG.CONCURRENCY 并发（默认 3）
+    // - GIF/视频 AV1 转码：单线程（WebCodecs 内部已是多线程并行；开多个同时编码极易 OOM / 掉驱动）
+    const av1Ok = _av1Support === true;
+    recomputeUploadOverall(files.length > 1 ? `${files.length} 个文件` : files[0].name, '预处理中…');
+    const picTasks = [];
+    const av1Tasks = [];
+    files.forEach((file, idx) => {
+        const heavy = av1Ok && (isVideoFile(file) || isGifFile(file));
+        const run = async () => {
+            const base = { idx, file, err: null, blob: null, ext: 'webp', sha: null, hasAudio: false };
+            if (file.type === 'image/svg+xml') { base.err = new Error('SVG 暂不支持'); return base; }
+            try {
+                const isV = isVideoFile(file);
+                const isG = isGifFile(file);
+                const isP = _safeForWebp(file);
+                let blob = file;
+                let ext = 'webp';
+                // 1) 普通图片：WebP 压缩（不大于原文件就采用；GIF 明确排除不走这步）
+                if (isP) {
+                    if (file.type !== 'image/webp') {
+                        const webp = await compressToWebp(file, WEBP_QUALITY);
+                        if (webp && webp.size <= file.size) { blob = webp; ext = 'webp'; }
+                        else { ext = extFromNameFn(file.name) || 'webp'; }
+                    } else {
+                        ext = 'webp';
+                    }
                 }
-            } else if (isGif || isVideo) {
-                // GIF/视频统一标注为 webm（实际转码在前端转换后再写入 blob，这里先占位 ext）
-                base.ext = 'webm';
-            } else if (!base.ext) {
-                base.ext = 'webp';
+                // 2) GIF / 视频：**强制**转 AV1 WebM，不管体积（统一后缀 webm 要求）
+                if ((isV || isG) && av1Ok) {
+                    const stepLabel = isG ? 'GIF 转码' : '视频转码';
+                    let r = null, lastErr = null;
+                    try {
+                        r = await transcodeToAv1Webm(file, (p, label) => {
+                            // 重任务的内部步骤进度只用于刷新 step 标签 / 当前文件名，
+                            // 字节进度由 finally 统一以 file.size 计入，避免重复累加
+                            recomputeUploadOverall(file.name, label || stepLabel + '中…');
+                        });
+                    } catch (err) { lastErr = err; console.warn('[infoto] AV1 转码失败，将再次尝试', err); }
+                    // AV1 转码失败 → 兜底：如果是 GIF 用原 GIF（保持动画不变），如果是视频直接报错
+                    if (!r || !r.blob) {
+                        if (isG) {
+                            console.warn('[infoto] GIF 强制 AV1 失败，降级原 GIF（会保留动画）');
+                            blob = file; ext = 'gif'; base.hasAudio = false;
+                        } else {
+                            base.err = new Error('视频转码失败：' + (lastErr ? lastErr.message : 'unknown'));
+                            return base;
+                        }
+                    } else {
+                        blob = r.blob; ext = 'webm'; base.hasAudio = !!r.hasAudio;
+                    }
+                } else if ((isV || isG) && !av1Ok) {
+                    base.err = new Error(isG ? 'GIF 需要支持 AV1 WebCodecs 的浏览器' : '视频需要支持 AV1 WebCodecs 的浏览器');
+                    return base;
+                }
+                base.blob = blob;
+                base.ext = ext;
+                base.sha = await sha256Hex(await blob.arrayBuffer());
+            } catch (e) { base.err = e; } finally {
+                // 预处理完成：无论成功失败都按原文件大小计入"预处理 done"，避免总进度卡住
+                _prepBytes.done = Math.min(_prepBytes.total, _prepBytes.done + (file.size || 0));
             }
-            base.blob = blob;
-            base.sha = await sha256Hex(await blob.arrayBuffer());
-        } catch (e) { base.err = e; }
-        return base;
+            return base;
+        };
+        (heavy ? av1Tasks : picTasks).push(run);
     });
-    const prepared = await runWithConcurrency(prepTasks, CONFIG.CONCURRENCY);
+    // 预处理过程中：轻量刷新 UI（节流，约 150ms 一次）
+    let prepLastPush = 0;
+    const prepTick = setInterval(() => {
+        const now = Date.now();
+        if (now - prepLastPush < 120) return;
+        prepLastPush = now;
+        recomputeUploadOverall(null, '预处理中…');
+    }, 150);
+    const [preparedPic, preparedAv1] = await Promise.all([
+        runWithConcurrency(picTasks, CONFIG.CONCURRENCY),
+        runWithConcurrency(av1Tasks, 1) // AV1 转码单线程防止 OOM
+    ]);
+    clearInterval(prepTick);
+    const prepared = [...preparedPic, ...preparedAv1].sort((a, b) => a.idx - b.idx);
     prepared.sort((a, b) => a.idx - b.idx);
+    _prepBytes.done = _prepBytes.total; // 保证预处理阶段显示为完成
 
-    // 阶段 2：逐张顺序查重 + 上传（保证进度条意义与上传顺序）
-    const refresh = async () => {
-        try { await Store.load(true); } catch (_) { }
-        renderMasonry();
-        if (state.lightboxOpen) { updateLightbox(); renderDots(); }
-    };
+    // 阶段 2：逐张查重 + 上传（增量渲染，不再全量重建瀑布流）占总进度 75%
+    // - 每张内部：查重 5% → 上传 90%（含分片字节级进度） → 获取尺寸 5%
     for (let i = 0; i < total; i++) {
         const pr = prepared[i];
         const file = pr.file;
+        const fileWeightBytes = file.size || 0;
+        const _uploadBaseBefore = _uploadBytes.done; // 当前这张在总上传字节区间的起点
+
+        const addSubProgress = (subP) => {
+            // subP ∈ [0,1]：该文件在上传大阶段里的内部子进度
+            _uploadBytes.done = Math.min(
+                _uploadBytes.total,
+                _uploadBaseBefore + fileWeightBytes * subP
+            );
+        };
         if (pr.err) {
             failed++;
-            _uploadDoneLike = i + 1;
+            addSubProgress(1); // 失败也算"处理完了"，推进进度
             $('#upFailed').textContent = String(failed);
+            recomputeUploadOverall(file.name, '失败', `错误: ${pr.err.message}`);
             toast(`「${file.name}」${pr.err.message}`, 'alert');
-            await refresh();
             continue;
         }
-        const base = i / total;
-        const span = 1 / total;
-        const upName = 'upload.' + pr.ext;   // 传图床用的临时文件名，只用来走 API、不入库
-        setUploadProgress(base, file.name, '查重…');
+        const upName = 'upload.' + pr.ext;
+
+        // 子阶段 2a：查重（占该张的 5%）
+        addSubProgress(SUB.CHECK * 0.1);
+        recomputeUploadOverall(file.name, '查重…');
         try {
+            addSubProgress(SUB.CHECK);
             const dup = await checkHashExists(pr.sha);
             if (dup) {
                 skipped++;
-                _uploadDoneLike = i + 1;
+                addSubProgress(1);
                 $('#upSkipped').textContent = String(skipped);
-                setUploadProgress(base + span, file.name, '已存在，跳过');
+                recomputeUploadOverall(file.name, '已存在，跳过');
                 toast(`「${file.name}」已存在，跳过`, 'info');
-            } else {
-                const parts = await uploadToBed(pr.blob, upName, p => {
-                    setUploadProgress(base + p * span, file.name, p < 1 ? '直链上传' : '获取直链');
-                });
-                setUploadProgress(base + span * 0.95, file.name, '获取尺寸…');
-                const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-                const photo = {
-                    id, url: fileUrl(id), parts, sha256: pr.sha,
-                    width: 0, height: 0, createdAt: Date.now(),
-                    ext: pr.ext
-                };
-                await loadDims(photo);
-                await Store.add(photo);
-                done++;
-                _uploadDoneLike = i + 1;
-                $('#upDone').textContent = String(done);
+                continue;
+            }
+            // 子阶段 2b：直链上传（占该张的 90%，内部按字节级 onProgress）
+            const upStart = SUB.CHECK;
+            const upSpan = SUB.UPLOAD;
+            const parts = await uploadToBed(pr.blob, upName, p => {
+                addSubProgress(upStart + p * upSpan);
+                recomputeUploadOverall(file.name, p < 1 ? '直链上传' : '获取直链');
+            });
+            // 子阶段 2c：获取尺寸 + 写库（占该张的 5%）
+            addSubProgress(SUB.CHECK + SUB.UPLOAD + SUB.DIMS * 0.2);
+            recomputeUploadOverall(file.name, '获取尺寸…');
+            const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+            const photo = {
+                id, url: fileUrl(id), parts, sha256: pr.sha,
+                width: 0, height: 0, createdAt: Date.now(),
+                ext: pr.ext, hasAudio: !!pr.hasAudio
+            };
+            await loadDims(photo);
+            addSubProgress(SUB.CHECK + SUB.UPLOAD + SUB.DIMS * 0.7);
+            await Store.add(photo);
+            addSubProgress(1); // 这张完成 100%
+            done++;
+            $('#upDone').textContent = String(done);
+            recomputeUploadOverall(file.name, `已完成 ${done}/${total}`);
+            // 关键：增量插入这张新卡片到瀑布流顶部，不重建已有 DOM
+            prependCardToMasonry(photo);
+            // 尺寸异步回写（图片 onload 触发时也会保存），不阻塞当前流程
+            if (photo.width && photo.height) {
+                Store.save(photo).catch(() => { });
             }
         } catch (err) {
             console.error('upload failed:', file.name, err);
             failed++;
-            _uploadDoneLike = i + 1;
+            addSubProgress(1);
             $('#upFailed').textContent = String(failed);
+            recomputeUploadOverall(file.name, '失败', err.message);
             toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
         }
-        await refresh();
     }
-    setUploadProgress(1, null, '完成');
-    try { await Store.load(true); } catch (_) { }
-    renderMasonry();
-    if (state.lightboxOpen) { updateLightbox(); renderDots(); }
+    _uploadBytes.done = _uploadBytes.total;
+
+    // 阶段 3：服务器同步对齐（占总进度最后 5%）
+    setUploadProgress(PHASE_WEIGHT.PREP + PHASE_WEIGHT.UPLOAD + 0.01, null, '同步服务器…', { stat: buildStat('最终同步') });
+    const syncPromise = (async () => {
+        try {
+            const beforeIds = new Set(Store.photos.map(p => p.id));
+            const fresh = await Store.load(true);
+            for (const p of fresh) {
+                if (!beforeIds.has(p.id)) {
+                    const idx = getSorted().findIndex(x => x.id === p.id);
+                    if (idx >= 0 && idx < state.loadedCount && !document.querySelector(`.photo-card[data-id="${CSS.escape(p.id)}"]`)) {
+                        prependCardToMasonry(p);
+                    }
+                }
+            }
+            updateMasonryStatsOnly();
+            if (state.lightboxOpen) {
+                const cp = curPhoto();
+                if (cp) updateLightboxVotes(cp);
+                renderDots();
+            }
+        } catch (_) { }
+    })();
+    // 给同步过程一个平滑的进度动画（约 0.5s 从 96% → 99%）
+    const finalStart = Date.now();
+    const finalDur = 500;
+    const finalAnim = setInterval(() => {
+        const t = Math.min(1, (Date.now() - finalStart) / finalDur);
+        const p = PHASE_WEIGHT.PREP + PHASE_WEIGHT.UPLOAD + 0.01 + t * 0.03;
+        setUploadProgress(p, null, '同步服务器…');
+    }, 30);
+    await syncPromise;
+    clearInterval(finalAnim);
+
+    setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(rawBytes)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s` });
+
     const summary = [];
     if (done > 0) summary.push(`成功 ${done}`);
     if (skipped > 0) summary.push(`跳过重复 ${skipped}`);
@@ -877,11 +1854,54 @@ async function checkHashExists(sha) {
 
 function loadDims(photo) {
     return new Promise(resolve => {
-        const img = new Image();
-        img.onload = () => { photo.width = img.naturalWidth || 0; photo.height = img.naturalHeight || 0; resolve(); };
-        img.onerror = () => { photo.width = photo.width || 0; photo.height = photo.height || 0; resolve(); };
-        img.src = photo.url;
-        setTimeout(resolve, 8000);
+        const animated = hasAnimatedMedia(photo);
+        const done = (w, h, probeAudio = false) => {
+            photo.width = w || 0;
+            photo.height = h || 0;
+            if (probeAudio && typeof photo.hasAudio !== 'boolean') {
+                // 老数据没有 hasAudio，异步探测补一次并写回服务端（lazy）
+                probeHasAudioFromUrl(photo.url, photo.ext).then(a => {
+                    if (typeof a === 'boolean' && a !== !!photo.hasAudio) {
+                        photo.hasAudio = a;
+                        Store.save(photo).catch(() => { });
+                    }
+                }).catch(() => { });
+            }
+            resolve();
+        };
+        const timeout = setTimeout(() => done(photo.width || 0, photo.height || 0), 8000);
+        if (animated) {
+            const v = document.createElement('video');
+            v.muted = true; v.playsInline = true; v.preload = 'metadata';
+            v.onloadedmetadata = () => { clearTimeout(timeout); done(v.videoWidth, v.videoHeight, true); v.removeAttribute('src'); v.load(); };
+            v.onerror = () => { clearTimeout(timeout); done(photo.width, photo.height, false); };
+            v.src = photo.url;
+        } else {
+            const img = new Image();
+            img.onload = () => { clearTimeout(timeout); done(img.naturalWidth, img.naturalHeight, false); };
+            img.onerror = () => { clearTimeout(timeout); done(photo.width, photo.height, false); };
+            img.src = photo.url;
+        }
+    });
+}
+// 探测 URL 的 webm/视频是否有音轨（给老数据补 hasAudio 字段用）
+function probeHasAudioFromUrl(url, ext) {
+    return new Promise(resolve => {
+        if (ext !== 'webm' && !VIDEO_EXT_RE.test('x.' + ext)) { resolve(false); return; }
+        const v = document.createElement('video');
+        v.preload = 'metadata'; v.muted = true; v.playsInline = true; v.src = url;
+        const tm = setTimeout(() => { cleanup(); resolve(false); }, 5000);
+        const cleanup = () => { clearTimeout(tm); try { v.removeAttribute('src'); v.load(); } catch (_) { } };
+        v.onloadedmetadata = () => {
+            let has = false;
+            try {
+                has = (typeof v.mozHasAudio === 'boolean') ? v.mozHasAudio
+                    : (typeof v.webkitAudioDecodedByteCount === 'number') ? v.webkitAudioDecodedByteCount > 0
+                        : (v.audioTracks && v.audioTracks.length > 0);
+            } catch (_) { }
+            cleanup(); resolve(!!has);
+        };
+        v.onerror = () => { cleanup(); resolve(false); };
     });
 }
 
@@ -908,6 +1928,11 @@ function closeLightbox() {
     resetGestures();
 }
 function curPhoto() { return getSorted()[state.currentIndex]; }
+/* ---------- 音量按钮显示/隐藏（拖动时隐藏，结束显示）---------- */
+function _setAudioBtnsVisible(v) {
+    const list = document.querySelectorAll('.audio-toggle');
+    list.forEach(b => { b.classList.toggle('is-hidden', !v); });
+}
 function updateLightboxVotes(p) {
     const likes = p.likes || 0;
     const dislikes = p.dislikes || 0;
@@ -930,18 +1955,74 @@ function updateLightboxVotes(p) {
 function updateLightbox() {
     const p = curPhoto();
     if (!p) return;
-    const img = $('#lbImg');
+
+    // 清理旧的 lb 音量按钮
+    const w = lbWrap();
+    if (w) {
+        w.querySelectorAll('.audio-toggle').forEach(n => n.remove());
+    }
     state.zoom = { s: 1, x: 0, y: 0 };
     state.panning = false;
-    img.style.transition = 'none';
-    img.style.transform = 'translate(0,0) scale(1)';
-    img.style.opacity = 1;
-    img.src = p.url;
-    img.alt = dlName(p);
-    img.onerror = () => { };
+    if (w) {
+        w.style.transition = 'none';
+        w.style.transform = 'translate(0,0) scale(1)';
+        w.style.opacity = 1;
+    }
+
+    const img = $('#lbImg');
+    const vid = $('#lbVid');
+
+    try { if (vid && vid.pause) vid.pause(); } catch (_) { }
+
+    const animated = hasAnimatedMedia(p);
+    if (animated) {
+        img.style.display = 'none';
+        try { img.removeAttribute('src'); } catch (_) { }
+        vid.style.display = '';
+        vid.muted = true;
+        vid.loop = true;
+        vid.playsInline = true;
+        vid.controls = false;
+        vid.preload = 'auto';
+        vid.onerror = () => { vid.style.opacity = '.4'; };
+        vid.src = p.url;
+
+        const tryPlay = () => {
+            try { vid.play().catch(() => { }); } catch (_) { }
+            const tryProbe = () => {
+                let has = !!p.hasAudio;
+                if (typeof has !== 'boolean' || has === null) {
+                    try {
+                        has = (typeof vid.mozHasAudio === 'boolean') ? vid.mozHasAudio
+                            : (typeof vid.webkitAudioDecodedByteCount === 'number') ? vid.webkitAudioDecodedByteCount > 0
+                                : (vid.audioTracks && vid.audioTracks.length > 0);
+                    } catch (_) { has = false; }
+                    p.hasAudio = !!has;
+                }
+                if (has && w && !w.querySelector('.audio-toggle')) {
+                    const vbtn = makeVolumeBtn({ initiallyMuted: true });
+                    vbtn.classList.add('audio-toggle--lb');
+                    w.appendChild(vbtn);
+                    _setAudioBtnsVisible(true);
+                }
+                Store.save(p).catch(() => { });
+            };
+            if (vid.readyState >= 1) tryProbe();
+            else vid.addEventListener('loadedmetadata', tryProbe, { once: true });
+        };
+        setTimeout(() => tryPlay(), 0);
+    } else {
+        vid.style.display = 'none';
+        try { vid.removeAttribute('src'); if (vid.load) vid.load(); } catch (_) { }
+        img.style.display = '';
+        img.onerror = () => { };
+        img.src = p.url;
+        img.alt = dlName(p);
+    }
     $('#lbCounter').textContent = `${state.currentIndex + 1} / ${getSorted().length}`;
     updateLightboxVotes(p);
     renderDots();
+    _setAudioBtnsVisible(true);
 }
 function renderDots() {
     const d = $('#lbDots');
@@ -986,28 +2067,29 @@ function resetGestures() {
     });
 }
 
-/* ---- Lightbox 缩放 / 平移 ---- */
+/* ---- Lightbox 缩放 / 平移（统一作用到 lbMediaWrap 容器，img/video 同步被变换）---- */
+function lbWrap() { return $('#lbMediaWrap'); }
 function applyZoomTransform() {
-    const img = $('#lbImg');
-    img.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s})`;
+    const w = lbWrap(); if (!w) return;
+    w.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s})`;
 }
 function clampPan() {
-    const img = $('#lbImg');
+    const w = lbWrap(); if (!w) return;
     const sr = stage.getBoundingClientRect();
-    const r = img.getBoundingClientRect();
+    const r = w.getBoundingClientRect();
+    if (state.zoom.s <= 1) { state.zoom.x = 0; state.zoom.y = 0; applyZoomTransform(); return; }
     if (r.left > sr.left + 1) state.zoom.x += (sr.left + 1 - r.left);
     if (r.right < sr.right - 1) state.zoom.x += (sr.right - 1 - r.right);
     if (r.top > sr.top + 1) state.zoom.y += (sr.top + 1 - r.top);
     if (r.bottom < sr.bottom - 1) state.zoom.y += (sr.bottom - 1 - r.bottom);
 }
-// 以 stage 内坐标 (sx,sy) 为锚点缩放到 ns（图片由 flex 居中，transform-origin 默认 center）
+// 以 stage 内坐标 (sx,sy) 为锚点缩放到 ns
 function zoomTo(ns, sx, sy) {
-    ns = Math.min(5, Math.max(1, ns));
+    ns = Math.min(8, Math.max(1, ns));
     const sr = stage.getBoundingClientRect();
     const Sx = sr.width / 2, Sy = sr.height / 2;
     const s = state.zoom.s, x = state.zoom.x, y = state.zoom.y;
     state.zoom.s = ns;
-    // 保持锚点在原内容位置不变：P = S + t + s*q  →  t' = (P-S) - ns*(P-S - t)/s
     state.zoom.x = (sx - Sx) - ns * (sx - Sx - x) / s;
     state.zoom.y = (sy - Sy) - ns * (sy - Sy - y) / s;
     applyZoomTransform();
@@ -1015,10 +2097,9 @@ function zoomTo(ns, sx, sy) {
 }
 function resetZoom() {
     state.zoom = { s: 1, x: 0, y: 0 };
-    const img = $('#lbImg');
-    img.style.transition = 'transform .2s ease';
+    const w = lbWrap(); if (w) { w.style.transition = 'transform .2s ease'; }
     applyZoomTransform();
-    setTimeout(() => { img.style.transition = 'none'; }, 200);
+    setTimeout(() => { if (w) w.style.transition = 'none'; }, 200);
 }
 let pinch = null;
 function startPinch(e) {
@@ -1034,23 +2115,25 @@ function startPinch(e) {
 
 function onGs(e) {
     if (!state.lightboxOpen || state.menuOpen) return;
-    if (e.target.closest('#lbMoreBtn,#lbCloseBtn')) return;
+    if (e.target.closest('#lbMoreBtn,#lbCloseBtn,.audio-toggle')) return;
     // 双指捏合缩放
-    if (e.touches && e.touches.length === 2) { startPinch(e); state.dragging = true; return; }
+    if (e.touches && e.touches.length === 2) { startPinch(e); state.dragging = true; _setAudioBtnsVisible(false); return; }
     // 已放大：单指/鼠标拖动 = 平移看图（不做投票手势）
     if (state.zoom.s > 1.01) {
         state.dragging = true; state.panning = true;
         const pt = e.touches ? e.touches[0] : e;
         state.dragStart = { x: pt.clientX, y: pt.clientY };
         state.dragCurrent = { x: pt.clientX, y: pt.clientY };
-        $('#lbImg').style.transition = 'none';
+        const w = lbWrap(); if (w) w.style.transition = 'none';
+        _setAudioBtnsVisible(false);
         return;
     }
     state.dragging = true;
     const pt = e.touches ? e.touches[0] : e;
     state.dragStart = { x: pt.clientX, y: pt.clientY };
     state.dragCurrent = { x: pt.clientX, y: pt.clientY };
-    $('#lbImg').style.transition = 'none';
+    const w = lbWrap(); if (w) w.style.transition = 'none';
+    _setAudioBtnsVisible(false);
     resetGestures();
 }
 function onGm(e) {
@@ -1083,8 +2166,8 @@ function onGm(e) {
     const dx = pt.clientX - state.dragStart.x;
     const dy = pt.clientY - state.dragStart.y;
     state.dragCurrent = { x: pt.clientX, y: pt.clientY };
-    const img = $('#lbImg');
-    img.style.transform = `translate(${dx}px, ${dy}px) scale(1)`;
+    const w = lbWrap();
+    if (w) w.style.transform = `translate(${dx}px, ${dy}px) scale(1)`;
 
     const ax = Math.abs(dx), ay = Math.abs(dy);
     let dir = null, dist = 0;
@@ -1104,11 +2187,12 @@ function onGm(e) {
 function onGe(e) {
     if (!state.dragging) return;
     // 捏合结束
-    if (pinch) { pinch = null; state.dragging = false; return; }
+    if (pinch) { pinch = null; state.dragging = false; _setAudioBtnsVisible(true); return; }
     // 平移结束
     if (state.panning) {
         state.dragging = false; state.panning = false;
         clampPan();
+        _setAudioBtnsVisible(true);
         return;
     }
     // 触摸双击：放大 / 复位
@@ -1123,6 +2207,7 @@ function onGe(e) {
                 else zoomTo(2.5, t.clientX - sr.left, t.clientY - sr.top);
                 state._lastTap = null;
                 state.dragging = false;
+                _setAudioBtnsVisible(true);
                 return;
             }
             state._lastTap = { t: now, x: t.clientX, y: t.clientY };
@@ -1132,25 +2217,25 @@ function onGe(e) {
     const dx = state.dragCurrent.x - state.dragStart.x;
     const dy = state.dragCurrent.y - state.dragStart.y;
     const ax = Math.abs(dx), ay = Math.abs(dy);
-    const img = $('#lbImg');
-    img.style.transition = 'transform .3s ease, opacity .3s ease';
+    const w = lbWrap();
+    if (w) w.style.transition = 'transform .3s ease, opacity .3s ease';
 
     if (ax > ay) {
         if (ax > THRESHOLD) triggerGesture(dx > 0 ? 'right' : 'left');
     } else {
         if (ay > THRESHOLD) triggerGesture(dy > 0 ? 'down' : 'up');
     }
-    img.style.transform = 'translate(0,0)';
+    if (w) w.style.transform = 'translate(0,0)';
     resetGestures();
+    _setAudioBtnsVisible(true);
 }
 
 function triggerGesture(dir) {
     if (!state.lightboxOpen || state.menuOpen) return;
     const p = curPhoto();
     if (!p) return;
-    const img = $('#lbImg');
-    img.style.transition = 'transform .2s ease';
-    img.style.transform = 'translate(0,0)';
+    const w = lbWrap();
+    if (w) { w.style.transition = 'transform .2s ease'; w.style.transform = 'translate(0,0)'; }
 
     if (dir === 'left' || dir === 'right') {
         const delta = dir === 'left' ? +1 : -1;
@@ -1168,15 +2253,17 @@ function triggerGesture(dir) {
             delta === 1 ? 'heart' : 'alert');
 
         updateLightboxVotes(p);
-        updateMasonryStatsOnly();
+        updateCardStatsById(p.id);
 
         // 异步收尾：服务器回来后 → 刷新全局数据（更新其他图的最新投票、新增图等）
         rPromise.then(() => {
             try { return Store.load(); } catch (_) { return Store.photos; }
         }).then(() => {
             const cp = curPhoto();
-            if (cp) updateLightboxVotes(cp);
-            updateMasonryStatsOnly();
+            if (cp) {
+                updateLightboxVotes(cp);
+                updateCardStatsById(cp.id);
+            }
             if (state.lightboxOpen) renderDots();
         }).catch(() => { });
 
@@ -1191,28 +2278,29 @@ function triggerGesture(dir) {
         setTimeout(() => { resetGestures(); openMenu(); }, 200);
     }
 }
-function onGe() {
+function onGeMouse() {
     if (!state.dragging) return;
     state.dragging = false;
     const dx = state.dragCurrent.x - state.dragStart.x;
     const dy = state.dragCurrent.y - state.dragStart.y;
     const ax = Math.abs(dx), ay = Math.abs(dy);
-    const img = $('#lbImg');
-    img.style.transition = 'transform .3s ease, opacity .3s ease';
+    const w = lbWrap();
+    if (w) w.style.transition = 'transform .3s ease, opacity .3s ease';
 
     if (ax > ay) {
         if (ax > THRESHOLD) triggerGesture(dx > 0 ? 'right' : 'left');
     } else {
         if (ay > THRESHOLD) triggerGesture(dy > 0 ? 'down' : 'up');
     }
-    img.style.transform = 'translate(0,0)';
+    if (w) w.style.transform = 'translate(0,0)';
     resetGestures();
+    _setAudioBtnsVisible(true);
 }
 
 const stage = $('#lbStage');
 stage.addEventListener('mousedown', onGs);
 document.addEventListener('mousemove', onGm);
-document.addEventListener('mouseup', () => { if (state.dragging) onGe(); });
+document.addEventListener('mouseup', () => { if (state.dragging) onGeMouse(); });
 stage.addEventListener('touchstart', onGs, { passive: false });
 stage.addEventListener('touchmove', onGm, { passive: false });
 stage.addEventListener('touchend', onGe);

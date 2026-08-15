@@ -34,7 +34,7 @@
       <button class="nav-btn upload" id="uploadBtn" title="上传">
         <svg class="icon-lg" data-i="upload-cloud"></svg>
       </button>
-      <input type="file" id="fileInput" class="hidden" multiple accept="image/*" />
+      <input type="file" id="fileInput" class="hidden" multiple />
     </div>
   </header>
 
@@ -96,7 +96,11 @@
     </div>
 
     <div class="lb-stage" id="lbStage">
-      <img class="lb-img" id="lbImg" alt="预览图片" draggable="false" />
+      <div class="lb-media-wrap" id="lbMediaWrap">
+        <img class="lb-img" id="lbImg" alt="预览图片" draggable="false" />
+        <video class="lb-img" id="lbVid" style="display:none" muted loop playsinline autoplay preload="metadata"
+          disablepictureinpicture controlslist="nodownload nofullscreen noremoteplayback" draggable="false"></video>
+      </div>
     </div>
 
     <div class="gesture-icon gi-left" id="giLeft">
