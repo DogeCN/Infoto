@@ -6,9 +6,26 @@
  *   2. /api/photos  —— 照片元数据读写（KV 持久化）
  *   3. /api/vote    —— 按 IP 防重的喜欢/不喜欢投票
  *   4. /api/photos/hash —— SHA-256 查重
+ *   5. /api/file —— 多分片 JXL 在边缘 Worker 内合并并解码为 PNG 直出（单分片 JXL 仍由浏览器解码兜底）
  *
- * 上传由浏览器直连图床（cdeaa OSS），本服务端只接收最终直链，不做文件中转。
+ * 上传由浏览器直连图床（cdeaa OSS），本服务端只接收最终直链；大文件分片经 tc 中转，
+ * 取图时由本服务端合并还原（JXL 在此解码为 PNG，省去客户端 WASM 解码）。
  */
+
+// 服务端 JXL 解码所需的 WASM（libjxl 解码 / rust-png 编码），由 wrangler/esbuild 打包为 WebAssembly.Module
+import decode, { init as initJxl } from '@jsquash/jxl/decode.js';
+import encode, { init as initPng } from '@jsquash/png/encode.js';
+import jxlDecWasm from '@jsquash/jxl/codec/dec/jxl_dec.wasm';
+import pngEncWasm from '@jsquash/png/codec/pkg/squoosh_png_bg.wasm';
+
+// Cloudflare Worker 无 DOM ImageData 全局；JXL 解码胶水需要它来包装像素。
+// 解码返回 {data,width,height}，与 PNG 编码所需形态一致，这里做最小兜底。
+if (typeof ImageData === 'undefined') {
+  globalThis.ImageData = class {
+    constructor(data, width, height) { this.data = data; this.width = width; this.height = height; }
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -135,8 +152,9 @@ export default {
       }
     }
 
-    /* ---------- 分片还原：GET /api/file/<id> ---------- */
-    // 照片以多个分片直链（cdeaa OSS）存储在 KV，本接口动态拉取各分片拼接还原为完整文件
+    /* ---------- 取图 / 分片还原：GET /api/file/<id> ---------- */
+    // 照片以多个分片直链（cdeaa / tc OSS）存储在 KV，本接口动态拉取各分片拼接还原为完整文件。
+    // 多分片且为 JXL 时：在边缘 Worker 内合并后服务端解码为 PNG 直出（流式合并 + 服务端解码）。
     if (path.startsWith('/api/file/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const id = path.slice('/api/file/'.length);
@@ -146,13 +164,17 @@ export default {
       if (!p) return json(cors, { error: 'not found' }, 404);
       const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : (p.url ? [p.url] : []);
       if (!parts.length) return json(cors, { error: 'no parts' }, 404);
-      // 单分片（小文件直传 cdeaa）：直接 302 到分片直链，由浏览器加载。
-      // Worker 出口访问 lnjubao.cn 会被 EdgeOne 封（522），但浏览器直连正常。
+      const isJxl = (p.filename || '').toLowerCase().endsWith('.jxl');
+      const wantRaw = url.searchParams.has('raw') || url.searchParams.has('dl');
+
+      // 单分片（小/中文件，存于 cdeaa）：Worker 出口被 EdgeOne 封，无法直连，只能 302 让浏览器取。
+      // JXL 由前端 decodeJxlToPng 兜底解码；原图/其它格式浏览器原生渲染。
       if (parts.length === 1) {
         return Response.redirect(parts[0], 302);
       }
+
       try {
-        // 逐片拉取并拼接（小图数据量，Worker 内存可承受）
+        // 多分片（大文件，分片存于 tc，Worker 可访问）：逐片拉取拼接
         // EdgeOne 会拦截无 UA/数据中心 UA 的请求，伪装浏览器 UA 绕过
         const chunks = [];
         let total = 0;
@@ -167,6 +189,24 @@ export default {
         const merged = new Uint8Array(total);
         let off = 0;
         for (const c of chunks) { merged.set(c, off); off += c.length; }
+
+        // 服务端 JXL 解码：合并后直出 PNG，浏览器无需再跑 WASM 解码
+        // raw 下载请求跳过，返回原始 JXL 字节（供保存原图）；解码失败回退到原始 JXL（前端兜底）
+        if (isJxl && !wantRaw) {
+          try {
+            const pngBuf = await decodeJxlToPngBytes(merged.buffer);
+            const fhdrs = {
+              ...cors,
+              'Content-Type': 'image/png',
+              'Content-Length': String(pngBuf.byteLength),
+              'Cache-Control': 'public, max-age=86400',
+            };
+            return new Response(pngBuf, { headers: fhdrs });
+          } catch (e) {
+            // 解码失败（wasm/CPU/内存）：回退返回原始 JXL，交由前端 decodeJxlToPng 兜底
+          }
+        }
+
         const ct = mimeFromName(p.filename) || 'application/octet-stream';
         const isSafe = ct.startsWith('image/') || ct.startsWith('video/');
         const fhdrs = {
@@ -175,7 +215,7 @@ export default {
           'Content-Length': String(total),
           'Cache-Control': 'public, max-age=86400',
         };
-        if (!isSafe && p.filename) {
+        if ((wantRaw || !isSafe) && p.filename) {
           fhdrs['Content-Disposition'] = `attachment; filename="${p.filename.replace(/"/g, '')}"`;
         }
         return new Response(merged, { headers: fhdrs });
@@ -226,4 +266,25 @@ async function makeTcToken(secret, sha) {
   const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(header + '.' + payload)));
   return `${header}.${payload}.${b64u(sig)}`;
+}
+
+/* ---------- 服务端 JXL 解码（@jsquash/jxl + @jsquash/png，WASM 已在边缘打包） ---------- */
+let _codecsReady = null;
+function ensureCodecs() {
+  if (!_codecsReady) {
+    _codecsReady = (async () => {
+      await initJxl(jxlDecWasm);
+      await initPng(pngEncWasm);
+    })();
+  }
+  return _codecsReady;
+}
+// 把 JXL 字节解码为 PNG ArrayBuffer；任意环节失败都抛出，由 /api/file 回退到原始 JXL
+async function decodeJxlToPngBytes(jxlBytes) {
+  await ensureCodecs();
+  const imageData = await decode(jxlBytes); // { data, width, height } 或 ImageData
+  // 复制像素到独立 buffer：避免 data.data.buffer 带 byteOffset / 填充导致 PNG 编码错位（静默错乱）
+  const pixels = new Uint8ClampedArray(imageData.data);
+  const pngBuf = await encode({ data: pixels, width: imageData.width, height: imageData.height });
+  return pngBuf;
 }

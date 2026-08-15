@@ -578,7 +578,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const list = getSorted().filter(p => state.selected.has(p.id));
     if (list.length === 0) { toast('请先选择照片'); return; }
     toast(`开始下载 ${list.length} 张图片`, 'download');
-    list.forEach(p => downloadUrl(p.url, p.filename || 'image.jpg'));
+    list.forEach(p => downloadUrl(p.url + '?raw=1', p.filename || 'image.jpg'));
 });
 
 /* =========================================================
@@ -629,12 +629,14 @@ async function uploadFiles(files) {
         // 整体进度 = 已处理 / 总数（单文件内部进度细化为当前文件的进度）
         const base = i / total;
         const span = 1 / total;
-        let stepMsg = 'JXL 无损压缩…';
+        // 600KB 以下小文件不压缩，直接传原格式到 cdeaa（JXL 压缩对微小文件无收益）
+        const willCompress = file.type.startsWith('image/') && !/gif|svg/.test(file.type) && file.size > CONFIG.CDEAA_LIMIT;
+        let stepMsg = willCompress ? 'JXL 无损压缩…' : '直传（小文件跳过压缩）';
         setUploadProgress(base, file.name, stepMsg);
         try {
             let upBlob = file;
             let upName = file.name;
-            if (file.type.startsWith('image/') && !/gif|svg/.test(file.type)) {
+            if (willCompress) {
                 const jxl = await compressLossless(file);
                 if (jxl && jxl.size < file.size * 0.9) {
                     upBlob = jxl;
@@ -842,7 +844,7 @@ async function triggerGesture(dir) {
         setTimeout(() => { resetGestures(); nextPhoto(); }, 200);
     } else if (dir === 'down') {
         const gi = $('#giDown'); gi.style.opacity = 1; gi.style.transform = 'translateX(-50%) scale(1.2)';
-        downloadUrl(p.url, p.filename || 'image.jpg');
+        downloadUrl(p.url + '?raw=1', p.filename || 'image.jpg');
         toast('开始下载', 'download');
         setTimeout(() => { resetGestures(); }, 250);
     } else if (dir === 'up') {
