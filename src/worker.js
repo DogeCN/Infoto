@@ -89,17 +89,25 @@ export default {
       return json(cors, hit ? { exists: true, photo: hit } : { exists: false });
     }
 
-    /* ---------- 上传透明代理 ---------- */
-    if (path === '/api/upload-proxy' && request.method === 'POST') {
-      const token = request.headers.get('X-Auth-Token') || '';
+    /* ---------- 上传兜底代理：?target=cdeaa|tc（默认 cdeaa） ---------- */
+    // 主路径是浏览器直连图床；此接口仅在图床直连失败（网络波动等）时兜底，
+    // 服务端不落盘、不二次处理，只转发并原样返回直链。
+    if (path.startsWith('/api/upload-proxy') && request.method === 'POST') {
+      const target = url.searchParams.get('target') || 'cdeaa';
+      const upstreamUrl = target === 'tc'
+        ? 'https://tc.0147258.xyz/upload'
+        : 'https://cdeaa.qdqqd.com/public/resource/oss/put-file-attach';
       const headers = new Headers();
       const ct = request.headers.get('Content-Type') || 'application/octet-stream';
       headers.set('Content-Type', ct);
-      if (token) headers.set('X-Auth-Token', token);
-      headers.set('Content-Length', request.headers.get('Content-Length') || '');
+      // tc 图床需要 JWT 签名头；cdeaa 公共接口不需要
+      if (target === 'tc') {
+        const token = request.headers.get('X-Auth-Token') || '';
+        if (token) headers.set('X-Auth-Token', token);
+      }
 
       try {
-        const upstream = await fetch('https://tc.0147258.xyz/upload', {
+        const upstream = await fetch(upstreamUrl, {
           method: 'POST',
           headers,
           body: request.body,

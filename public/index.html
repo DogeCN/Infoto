@@ -519,48 +519,23 @@ function renderIcons(root){
 
 <script>
 /* =========================================================
-   配置：图床上传协议参数（逆向自 tc.0147258.xyz 前端）
+   配置：上传走浏览器直连 cdeaa 公共 OSS，服务端只接收直链
    ========================================================= */
 const CONFIG = {
-  JWT_SECRET: '9a31f2e82617e4b4b482110f8c928b9b2734d809f060c30f12e8b2574a84c122',
-  UPLOAD_PATH: '/upload',
-  SIZE_MB_THRESHOLD: 50,
-  CDEAA_MIMES: ['application/javascript','text/javascript','text/css','font/ttf'],
-  // 图床源站（直传目标）：跨域直传被 CORS 拦截时走同源 Worker 代理
-  BED_ORIGIN: 'https://tc.0147258.xyz',
   // 共享后端：默认空 = 同源（Cloudflare Worker 部署形态，/api/* 由 Worker 处理）
   // 若要独立后端，改为完整地址，如 'http://localhost:8080'
   API_BASE: '',
 };
 
-/* ---- base64url ---- */
-function b64u(bytes){
-  let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
 async function sha256Hex(buf){
   const d = await crypto.subtle.digest('SHA-256', buf);
   return Array.from(new Uint8Array(d)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
-async function hmacSign(secret, data){
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
-    {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
-  return b64u(new Uint8Array(sig));
-}
-async function makeJwt(sha){
-  const header = b64u(new TextEncoder().encode(JSON.stringify({alg:'HS256',typ:'JWT'})));
-  const claims = {timestamp: Date.now()};
-  if(sha) claims.sha256 = sha;
-  const payload = b64u(new TextEncoder().encode(JSON.stringify(claims)));
-  const sig = await hmacSign(CONFIG.JWT_SECRET, header+'.'+payload);
-  return `${header}.${payload}.${sig}`;
-}
 
 /* ---- 图床上传（XHR 带进度） ----
-   小文件: POST <origin>/upload, X-Auth-Token: JWT, FormData{file}
-   返回: {"data": "直链"}
-   fallback: POST cdeaa.qdqqd.com/.../put-file-attach, FormData{file}, 返回 data.link
+   浏览器直连 cdeaa 公共 OSS（CORS 放行，multipart 简单请求，无需签名）
+   直连失败（网络波动/超时）才走同源 Worker 代理兜底（?target=cdeaa）
+   返回: {"code":200,"data":{"link":"/minio-jbpt/upload/..."}} → 拼 https://www.lnjubao.cn + link
 */
 function uploadViaXhr(url, fd, headers, onProgress){
   return new Promise((resolve,reject)=>{
@@ -574,49 +549,18 @@ function uploadViaXhr(url, fd, headers, onProgress){
   });
 }
 
-async function uploadToBed(file, onProgress, precomputedSha){
+async function uploadToBed(file, onProgress){
   onProgress(0.05);
-
-  // 小文件主路径
-  if(!CONFIG.CDEAA_MIMES.includes(file.type) && file.size <= CONFIG.SIZE_MB_THRESHOLD*1024*1024){
-    const sha = precomputedSha || await sha256Hex(await file.arrayBuffer());
-    const token = await makeJwt(sha);
-    const fd = new FormData();
-    fd.append('file', file);
-    try {
-      // 优先浏览器直传（图床 CORS 放行时）
-      const txt = await uploadViaXhr(CONFIG.BED_ORIGIN + CONFIG.UPLOAD_PATH, fd, {'X-Auth-Token': token}, p=>onProgress(0.05 + p*0.9));
-      onProgress(0.95);
-      const json = JSON.parse(txt);
-      if(!json.data) throw new Error('上传响应缺少 data');
-      onProgress(1);
-      return json.data;
-    } catch(e1) {
-      // 跨域直传被拦 → 走同源 Worker 透明代理（/api/upload-proxy）
-      const txt = await uploadViaXhr(apiBase() + '/api/upload-proxy', fd, {'X-Auth-Token': token}, p=>onProgress(0.05 + p*0.9));
-      onProgress(0.95);
-      const json = JSON.parse(txt);
-      if(!json.data) throw new Error('上传响应缺少 data');
-      onProgress(1);
-      return json.data;
-    }
-  }
-  // 大文件 fallback（cdeaa OSS 公共直链，尽量不用）
   const fd = new FormData();
   fd.append('file', file);
-  try {
-    const txt = await uploadViaXhr('https://cdeaa.qdqqd.com/public/resource/oss/put-file-attach', fd, {}, p=>onProgress(p));
-    const json = JSON.parse(txt);
-    if(!(json.data && json.data.link)) throw new Error('上传响应缺少 link');
-    onProgress(1);
-    return 'https://www.lnjubao.cn' + json.data.link;
-  } catch(e2) {
-    const txt = await uploadViaXhr(apiBase() + '/api/upload-proxy', fd, {}, p=>onProgress(p));
-    const json = JSON.parse(txt);
-    if(!(json.data && json.data.link)) throw new Error('上传响应缺少 link');
-    onProgress(1);
-    return 'https://www.lnjubao.cn' + json.data.link;
-  }
+  // 主路径：浏览器直连 cdeaa OSS（公共接口，无需 JWT，任意大小/类型）
+  const txt = await uploadViaXhr('https://cdeaa.qdqqd.com/public/resource/oss/put-file-attach', fd, {}, p=>onProgress(0.05 + p*0.9))
+    .catch(() => uploadViaXhr(apiBase() + '/api/upload-proxy?target=cdeaa', fd, {}, p=>onProgress(0.05 + p*0.9))); // 兜底：同源 Worker 代理
+  onProgress(0.95);
+  const json = JSON.parse(txt);
+  if(!(json.data && json.data.link)) throw new Error('上传响应缺少 link');
+  onProgress(1);
+  return 'https://www.lnjubao.cn' + json.data.link;
 }
 /* 返回 API 根：同源(空字符串) 或自定义 API_BASE */
 function apiBase(){ return CONFIG.API_BASE || ''; }
@@ -1032,7 +976,7 @@ async function uploadFiles(files){
         bar.style.width = Math.round(p*100)+'%';
         pct.textContent = Math.round(p*100)+'%';
         step.textContent = p<1 ? '直链上传' : '获取直链';
-      }, sha);
+      });
       step.textContent = '获取尺寸…';
       const photo = {id:null, url, sha256: sha, width:0, height:0, createdAt:Date.now(), likes:0, dislikes:0, filename:file.name};
       await loadDims(photo);
