@@ -158,22 +158,6 @@ const TaskWorker = (() => {
         } catch (e) { return false; }
     }
 
-    function startUpload(files, apiBase) {
-        if (!connect()) return false;
-        try {
-            sw.port.postMessage({ type: 'start-upload', files, apiBase });
-            return true;
-        } catch (e) { return false; }
-    }
-
-    function startUploadPrepared(items, apiBase) {
-        if (!connect()) return false;
-        try {
-            sw.port.postMessage({ type: 'start-upload-prepared', items, apiBase });
-            return true;
-        } catch (e) { return false; }
-    }
-
     try {
         connect();
         window.addEventListener('beforeunload', () => {
@@ -181,7 +165,7 @@ const TaskWorker = (() => {
         }, { once: true });
     } catch (e) { console.warn('[TaskWorker] init connect fail:', e && e.message); }
 
-    return { connect, isSupported, onMessage, getTask, hasAnyTask, startDelete, startDownload, startUpload, startUploadPrepared };
+    return { connect, isSupported, onMessage, getTask, hasAnyTask, startDelete, startDownload };
 })();
 
 /* =========================================================
@@ -983,10 +967,21 @@ function buildColumns() {
     const m = $('#masonry');
     m.innerHTML = '';
     cols = [];
-    for (let i = 0; i < colCount(); i++) {
+    const need = Math.max(1, colCount());
+    for (let i = 0; i < need; i++) {
         const c = el('div', 'masonry-col');
         m.appendChild(c); cols.push(c);
     }
+}
+
+function _shortestCol() {
+    if (!cols || cols.length === 0) buildColumns();
+    let best = cols[0], bestH = best.getBoundingClientRect().height || best.scrollHeight || 0;
+    for (let i = 1; i < cols.length; i++) {
+        const ch = cols[i].getBoundingClientRect().height || cols[i].scrollHeight || 0;
+        if (ch < bestH) { best = cols[i]; bestH = ch; }
+    }
+    return best;
 }
 
 /* ---------- 音量按钮 ---------- */
@@ -1122,15 +1117,12 @@ function applySelectUI() {
     });
 }
 
-function _shortestCol() {
-    let best = cols[0], bestH = best.scrollHeight;
-    for (let i = 1; i < cols.length; i++) {
-        if (cols[i].scrollHeight < bestH) { best = cols[i]; bestH = best.scrollHeight; }
-    }
-    return best;
-}
-
 function renderMasonry(reset = true) {
+    const expectedCols = colCount();
+    const curColsDom = $('#masonry').querySelectorAll('.masonry-col').length;
+    if (!cols || cols.length !== expectedCols || curColsDom !== expectedCols) {
+        reset = true;
+    }
     if (reset) { buildColumns(); renderedCount = 0; }
     const sorted = getSorted();
     const n = Math.min(sorted.length, state.loadedCount);
@@ -1144,11 +1136,10 @@ function renderMasonry(reset = true) {
 
 function prependCardToMasonry(photo) {
     const card = makeCard(photo, 0);
-    // 放在当前"第一张卡片"之前（即最矮列的最前面；若还没有列就放第一列）
-    const firstCol = cols[0];
-    if (!firstCol) return;
-    if (firstCol.firstChild) firstCol.insertBefore(card, firstCol.firstChild);
-    else firstCol.appendChild(card);
+    const targetCol = _shortestCol();
+    if (!targetCol) return;
+    if (targetCol.firstChild) targetCol.insertBefore(card, targetCol.firstChild);
+    else targetCol.appendChild(card);
     applySelectUI();
     updateCardStatsById(photo.id);
     $('#emptyState').classList.add('hidden');
@@ -1674,279 +1665,166 @@ async function uploadFiles(files) {
     resetUploadUI();
     _mode = 'upload';
     const t0 = Date.now();
-    const vp9Supported = await supportsVp9WebCodecs();
-    applyFileInputAccept(); // 确保探测完成后 accept 与实际支持情况一致
+    await supportsVp9WebCodecs();
+    applyFileInputAccept();
     const total = files.length;
     if (total === 0) return;
+    const vp9Ok = _vp9Support === true;
+    _prepBytes = { total: 0, done: 0 };
+    _uploadBytes = { total: 0, done: 0 };
+
     let done = 0, failed = 0, skipped = 0;
+    const PHASE = { PREP: 0.20, UPLOAD: 0.75, SYNC: 0.05 };
 
-    // 按原始文件字节作为总工作量，阶段加权计算总进度
-    const rawBytes = files.reduce((a, f) => a + (f.size || 0), 0) || 1;
-    _prepBytes.total = rawBytes;
-    _uploadBytes.total = rawBytes;
-    // 单文件内部子阶段权重（在单文件的上传 75% 大阶段里拆分）
-    const SUB = { CHECK: 0.05, UPLOAD: 0.90, DIMS: 0.05 };
+    // 每文件独立状态：各自写入自己的进度，整体进度统一汇总（并发写入互不干扰，不会互相覆盖）
+    const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null }));
+    const prepTotal = fileStates.reduce((a, s) => a + s.size, 0) || 1;
 
-    function buildStat(extraLabel) {
+    // 并发保序缓冲：按原始下标顺序 flush 卡片，避免乱序插入造成视觉抖动
+    const pendingPhotos = new Map();
+    let _nextInsertIdx = 0;
+    function flushCards() {
+        const run = [];
+        while (pendingPhotos.has(_nextInsertIdx)) {
+            run.push(pendingPhotos.get(_nextInsertIdx));
+            pendingPhotos.delete(_nextInsertIdx);
+            _nextInsertIdx++;
+        }
+        // 逆序 prepend：使本批次在阅读顺序上保持正向（0,1,2…）
+        for (let k = run.length - 1; k >= 0; k--) {
+            if (run[k]) prependCardToMasonry(run[k]);
+        }
+    }
+    function markReady(idx, photo) {
+        // photo 为 null 表示跳过/失败（无卡片），但仍占位以推进 _nextInsertIdx
+        pendingPhotos.set(idx, photo || null);
+        flushCards();
+    }
+
+    let currentFile = total > 1 ? `${total} 个文件` : (files[0] && files[0].name || '');
+    let currentStep = '准备中…';
+
+    function curOverall() {
+        let prepSum = 0, upSum = 0, upDen = 0;
+        for (const s of fileStates) {
+            prepSum += s.prepP * s.size;
+            const ub = s.uploadBytes || s.size || 1;
+            upSum += s.upP * ub; upDen += ub;
+        }
+        const prepP = prepSum / prepTotal;
+        const upP = upDen ? upSum / upDen : 0;
+        return Math.min(1, PHASE.PREP * prepP + PHASE.UPLOAD * upP);
+    }
+    function buildStat() {
         const elapsed = (Date.now() - t0) / 1000 || 0.001;
-        // 当前总已处理字节按进度大致换算（预处理 + 上传阶段分别估算）
-        const phasePrep = PHASE_WEIGHT.PREP * (_prepBytes.done / Math.max(1, _prepBytes.total));
-        const phaseUp = PHASE_WEIGHT.UPLOAD * (_uploadBytes.done / Math.max(1, _uploadBytes.total));
-        const overallPct = Math.min(1, phasePrep + phaseUp);
-        const processedEst = rawBytes * overallPct;
+        const overallPct = curOverall();
+        const processedEst = prepTotal * overallPct;
         const speed = processedEst / elapsed;
-        const remain = overallPct > 0.02 ? (rawBytes - processedEst) / Math.max(0.0001, speed) : 0;
+        const remain = overallPct > 0.02 ? (prepTotal - processedEst) / Math.max(0.0001, speed) : 0;
         const mm = Math.floor(remain / 60), ss = Math.round(remain % 60).toString().padStart(2, '0');
-        const parts = [];
-        parts.push(`${formatSize(processedEst)} / ${formatSize(rawBytes)}`);
+        const parts = [`${formatSize(processedEst)} / ${formatSize(prepTotal)}`];
         if (elapsed > 2) parts.push(`${formatSize(speed)}/s`);
         if (elapsed > 4 && remain > 0 && remain < 3600 * 6) parts.push(`剩 ${mm ? mm + '分' : ''}${ss}秒`);
-        if (extraLabel) parts.push(extraLabel);
         return parts.join(' · ');
     }
-    function recomputeUploadOverall(curFile, curStep, extraLabel) {
-        const phasePrep = PHASE_WEIGHT.PREP * (_prepBytes.done / Math.max(1, _prepBytes.total));
-        const phaseUp = PHASE_WEIGHT.UPLOAD * (_uploadBytes.done / Math.max(1, _uploadBytes.total));
-        const overall = Math.min(1, phasePrep + phaseUp);
-        setUploadProgress(overall, curFile, curStep, { stat: buildStat(extraLabel), remaining: total - done - skipped - failed });
+    let uiTick = null;
+    const startUiTick = () => { if (uiTick) return; uiTick = setInterval(() => {
+        setUploadProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed) });
+    }, 120); };
+    const stopUiTick = () => { if (uiTick) { clearInterval(uiTick); uiTick = null; } };
+
+    async function processOne(file, idx) {
+        const st = fileStates[idx];
+        try {
+            if (file.type === 'image/svg+xml') { st.err = 'SVG 暂不支持'; failed++; markReady(idx, null); toast(`「${file.name}」SVG 暂不支持`, 'alert'); return; }
+            let blob = file, ext = 'webp', hasAudio = false;
+            const isV = isVideoFile(file), isG = isGifFile(file), isP = _safeForWebp(file);
+            if (isP) {
+                currentFile = file.name; currentStep = '压缩中…';
+                const webp = await compressToWebp(file, WEBP_QUALITY);
+                if (!webp) { st.err = '图片 WebP 压缩失败'; failed++; markReady(idx, null); toast(`「${file.name}」图片 WebP 压缩失败`, 'alert'); return; }
+                blob = webp; ext = 'webp';
+            } else if (isV || isG) {
+                if (!vp9Ok) {
+                    const msg = (isG ? 'GIF' : '视频') + '需要支持 VP9 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）';
+                    st.err = msg; failed++; markReady(idx, null); toast(`「${file.name}」${msg}`, 'alert'); return;
+                }
+                const label = isG ? 'GIF 转码' : '视频转码';
+                currentFile = file.name; currentStep = label + '中…';
+                const r = await transcodeToVp9Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); });
+                blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio;
+            }
+            st.prepP = 1;
+            st.uploadBytes = blob.size || st.size || 1;
+            const ab = await blob.arrayBuffer();
+            const sha = await sha256Hex(ab);
+            currentStep = '查重…'; st.upP = 0.02;
+            const dup = await checkHashExists(sha);
+            if (dup) {
+                skipped++; st.upP = 1;
+                markReady(idx, null);
+                toast(`「${file.name}」已存在，跳过`, 'info');
+                return;
+            }
+            currentFile = file.name; currentStep = '上传到图床';
+            const parts = await uploadToBed(blob, 'upload.' + ext, (p) => { st.upP = 0.02 + p * 0.93; }, apiBase());
+            st.upP = 0.96; currentStep = '获取尺寸…';
+            const photo = {
+                id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+                url: '', parts, sha256: sha,
+                width: 0, height: 0, createdAt: Date.now(),
+                ext, hasAudio
+            };
+            photo.url = fileUrl(photo.id);
+            await loadDims(photo);
+            st.upP = 0.98;
+            await Store.add(photo);
+            st.upP = 1; done++;
+            markReady(idx, photo);
+            if (photo.width && photo.height) Store.save(photo).catch(() => { });
+            blob = null; // 立即释放字节，降低内存峰值
+        } catch (e) {
+            console.error('upload failed:', file.name, e);
+            st.err = e && e.message ? e.message : String(e);
+            failed++;
+            markReady(idx, null);
+            toast(`「${file.name}」上传失败: ${st.err}`, 'alert');
+        }
     }
 
-    // 阶段 1：预处理（压缩 + SHA）占总进度 20%
-    // - 纯图片 WebP 压缩：CONFIG.CONCURRENCY 并发（默认 3）
-    // - GIF/视频 VP9 转码：单线程（WebCodecs 内部已是多线程并行；开多个同时编码极易 OOM / 掉驱动）
-    const vp9Ok = _vp9Support === true;
-    recomputeUploadOverall(files.length > 1 ? `${files.length} 个文件` : files[0].name, '预处理中…');
-    const picTasks = [];
-    const vp9Tasks = [];
+    // 拆分：图片走 CONFIG.CONCURRENCY 并发；视频/GIF 单线程（WebCodecs 内部已并行，多开极易 OOM）
+    const picTasks = [], vp9Tasks = [];
     files.forEach((file, idx) => {
         const heavy = vp9Ok && (isVideoFile(file) || isGifFile(file));
-        const run = async () => {
-            const base = { idx, file, err: null, blob: null, ext: 'webp', sha: null, hasAudio: false };
-            if (file.type === 'image/svg+xml') { base.err = new Error('SVG 暂不支持'); return base; }
-            try {
-                const isV = isVideoFile(file);
-                const isG = isGifFile(file);
-                const isP = _safeForWebp(file);
-                let blob = file;
-                let ext = 'webp';
-                if (isP) {
-                    // 即使是 webp 也重新编码，防止上传奇奇怪怪/恶意的 webp（统一规范化为干净静态 webp）
-                    recomputeUploadOverall(file.name, '压缩中…');
-                    const webp = await compressToWebp(file, WEBP_QUALITY);
-                    if (!webp) { base.err = new Error('图片 WebP 压缩失败'); return base; }
-                    blob = webp; ext = 'webp';
-                }
-                if (isV || isG) {
-                    if (!vp9Ok) {
-                        base.err = new Error(isG ? 'GIF 需要支持 VP9 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）' : '视频需要支持 VP9 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）');
-                        return base;
-                    }
-                    const stepLabel = isG ? 'GIF 转码' : '视频转码';
-                    try {
-                        const r = await transcodeToVp9Webm(file, (p, label) => {
-                            recomputeUploadOverall(file.name, label || stepLabel + '中…');
-                        });
-                        blob = r.blob; ext = 'webm'; base.hasAudio = !!r.hasAudio;
-                    } catch (err) {
-                        base.err = new Error(stepLabel + '失败：' + err.message);
-                        return base;
-                    }
-                }
-                base.blob = blob;
-                base.ext = ext;
-                base.sha = await sha256Hex(await blob.arrayBuffer());
-            } catch (e) { base.err = e; } finally {
-                // 预处理完成：无论成功失败都按原文件大小计入"预处理 done"，避免总进度卡住
-                _prepBytes.done = Math.min(_prepBytes.total, _prepBytes.done + (file.size || 0));
-            }
-            return base;
-        };
-        (heavy ? vp9Tasks : picTasks).push(run);
+        (heavy ? vp9Tasks : picTasks).push(() => processOne(file, idx));
     });
-    // 预处理过程中：轻量刷新 UI（节流，约 150ms 一次）
-    let prepLastPush = 0;
-    const prepTick = setInterval(() => {
-        const now = Date.now();
-        if (now - prepLastPush < 120) return;
-        prepLastPush = now;
-        recomputeUploadOverall(null, '预处理中…');
-    }, 150);
-    const [preparedPic, preparedVp9] = await Promise.all([
+
+    startUiTick();
+    await Promise.all([
         runWithConcurrency(picTasks, CONFIG.CONCURRENCY),
-        runWithConcurrency(vp9Tasks, 1) // VP9 转码单线程防止 OOM
+        runWithConcurrency(vp9Tasks, 1)
     ]);
-    clearInterval(prepTick);
-    const prepared = [...preparedPic, ...preparedVp9].sort((a, b) => a.idx - b.idx);
-    _prepBytes.done = _prepBytes.total;
+    stopUiTick();
+    flushCards(); // 兜底 flush 剩余卡片
 
-    const errCount = prepared.filter(p => p.err).length;
-    const validItems = prepared.filter(p => !p.err);
-
-    if (errCount > 0) {
-        prepared.forEach(p => {
-            if (p.err) toast(`「${p.file?.name || ''}」${p.err.message}`, 'alert');
-        });
-    }
-
-    if (validItems.length === 0) {
-        setUploadProgress(1, null, '完成', { stat: '所有文件预处理失败' });
-        setTimeout(resetUploadUI, 2000);
-        return;
-    }
-
-    if (TaskWorker.isSupported()) {
-        const items = validItems.map(p => ({
-            blob: p.blob,
-            ext: p.ext,
-            sha: p.sha,
-            hasAudio: !!p.hasAudio,
-            width: 0,
-            height: 0,
-            fileName: p.file?.name || 'upload',
-        }));
-        const ok = TaskWorker.startUploadPrepared(items, apiBase());
-        if (ok) {
-            let uploadLsn = null;
-            const cleanup = () => { if (uploadLsn) { uploadLsn(); uploadLsn = null; } };
-            uploadLsn = TaskWorker.onMessage((msg) => {
-                if (msg.type === 'task-update' && msg.task && msg.task.type === 'upload') {
-                    const t = msg.task;
-                    $('#upDone').textContent = String(t.done);
-                    $('#upSkipped').textContent = String(t.skipped);
-                    $('#upFailed').textContent = String(t.failed);
-                    setProgress(t.progress, t.curFile, t.step, {
-                        stat: t.extraStat || '',
-                        remaining: Math.max(0, t.total - t.done - t.skipped - t.failed),
-                    });
-                }
-                if (msg.type === 'task-clear' && msg.taskType === 'upload') {
-                    setTimeout(() => { resetUploadUI(); _mode = 'upload'; }, 2500);
-                    cleanup();
-                }
-                if (msg.type === 'upload-complete') {
-                    (async () => {
-                        const beforeIds = new Set(Store.photos.map(p => p.id));
-                        const fresh = await Store.load(true);
-                        for (const p of fresh) {
-                            if (!beforeIds.has(p.id)) {
-                                const idx = getSorted().findIndex(x => x.id === p.id);
-                                if (idx >= 0 && idx < state.loadedCount && !document.querySelector(`.photo-card[data-id="${CSS.escape(p.id)}"]`)) {
-                                    prependCardToMasonry(p);
-                                }
-                            }
-                        }
-                        updateMasonryStatsOnly();
-                        const s = msg.summary || {};
-                        const summary = [];
-                        if (s.done > 0) summary.push(`成功 ${s.done}`);
-                        if (s.skipped > 0) summary.push(`跳过重复 ${s.skipped}`);
-                        if (s.failed > 0) summary.push(`失败 ${s.failed}`);
-                        if (summary.length) toast(`上传完成：${summary.join('，')}`, s.done > 0 || s.skipped > 0 ? 'success' : 'alert');
-                    })();
-                }
-            });
-            recomputeUploadOverall(validItems.length > 1 ? `${validItems.length} 个文件` : validItems[0].file?.name || '', '排队上传…');
-            return;
-        }
-    }
-
-    // 降级：TaskWorker 不可用 → 页面内执行（原有逻辑）
-    done = 0; failed = errCount; skipped = 0;
-    const SUB_X = { CHECK: 0.05, UPLOAD: 0.90, DIMS: 0.05 };
-
-    for (let i = 0; i < prepared.length; i++) {
-        const pr = prepared[i];
-        const file = pr.file;
-        const fileWeightBytes = file.size || 0;
-        const _uploadBaseBefore = _uploadBytes.done;
-        const addSubProgress = (subP) => {
-            _uploadBytes.done = Math.min(_uploadBytes.total, _uploadBaseBefore + fileWeightBytes * subP);
-        };
-        if (pr.err) continue;
-        const upName = 'upload.' + pr.ext;
-
-        addSubProgress(SUB_X.CHECK * 0.1);
-        recomputeUploadOverall(file.name, '查重…');
-        try {
-            addSubProgress(SUB_X.CHECK);
-            const dup = await checkHashExists(pr.sha);
-            if (dup) {
-                skipped++;
-                addSubProgress(1);
-                $('#upSkipped').textContent = String(skipped);
-                recomputeUploadOverall(file.name, '已存在，跳过');
-                toast(`「${file.name}」已存在，跳过`, 'info');
-                continue;
-            }
-            const upStart = SUB_X.CHECK;
-            const upSpan = SUB_X.UPLOAD;
-            const parts = await uploadToBed(pr.blob, upName, p => {
-                addSubProgress(upStart + p * upSpan);
-                recomputeUploadOverall(file.name, p < 1 ? '上传到图床' : '上传完成');
-            });
-            addSubProgress(SUB_X.CHECK + SUB_X.UPLOAD + SUB_X.DIMS * 0.2);
-            recomputeUploadOverall(file.name, '获取尺寸…');
-            const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-            const photo = {
-                id, url: fileUrl(id), parts, sha256: pr.sha,
-                width: 0, height: 0, createdAt: Date.now(),
-                ext: pr.ext, hasAudio: !!pr.hasAudio
-            };
-            await loadDims(photo);
-            addSubProgress(SUB_X.CHECK + SUB_X.UPLOAD + SUB_X.DIMS * 0.7);
-            await Store.add(photo);
-            addSubProgress(1);
-            done++;
-            $('#upDone').textContent = String(done);
-            recomputeUploadOverall(file.name, `已完成 ${done}/${total}`);
-            prependCardToMasonry(photo);
-            if (photo.width && photo.height) Store.save(photo).catch(() => { });
-        } catch (err) {
-            console.error('upload failed:', file.name, err);
-            failed++;
-            addSubProgress(1);
-            $('#upFailed').textContent = String(failed);
-            recomputeUploadOverall(file.name, '失败', err.message);
-            toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
-        }
-    }
-    _uploadBytes.done = _uploadBytes.total;
-
-    // 阶段 3：服务器同步对齐（占总进度最后 5%）
-    setUploadProgress(PHASE_WEIGHT.PREP + PHASE_WEIGHT.UPLOAD + 0.01, null, '同步服务器…', { stat: buildStat('最终同步'), remaining: Math.max(0, total - done - skipped - failed) });
-    const syncPromise = (async () => {
-        try {
-            const beforeIds = new Set(Store.photos.map(p => p.id));
-            const fresh = await Store.load(true);
-            for (const p of fresh) {
-                if (!beforeIds.has(p.id)) {
-                    const idx = getSorted().findIndex(x => x.id === p.id);
-                    if (idx >= 0 && idx < state.loadedCount && !document.querySelector(`.photo-card[data-id="${CSS.escape(p.id)}"]`)) {
-                        prependCardToMasonry(p);
-                    }
-                }
-            }
-            updateMasonryStatsOnly();
-            if (state.lightboxOpen) {
-                const cp = curPhoto();
-                if (cp) updateLightboxVotes(cp);
-                renderDots();
-            }
-        } catch (_) { }
-    })();
-    // 给同步过程一个平滑的进度动画（约 0.5s 从 96% → 99%）
+    // 阶段 3：最终同步对齐（占总进度最后 5%）
     const finalStart = Date.now();
     const finalDur = 500;
     const finalAnim = setInterval(() => {
         const t = Math.min(1, (Date.now() - finalStart) / finalDur);
-        const p = PHASE_WEIGHT.PREP + PHASE_WEIGHT.UPLOAD + 0.01 + t * 0.03;
-        setUploadProgress(p, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed) });
+        setUploadProgress(PHASE.PREP + PHASE.UPLOAD + t * PHASE.SYNC, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed) });
     }, 30);
-    await syncPromise;
+    try {
+        updateMasonryStatsOnly();
+        if (state.lightboxOpen) {
+            const cp = curPhoto();
+            if (cp) updateLightboxVotes(cp);
+            renderDots();
+        }
+    } catch (_) { }
     clearInterval(finalAnim);
 
-    setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(rawBytes)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s` });
-
+    setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s` });
     const summary = [];
     if (done > 0) summary.push(`成功 ${done}`);
     if (skipped > 0) summary.push(`跳过重复 ${skipped}`);
@@ -2567,7 +2445,7 @@ async function downloadUrl(url, name) {
 let _resumeWorkerListener = null;
 function resumeRunningTask() {
     if (!TaskWorker.isSupported()) return;
-    const types = ['delete', 'download', 'upload'];
+    const types = ['delete', 'download'];
     for (const ttype of types) {
         const t = TaskWorker.getTask(ttype);
         if (t && t.status === 'running') {
@@ -2596,27 +2474,6 @@ function resumeRunningTask() {
                     downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
                     setTimeout(() => URL.revokeObjectURL(msg.zipUrl), 60000);
                     toast('下载完成', 'success');
-                }
-                if (msg.type === 'upload-complete') {
-                    (async () => {
-                        const beforeIds = new Set(Store.photos.map(p => p.id));
-                        const fresh = await Store.load(true);
-                        for (const p of fresh) {
-                            if (!beforeIds.has(p.id)) {
-                                const idx = getSorted().findIndex(x => x.id === p.id);
-                                if (idx >= 0 && idx < state.loadedCount && !document.querySelector(`.photo-card[data-id="${CSS.escape(p.id)}"]`)) {
-                                    prependCardToMasonry(p);
-                                }
-                            }
-                        }
-                        updateMasonryStatsOnly();
-                        const s = msg.summary || {};
-                        const summary = [];
-                        if (s.done > 0) summary.push(`成功 ${s.done}`);
-                        if (s.skipped > 0) summary.push(`跳过重复 ${s.skipped}`);
-                        if (s.failed > 0) summary.push(`失败 ${s.failed}`);
-                        if (summary.length) toast(`上传完成：${summary.join('，')}`, s.done > 0 || s.skipped > 0 ? 'success' : 'alert');
-                    })();
                 }
             });
             return;

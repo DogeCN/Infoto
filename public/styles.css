@@ -296,8 +296,9 @@ main {
   display: flex;
   flex-direction: column;
   gap: .75rem;
+  width: 0;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 0%;
 }
 
 @media(min-width:768px) {
@@ -570,8 +571,13 @@ main {
 }
 
 /* 多选底栏出现时，进度环与左下通知统一上浮，避免与底栏按钮重叠 */
-.multi-bar.show ~ .up-indicator { bottom: 4.75rem; }
-.multi-bar.show ~ .toasts { bottom: 4.75rem; }
+.multi-bar.show~.up-indicator {
+  bottom: 4.75rem;
+}
+
+.multi-bar.show~.toasts {
+  bottom: 4.75rem;
+}
 
 @keyframes tip-in {
   from {

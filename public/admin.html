@@ -7,6 +7,8 @@
   <meta name="theme-color" content="#0a0e1a" />
   <meta name="robots" content="noindex" />
   <title>Infoto 管理后台</title>
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2322d3ee%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><rect x=%223%22 y=%2211%22 width=%2218%22 height=%2211%22 rx=%222%22/><path d=%22M7 11V7a5 5 0 0 1 10 0v4%22/></svg>" />
   <style>
     :root {
       --bg: #0a0e1a;
@@ -92,6 +94,12 @@
       font-weight: 600;
       font-size: 15px;
       cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+
+    button:disabled {
+      opacity: .55;
+      cursor: not-allowed;
     }
 
     button:active {
@@ -195,12 +203,26 @@
   <script>
     const $ = s => document.querySelector(s);
     const $$ = s => document.querySelectorAll(s);
-    const api = (p, body = {}) => fetch('/api/admin/' + p, {
+    const api = (p, body = {}, opts = {}) => fetch('/api/admin/' + p, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: opts.signal,
     });
     const get = p => fetch('/api/admin/' + p, { cache: 'no-store' });
+    const safeJson = async resp => {
+      try { return await resp.json(); } catch (e) { return { error: '服务端响应异常' }; }
+    };
+    const withBtn = (btnSel, cb) => async () => {
+      const btn = typeof btnSel === 'string' ? $('#' + btnSel) : btnSel;
+      const oldText = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+      try {
+        await cb();
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText; }
+      }
+    };
 
     function show(id) {
       ['pLogin', 'pSetup', 'pChange'].forEach(p => $('#' + p).classList.toggle('show', p === id));
@@ -214,63 +236,74 @@
     async function refresh() {
       try {
         const r = await get('check');
-        const j = await r.json();
+        const j = await safeJson(r);
         if (j.ok) { show('pChange'); msg('mChange', ''); }
         else if (j.setup) show('pSetup');
         else show('pLogin');
       } catch {
         show('pLogin');
-        msg('mLogin', '无法连接服务器', false);
+        msg('mLogin', '无法连接服务器，请刷新重试', false);
       }
     }
 
-    $('#btnLogin').addEventListener('click', async () => {
+    $('#btnLogin').addEventListener('click', withBtn('btnLogin', async () => {
       const pw = $('#pw').value;
       if (!pw) return msg('mLogin', '请输入密码', false);
-      const x = await api('login', { password: pw });
-      const j = await x.json();
+      let x, j;
+      try {
+        x = await api('login', { password: pw });
+        j = await safeJson(x);
+      } catch { return msg('mLogin', '网络错误，请求未送达', false); }
       if (x.status === 200 && j.ok) {
         $('#pw').value = '';
         msg('mLogin', '');
         refresh();
       } else {
-        msg('mLogin', j.error === 'wrong password' ? '密码错误' : (j.error || '登录失败'), false);
+        if (x.status === 429) msg('mLogin', '尝试过于频繁，请稍后再试', false);
+        else msg('mLogin', j.error === 'wrong password' ? '密码错误' : (j.error || '登录失败'), false);
       }
-    });
+    }));
 
-    $('#btnSetup').addEventListener('click', async () => {
+    $('#btnSetup').addEventListener('click', withBtn('btnSetup', async () => {
       const a = $('#spw').value, b = $('#spw2').value;
       if (a.length < 4) return msg('mSetup', '密码至少 4 位', false);
       if (a !== b) return msg('mSetup', '两次输入不一致', false);
-      const x = await api('login', { password: a });
-      const j = await x.json();
+      let x, j;
+      try {
+        x = await api('login', { password: a });
+        j = await safeJson(x);
+      } catch { return msg('mSetup', '网络错误，请求未送达', false); }
       if (x.status === 200 && j.ok) {
         $('#spw').value = $('#spw2').value = '';
-        msg('mSetup', '');
-        refresh();
+        msg('mSetup', '密码设置成功，正在进入…', true);
+        setTimeout(refresh, 350);
       } else {
-        msg('mSetup', j.error || '设置失败', false);
+        if (x.status === 429) msg('mSetup', '尝试过于频繁，请稍后再试', false);
+        else msg('mSetup', j.error || '设置失败', false);
       }
-    });
+    }));
 
-    $('#btnChange').addEventListener('click', async () => {
+    $('#btnChange').addEventListener('click', withBtn('btnChange', async () => {
       const a = $('#npw').value, b = $('#npw2').value;
       if (a.length < 4) return msg('mChange', '密码至少 4 位', false);
       if (a !== b) return msg('mChange', '两次输入不一致', false);
-      const x = await api('change', { password: a });
-      const j = await x.json();
+      let x, j;
+      try {
+        x = await api('change', { password: a });
+        j = await safeJson(x);
+      } catch { return msg('mChange', '网络错误，请求未送达', false); }
       if (x.status === 200 && j.ok) {
         $('#npw').value = $('#npw2').value = '';
         msg('mChange', '密码已更新', true);
       } else {
-        msg('mChange', j.error === 'unauthorized' ? '登录已失效，请刷新' : (j.error || '修改失败'), false);
+        msg('mChange', j.error === 'unauthorized' ? '登录已失效，请刷新页面重试' : (j.error || '修改失败'), false);
       }
-    });
+    }));
 
-    $('#btnLogout').addEventListener('click', async () => {
-      await api('logout').catch(() => { });
+    $('#btnLogout').addEventListener('click', withBtn('btnLogout', async () => {
+      try { await api('logout'); } catch { }
       refresh();
-    });
+    }));
 
     $$('.btnBack').forEach(btn => btn.addEventListener('click', () => location.href = '/'));
 

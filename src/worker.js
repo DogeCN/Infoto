@@ -212,7 +212,7 @@ export default {
         stored = (await getAdminHash(env)) || stored;
       }
       const token = await createSession(env, stored);
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(token, cors) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(token, request, cors) });
     }
 
     if (path === '/api/admin/change' && request.method === 'POST') {
@@ -228,14 +228,17 @@ export default {
       // 密码改动后：当前 Session 绑定的是旧 adminHash，新的请求走到 isAdmin 时比对失败 → 自动失效
       if (oldToken) destroySession(env, oldToken).catch(() => { });
       const newToken = await createSession(env, hash);
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(newToken, cors) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(newToken, request, cors) });
     }
 
     if (path === '/api/admin/logout' && request.method === 'POST') {
       const tok = parseCookies(request)['admin_session'];
       if (tok) destroySession(env, tok).catch(() => { });
       const h = new Headers(cors);
-      h.set('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0');
+      const isHttps = request.url.startsWith('https://');
+      const isLocalhost = /^https?:\/\/localhost(:|\d|\/)/.test(request.url);
+      const secureFlag = isHttps ? ' Secure;' : (isLocalhost ? '' : ' Secure;');
+      h.set('Set-Cookie', `admin_session=; Path=/; HttpOnly; SameSite=Lax;${secureFlag} Max-Age=0`);
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: h });
     }
 
@@ -554,9 +557,12 @@ async function isAdmin(req, env) {
   if (!token) return false;
   return await verifySessionToken(env, token);
 }
-function sessionCookieHeaders(token, cors) {
+function sessionCookieHeaders(token, request, cors) {
   const h = new Headers(cors);
-  h.set('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${SESS_TTL_SEC}`);
+  const isHttps = request && request.url && request.url.startsWith('https://');
+  const isLocalhost = request && request.url && /^https?:\/\/localhost(:|\d|\/)/.test(request.url);
+  const secureFlag = isHttps ? ' Secure;' : (isLocalhost ? '' : ' Secure;');
+  h.set('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax;${secureFlag} Max-Age=${SESS_TTL_SEC}`);
   return h;
 }
 

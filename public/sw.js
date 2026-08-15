@@ -1,6 +1,6 @@
 /* Infoto Service Worker —— 离线壳 + 图片 Stale-While-Revalidate 缓存 */
-const V = 'infoto-v2';
-const CORE = ['./', './index.html', './app.js', './styles.css', './manifest.webmanifest'];
+const V = 'infoto-v3';
+const CORE = ['./', './index.html', './app.js', './styles.css', './shared.js', './manifest.webmanifest'];
 
 self.addEventListener('install', e => {
     e.waitUntil(caches.open(V).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
