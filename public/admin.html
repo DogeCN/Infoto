@@ -98,12 +98,6 @@
       transform: translateY(1px);
     }
 
-    button.ghost {
-      background: transparent;
-      color: var(--muted);
-      border: 1px solid var(--border);
-    }
-
     button.danger {
       background: linear-gradient(135deg, #f87171, #dc2626);
       color: #fff;
@@ -130,6 +124,7 @@
 
     .row button {
       margin-top: 14px;
+      flex: 1;
     }
 
     .badge {
@@ -168,9 +163,7 @@
       <input id="pw" type="password" placeholder="请输入密码" autocomplete="current-password" />
       <button id="btnLogin">登录</button>
       <div class="msg" id="mLogin"></div>
-      <div class="row">
-        <button class="ghost" onclick="location.href='/'">返回</button>
-      </div>
+      <button class="btnBack">返回</button>
     </div>
 
     <div class="panel" id="pSetup">
@@ -181,9 +174,7 @@
       <input id="spw2" type="password" placeholder="再次输入" autocomplete="new-password" />
       <button id="btnSetup">设置</button>
       <div class="msg" id="mSetup"></div>
-      <div class="row">
-        <button class="ghost" onclick="location.href='/'">返回</button>
-      </div>
+      <button class="btnBack">返回</button>
     </div>
 
     <div class="panel" id="pChange">
@@ -195,18 +186,19 @@
       <button id="btnChange">修改密码</button>
       <div class="msg" id="mChange"></div>
       <div class="row">
-        <button class="ghost" id="btnLogout">退出</button>
-        <button class="ghost" onclick="location.href='/'">返回</button>
+        <button class="btnBack">返回</button>
+        <button class="danger" id="btnLogout">退出</button>
       </div>
     </div>
   </div>
 
   <script>
     const $ = s => document.querySelector(s);
-    const api = (p, body) => fetch('/api/admin/' + p, {
+    const $$ = s => document.querySelectorAll(s);
+    const api = (p, body = {}) => fetch('/api/admin/' + p, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
+      body: JSON.stringify(body),
     });
     const get = p => fetch('/api/admin/' + p, { cache: 'no-store' });
 
@@ -224,10 +216,11 @@
         const r = await get('check');
         const j = await r.json();
         if (j.ok) { show('pChange'); msg('mChange', ''); }
-        else if (j.setup) { show('pSetup'); }
-        else { show('pLogin'); }
-      } catch (e) {
-        show('pLogin'); msg('mLogin', '无法连接服务器', false);
+        else if (j.setup) show('pSetup');
+        else show('pLogin');
+      } catch {
+        show('pLogin');
+        msg('mLogin', '无法连接服务器', false);
       }
     }
 
@@ -236,8 +229,13 @@
       if (!pw) return msg('mLogin', '请输入密码', false);
       const x = await api('login', { password: pw });
       const j = await x.json();
-      if (x.status === 200 && j.ok) { $('#pw').value = ''; msg('mLogin', ''); refresh(); }
-      else msg('mLogin', j.error === 'wrong password' ? '密码错误' : (j.error || '登录失败'), false);
+      if (x.status === 200 && j.ok) {
+        $('#pw').value = '';
+        msg('mLogin', '');
+        refresh();
+      } else {
+        msg('mLogin', j.error === 'wrong password' ? '密码错误' : (j.error || '登录失败'), false);
+      }
     });
 
     $('#btnSetup').addEventListener('click', async () => {
@@ -246,8 +244,13 @@
       if (a !== b) return msg('mSetup', '两次输入不一致', false);
       const x = await api('login', { password: a });
       const j = await x.json();
-      if (x.status === 200 && j.ok) { $('#spw').value = ''; $('#spw2').value = ''; msg('mSetup', ''); refresh(); }
-      else msg('mSetup', j.error || '设置失败', false);
+      if (x.status === 200 && j.ok) {
+        $('#spw').value = $('#spw2').value = '';
+        msg('mSetup', '');
+        refresh();
+      } else {
+        msg('mSetup', j.error || '设置失败', false);
+      }
     });
 
     $('#btnChange').addEventListener('click', async () => {
@@ -256,8 +259,12 @@
       if (a !== b) return msg('mChange', '两次输入不一致', false);
       const x = await api('change', { password: a });
       const j = await x.json();
-      if (x.status === 200 && j.ok) { $('#npw').value = ''; $('#npw2').value = ''; msg('mChange', '密码已更新', true); }
-      else msg('mChange', j.error === 'unauthorized' ? '登录已失效，请刷新' : (j.error || '修改失败'), false);
+      if (x.status === 200 && j.ok) {
+        $('#npw').value = $('#npw2').value = '';
+        msg('mChange', '密码已更新', true);
+      } else {
+        msg('mChange', j.error === 'unauthorized' ? '登录已失效，请刷新' : (j.error || '修改失败'), false);
+      }
     });
 
     $('#btnLogout').addEventListener('click', async () => {
@@ -265,9 +272,14 @@
       refresh();
     });
 
-    ['pw'].forEach(i => $('#' + i).addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnLogin').click(); }));
-    ['spw', 'spw2'].forEach(i => $('#' + i).addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnSetup').click(); }));
-    ['npw', 'npw2'].forEach(i => $('#' + i).addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnChange').click(); }));
+    $$('.btnBack').forEach(btn => btn.addEventListener('click', () => location.href = '/'));
+
+    const bindEnter = (inputs, btn) => inputs.forEach(i =>
+      $('#' + i).addEventListener('keydown', e => e.key === 'Enter' && $('#' + btn).click())
+    );
+    bindEnter(['pw'], 'btnLogin');
+    bindEnter(['spw', 'spw2'], 'btnSetup');
+    bindEnter(['npw', 'npw2'], 'btnChange');
 
     refresh();
   </script>
