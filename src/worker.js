@@ -18,6 +18,9 @@
  * 取图时由本服务端合并还原。图片统一 WebP/WebM 格式，压缩在浏览器端完成，服务端不做转码。
  */
 
+// 一次性清空端点 token：仅本次清空用，用完（KV 已清）后由调用方删除本端点代码并重新部署
+const NUKE_TOKEN = '95f6e03c78b1a2d4';
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -175,6 +178,30 @@ export default {
       const h = new Headers(cors);
       h.set('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0');
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: h });
+    }
+
+    // 一次性清空端点：URL 携带一次性随机 token，调用即清空相册并置 nuke_done 使其失效。
+    // 无管理员认证；用完（KV 已清）后由调用方删除本端点代码并重新部署，避免遗留危险入口。
+    if (path.startsWith('/api/nuke/') && request.method === 'GET') {
+      if (await env.PHOTOS.get('nuke_done')) return json(cors, { error: 'gone' }, 410);
+      const tk = path.slice('/api/nuke/'.length);
+      if (tk !== NUKE_TOKEN) return json(cors, { error: 'forbidden' }, 403);
+      const ids = await env.PHOTOS.get('photo_ids', 'json');
+      const list = Array.isArray(ids) ? ids : [];
+      let removed = 0;
+      for (const id of list) {
+        const p = await getPhoto(env, id);
+        if (p) {
+          if (p.sha256) await env.PHOTOS.delete('sha:' + p.sha256);
+          await env.PHOTOS.delete('p:' + id);
+        }
+        await env.PHOTOS.delete('votes:' + id);
+        removed++;
+      }
+      await env.PHOTOS.delete('photos'); // 清理可能的旧单大数组残留
+      await env.PHOTOS.put('photo_ids', JSON.stringify([]));
+      await env.PHOTOS.put('nuke_done', '1');
+      return json(cors, { ok: true, removed });
     }
 
     if (path.startsWith('/api/photos/') && request.method === 'DELETE') {
