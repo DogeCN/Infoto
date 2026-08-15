@@ -105,10 +105,12 @@ export default {
       if (!parts.length) return json(cors, { error: 'no parts' }, 404);
       try {
         // 逐片拉取并拼接（小图数据量，Worker 内存可承受）
+        // EdgeOne 会拦截无 UA/数据中心 UA 的请求，伪装浏览器 UA 绕过
         const chunks = [];
         let total = 0;
+        const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
         for (const u of parts) {
-          const r = await fetch(u);
+          const r = await fetch(u, { headers: { 'User-Agent': ua, 'Referer': 'https://inf.prom.cc.cd/', 'Accept': '*/*' } });
           if (!r.ok) return json(cors, { error: 'part fetch failed ' + r.status }, 502);
           const ab = await r.arrayBuffer();
           chunks.push(new Uint8Array(ab));
