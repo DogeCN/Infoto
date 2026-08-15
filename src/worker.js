@@ -345,13 +345,24 @@ export default {
 
     /* ---------- 管理员页：/admin → admin.html ---------- */
     if (path === '/admin' || path === '/admin/') {
-      return env.ASSETS.fetch(new Request(new URL('/admin.html', url), request));
+      return serveAsset(env, new Request(new URL('/admin.html', url), request));
     }
 
     /* ---------- 静态资源（public/） ---------- */
-    return env.ASSETS.fetch(request);
+    return serveAsset(env, request);
   },
 };
+
+// 静态资源统一走这里：ASSETS 返回后覆盖 Cache-Control 为 no-cache。
+// 原因：部署切换瞬间 ASSETS 可能短暂返回空 200，被 Cloudflare 边缘按请求特征缓存成"空 HTML/CSS"，
+// 导致用户拿到无样式页面（瀑布流塌成单列、lightbox 失去 touch-action 缩放被浏览器原生抢走）且刷新无效。
+// no-cache + must-revalidate 让每次请求回源校验，污染条目会在下一次访问时自动用真实内容覆盖。
+async function serveAsset(env, request) {
+  const res = await env.ASSETS.fetch(request);
+  const h = new Headers(res.headers);
+  if (res.ok) h.set('Cache-Control', 'no-cache, must-revalidate');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
 
 function json(headers, data, status = 200) {
   return new Response(JSON.stringify(data), {
