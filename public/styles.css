@@ -388,9 +388,10 @@ main {
   right: .5rem;
   bottom: .5rem;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
   gap: .35rem;
+  flex-wrap: wrap;
   pointer-events: none;
   z-index: 2;
   max-width: 100%;
@@ -1072,7 +1073,7 @@ video.ph-img {
 .toasts {
   position: fixed;
   bottom: 5rem;
-  right: .75rem;
+  left: .75rem;
   z-index: 100;
   display: flex;
   flex-direction: column;
@@ -1083,7 +1084,7 @@ video.ph-img {
 @media(min-width:768px) {
   .toasts {
     bottom: 2rem;
-    right: 1.5rem;
+    left: 1.5rem;
   }
 }
 

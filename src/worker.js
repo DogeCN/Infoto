@@ -322,7 +322,7 @@ async function migrateOldToNew(env, old) {
 // 文件名不再存储，统一用 <id>.<ext>；ext 标记 webp/webm 等由前端压缩转换后确定的后缀
 function sanitizePhoto(p) {
   const out = {};
-  for (const k of ['id', 'url', 'parts', 'sha256', 'width', 'height', 'createdAt', 'ext']) {
+  for (const k of ['id', 'url', 'parts', 'sha256', 'width', 'height', 'createdAt', 'ext', 'hasAudio']) {
     if (p[k] !== undefined) out[k] = p[k];
   }
   return out;
