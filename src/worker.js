@@ -345,24 +345,13 @@ export default {
 
     /* ---------- 管理员页：/admin → admin.html ---------- */
     if (path === '/admin' || path === '/admin/') {
-      return serveAsset(env, new Request(new URL('/admin.html', url), request));
+      return env.ASSETS.fetch(new Request(new URL('/admin.html', url), request));
     }
 
     /* ---------- 静态资源（public/） ---------- */
-    return serveAsset(env, request);
+    return env.ASSETS.fetch(request);
   },
 };
-
-// 静态资源统一走这里：ASSETS 返回后覆盖 Cache-Control 为 no-store。
-// 原因：Cloudflare 面板存在 Cache Everything 规则（Edge TTL 覆盖源站、缓存 key 不含 query），
-// 部署切换后旧条目会长期 HIT，用户刷新也拿不到新代码（曾致"单列/无样式/缩放异常"且刷新无效）。
-// no-store 让边缘不再缓存这些资源，每次回源拿到最新内容；配合部署后 purge 清除存量旧条目。
-async function serveAsset(env, request) {
-  const res = await env.ASSETS.fetch(request);
-  const h = new Headers(res.headers);
-  if (res.ok) h.set('Cache-Control', 'no-store');
-  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
-}
 
 function json(headers, data, status = 200) {
   return new Response(JSON.stringify(data), {

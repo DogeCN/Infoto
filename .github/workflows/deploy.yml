@@ -34,19 +34,3 @@ jobs:
         run: |
           set -e
           node scripts/deploy-variants.js
-
-      - name: Purge Cloudflare edge cache (清除部署切换时的旧缓存条目)
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_ZONE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
-            echo "::warning::未配置 CF_ZONE_API_TOKEN，跳过自动 purge。若线上仍显示旧版本，请在 Cloudflare 面板手动 Purge Everything。"
-            exit 0
-          fi
-          ZONE_ID=$(curl -s -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "https://api.cloudflare.com/client/v4/zones?name=prom.cc.cd" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);console.log(j.result&&j.result[0]?j.result[0].id:'')}catch(e){console.log('')}})")
-          if [ -z "$ZONE_ID" ]; then
-            echo "::warning::未找到 zone (prom.cc.cd) 或无权限，跳过 purge"
-          else
-            RESP=$(curl -s -X POST -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json" --data '{"purge_everything":true}' "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache")
-            echo "$RESP" | grep -q '"success":true' && echo "CF 边缘缓存已清除" || echo "::warning::purge 响应异常: $RESP（token 需含 Zone.Cache.Purge 权限）"
-          fi
