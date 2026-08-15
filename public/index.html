@@ -266,8 +266,8 @@ main { padding:4.5rem .75rem 4rem; min-height:100vh; }
   backdrop-filter:blur(4px); border-width:2px; border-style:solid;
 }
 .gi-circle .icon { width:2rem; height:2rem; }
-.gi-left { left:1.5rem; top:50%; transform:translateY(-50%); border-color:var(--success); background:rgba(16,185,129,.15); }
-.gi-left .gi-circle { border-color:rgba(16,185,129,.5); }
+.gi-left { left:1.5rem; top:50%; transform:translateY(-50%); }
+.gi-left .gi-circle { border-color:rgba(16,185,129,.5); background:rgba(16,185,129,.15); }
 .gi-left .icon { color:var(--success); }
 .gi-right { right:1.5rem; top:50%; transform:translateY(-50%); }
 .gi-right .gi-circle { border-color:rgba(244,63,94,.5); background:rgba(244,63,94,.15); }
@@ -662,12 +662,33 @@ const Store = {
     this.photos = this.photos.filter(p=>!set.has(p.id));
     await this.save();
   },
+  /* 投票：优先走后端 /api/vote（按 IP 防重），后端不可用时回退本地计数 */
   async setLike(id, delta){
     const p = this.photos.find(x=>x.id===id);
-    if(!p) return;
+    if(!p) return {ok:false, already:false};
+    if(this._remote){
+      try{
+        const r = await fetch(apiBase() + '/api/vote', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({id, delta})
+        });
+        const j = await r.json();
+        if(j.ok){
+          p.likes = j.likes; p.dislikes = j.dislikes;
+          return {ok:true, already:false};
+        }
+        if(j.already){
+          return {ok:false, already:true};
+        }
+      }catch(e){
+        console.warn('[infoto] 投票接口失败，回退本地计数', e);
+      }
+    }
+    // 本地兜底（后端不可用）
     if(delta>0) p.likes = (p.likes||0) + delta;
     else p.dislikes = (p.dislikes||0) - delta;
     await this.save();
+    return {ok:true, already:false};
   }
 };
 
@@ -1163,7 +1184,7 @@ function onGm(e){
   if(e.cancelable) e.preventDefault();
 }
 /* 四向动作统一处理（滑动手势 onGe 与方向键共用） */
-function triggerGesture(dir){
+async function triggerGesture(dir){
   if(!state.lightboxOpen || state.menuOpen) return;
   const p = curPhoto();
   if(!p) return;
@@ -1172,14 +1193,14 @@ function triggerGesture(dir){
   img.style.transition='transform .2s ease';
   img.style.transform='translate(0,0)';
   if(dir==='left'){       // 左 → 支持(喜欢)
-    toast('已标记为喜欢','heart');
-    Store.setLike(p.id, +1);
     const gi=$('#giLeft'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
+    const r = await Store.setLike(p.id, +1);
+    toast(r.already ? '你已标记过喜欢这张' : '已标记为喜欢','heart');
     setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);   // 自动下一张
   }else if(dir==='right'){ // 右 → 反对(不喜欢)
-    toast('已标记为不喜欢','alert');
-    Store.setLike(p.id, -1);
     const gi=$('#giRight'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
+    const r = await Store.setLike(p.id, -1);
+    toast(r.already ? '你已标记过不喜欢这张' : '已标记为不喜欢','alert');
     setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);   // 自动下一张
   }else if(dir==='down'){ // 下 → 下载
     const gi=$('#giDown'); gi.style.opacity=1; gi.style.transform='translateX(-50%) scale(1.2)';

@@ -14,5 +14,8 @@ Thumbs.db
 .vscode/
 .idea/
 
+# 本地工作区数据（AI 记忆等）
+.workbuddy/
+
 # wrangler 生成
 *.dev.vars

@@ -42,6 +42,42 @@ export default {
       return json(cors, { error: 'method not allowed' }, 405);
     }
 
+    /* ---------- 投票：POST /api/vote {id, delta} ---------- */
+    // 按 IP 防重：每个 IP 对同一张照片只能投一次（喜欢+1 / 不喜欢-1）
+    if (path === '/api/vote' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const id = body && body.id;
+        const delta = body && body.delta;
+        if (!id || (delta !== 1 && delta !== -1)) {
+          return json(cors, { error: 'bad vote payload' }, 400);
+        }
+        // 取客户端 IP（Cloudflare 注入，绕过代理）
+        const ip = request.headers.get('CF-Connecting-IP')
+          || (request.headers.get('X-Forwarded-For') || '').split(',')[0].trim()
+          || 'unknown';
+        const vkey = 'vote:' + id + ':' + ip;
+        const existing = await env.PHOTOS.get(vkey);
+        if (existing) {
+          const prev = JSON.parse(existing);
+          return json(cors, { ok: false, already: true, delta: prev.delta });
+        }
+        // 更新照片计数（读-改-写，小数据量可接受）
+        const data = await env.PHOTOS.get('photos', 'json');
+        const arr = Array.isArray(data) ? data : [];
+        const p = arr.find(x => x.id === id);
+        if (!p) return json(cors, { error: 'photo not found' }, 404);
+        if (delta > 0) p.likes = (p.likes || 0) + 1;
+        else p.dislikes = (p.dislikes || 0) + 1;
+        await env.PHOTOS.put('photos', JSON.stringify(arr));
+        // 投票记录保留 1 年，防止 KV 无限膨胀
+        await env.PHOTOS.put(vkey, JSON.stringify({ delta, ts: Date.now() }), { expirationTtl: 31536000 });
+        return json(cors, { ok: true, likes: p.likes, dislikes: p.dislikes });
+      } catch (e) {
+        return json(cors, { error: 'bad json' }, 400);
+      }
+    }
+
     /* ---------- 哈希查重：GET /api/photos/hash/<sha256> ---------- */
     if (path.startsWith('/api/photos/hash/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
