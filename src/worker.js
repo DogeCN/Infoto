@@ -21,6 +21,7 @@ export default {
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age': '86400',
     };
+    // 图片资源需要 CORS 放行（前端跨域取尺寸/复制图片），由 /api/file 单独追加
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: cors });
     }
@@ -91,6 +92,44 @@ export default {
       return json(cors, hit ? { exists: true, photo: hit } : { exists: false });
     }
 
+    /* ---------- 分片还原：GET /api/file/<id> ---------- */
+    // 照片以多个分片直链（cdeaa OSS）存储在 KV，本接口动态拉取各分片拼接还原为完整文件
+    if (path.startsWith('/api/file/')) {
+      if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
+      const id = path.slice('/api/file/'.length);
+      const data = await env.PHOTOS.get('photos', 'json');
+      const arr = Array.isArray(data) ? data : [];
+      const p = arr.find(x => x.id === id);
+      if (!p) return json(cors, { error: 'not found' }, 404);
+      const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : (p.url ? [p.url] : []);
+      if (!parts.length) return json(cors, { error: 'no parts' }, 404);
+      try {
+        // 逐片拉取并拼接（小图数据量，Worker 内存可承受）
+        const chunks = [];
+        let total = 0;
+        for (const u of parts) {
+          const r = await fetch(u);
+          if (!r.ok) return json(cors, { error: 'part fetch failed ' + r.status }, 502);
+          const ab = await r.arrayBuffer();
+          chunks.push(new Uint8Array(ab));
+          total += ab.byteLength;
+        }
+        const merged = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { merged.set(c, off); off += c.length; }
+        return new Response(merged, {
+          headers: {
+            ...cors,
+            'Content-Type': mimeFromName(p.filename) || 'application/octet-stream',
+            'Content-Length': String(total),
+            'Cache-Control': 'public, max-age=86400',
+          },
+        });
+      } catch (e) {
+        return json(cors, { error: 'merge error: ' + e.message }, 502);
+      }
+    }
+
     /* ---------- 静态资源（public/） ---------- */
     return env.ASSETS.fetch(request);
   },
@@ -101,4 +140,19 @@ function json(headers, data, status = 200) {
     status,
     headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' },
   });
+}
+
+function mimeFromName(name){
+  if(!name) return 'application/octet-stream';
+  const ext = name.split('.').pop().toLowerCase();
+  const map = {
+    jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif',
+    webp:'image/webp', bmp:'image/bmp', svg:'image/svg+xml', avif:'image/avif',
+    heic:'image/heic', ico:'image/x-icon', tiff:'image/tiff', tif:'image/tiff',
+    mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime',
+    mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg',
+    pdf:'application/pdf', zip:'application/zip', json:'application/json',
+    txt:'text/plain', html:'text/html', css:'text/css', js:'application/javascript',
+  };
+  return map[ext] || 'application/octet-stream';
 }
