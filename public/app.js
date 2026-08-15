@@ -20,6 +20,7 @@ const ICONS = {
     'x-circle': '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
     'copy': '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     'link': '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    'lock': '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     'share': '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
     'search': '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
     'external': '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
@@ -81,34 +82,8 @@ async function supportsAV1WebCodecs() {
     } catch (_) { _av1Support = false; }
     return _av1Support;
 }
-function applyFileAcceptFilter(av1Supported) {
-    const input = $('#fileInput');
-    if (!input) return;
-    if (av1Supported) {
-        // 支持 AV1：图片 + 视频 + 显式 .gif（部分浏览器 image/* 包含 gif，单独写确保）
-        input.setAttribute('accept', 'image/*,video/*,.gif');
-    } else {
-        // 不支持（Safari 等）：仅接受图片，排除 GIF 与所有视频
-        input.setAttribute('accept', 'image/png,image/jpeg,image/webp,image/bmp,image/avif,image/jxl,image/heic,image/tiff,image/x-icon');
-    }
-}
-// 启动探测后立即设置 accept
-supportsAV1WebCodecs().then(ok => applyFileAcceptFilter(ok));
-
-// 文件名/类型兜底：拖拽、剪贴板可能绕过 accept，上传前再次过滤
-function filterUnsupportedFiles(files, av1Supported) {
-    const out = [];
-    const rejected = [];
-    for (const f of files) {
-        if (isGifFile(f) || isVideoFile(f)) {
-            if (av1Supported) out.push(f); else rejected.push(f);
-        } else {
-            // 图片 & 其他：一律通过，SVG/不支持格式后续在预处理里拒
-            out.push(f);
-        }
-    }
-    return { ok: out, rejected };
-}
+// 统一接受所有媒体类型：GIF/视频在上传阶段报错提示
+$('#fileInput')?.setAttribute('accept', 'image/*,video/*,.gif');
 
 async function sha256Hex(buf) {
     const d = await crypto.subtle.digest('SHA-256', buf);
@@ -346,18 +321,17 @@ async function _decodeVideoFramesAndAudio(file, progressCb) {
     const duration = Math.max(0.001, isFinite(v.duration) ? v.duration : 1);
     // --- 音频探测 & 解码 ---
     let hasAudio = false;
-    try { hasAudio = !!((v.mozHasAudio || v.webkitAudioDecodedByteCount || v.audioTracks && v.audioTracks.length) || (v.played && v.played.length >= 0)); } catch (_) { }
-    let audioCtx = null, source = null, script = null, stereoBuffers = null, audioSr = 48000, audioCh = 2;
+    try { hasAudio = !!(v.audioTracks && v.audioTracks.length > 0); } catch (_) { }
+    let audioCtx = null, stereoBuffers = null, audioSr = 48000, audioCh = 2;
     if (hasAudio && typeof AudioContext !== 'undefined') {
         try {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+            audioCtx = new AudioContext({ sampleRate: 48000 });
             const ab = await file.arrayBuffer();
             const decoded = await audioCtx.decodeAudioData(ab.slice(0));
             hasAudio = decoded.numberOfChannels > 0 && decoded.length > 0;
             if (hasAudio) {
                 audioSr = decoded.sampleRate;
                 audioCh = Math.min(2, decoded.numberOfChannels);
-                // 把解码得到的 PCM 交错 float32，后续直接送 AudioEncoder（要求 48kHz Opus，这里重采样交给 audioCtx.decodeAudioData + 我们做线性插值）
                 stereoBuffers = {
                     sr: decoded.sampleRate,
                     length: decoded.length,
@@ -365,7 +339,7 @@ async function _decodeVideoFramesAndAudio(file, progressCb) {
                 };
             }
         } catch (err) {
-            console.warn('[infoto] audio decode fail, fallback no-audio', err);
+            console.warn('[infoto] audio decode fail', err);
             hasAudio = false;
         }
     }
@@ -556,27 +530,6 @@ async function transcodeToAv1Webm(file, progressCb) {
     return { blob, ext: 'webm', hasAudio: opusSupported && !!audio };
 }
 
-// 转码前快速判断"原文件有无音轨"，用于不支持 AV1 WebCodecs 的浏览器（虽然这些浏览器在入口已被排除，但统一函数保险）
-async function probeHasAudio(file) {
-    if (isGifFile(file)) return false;
-    if (!isVideoFile(file)) return false;
-    const url = URL.createObjectURL(file);
-    const v = document.createElement('video');
-    v.preload = 'metadata'; v.src = url;
-    try { await new Promise((res, rej) => { v.onloadedmetadata = () => res(); v.onerror = () => rej(new Error('probe fail')); setTimeout(res, 5000); }); }
-    catch (_) { URL.revokeObjectURL(url); return false; }
-    let has = false;
-    try {
-        has = (typeof v.mozHasAudio === 'boolean') ? v.mozHasAudio
-            : (typeof v.webkitAudioDecodedByteCount === 'number') ? v.webkitAudioDecodedByteCount > 0
-                : (v.audioTracks && v.audioTracks.length > 0);
-    } catch (_) { }
-    URL.revokeObjectURL(url);
-    return has;
-}
-
-// 图片→WebP 时明确排除 GIF（不再转成静态单帧 WebP 丢动画）
-// 注：isPicFile 内部已经排除 GIF，这里保留函数名以维持业务语义
 function _safeForWebp(file) { return isPicFile(file); }
 
 /* ---- 图床上传 ---- */
@@ -607,8 +560,6 @@ async function withRetry(fn, retries) {
     throw lastErr;
 }
 
-// cdeaa 直传分支已移除：统一由 uploadPartToTcProgressive 经 /api/upload-proxy 中转 tc 图床。
-
 async function runWithConcurrency(tasks, concurrency) {
     const results = new Array(tasks.length);
     let next = 0;
@@ -628,8 +579,7 @@ async function runWithConcurrency(tasks, concurrency) {
 async function uploadToBed(blob, name, onProgress) {
     onProgress(0.05);
     const parts = [];
-    // 统一走 tc 图床（经 Worker /api/upload-proxy 中转）：Worker 可访问 tc，使 /api/file 能 200 直出字节，
-    // 谷歌搜图等外部抓取可用；小文件整文件、大文件分片均经此通道，不再直传 cdeaa。
+    // 统一走 tc 图床（经 Worker /api/upload-proxy 中转）
     if (blob.size <= CONFIG.SINGLE_PART_LIMIT) {
         const link = await uploadPartToTcProgressive(blob, name, p => onProgress(0.05 + p * 0.9));
         onProgress(1);
@@ -701,6 +651,14 @@ const Store = {
     _loaded: false,
     myVotes: Object.create(null),
 
+    // 给从服务端拉回的精简对象补全前端派生字段（url 永远由 id 拼，KV 不再存冗余 url）
+    _hydrate(p) {
+        if (!p) return p;
+        if (!p.url) p.url = fileUrl(p.id);
+        if (typeof p.hasAudio !== 'boolean') p.hasAudio = false;
+        return p;
+    },
+
     async load(force = false) {
         if (this._loaded && !force) return this.photos;
         this._loaded = true;
@@ -711,8 +669,9 @@ const Store = {
                 const r = await fetch(apiBase() + '/api/photos', { cache: 'no-store' });
                 if (r.ok) {
                     const fresh = await r.json();
-                    // 保持 myVotes 本地状态（不替换），只刷新照片数组与计数
-                    this.photos = fresh.map(p => ({ ...p, likes: p.likes ?? 0, dislikes: p.dislikes ?? 0 }));
+                    // 保持 myVotes 本地状态（不替换），只刷新照片数组与计数；补全派生字段
+                    this.photos = fresh
+                        .map(p => this._hydrate({ ...p, likes: p.likes ?? 0, dislikes: p.dislikes ?? 0 }));
                     return this.photos;
                 }
             } catch (e) { console.warn('[infoto] 加载失败', e); }
@@ -725,13 +684,18 @@ const Store = {
     getMyVote(id) { return this.myVotes[id] || 0; },
 
     async save(photo) {
+        // 剥离前端派生字段 url，服务端 sanitize 本来就会过滤；这里提前剥离减小 payload
+        const { url, ...payload } = photo;
+        void url;
         await fetch(apiBase() + '/api/photos', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(photo)
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
     },
 
     async add(photo) {
         photo.id = photo.id || 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        // url 只在前端内存里存在：save 会剥离，服务端不存；下次 load 由 _hydrate 重新拼出
+        if (!photo.url) photo.url = fileUrl(photo.id);
         this.photos.unshift(photo);
         await this.save(photo);
         return photo;
@@ -809,6 +773,7 @@ const state = {
     lightboxOpen: false, currentIndex: 0,
     boxSelecting: false, boxStart: null, boxArm: false, suppressClick: false,
     menuOpen: false,
+    isAdmin: false,
     dragging: false, dragStart: null, dragCurrent: null,
     batchSize: 60, loadedCount: 60,
     zoom: { s: 1, x: 0, y: 0 },
@@ -936,16 +901,13 @@ function makeCard(photo, index) {
     let media;
     if (animated) {
         media = el('video', 'ph-img');
-        media.muted = true;          // 默认静音（用户要求）
+        media.muted = true;
         media.loop = true;
         media.playsInline = true;
         media.autoplay = true;
         media.controls = false;
         media.preload = 'metadata';
         media.setAttribute('playsinline', '');
-        media.setAttribute('webkit-playsinline', '');
-        media.setAttribute('disablepictureinpicture', '');
-        media.setAttribute('controlslist', 'nodownload nofullscreen noremoteplayback');
         media.draggable = false;
         media.onloadedmetadata = () => {
             const nw = media.videoWidth, nh = media.videoHeight;
@@ -957,14 +919,7 @@ function makeCard(photo, index) {
                     dirty = true;
                 }
             }
-            // 自动检测音轨：如果 photo.hasAudio 未知，使用共享探测函数
-            if (typeof photo.hasAudio !== 'boolean') {
-                const probe = _probeHasAudio(media);
-                photo.hasAudio = typeof probe === 'boolean' ? probe : false;
-                dirty = true;
-            }
             if (dirty) Store.save(photo).catch(() => { });
-            // 首次渲染完成后，如果判定有音频 → 追加音量按钮（未存在则加）
             if (photo.hasAudio && !card.querySelector('.audio-toggle')) {
                 const vbtn = makeVolumeBtn({ initiallyMuted: true });
                 holder.appendChild(vbtn);
@@ -1226,6 +1181,7 @@ function enterMulti(initialId) {
     $('#multiSelectBtn').querySelector('svg').setAttribute('data-i', 'x');
     $('#uploadBtn').classList.add('hidden');
     $('#multiBar').classList.add('show');
+    if (state.isAdmin) $('#batchDeleteBtn').classList.remove('hidden');
     renderIcons();
     applySelectUI();
     updateCount();
@@ -1236,6 +1192,7 @@ function exitMulti() {
     $('#multiSelectBtn').querySelector('svg').setAttribute('data-i', 'check-square');
     $('#uploadBtn').classList.remove('hidden');
     $('#multiBar').classList.remove('show');
+    $('#batchDeleteBtn').classList.add('hidden');
     $('#selectionBox').style.display = 'none';
     renderIcons();
     applySelectUI();
@@ -1249,9 +1206,35 @@ function updateCount() {
     const n = state.selected.size;
     $('#selectedCount').textContent = `已选择 ${n} 张`;
 }
+
+async function checkAdmin() {
+    try {
+        const r = await fetch(apiBase() + '/api/admin/check', { cache: 'no-store' });
+        const j = await r.json();
+        state.isAdmin = !!(j && j.ok);
+    } catch (e) { state.isAdmin = false; }
+}
 $('#multiSelectBtn').addEventListener('click', () => {
     state.multiMode ? exitMulti() : enterMulti();
 });
+$('#batchDeleteBtn').addEventListener('click', deleteSelected);
+async function deleteSelected() {
+    if (!state.isAdmin) return;
+    const ids = [...state.selected];
+    if (ids.length === 0) { toast('请先选择照片'); return; }
+    if (!confirm(`确定删除选中的 ${ids.length} 张照片吗？此操作不可撤销。`)) return;
+    let done = 0, fail = 0;
+    for (const id of ids) {
+        try {
+            const r = await fetch(apiBase() + '/api/photos/' + encodeURIComponent(id), { method: 'DELETE' });
+            if (r.ok) done++; else fail++;
+        } catch (e) { fail++; }
+    }
+    toast(fail === 0 ? `已删除 ${done} 张照片` : `删除完成：${done} 成功 / ${fail} 失败`, fail === 0 ? 'success' : 'alert');
+    await Store.load(true);
+    exitMulti();
+    renderMasonry();
+}
 
 $('#masonry').addEventListener('mousedown', onCardPress);
 $('#masonry').addEventListener('touchstart', onCardPress, { passive: true });
@@ -1591,13 +1574,7 @@ async function uploadFiles(files) {
     resetUploadUI();
     _mode = 'upload';
     const t0 = Date.now();
-    // 入口过滤：拖拽/剪贴板可绕过 accept，这里再卡一次
     const av1Supported = await supportsAV1WebCodecs();
-    const filtered = filterUnsupportedFiles(files, av1Supported);
-    if (filtered.rejected.length) {
-        toast(`此浏览器暂不支持视频/GIF，已跳过 ${filtered.rejected.length} 个文件`, 'alert');
-    }
-    files = filtered.ok;
     const total = files.length;
     if (total === 0) return;
     let done = 0, failed = 0, skipped = 0;
@@ -1651,43 +1628,30 @@ async function uploadFiles(files) {
                 const isP = _safeForWebp(file);
                 let blob = file;
                 let ext = 'webp';
-                // 1) 普通图片：**强制统一 WebP 格式**（与 GIF/Video→WebM 的统一策略一致）
-                //    只要 compressToWebp 成功就使用压缩结果，不再因"体积没减小"回退原 JPG/PNG。
                 if (isP) {
                     if (file.type !== 'image/webp') {
                         const webp = await compressToWebp(file, WEBP_QUALITY);
-                        if (webp) { blob = webp; ext = 'webp'; }
-                        else { blob = file; ext = extFromNameFn(file.name) || 'webp'; }
+                        if (!webp) { base.err = new Error('图片 WebP 压缩失败'); return base; }
+                        blob = webp; ext = 'webp';
                     } else {
                         blob = file; ext = 'webp';
                     }
                 }
-                // 2) GIF / 视频：**强制**转 AV1 WebM，不管体积（统一后缀 webm 要求）
-                if ((isV || isG) && av1Ok) {
+                if (isV || isG) {
+                    if (!av1Ok) {
+                        base.err = new Error(isG ? 'GIF 需要支持 AV1 WebCodecs 的浏览器（Chrome/Edge 115+）' : '视频需要支持 AV1 WebCodecs 的浏览器（Chrome/Edge 115+）');
+                        return base;
+                    }
                     const stepLabel = isG ? 'GIF 转码' : '视频转码';
-                    let r = null, lastErr = null;
                     try {
-                        r = await transcodeToAv1Webm(file, (p, label) => {
-                            // 重任务的内部步骤进度只用于刷新 step 标签 / 当前文件名，
-                            // 字节进度由 finally 统一以 file.size 计入，避免重复累加
+                        const r = await transcodeToAv1Webm(file, (p, label) => {
                             recomputeUploadOverall(file.name, label || stepLabel + '中…');
                         });
-                    } catch (err) { lastErr = err; console.warn('[infoto] AV1 转码失败，将再次尝试', err); }
-                    // AV1 转码失败 → 兜底：如果是 GIF 用原 GIF（保持动画不变），如果是视频直接报错
-                    if (!r || !r.blob) {
-                        if (isG) {
-                            console.warn('[infoto] GIF 强制 AV1 失败，降级原 GIF（会保留动画）');
-                            blob = file; ext = 'gif'; base.hasAudio = false;
-                        } else {
-                            base.err = new Error('视频转码失败：' + (lastErr ? lastErr.message : 'unknown'));
-                            return base;
-                        }
-                    } else {
                         blob = r.blob; ext = 'webm'; base.hasAudio = !!r.hasAudio;
+                    } catch (err) {
+                        base.err = new Error(stepLabel + '失败：' + err.message);
+                        return base;
                     }
-                } else if ((isV || isG) && !av1Ok) {
-                    base.err = new Error(isG ? 'GIF 需要支持 AV1 WebCodecs 的浏览器' : '视频需要支持 AV1 WebCodecs 的浏览器');
-                    return base;
                 }
                 base.blob = blob;
                 base.ext = ext;
@@ -1852,49 +1816,24 @@ async function checkHashExists(sha) {
 function loadDims(photo) {
     return new Promise(resolve => {
         const animated = hasAnimatedMedia(photo);
-        const done = (w, h, probeAudio = false) => {
+        const done = (w, h) => {
             photo.width = w || 0;
             photo.height = h || 0;
-            if (probeAudio && typeof photo.hasAudio !== 'boolean') {
-                // 老数据没有 hasAudio，异步探测补一次并写回服务端（lazy）
-                probeHasAudioFromUrl(photo.url, photo.ext).then(a => {
-                    if (typeof a === 'boolean' && a !== !!photo.hasAudio) {
-                        photo.hasAudio = a;
-                        Store.save(photo).catch(() => { });
-                    }
-                }).catch(() => { });
-            }
             resolve();
         };
         const timeout = setTimeout(() => done(photo.width || 0, photo.height || 0), 8000);
         if (animated) {
             const v = document.createElement('video');
             v.muted = true; v.playsInline = true; v.preload = 'metadata';
-            v.onloadedmetadata = () => { clearTimeout(timeout); done(v.videoWidth, v.videoHeight, true); v.removeAttribute('src'); v.load(); };
-            v.onerror = () => { clearTimeout(timeout); done(photo.width, photo.height, false); };
+            v.onloadedmetadata = () => { clearTimeout(timeout); done(v.videoWidth, v.videoHeight); v.removeAttribute('src'); v.load && v.load(); };
+            v.onerror = () => { clearTimeout(timeout); done(photo.width, photo.height); };
             v.src = photo.url;
         } else {
             const img = new Image();
-            img.onload = () => { clearTimeout(timeout); done(img.naturalWidth, img.naturalHeight, false); };
-            img.onerror = () => { clearTimeout(timeout); done(photo.width, photo.height, false); };
+            img.onload = () => { clearTimeout(timeout); done(img.naturalWidth, img.naturalHeight); };
+            img.onerror = () => { clearTimeout(timeout); done(photo.width, photo.height); };
             img.src = photo.url;
         }
-    });
-}
-// 探测 URL 的 webm/视频是否有音轨（给老数据补 hasAudio 字段用）
-function probeHasAudioFromUrl(url, ext) {
-    return new Promise(resolve => {
-        if (ext !== 'webm' && !VIDEO_EXT_RE.test('x.' + ext)) { resolve(false); return; }
-        const v = document.createElement('video');
-        v.preload = 'metadata'; v.muted = true; v.playsInline = true; v.src = url;
-        const tm = setTimeout(() => { cleanup(); resolve(false); }, 5000);
-        const cleanup = () => { clearTimeout(tm); try { v.removeAttribute('src'); v.load(); } catch (_) { } };
-        const tryProbe = () => {
-            const r = _probeHasAudio(v);
-            cleanup(); resolve(typeof r === 'boolean' ? !!r : false);
-        };
-        v.onloadedmetadata = tryProbe;
-        v.onerror = () => { cleanup(); resolve(false); };
     });
 }
 
@@ -1935,20 +1874,6 @@ function curPhoto() { return getSorted()[state.currentIndex]; }
 function _setAudioBtnsVisible(v) {
     const list = document.querySelectorAll('.audio-toggle');
     list.forEach(b => { b.classList.toggle('is-hidden', !v); });
-}
-/* ---------- 统一音轨探测：读取 video/audioTracks，优先用浏览器原生标志 ---------- */
-function _probeHasAudio(el) {
-    if (!el) return false;
-    try {
-        // Firefox: mozHasAudio (boolean)
-        if (typeof el.mozHasAudio === 'boolean') return !!el.mozHasAudio;
-        // Safari: webkitAudioDecodedByteCount > 0 (表示已解码到音频包)
-        if (typeof el.webkitAudioDecodedByteCount === 'number') return el.webkitAudioDecodedByteCount > 0;
-        // 标准: audioTracks (Chrome/Edge/Opera)
-        if (el.audioTracks && typeof el.audioTracks.length === 'number') return el.audioTracks.length > 0;
-        // 兜底: <source> 标签数量不能作为依据；返回 undefined 让调用方保留原值
-    } catch (_) { }
-    return undefined;
 }
 /* ---------- 轻量通用收尾：Lightbox 手势结束时把 lbWrap 复位 + 图标复位 + 音量按钮恢复 ---------- */
 function _resetLbWrapAndGestures(animatedBack = true) {
@@ -2023,20 +1948,13 @@ function updateLightbox() {
         vid.preload = 'auto';
         vid.onerror = () => { vid.style.opacity = '.4'; };
 
-        // loadedmetadata 后统一：探测 hasAudio + 挂音量按钮 + 存库
         const onMeta = () => {
-            // 只有 photo.hasAudio 未知时才探测（否则沿用服务端准确值）
-            if (typeof p.hasAudio !== 'boolean') {
-                const r = _probeHasAudio(vid);
-                if (typeof r === 'boolean') p.hasAudio = r;
-            }
             if (p.hasAudio && w && !w.querySelector('.audio-toggle')) {
                 const vbtn = makeVolumeBtn({ initiallyMuted: true });
                 vbtn.classList.add('audio-toggle--lb');
                 w.appendChild(vbtn);
                 _setAudioBtnsVisible(true);
             }
-            Store.save(p).catch(() => { });
         };
         vid.addEventListener('loadedmetadata', onMeta, { once: true });
 
@@ -2416,13 +2334,7 @@ $('#menuCancel').addEventListener('click', closeMenu);
 
 async function copyText(txt) {
     try { await navigator.clipboard.writeText(txt); return true; }
-    catch (e) {
-        try {
-            const ta = el('textarea');
-            ta.value = txt; document.body.appendChild(ta); ta.select();
-            document.execCommand('copy'); ta.remove(); return true;
-        } catch (e2) { return false; }
-    }
+    catch (e) { return false; }
 }
 $('#menuCopyLink').addEventListener('click', async () => {
     const ok = await copyText(curPhoto().url);
@@ -2456,6 +2368,10 @@ $('#menuGoogle').addEventListener('click', () => {
     toast('即将打开 Google 搜图', 'info');
     closeMenu();
 });
+$('#menuAdmin').addEventListener('click', () => {
+    window.open('/admin', '_blank', 'noopener');
+    closeMenu();
+});
 
 function downloadUrl(url, name) {
     const a = el('a');
@@ -2476,6 +2392,7 @@ function downloadUrl(url, name) {
     } catch (e) { }
     renderIcons();
     updateSortUI();
+    await checkAdmin();
     await Store.load();
     renderMasonry();
     installInfiniteScroll();

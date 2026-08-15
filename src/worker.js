@@ -6,16 +6,16 @@
  *   2. /api/photos  —— 照片元数据读写（KV 持久化，按 id 拆分存储）
  *   3. /api/vote    —— 按 IP 防重的喜欢/不喜欢投票
  *   4. /api/photos/hash —— SHA-256 查重（O(1) 反向索引）
- *   5. /api/file —— 多分片文件在边缘 Worker 内合并还原为完整文件（单分片 302 直连图床）
+ *   5. /api/file —— 多分片文件在边缘 Worker 内合并还原为完整文件（200 直出）
  *
- * KV 存储结构（避免单 key 25MB 上限 / 读放大 / 并发写丢失）：
+ * KV 存储结构：
  *   p:<id>        → 单张元数据（含服务端权威的 likes/dislikes）
  *   photo_ids     → 有序 id 列表 [id...]（最新在前）
  *   sha:<hash>    → 对应 photoId（查重反向索引）
  *   votes:<id>    → { likes:[ip...], dislikes:[ip...] }（投票真值源）
  *
- * 上传统一由浏览器经 /api/upload-proxy 中转 tc 图床（Worker 可访问 tc，故 /api/file 能 200 直出字节，外部抓取可用）；
- * 取图时由本服务端合并还原。图片压缩（WebP）在浏览器端完成，服务端不做转码。
+ * 上传统一由浏览器经 /api/upload-proxy 中转 tc 图床（Worker 可访问 tc，/api/file 200 直出字节供外部抓取）；
+ * 取图时由本服务端合并还原。图片统一 WebP/WebM 格式，压缩在浏览器端完成，服务端不做转码。
  */
 
 export default {
@@ -26,7 +26,7 @@ export default {
     // CORS（方便前端若部署到其它域名）
     const cors = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, X-File-Sha256',
       'Access-Control-Max-Age': '86400',
     };
@@ -93,7 +93,6 @@ export default {
           || (request.headers.get('X-Forwarded-For') || '').split(',')[0].trim()
           || 'unknown';
 
-        // 验证照片存在（先 p:<id>，回退旧 photos）
         const photo = await getPhoto(env, id);
         if (!photo) return json(cors, { error: 'photo not found' }, 404);
 
@@ -136,6 +135,64 @@ export default {
       return json(cors, photo ? { exists: true, photo } : { exists: false });
     }
 
+    /* ---------- 管理员认证 + 删除 ---------- */
+    // 密码以 SHA-256 存 KV（key: admin_pw）。登录成功下发 admin_session Cookie（HttpOnly）。
+    // 首次使用（KV 无密码）进入"设置密码"模式：提交的密码即成为管理员密码；
+    // 也可通过环境变量 ADMIN_PASSWORD 预设（防止被他人抢先设置）。
+    if (path === '/api/admin/check' && request.method === 'GET') {
+      const hash = await getAdminHash(env);
+      if (!hash) return json(cors, { ok: false, setup: true });
+      return json(cors, { ok: await isAdmin(request, env) });
+    }
+
+    if (path === '/api/admin/login' && request.method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch (e) { body = {}; }
+      const pw = body && body.password;
+      if (!pw) return json(cors, { error: 'missing password' }, 400);
+      let hash = await getAdminHash(env);
+      if (!hash) {
+        // 设置模式：优先用环境变量预设，否则以本次提交为准
+        hash = env.ADMIN_PASSWORD ? await sha256Hex(env.ADMIN_PASSWORD) : await sha256Hex(pw);
+        await env.PHOTOS.put('admin_pw', hash);
+      }
+      if (await sha256Hex(pw) !== hash) return json(cors, { error: 'wrong password' }, 401);
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(hash, cors) });
+    }
+
+    if (path === '/api/admin/change' && request.method === 'POST') {
+      if (!(await isAdmin(request, env))) return json(cors, { error: 'unauthorized' }, 401);
+      let body;
+      try { body = await request.json(); } catch (e) { body = {}; }
+      const pw = body && body.password;
+      if (!pw || String(pw).length < 4) return json(cors, { error: 'password too short' }, 400);
+      const hash = await sha256Hex(pw);
+      await env.PHOTOS.put('admin_pw', hash);
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(hash, cors) });
+    }
+
+    if (path === '/api/admin/logout' && request.method === 'POST') {
+      const h = new Headers(cors);
+      h.set('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0');
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: h });
+    }
+
+    if (path.startsWith('/api/photos/') && request.method === 'DELETE') {
+      if (!(await isAdmin(request, env))) return json(cors, { error: 'unauthorized' }, 401);
+      const id = path.slice('/api/photos/'.length);
+      if (!id || id.includes('/')) return json(cors, { error: 'invalid id' }, 400);
+      const p = await getPhoto(env, id);
+      if (p) {
+        if (p.sha256) await env.PHOTOS.delete('sha:' + p.sha256);
+        await env.PHOTOS.delete('p:' + id);
+      }
+      const ids = await env.PHOTOS.get('photo_ids', 'json');
+      const list = Array.isArray(ids) ? ids : [];
+      const idx = list.indexOf(id);
+      if (idx >= 0) { list.splice(idx, 1); await env.PHOTOS.put('photo_ids', JSON.stringify(list)); }
+      return json(cors, { ok: true });
+    }
+
     /* ---------- 上传中转：POST /api/upload-proxy（大文件分片走 tc 图床） ---------- */
     // 浏览器经本接口中转 tc 图床（Worker 可访问 tc）：小文件整文件、大文件分片后均经此上传。
     // 服务端不落盘、不二次处理，只转发并原样返回直链。
@@ -173,13 +230,13 @@ export default {
 
     /* ---------- 取图 / 分片还原：GET /api/file/<id> ---------- */
     // 照片分片直链存于 tc 图床（KV 记 parts），本接口动态拉取各分片拼接还原为完整文件。
-    // 单分片：Worker 拉 tc 字节 200 直出（外部抓取可用）；多分片：Worker 内合并回传。不做转码（浏览器已存 WebP/原图）。
+    // 单分片：Worker 流式转发 tc 字节（200）；多分片：Worker 内合并回传。不做转码（浏览器已统一 WebP/WebM 格式）。
     if (path.startsWith('/api/file/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const id = path.slice('/api/file/'.length);
       const p = await getPhoto(env, id);
       if (!p) return json(cors, { error: 'not found' }, 404);
-      const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : (p.url ? [p.url] : []);
+      const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : [];
       if (!parts.length) return json(cors, { error: 'no parts' }, 404);
       const forceDownload = url.searchParams.has('dl');
       if (!p.ext) return json(cors, { error: 'photo missing ext' }, 500);
@@ -199,7 +256,7 @@ export default {
       const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
       const tcHeaders = { 'User-Agent': ua, 'Referer': 'https://inf.prom.cc.cd/', 'Accept': '*/*' };
 
-      // 单分片：Worker 流式转发 tc 字节（200）；legacy cdeaa 不可达时回退 302（浏览器仍能显示，仅外部搜图不可用）
+      // 单分片：Worker 流式转发 tc 字节（200），统一 200 直出（保证谷歌搜图等外部抓取可直接读取字节 / CORS 正常）
       if (parts.length === 1) {
         try {
           const r = await fetch(parts[0], { headers: tcHeaders, redirect: 'follow' });
@@ -208,8 +265,10 @@ export default {
             if (cl) fhdrs['Content-Length'] = cl;
             return new Response(r.body, { status: 200, headers: fhdrs });
           }
-        } catch (_) { /* 落到下方 302 回退 */ }
-        return Response.redirect(parts[0], 302);
+          return json(cors, { error: 'upstream rejected ' + r.status }, 502);
+        } catch (e) {
+          return json(cors, { error: 'upstream fetch failed: ' + e.message }, 502);
+        }
       }
 
       // 多分片（tc）：逐片拉取合并回传
@@ -233,6 +292,11 @@ export default {
       }
     }
 
+    /* ---------- 管理员页：/admin → admin.html ---------- */
+    if (path === '/admin' || path === '/admin/') {
+      return env.ASSETS.fetch(new Request(new URL('/admin.html', url), request));
+    }
+
     /* ---------- 静态资源（public/） ---------- */
     return env.ASSETS.fetch(request);
   },
@@ -245,19 +309,13 @@ function json(headers, data, status = 200) {
   });
 }
 
-// 仅放行安全的图像/视频类型；svg/html/pdf 等可渲染/含脚本类型一律按二进制下载，杜绝存储型 XSS
+// 前端统一格式：只有 webp / webm；其他 ext 一律按二进制下载（防御性编程）
 const SAFE_MIME = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
-  webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif', jxl: 'image/jxl',
-  heic: 'image/heic', ico: 'image/x-icon', tiff: 'image/tiff', tif: 'image/tiff',
-  webm: 'video/webm', mp4: 'video/mp4', mov: 'video/quicktime',
+  webp: 'image/webp',
+  webm: 'video/webm',
 };
 function mimeFromExt(ext) {
   return SAFE_MIME[String(ext || '').toLowerCase()] || 'application/octet-stream';
-}
-function mimeFromName(name) {
-  const i = String(name || '').lastIndexOf('.');
-  return mimeFromExt(i >= 0 ? String(name).slice(i + 1) : '');
 }
 
 // 安全 Content-Disposition：过滤控制字符（含 \r\n\t），用 RFC 5987 filename*=UTF-8'' 支持中文
@@ -269,32 +327,45 @@ function safeDisposition(filename, forceDownload = true) {
   return `${type}; filename="${ascii.replace(/"/g, '')}"; filename*=UTF-8''${encoded}`;
 }
 
-// ===== KV 存储辅助 =====
-
-// 取单张照片：优先 p:<id>，回退旧 photos 大数组（迁移过渡期安全）
-async function getPhoto(env, id) {
-  const p = await env.PHOTOS.get('p:' + id, 'json');
-  if (p && typeof p === 'object') return p;
-  const old = await env.PHOTOS.get('photos', 'json');
-  if (Array.isArray(old)) {
-    const hit = old.find(x => x && x.id === id);
-    if (hit) return hit;
+// ===== 管理员辅助 =====
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(str)));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function parseCookies(req) {
+  const c = req.headers.get('Cookie');
+  const out = {};
+  if (!c) return out;
+  for (const part of c.split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
   }
-  return null;
+  return out;
+}
+async function getAdminHash(env) {
+  return (await env.PHOTOS.get('admin_pw')) || '';
+}
+async function isAdmin(req, env) {
+  const cookie = parseCookies(req)['admin_session'];
+  if (!cookie) return false;
+  const hash = await getAdminHash(env);
+  return !!hash && cookie === hash;
+}
+function sessionCookieHeaders(value, cors) {
+  const h = new Headers(cors);
+  h.set('Set-Cookie', `admin_session=${value}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${60 * 60 * 24 * 30}`);
+  return h;
 }
 
-// 取全部照片（按 photo_ids 顺序）；无 photo_ids 时从旧 photos 自动迁移一次
+// ===== KV 存储辅助 =====
+
+async function getPhoto(env, id) {
+  return await env.PHOTOS.get('p:' + id, 'json');
+}
+
 async function getAllPhotos(env) {
-  let ids = await env.PHOTOS.get('photo_ids', 'json');
-  if (!Array.isArray(ids) || ids.length === 0) {
-    const old = await env.PHOTOS.get('photos', 'json');
-    if (Array.isArray(old) && old.length) {
-      await migrateOldToNew(env, old);
-      ids = await env.PHOTOS.get('photo_ids', 'json') || [];
-    } else {
-      return [];
-    }
-  }
+  const ids = await env.PHOTOS.get('photo_ids', 'json');
+  if (!Array.isArray(ids) || ids.length === 0) return [];
   const photos = await Promise.all(ids.map(async id => {
     const p = await env.PHOTOS.get('p:' + id, 'json');
     return p || null;
@@ -302,35 +373,11 @@ async function getAllPhotos(env) {
   return photos.filter(Boolean);
 }
 
-// 旧单 key photos → 拆分存储（幂等，可重复调用）
-async function migrateOldToNew(env, old) {
-  const idList = [];
-  for (const p of old) {
-    if (!p || !p.id) continue;
-    // 从 votes:<id> 计算计数，避免丢失已有投票
-    let likes = 0, dislikes = 0;
-    const v = await env.PHOTOS.get('votes:' + p.id, 'json');
-    if (v) {
-      likes = Array.isArray(v.likes) ? v.likes.length : 0;
-      dislikes = Array.isArray(v.dislikes) ? v.dislikes.length : 0;
-    }
-    const clean = sanitizePhoto(p);
-    clean.likes = likes;
-    clean.dislikes = dislikes;
-    await env.PHOTOS.put('p:' + clean.id, JSON.stringify(clean));
-    if (clean.sha256 && /^[0-9a-f]{64}$/.test(clean.sha256)) {
-      await env.PHOTOS.put('sha:' + clean.sha256, clean.id);
-    }
-    idList.push(clean.id);
-  }
-  await env.PHOTOS.put('photo_ids', JSON.stringify(idList));
-}
-
-// 只保留受信任字段，剥离客户端传入的 likes/dislikes 等（计数由服务端维护）
-// 文件名不再存储，统一用 <id>.<ext>；ext 标记 webp/webm 等由前端压缩转换后确定的后缀
+// 只保留受信任字段，剥离客户端传入的 likes/dislikes / 派生值 url 等
+// 文件名不再存储，统一用 <id>.<ext>；ext 只允许 webp / webm（前端统一压缩转换后确定）
 function sanitizePhoto(p) {
   const out = {};
-  for (const k of ['id', 'url', 'parts', 'sha256', 'width', 'height', 'createdAt', 'ext', 'hasAudio']) {
+  for (const k of ['id', 'parts', 'sha256', 'width', 'height', 'createdAt', 'ext', 'hasAudio']) {
     if (p[k] !== undefined) out[k] = p[k];
   }
   return out;
@@ -354,5 +401,3 @@ async function makeTcToken(secret, sha) {
   const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(header + '.' + payload)));
   return `${header}.${payload}.${b64u(sig)}`;
 }
-
-// 图片服务端解码已移除：WebP 压缩在浏览器端完成，服务端仅做分片合并还原（见 /api/file）。

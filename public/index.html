@@ -51,11 +51,14 @@
   <!-- ============ 多选底部操作栏 ============ -->
   <div class="multi-bar" id="multiBar">
     <span class="count" id="selectedCount">已选择 0 张</span>
-    <div class="actions">
-      <button class="nav-btn" id="batchDownloadBtn" title="批量下载">
-        <svg class="icon-lg" data-i="download"></svg>
-      </button>
-    </div>
+      <div class="actions">
+        <button class="nav-btn" id="batchDeleteBtn" title="删除所选">
+          <svg class="icon-lg" data-i="trash"></svg>
+        </button>
+        <button class="nav-btn" id="batchDownloadBtn" title="批量下载">
+          <svg class="icon-lg" data-i="download"></svg>
+        </button>
+      </div>
   </div>
 
   <!-- 框选矩形 -->
@@ -134,6 +137,10 @@
     </button>
     <button class="menu-item" id="menuGoogle">
       <svg class="icon" data-i="search"></svg><span>使用谷歌搜图</span>
+      <svg class="icon ext" data-i="external"></svg>
+    </button>
+    <button class="menu-item" id="menuAdmin">
+      <svg class="icon" data-i="lock"></svg><span>管理后台</span>
       <svg class="icon ext" data-i="external"></svg>
     </button>
     <div class="menu-divider"></div>

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a0e1a" />
+  <meta name="robots" content="noindex" />
+  <title>Infoto · 管理</title>
+  <style>
+    :root {
+      --bg: #0a0e1a;
+      --card: #121a2e;
+      --fg: #e7ecf5;
+      --muted: #8a97b1;
+      --accent: #22d3ee;
+      --accent2: #0ea5b7;
+      --danger: #f87171;
+      --border: #22304d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(1200px 600px at 50% -10%, #16203a, var(--bg));
+      color: var(--fg);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px 26px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, .45);
+    }
+
+    h1 {
+      font-size: 19px;
+      margin: 0 0 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin: 14px 0 6px;
+    }
+
+    input {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0c1322;
+      color: var(--fg);
+      font-size: 15px;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--accent);
+    }
+
+    button {
+      width: 100%;
+      margin-top: 18px;
+      padding: 11px 12px;
+      border: 0;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #04141a;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    button.ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .msg {
+      margin-top: 14px;
+      font-size: 13px;
+      min-height: 18px;
+    }
+
+    .msg.err {
+      color: var(--danger);
+    }
+
+    .msg.ok {
+      color: var(--accent);
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .row button {
+      margin-top: 14px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    a.back {
+      display: inline-block;
+      margin-top: 18px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    .panel {
+      display: none;
+    }
+
+    .panel.show {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </svg>
+      Infoto 管理
+    </h1>
+    <p class="sub">管理员登录</p>
+
+    <div class="panel" id="pLogin">
+      <label for="pw">密码</label>
+      <input id="pw" type="password" placeholder="请输入密码" autocomplete="current-password" />
+      <button id="btnLogin">登录</button>
+      <div class="msg" id="mLogin"></div>
+    </div>
+
+    <div class="panel" id="pSetup">
+      <p class="sub" style="margin-top:0">设置密码</p>
+      <label for="spw">密码（至少 4 位）</label>
+      <input id="spw" type="password" placeholder="新密码" autocomplete="new-password" />
+      <label for="spw2">确认</label>
+      <input id="spw2" type="password" placeholder="再次输入" autocomplete="new-password" />
+      <button id="btnSetup">设置</button>
+      <div class="msg" id="mSetup"></div>
+    </div>
+
+    <div class="panel" id="pChange">
+      <p class="sub" style="margin-top:0">已登录 <span class="badge">admin</span></p>
+      <label for="npw">新密码（至少 4 位）</label>
+      <input id="npw" type="password" placeholder="新密码" autocomplete="new-password" />
+      <label for="npw2">确认</label>
+      <input id="npw2" type="password" placeholder="再次输入" autocomplete="new-password" />
+      <button id="btnChange">修改密码</button>
+      <div class="msg" id="mChange"></div>
+      <div class="row">
+        <button class="ghost" id="btnLogout">退出</button>
+      </div>
+    </div>
+
+    <a class="back" href="/">← 返回</a>
+  </div>
+
+  <script>
+    const $ = s => document.querySelector(s);
+    const api = (p, body) => fetch('/api/admin/' + p, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const get = p => fetch('/api/admin/' + p, { cache: 'no-store' });
+
+    function show(id) {
+      ['pLogin', 'pSetup', 'pChange'].forEach(p => $('#' + p).classList.toggle('show', p === id));
+    }
+    function msg(el, text, ok) {
+      const e = $('#' + el);
+      e.textContent = text || '';
+      e.className = 'msg' + (text ? (ok ? ' ok' : ' err') : '');
+    }
+
+    async function refresh() {
+      try {
+        const r = await get('check');
+        const j = await r.json();
+        if (j.ok) { show('pChange'); msg('mChange', ''); }
+        else if (j.setup) { show('pSetup'); }
+        else { show('pLogin'); }
+      } catch (e) {
+        show('pLogin'); msg('mLogin', '无法连接服务器', false);
+      }
+    }
+
+    $('#btnLogin').addEventListener('click', async () => {
+      const pw = $('#pw').value;
+      if (!pw) return msg('mLogin', '请输入密码', false);
+      const x = await api('login', { password: pw });
+      const j = await x.json();
+      if (x.status === 200 && j.ok) { $('#pw').value = ''; msg('mLogin', ''); refresh(); }
+      else msg('mLogin', j.error === 'wrong password' ? '密码错误' : (j.error || '登录失败'), false);
+    });
+
+    $('#btnSetup').addEventListener('click', async () => {
+      const a = $('#spw').value, b = $('#spw2').value;
+      if (a.length < 4) return msg('mSetup', '密码至少 4 位', false);
+      if (a !== b) return msg('mSetup', '两次输入不一致', false);
+      const x = await api('login', { password: a });
+      const j = await x.json();
+      if (x.status === 200 && j.ok) { $('#spw').value = ''; $('#spw2').value = ''; msg('mSetup', ''); refresh(); }
+      else msg('mSetup', j.error || '设置失败', false);
+    });
+
+    $('#btnChange').addEventListener('click', async () => {
+      const a = $('#npw').value, b = $('#npw2').value;
+      if (a.length < 4) return msg('mChange', '密码至少 4 位', false);
+      if (a !== b) return msg('mChange', '两次输入不一致', false);
+      const x = await api('change', { password: a });
+      const j = await x.json();
+      if (x.status === 200 && j.ok) { $('#npw').value = ''; $('#npw2').value = ''; msg('mChange', '密码已更新', true); }
+      else msg('mChange', j.error === 'unauthorized' ? '登录已失效，请刷新' : (j.error || '修改失败'), false);
+    });
+
+    $('#btnLogout').addEventListener('click', async () => {
+      await api('logout').catch(() => { });
+      refresh();
+    });
+
+    ['pw'].forEach(i => $('#' + i).addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnLogin').click(); }));
+    ['spw', 'spw2'].forEach(i => $('#' + i).addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnSetup').click(); }));
+    ['npw', 'npw2'].forEach(i => $('#' + i).addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnChange').click(); }));
+
+    refresh();
+  </script>
+</body>
+
+</html>
