@@ -13,7 +13,7 @@
  *   photo_ids     → 有序 id 列表 [id...]（最新在前）
  *   sha:<hash>    → 对应 photoId（查重反向索引）
  *   votes:<id>    → { likes:[ip...], dislikes:[ip...] }（投票真值源）
- *   admin_pw      → <saltHex>$<pbkdf2Hex>（新版）或 64hex SHA-256（旧版，首次登录自动升级）
+ *   admin_pw      → PBKDF2$<iter>$<saltHex>$<hashHex>（新版，带迭代数）| <saltHex>$<hashHex>（旧 PBKDF2，按 120k 验证）| 64hex SHA-256（最旧版，登录时自动升级）
  *   sess:<token>  → { adminHash, exp }（随机 Session Token，带过期）
  *
  * 上传统一由浏览器经 /api/upload-proxy 中转 tc 图床（Worker 可访问 tc，/api/file 200 直出字节供外部抓取）；
@@ -468,7 +468,10 @@ function mergePartsAsStream(parts, tcHeaders) {
 }
 
 // ===== 密码哈希（PBKDF2 + 随机 salt，兼容旧版 SHA-256 自动升级）=====
-const PBKDF2_ITER = 120000;
+// 迭代数：CF Workers 免费计划 CPU 配额约 10ms/请求，120k 次迭代实测 15-30ms+ 超配额被终止
+// （前端 safeJson 兜底显示"服务端响应异常"）。10k 迭代实测约 1-3ms，安全且在配额内。
+const PBKDF2_ITER = 10000;
+const PBKDF2_LEGACY_ITER = 120000; // 历史格式 <salt>$<hash> 用过的迭代数（无格式标记，按此验证）
 const SESS_TTL_MS = 7 * 24 * 3600 * 1000;
 const SESS_TTL_SEC = 7 * 24 * 3600;
 
@@ -508,24 +511,48 @@ async function pbkdf2Hex(password, saltBytes, iterations) {
 async function hashPasswordForStorage(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await pbkdf2Hex(password, salt, PBKDF2_ITER);
-  return bytesToHex(salt) + '$' + hash;
+  // 格式：PBKDF2$<iter>$<saltHex>$<hashHex>（显式带迭代数，便于未来调整而不破坏旧哈希验证）
+  return 'PBKDF2$' + PBKDF2_ITER + '$' + bytesToHex(salt) + '$' + hash;
 }
 
 async function verifyPasswordAndUpgrade(env, input, stored) {
-  const sepIdx = stored.indexOf('$');
-  if (sepIdx > 0) {
-    // 新版：salt$hash
+  const str = String(stored || '');
+  // 新格式：PBKDF2$<iter>$<saltHex>$<hashHex>
+  const m = str.match(/^PBKDF2\$(\d+)\$([0-9a-f]+)\$([0-9a-f]{64})$/i);
+  if (m) {
+    const iter = Number(m[1]);
     try {
-      const salt = hexToBytes(stored.slice(0, sepIdx));
-      const expected = stored.slice(sepIdx + 1);
-      const actual = await pbkdf2Hex(input, salt, PBKDF2_ITER);
-      return { ok: actual === expected };
+      const salt = hexToBytes(m[2]);
+      const actual = await pbkdf2Hex(input, salt, iter);
+      if (actual === m[3]) {
+        // 迭代数与当前不一致：验证通过后重写为当前迭代数（平滑升级）
+        if (iter !== PBKDF2_ITER) {
+          try { await env.Infoto.put('admin_pw', await hashPasswordForStorage(input)); } catch { }
+        }
+        return { ok: true };
+      }
+      return { ok: false };
     } catch { return { ok: false }; }
   }
-  // 旧版：64 hex 单次 SHA-256（无 salt）
-  if (/^[0-9a-f]{64}$/.test(stored)) {
+  // 旧版 PBKDF2（无格式标记）：<saltHex>$<hashHex>，按 legacy 迭代数验证
+  const sepIdx = str.indexOf('$');
+  if (sepIdx > 0 && /^[0-9a-f]+\$[0-9a-f]{64}$/i.test(str)) {
+    try {
+      const salt = hexToBytes(str.slice(0, sepIdx));
+      const expected = str.slice(sepIdx + 1);
+      const actual = await pbkdf2Hex(input, salt, PBKDF2_LEGACY_ITER);
+      if (actual === expected) {
+        // 登录成功时自动升级为新格式（含当前迭代数）
+        try { await env.Infoto.put('admin_pw', await hashPasswordForStorage(input)); } catch { }
+        return { ok: true };
+      }
+      return { ok: false };
+    } catch { return { ok: false }; }
+  }
+  // 最旧版：64 hex 单次 SHA-256（无 salt）
+  if (/^[0-9a-f]{64}$/.test(str)) {
     const inputHash = await sha256Hex(input);
-    if (inputHash === stored) {
+    if (inputHash === str) {
       // 登录成功时自动升级为 PBKDF2
       try {
         const upgraded = await hashPasswordForStorage(input);
