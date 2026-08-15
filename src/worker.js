@@ -32,11 +32,11 @@ export default {
     /* ---------- 照片元数据 API ---------- */
     if (path === '/api/photos') {
       if (request.method === 'GET') {
-        const data = await env.PHOTOS.get('photos', 'json');
+        const data = await getJson(env.PHOTOS, 'photos', []);
         const arr = Array.isArray(data) ? data : [];
         // 动态计算每张照片的 likes / dislikes（从 votes:<id> 集合）
         const withCounts = await Promise.all(arr.map(async p => {
-          const v = await env.PHOTOS.get('votes:' + p.id, 'json');
+          const v = await getJson(env.PHOTOS, 'votes:' + p.id, null);
           const likes = v && Array.isArray(v.likes) ? v.likes.length : 0;
           const dislikes = v && Array.isArray(v.dislikes) ? v.dislikes.length : 0;
           return { ...p, likes, dislikes };
@@ -51,7 +51,7 @@ export default {
             return json(cors, { error: 'expected photo object' }, 400);
           }
           if (!body.id) return json(cors, { error: 'missing id' }, 400);
-          const data = await env.PHOTOS.get('photos', 'json');
+          const data = await getJson(env.PHOTOS, 'photos', []);
           const arr = Array.isArray(data) ? data : [];
           const clean = { ...body };
           delete clean.likes; delete clean.dislikes;
@@ -83,12 +83,12 @@ export default {
           || 'unknown';
 
         // 验证照片存在
-        const data = await env.PHOTOS.get('photos', 'json');
+        const data = await getJson(env.PHOTOS, 'photos', []);
         const arr = Array.isArray(data) ? data : [];
         if (!arr.some(x => x.id === id)) return json(cors, { error: 'photo not found' }, 404);
 
         const vkey = 'votes:' + id;
-        const raw = await env.PHOTOS.get(vkey, 'json');
+        const raw = await getJson(env.PHOTOS, vkey, null);
         const votes = raw && typeof raw === 'object'
           ? { likes: Array.isArray(raw.likes) ? raw.likes : [], dislikes: Array.isArray(raw.dislikes) ? raw.dislikes : [] }
           : { likes: [], dislikes: [] };
@@ -113,10 +113,10 @@ export default {
     if (path.startsWith('/api/photos/hash/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const sha = path.slice('/api/photos/hash/'.length).toLowerCase();
-      if (!/^[0-9a-f]{64}$/.test(sha)) return json(cors, { error: 'bad hash' }, 400);
-      const data = await env.PHOTOS.get('photos', 'json');
-      const arr = Array.isArray(data) ? data : [];
-      const hit = arr.find(p => p.sha256 === sha);
+        if (!/^[0-9a-f]{64}$/.test(sha)) return json(cors, { error: 'bad hash' }, 400);
+        const data = await getJson(env.PHOTOS, 'photos', []);
+        const arr = Array.isArray(data) ? data : [];
+        const hit = arr.find(p => p.sha256 === sha);
       return json(cors, hit ? { exists: true, photo: hit } : { exists: false });
     }
 
@@ -161,7 +161,7 @@ export default {
     if (path.startsWith('/api/file/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const id = path.slice('/api/file/'.length);
-      const data = await env.PHOTOS.get('photos', 'json');
+      const data = await getJson(env.PHOTOS, 'photos', []);
       const arr = Array.isArray(data) ? data : [];
       const p = arr.find(x => x.id === id);
       if (!p) return json(cors, { error: 'not found' }, 404);
@@ -208,10 +208,34 @@ export default {
       }
     }
 
+    /* ---------- 诊断接口：查看 KV photos 原始值（调试用，可删） ---------- */
+    if (path === '/api/debug/photos-raw') {
+      try {
+        const raw = await env.PHOTOS.get('photos');
+        return new Response(raw === null ? '<null>' : raw, {
+          headers: { ...cors, 'Content-Type': 'text/plain; charset=utf-8' },
+        });
+      } catch (e) {
+        return json(cors, { error: 'get raw failed: ' + e.message }, 500);
+      }
+    }
+
     /* ---------- 静态资源（public/） ---------- */
     return env.ASSETS.fetch(request);
   },
 };
+
+// 安全读取 JSON 格式的 KV：值不存在/损坏时返回默认值，避免整个 Worker 1101
+async function getJson(kv, key, fallback = null) {
+  try {
+    const raw = await kv.get(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error('[infoto] KV JSON parse failed for', key, e.message);
+    return fallback;
+  }
+}
 
 function json(headers, data, status = 200) {
   return new Response(JSON.stringify(data), {
