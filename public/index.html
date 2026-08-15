@@ -1112,10 +1112,19 @@ $('#lbPrev').addEventListener('click', e=>{ e.stopPropagation(); prevPhoto(); })
 $('#lbNext').addEventListener('click', e=>{ e.stopPropagation(); nextPhoto(); });
 $('#lightbox').addEventListener('click', e=>{ if(e.target.id==='lightbox') closeLightbox(); });
 
+/* 方向键与滑动手势统一：同一套四向语义
+   左=支持(喜欢) 右=反对(不喜欢) 上=更多菜单 下=下载
+   喜欢/不喜欢触发后自动切到下一张 */
 document.addEventListener('keydown', e=>{
   if(!state.lightboxOpen) return;
-  if(e.key==='ArrowLeft') prevPhoto();
-  else if(e.key==='ArrowRight') nextPhoto();
+  if(state.menuOpen){
+    if(e.key==='Escape') closeMenu();
+    return;
+  }
+  if(e.key==='ArrowLeft'){ e.preventDefault(); triggerGesture('left'); }
+  else if(e.key==='ArrowRight'){ e.preventDefault(); triggerGesture('right'); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); triggerGesture('up'); }
+  else if(e.key==='ArrowDown'){ e.preventDefault(); triggerGesture('down'); }
   else if(e.key==='Escape') closeLightbox();
 });
 
@@ -1160,6 +1169,36 @@ function onGm(e){
   }
   if(e.cancelable) e.preventDefault();
 }
+/* 四向动作统一处理（滑动手势 onGe 与方向键共用） */
+function triggerGesture(dir){
+  if(!state.lightboxOpen || state.menuOpen) return;
+  const p = curPhoto();
+  if(!p) return;
+  const img = $('#lbImg');
+  // 触发即复位（卡片弹回中心，图标高亮保持）
+  img.style.transition='transform .2s ease';
+  img.style.transform='translate(0,0)';
+  if(dir==='left'){       // 左 → 支持(喜欢)
+    toast('已标记为喜欢','heart');
+    Store.setLike(p.id, +1);
+    const gi=$('#giLeft'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
+    setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);   // 自动下一张
+  }else if(dir==='right'){ // 右 → 反对(不喜欢)
+    toast('已标记为不喜欢','alert');
+    Store.setLike(p.id, -1);
+    const gi=$('#giRight'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
+    setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);   // 自动下一张
+  }else if(dir==='down'){ // 下 → 下载
+    const gi=$('#giDown'); gi.style.opacity=1; gi.style.transform='translateX(-50%) scale(1.2)';
+    downloadUrl(p.url, p.filename||'image.jpg');
+    toast('开始下载','download');
+    setTimeout(()=>{ resetGestures(); }, 250);
+  }else if(dir==='up'){   // 上 → 更多菜单
+    const gi=$('#giUp'); gi.style.opacity=1; gi.style.transform='translateX(-50%) scale(1.2)';
+    setTimeout(()=>{ resetGestures(); openMenu(); }, 200);
+  }
+}
+
 function onGe(){
   if(!state.dragging) return;
   state.dragging = false;
@@ -1168,42 +1207,13 @@ function onGe(){
   const ax=Math.abs(dx), ay=Math.abs(dy);
   const img = $('#lbImg');
   img.style.transition='transform .3s ease, opacity .3s ease';
-  const p = curPhoto();
 
   if(ax>ay){
-    if(ax>THRESHOLD){
-      // 触发即复位（卡片弹回中心，图标高亮保持，稍后切图）
-      img.style.transition='transform .2s ease';
-      img.style.transform='translate(0,0)';
-      if(dx<0){ // 左滑 → 支持(喜欢)
-        toast('已标记为喜欢','heart');
-        Store.setLike(p.id, +1);
-        const gi=$('#giLeft'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
-        setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);
-      }else{ // 右滑 → 反对(不喜欢)
-        toast('已标记为不喜欢','alert');
-        Store.setLike(p.id, -1);
-        const gi=$('#giRight'); gi.style.opacity=1; gi.style.transform='translateY(-50%) scale(1.2)';
-        setTimeout(()=>{ resetGestures(); nextPhoto(); }, 200);
-      }
-      return;
-    }
+    if(ax>THRESHOLD) triggerGesture(dx<0?'left':'right');
   }else{
-    if(ay>THRESHOLD){
-      img.style.transition='transform .2s ease';
-      img.style.transform='translate(0,0)';
-      if(dy>0){ // 下滑 → 下载
-        const gi=$('#giDown'); gi.style.opacity=1; gi.style.transform='translateX(-50%) scale(1.2)';
-        downloadUrl(p.url, p.filename||'image.jpg');
-        toast('开始下载','download');
-        setTimeout(()=>{ resetGestures(); }, 250);
-      }else{ // 上滑 → 更多菜单
-        const gi=$('#giUp'); gi.style.opacity=1; gi.style.transform='translateX(-50%) scale(1.2)';
-        setTimeout(()=>{ resetGestures(); openMenu(); }, 200);
-      }
-      return;
-    }
+    if(ay>THRESHOLD) triggerGesture(dy>0?'down':'up');
   }
+  // 未达阈值：复位
   img.style.transform='translate(0,0)';
   resetGestures();
 }
