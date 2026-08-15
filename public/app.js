@@ -45,6 +45,10 @@ function renderIcons(root) {
     });
 }
 
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const el = (tag, cls, html) => { const d = document.createElement(tag); if (cls) d.className = cls; if (html != null) d.innerHTML = html; return d; };
+
 /* =========================================================
    配置
    ========================================================= */
@@ -780,10 +784,6 @@ const state = {
     panning: false,
     _lastTap: null
 };
-
-const $ = s => document.querySelector(s);
-const $$ = s => Array.from(document.querySelectorAll(s));
-const el = (tag, cls, html) => { const d = document.createElement(tag); if (cls) d.className = cls; if (html != null) d.innerHTML = html; return d; };
 
 function toast(msg, icon = 'info') {
     if (!ICONS[icon]) icon = 'info';
@@ -2392,8 +2392,8 @@ function downloadUrl(url, name) {
     } catch (e) { }
     renderIcons();
     updateSortUI();
-    await checkAdmin();
-    await Store.load();
-    renderMasonry();
-    installInfiniteScroll();
+    try { await checkAdmin(); } catch (_) { state.isAdmin = false; }
+    try { await Store.load(); } catch (_) { /* 空状态也能渲染 empty */ }
+    try { renderMasonry(); } catch (e) { console.error('[infoto] renderMasonry', e); }
+    try { installInfiniteScroll(); } catch (_) { }
 })();
