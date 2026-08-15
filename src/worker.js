@@ -91,6 +91,23 @@ export default {
       return json(cors, hit ? { exists: true, photo: hit } : { exists: false });
     }
 
+    /* ---------- 临时管理：重置 KV（部署后即移除） ---------- */
+    if (path === '/api/admin/reset' && request.method === 'POST') {
+      const token = request.headers.get('X-Admin-Token') || '';
+      if (token !== 'infoto-reset-tmp-7k2q') return json(cors, { error: 'forbidden' }, 403);
+      let removed = 0;
+      // 删除照片元数据
+      await env.PHOTOS.delete('photos');
+      // 删除所有 vote:* 投票记录
+      let cursor;
+      do {
+        const page = await env.PHOTOS.list({ prefix: 'vote:', cursor });
+        for (const k of page.keys) { await env.PHOTOS.delete(k.name); removed++; }
+        cursor = page.cursor;
+      } while (cursor);
+      return json(cors, { ok: true, removedVotes: removed });
+    }
+
     /* ---------- 静态资源（public/） ---------- */
     return env.ASSETS.fetch(request);
   },
