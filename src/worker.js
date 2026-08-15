@@ -13,7 +13,7 @@
  *   photo_ids     → 有序 id 列表 [id...]（最新在前）
  *   sha:<hash>    → 对应 photoId（查重反向索引）
  *   votes:<id>    → { likes:[ip...], dislikes:[ip...] }（投票真值源）
- *   admin_pw      → PBKDF2$<iter>$<saltHex>$<hashHex>（新版，带迭代数）| <saltHex>$<hashHex>（旧 PBKDF2，按 120k 验证）| 64hex SHA-256（最旧版，登录时自动升级）
+ *   admin_pw      → PBKDF2$<iter>$<saltHex>$<hashHex>（唯一格式，不再兼容旧格式）
  *   sess:<token>  → { adminHash, exp }（随机 Session Token，带过期）
  *
  * 上传统一由浏览器经 /api/upload-proxy 中转 tc 图床（Worker 可访问 tc，/api/file 200 直出字节供外部抓取）；
@@ -232,10 +232,8 @@ export default {
         }
         await env.Infoto.put('admin_pw', stored);
       } else {
-        const vr = await verifyPasswordAndUpgrade(env, pw, stored);
+        const vr = await verifyPassword(env, pw, stored);
         if (!vr.ok) return json(cors, { error: 'wrong password' }, 401);
-        // verifyPasswordAndUpgrade 内部已把旧 SHA-256 升级为 PBKDF2，重新读取最新
-        stored = (await getAdminHash(env)) || stored;
       }
       const token = await createSession(env, stored);
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: sessionCookieHeaders(token, request, cors) });
@@ -471,7 +469,6 @@ function mergePartsAsStream(parts, tcHeaders) {
 // 迭代数：CF Workers 免费计划 CPU 配额约 10ms/请求，120k 次迭代实测 15-30ms+ 超配额被终止
 // （前端 safeJson 兜底显示"服务端响应异常"）。10k 迭代实测约 1-3ms，安全且在配额内。
 const PBKDF2_ITER = 10000;
-const PBKDF2_LEGACY_ITER = 120000; // 历史格式 <salt>$<hash> 用过的迭代数（无格式标记，按此验证）
 const SESS_TTL_MS = 7 * 24 * 3600 * 1000;
 const SESS_TTL_SEC = 7 * 24 * 3600;
 
@@ -485,11 +482,6 @@ function hexToBytes(hex) {
 }
 function randomTokenHex(n = 32) {
   return bytesToHex(crypto.getRandomValues(new Uint8Array(n)));
-}
-
-async function sha256Hex(str) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(str)));
-  return bytesToHex(new Uint8Array(buf));
 }
 
 async function pbkdf2Hex(password, saltBytes, iterations) {
@@ -515,54 +507,17 @@ async function hashPasswordForStorage(password) {
   return 'PBKDF2$' + PBKDF2_ITER + '$' + bytesToHex(salt) + '$' + hash;
 }
 
-async function verifyPasswordAndUpgrade(env, input, stored) {
+async function verifyPassword(env, input, stored) {
+  // 仅支持当前格式：PBKDF2$<iter>$<saltHex>$<hashHex>（不再兼容旧 SHA-256 / 无标记 PBKDF2）
   const str = String(stored || '');
-  // 新格式：PBKDF2$<iter>$<saltHex>$<hashHex>
   const m = str.match(/^PBKDF2\$(\d+)\$([0-9a-f]+)\$([0-9a-f]{64})$/i);
-  if (m) {
-    const iter = Number(m[1]);
-    try {
-      const salt = hexToBytes(m[2]);
-      const actual = await pbkdf2Hex(input, salt, iter);
-      if (actual === m[3]) {
-        // 迭代数与当前不一致：验证通过后重写为当前迭代数（平滑升级）
-        if (iter !== PBKDF2_ITER) {
-          try { await env.Infoto.put('admin_pw', await hashPasswordForStorage(input)); } catch { }
-        }
-        return { ok: true };
-      }
-      return { ok: false };
-    } catch { return { ok: false }; }
-  }
-  // 旧版 PBKDF2（无格式标记）：<saltHex>$<hashHex>，按 legacy 迭代数验证
-  const sepIdx = str.indexOf('$');
-  if (sepIdx > 0 && /^[0-9a-f]+\$[0-9a-f]{64}$/i.test(str)) {
-    try {
-      const salt = hexToBytes(str.slice(0, sepIdx));
-      const expected = str.slice(sepIdx + 1);
-      const actual = await pbkdf2Hex(input, salt, PBKDF2_LEGACY_ITER);
-      if (actual === expected) {
-        // 登录成功时自动升级为新格式（含当前迭代数）
-        try { await env.Infoto.put('admin_pw', await hashPasswordForStorage(input)); } catch { }
-        return { ok: true };
-      }
-      return { ok: false };
-    } catch { return { ok: false }; }
-  }
-  // 最旧版：64 hex 单次 SHA-256（无 salt）
-  if (/^[0-9a-f]{64}$/.test(str)) {
-    const inputHash = await sha256Hex(input);
-    if (inputHash === str) {
-      // 登录成功时自动升级为 PBKDF2
-      try {
-        const upgraded = await hashPasswordForStorage(input);
-        await env.Infoto.put('admin_pw', upgraded);
-      } catch { }
-      return { ok: true };
-    }
-    return { ok: false };
-  }
-  return { ok: false };
+  if (!m) return { ok: false };
+  const iter = Number(m[1]);
+  try {
+    const salt = hexToBytes(m[2]);
+    const actual = await pbkdf2Hex(input, salt, iter);
+    return { ok: actual === m[3] };
+  } catch { return { ok: false }; }
 }
 
 // ===== Session 机制：随机 Token 存 KV（sess:<token>），7 天过期 =====
