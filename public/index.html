@@ -1093,12 +1093,17 @@
 
   <script>
     /* =========================================================
-       配置：上传由浏览器直连 cdeaa OSS，服务端只接收直链
+       配置：上传先做 JXL 无损压缩，小文件直传 cdeaa，大文件分片经 Worker 中转 tc
        ========================================================= */
     const CONFIG = {
+      JWT_SECRET: '9a31f2e82617e4b4b482110f8c928b9b2734d809f060c30f12e8b2574a84c122',
       // 共享后端：默认空 = 同源（Cloudflare Worker 部署形态，/api/* 由 Worker 处理）
       // 若要独立后端，改为完整地址，如 'http://localhost:8080'
       API_BASE: '',
+      // cdeaa 单文件上限约 600KB（实测 620KB 通过 / 650KB 404），直传阈值留余量
+      CDEAA_LIMIT: 600 * 1024,
+      // 大文件分片大小
+      CHUNK_SIZE: 512 * 1024,
     };
 
     async function sha256Hex(buf) {
@@ -1106,12 +1111,63 @@
       return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
-    /* ---- 图床上传（XHR 带进度） ----
-       浏览器直连 cdeaa 公共 OSS（CORS 放行，multipart 简单请求，无需签名）
-       cdeaa 有约 600KB 单文件上限 → 大文件按 512KB 分片逐个直传
-       返回: 分片直链数组（每片 https://www.lnjubao.cn + data.link）
+    /* ---- base64url / JWT（大文件中转 tc 图床需要 X-Auth-Token） ---- */
+    function b64u(bytes) {
+      let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    async function hmacSign(secret, data) {
+      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+      return b64u(new Uint8Array(sig));
+    }
+    async function makeJwt(sha) {
+      const header = b64u(new TextEncoder().encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+      const claims = { timestamp: Date.now() };
+      if (sha) claims.sha256 = sha;
+      const payload = b64u(new TextEncoder().encode(JSON.stringify(claims)));
+      const sig = await hmacSign(CONFIG.JWT_SECRET, header + '.' + payload);
+      return `${header}.${payload}.${sig}`;
+    }
+
+    /* ---- JXL 无损压缩（@jsquash/jxl，libjxl WASM） ---- */
+    let jxlEncode = null;
+    async function loadJxl() {
+      if (jxlEncode) return jxlEncode;
+      // jsDelivr +esm 模块内部自动定位 wasm（import.meta.url），浏览器可直接用
+      const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/jxl@1.2.0/+esm');
+      jxlEncode = mod.encode;
+      return jxlEncode;
+    }
+    /* 解码图片 → ImageData（浏览器原生解码，支持 jpg/png/webp/gif/bmp） */
+    async function fileToImageData(file) {
+      const bmp = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = bmp.width; canvas.height = bmp.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bmp, 0, 0);
+      bmp.close();
+      return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+    /* JXL 无损压缩：成功返回 Blob，失败/不支持返回 null */
+    async function compressJxl(file) {
+      try {
+        const encode = await loadJxl();
+        const data = await fileToImageData(file);
+        const buf = await encode(data, { lossless: true, effort: 3 });
+        return new Blob([buf], { type: 'image/jxl' });
+      } catch (e) {
+        console.warn('[infoto] JXL 压缩失败，使用原文件', e);
+        return null;
+      }
+    }
+
+    /* ---- 图床上传 ----
+       小文件（≤600KB）：浏览器直连 cdeaa（CORS 放行，无需签名）
+       大文件：分片 512KB → 每片经 Worker 中转 tc 图床（X-Auth-Token JWT）
+       返回: 分片直链数组
     */
-    const CHUNK_SIZE = 512 * 1024;   // 分片大小，cdeaa 上限约 600KB，留余量
     function uploadViaXhr(url, fd, headers, onProgress) {
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -1124,7 +1180,7 @@
       });
     }
 
-    async function uploadPartToBed(blob, name) {
+    async function uploadPartToCdeaa(blob, name) {
       const fd = new FormData();
       fd.append('file', blob, name);
       const txt = await uploadViaXhr('https://cdeaa.qdqqd.com/public/resource/oss/put-file-attach', fd, {});
@@ -1133,22 +1189,33 @@
       return 'https://www.lnjubao.cn' + json.data.link;
     }
 
-    async function uploadToBed(file, onProgress) {
+    async function uploadPartToTc(blob, name) {
+      const sha = await sha256Hex(await blob.arrayBuffer());
+      const token = await makeJwt(sha);
+      const fd = new FormData();
+      fd.append('file', blob, name);
+      const txt = await uploadViaXhr(apiBase() + '/api/upload-proxy', fd, { 'X-Auth-Token': token });
+      const json = JSON.parse(txt);
+      if (!json.data) throw new Error('上传响应缺少 data');
+      return json.data;
+    }
+
+    async function uploadToBed(blob, name, onProgress) {
       onProgress(0.05);
       const parts = [];
-      if (file.size <= CHUNK_SIZE) {
-        // 单片直传
+      if (blob.size <= CONFIG.CDEAA_LIMIT) {
+        // 小文件：浏览器直传 cdeaa
         onProgress(0.5);
-        parts.push(await uploadPartToBed(file, file.name));
+        parts.push(await uploadPartToCdeaa(blob, name));
         onProgress(1);
         return parts;
       }
-      // 大文件分片（串行上传，避免并发被限流）
-      const total = Math.ceil(file.size / CHUNK_SIZE);
+      // 大文件：分片经 Worker 中转 tc
+      const total = Math.ceil(blob.size / CONFIG.CHUNK_SIZE);
       for (let i = 0; i < total; i++) {
-        const blob = file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size));
-        const name = `${file.name}.part${i + 1}`;
-        parts.push(await uploadPartToBed(blob, name));
+        const chunk = blob.slice(i * CONFIG.CHUNK_SIZE, Math.min((i + 1) * CONFIG.CHUNK_SIZE, blob.size));
+        const chunkName = `${name}.part${i + 1}`;
+        parts.push(await uploadPartToTc(chunk, chunkName));
         onProgress(0.05 + ((i + 1) / total) * 0.9);
       }
       onProgress(1);
@@ -1555,11 +1622,21 @@
       let done = 0, failed = 0, skipped = 0;
       for (const file of files) {
         fname.textContent = file.name;
-        step.textContent = '计算哈希…';
+        step.textContent = 'JXL 无损压缩…';
         bar.style.width = '0%'; pct.textContent = '0%';
         try {
-          // 先算 SHA-256，交给服务端查重：已存在则跳过上传
-          const sha = await sha256Hex(await file.arrayBuffer());
+          // 1) 浏览器端 JXL 无损压缩（仅图片；压缩失败则退回原文件）
+          let upBlob = file;
+          let upName = file.name;
+          if (file.type.startsWith('image/') && !/gif|svg/.test(file.type)) {
+            const jxl = await compressJxl(file);
+            if (jxl && jxl.size < file.size * 0.9) {   // 压缩后明显更小才采用
+              upBlob = jxl;
+              upName = file.name.replace(/\.[^.]+$/, '') + '.jxl';
+            }
+          }
+          // 2) 对最终内容算 SHA-256 查重
+          const sha = await sha256Hex(await upBlob.arrayBuffer());
           step.textContent = '查重…';
           const dup = await checkHashExists(sha);
           if (dup) {
@@ -1567,7 +1644,8 @@
             toast(`「${file.name}」已存在，跳过`, 'info');
             continue;
           }
-          const parts = await uploadToBed(file, p => {
+          // 3) 小文件直传 cdeaa / 大文件分片中转 tc
+          const parts = await uploadToBed(upBlob, upName, p => {
             bar.style.width = Math.round(p * 100) + '%';
             pct.textContent = Math.round(p * 100) + '%';
             step.textContent = p < 1 ? '直链上传' : '获取直链';
@@ -1575,7 +1653,8 @@
           step.textContent = '获取尺寸…';
           // url 统一指向 Worker 还原接口（多分片由服务端动态拼接）
           const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-          const photo = { id, url: fileUrl(id), parts, sha256: sha, width: 0, height: 0, createdAt: Date.now(), likes: 0, dislikes: 0, filename: file.name };
+          // filename 存压缩后的扩展名（供 MIME 还原），另存 originalName 用于展示
+          const photo = { id, url: fileUrl(id), parts, sha256: sha, width: 0, height: 0, createdAt: Date.now(), likes: 0, dislikes: 0, filename: upName, originalName: file.name };
           await loadDims(photo);
           await Store.add(photo);
           done++;

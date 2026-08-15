@@ -92,6 +92,30 @@ export default {
       return json(cors, hit ? { exists: true, photo: hit } : { exists: false });
     }
 
+    /* ---------- 上传中转：POST /api/upload-proxy（大文件分片走 tc 图床） ---------- */
+    // 浏览器直传 cdeaa 有 ~600KB 上限；大文件分片后经本接口中转 tc 图床（Worker 可访问 tc）
+    // 服务端不落盘、不二次处理，只转发并原样返回直链。
+    if (path === '/api/upload-proxy' && request.method === 'POST') {
+      const token = request.headers.get('X-Auth-Token') || '';
+      const headers = new Headers();
+      const ct = request.headers.get('Content-Type') || 'application/octet-stream';
+      headers.set('Content-Type', ct);
+      if (token) headers.set('X-Auth-Token', token);
+      try {
+        const upstream = await fetch('https://tc.0147258.xyz/upload', {
+          method: 'POST',
+          headers,
+          body: request.body,
+          duplex: 'half',
+        });
+        const outHeaders = new Headers(cors);
+        outHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json');
+        return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
+      } catch (e) {
+        return json(cors, { error: 'proxy upstream error: ' + e.message }, 502);
+      }
+    }
+
     /* ---------- 分片还原：GET /api/file/<id> ---------- */
     // 照片以多个分片直链（cdeaa OSS）存储在 KV，本接口动态拉取各分片拼接还原为完整文件
     if (path.startsWith('/api/file/')) {
@@ -150,7 +174,7 @@ function mimeFromName(name){
   const map = {
     jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif',
     webp:'image/webp', bmp:'image/bmp', svg:'image/svg+xml', avif:'image/avif',
-    heic:'image/heic', ico:'image/x-icon', tiff:'image/tiff', tif:'image/tiff',
+    jxl:'image/jxl', heic:'image/heic', ico:'image/x-icon', tiff:'image/tiff', tif:'image/tiff',
     mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime',
     mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg',
     pdf:'application/pdf', zip:'application/zip', json:'application/json',
