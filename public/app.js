@@ -586,15 +586,6 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     toast(`开始下载 ${list.length} 张图片`, 'download');
     list.forEach(p => downloadUrl(p.url, p.filename || 'image.jpg'));
 });
-$('#batchDeleteBtn').addEventListener('click', async () => {
-    const n = state.selected.size;
-    if (n === 0) { toast('请先选择照片'); return; }
-    if (!confirm(`确定删除已选择的 ${n} 张照片吗？`)) return;
-    await Store.remove([...state.selected]);
-    exitMulti();
-    renderMasonry();
-    toast(`已删除 ${n} 张照片`, 'success');
-});
 
 /* =========================================================
    上传
@@ -607,19 +598,39 @@ $('#fileInput').addEventListener('change', async e => {
     await uploadFiles(files);
 });
 
-async function uploadFiles(files) {
-    const overlay = $('#uploadOverlay');
-    overlay.classList.add('show');
-    const bar = $('#uploadProgressBar');
-    const pct = $('#uploadProgressText');
-    const fname = $('#uploadFileName');
-    const step = $('#uploadStep');
+/* 上传进度 UI：按钮右下角小圆圈 + 悬停详情 */
+function resetUploadUI() {
+    const ind = $('#upIndicator');
+    ind.classList.add('hidden');
+    $('#upRing').style.strokeDashoffset = '97.4';
+    $('#upPct').textContent = '0%';
+    $('#upDone').textContent = '0';
+    $('#upSkipped').textContent = '0';
+    $('#upFailed').textContent = '0';
+    $('#upTipFile').textContent = '准备上传…';
+    $('#upTipStep').textContent = '';
+}
+function setUploadProgress(p, file, step) {
+    const ind = $('#upIndicator');
+    ind.classList.remove('hidden');
+    const pct = Math.round(p * 100);
+    $('#upRing').style.strokeDashoffset = String(97.4 * (1 - p));
+    $('#upPct').textContent = pct + '%';
+    if (file) $('#upTipFile').textContent = file;
+    if (step) $('#upTipStep').textContent = step;
+}
 
+async function uploadFiles(files) {
+    resetUploadUI();
+    const total = files.length;
     let done = 0, failed = 0, skipped = 0;
-    for (const file of files) {
-        fname.textContent = file.name;
-        step.textContent = 'JXL 无损压缩…';
-        bar.style.width = '0%'; pct.textContent = '0%';
+    for (let i = 0; i < total; i++) {
+        const file = files[i];
+        // 整体进度 = 已处理 / 总数（单文件内部进度细化为当前文件的进度）
+        const base = i / total;
+        const span = 1 / total;
+        let stepMsg = 'JXL 无损压缩…';
+        setUploadProgress(base, file.name, stepMsg);
         try {
             let upBlob = file;
             let upName = file.name;
@@ -631,19 +642,21 @@ async function uploadFiles(files) {
                 }
             }
             const sha = await sha256Hex(await upBlob.arrayBuffer());
-            step.textContent = '查重…';
+            stepMsg = '查重…';
+            setUploadProgress(base, file.name, stepMsg);
             const dup = await checkHashExists(sha);
             if (dup) {
                 skipped++;
+                $('#upSkipped').textContent = String(skipped);
+                setUploadProgress(base + span, file.name, '已存在，跳过');
                 toast(`「${file.name}」已存在，跳过`, 'info');
                 continue;
             }
             const parts = await uploadToBed(upBlob, upName, p => {
-                bar.style.width = Math.round(p * 100) + '%';
-                pct.textContent = Math.round(p * 100) + '%';
-                step.textContent = p < 1 ? '直链上传' : '获取直链';
+                setUploadProgress(base + p * span, file.name, p < 1 ? '直链上传' : '获取直链');
             });
-            step.textContent = '获取尺寸…';
+            stepMsg = '获取尺寸…';
+            setUploadProgress(base + span * 0.95, file.name, stepMsg);
             const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
             const photo = {
                 id, url: fileUrl(id), parts, sha256: sha,
@@ -654,19 +667,23 @@ async function uploadFiles(files) {
             await loadDims(photo);
             await Store.add(photo);
             done++;
+            $('#upDone').textContent = String(done);
         } catch (err) {
             console.error('upload failed:', file.name, err);
             failed++;
+            $('#upFailed').textContent = String(failed);
             toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
         }
     }
-    overlay.classList.remove('show');
+    setUploadProgress(1, null, '完成');
     renderMasonry();
     const parts = [];
     if (done > 0) parts.push(`成功 ${done}`);
     if (skipped > 0) parts.push(`跳过重复 ${skipped}`);
     if (failed > 0) parts.push(`失败 ${failed}`);
     if (parts.length) toast(`上传完成：${parts.join('，')}`, done > 0 || skipped > 0 ? 'success' : 'alert');
+    // 完成后短暂展示结果，再隐藏
+    setTimeout(resetUploadUI, 2500);
 }
 
 async function checkHashExists(sha) {
@@ -726,7 +743,7 @@ function updateLightbox() {
         if ((p.filename || '').endsWith('.jxl')) {
             decodeJxlToPng(p.url).then(blob => {
                 if (blob) img.src = URL.createObjectURL(blob);
-            }).catch(() => {});
+            }).catch(() => { });
         }
     };
     $('#lbCounter').textContent = `${state.currentIndex + 1} / ${getSorted().length}`;

@@ -54,31 +54,26 @@
       <button class="nav-btn" id="batchDownloadBtn" title="批量下载">
         <svg class="icon-lg" data-i="download"></svg>
       </button>
-      <button class="nav-btn danger" id="batchDeleteBtn" title="批量删除">
-        <svg class="icon-lg" data-i="trash"></svg>
-      </button>
     </div>
   </div>
 
   <!-- 框选矩形 -->
   <div class="selection-box" id="selectionBox"></div>
 
-  <!-- ============ 上传浮层 ============ -->
-  <div class="overlay" id="uploadOverlay">
-    <div class="upload-box">
-      <div class="upload-head">
-        <div class="spin"><svg class="icon" data-i="upload-cloud"></svg></div>
-        <div>
-          <h3>正在上传图片</h3>
-          <p id="uploadFileName">IMG_001.jpg</p>
-        </div>
-      </div>
-      <div class="pbar">
-        <div class="pbar-fill" id="uploadProgressBar"></div>
-      </div>
-      <div class="upload-foot">
-        <span class="upload-info" id="uploadStep">直链上传</span>
-        <span class="upload-pct" id="uploadProgressText">0%</span>
+  <!-- ============ 上传进度：按钮右下角小圆圈 + 悬停详情 ============ -->
+  <div class="up-indicator hidden" id="upIndicator">
+    <svg viewBox="0 0 36 36" class="up-ring">
+      <circle class="up-ring-bg" cx="18" cy="18" r="15.5" />
+      <circle class="up-ring-fg" id="upRing" cx="18" cy="18" r="15.5" />
+    </svg>
+    <span class="up-pct" id="upPct">0%</span>
+    <div class="up-tip" id="upTip">
+      <div class="up-tip-file" id="upTipFile">准备上传…</div>
+      <div class="up-tip-step" id="upTipStep"></div>
+      <div class="up-tip-stat">
+        <span class="ok">成功 <b id="upDone">0</b></span>
+        <span class="dup">重复 <b id="upSkipped">0</b></span>
+        <span class="bad">失败 <b id="upFailed">0</b></span>
       </div>
     </div>
   </div>

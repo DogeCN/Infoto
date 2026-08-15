@@ -116,6 +116,7 @@ button:focus-visible {
   0% {
     background-position: -400px 0
   }
+
   100% {
     background-position: 400px 0
   }
@@ -133,6 +134,7 @@ button:focus-visible {
     opacity: 0;
     transform: scale(.98)
   }
+
   to {
     opacity: 1;
     transform: scale(1)
@@ -467,80 +469,83 @@ main {
   display: flex;
 }
 
-.upload-box {
-  background: var(--surface-high);
-  border-radius: var(--r-xl);
-  box-shadow: var(--shadow-dialog);
-  padding: 1.5rem;
-  width: 90%;
-  max-width: 24rem;
-}
-
-.upload-head {
-  display: flex;
-  align-items: center;
-  gap: .75rem;
-  margin-bottom: 1rem;
-}
-
-.upload-head .spin {
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 50%;
-  background: rgba(34, 211, 238, .2);
+/* ============ 上传进度：按钮右下角小圆圈 + 悬停详情 ============ */
+.up-indicator {
+  position: fixed;
+  right: .65rem;
+  bottom: .65rem;
+  z-index: 90;
+  width: 2.6rem;
+  height: 2.6rem;
   display: flex;
   align-items: center;
   justify-content: center;
+  cursor: default;
 }
-
-.upload-head .spin .icon {
-  color: var(--primary);
+.up-ring {
+  width: 2.6rem;
+  height: 2.6rem;
+  transform: rotate(-90deg);
+  position: absolute;
+  inset: 0;
 }
-
-.upload-head h3 {
-  font-size: .875rem;
+.up-ring-bg {
+  fill: none;
+  stroke: rgba(123, 133, 160, .25);
+  stroke-width: 3;
+}
+.up-ring-fg {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 97.4;
+  stroke-dashoffset: 97.4;
+  transition: stroke-dashoffset .2s;
+}
+.up-pct {
+  font-size: .55rem;
   font-weight: 600;
+  color: var(--on-surface);
+  z-index: 1;
 }
-
-.upload-head p {
-  font-size: .75rem;
-  color: var(--on-variant);
-  margin-top: .15rem;
+.up-tip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + .5rem);
+  width: 13.5rem;
+  background: var(--surface-high);
+  border: 1px solid rgba(123, 133, 160, .3);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-dialog);
+  padding: .65rem .75rem;
+  display: none;
+  pointer-events: none;
+}
+.up-indicator:hover .up-tip {
+  display: block;
+}
+.up-tip-file {
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--on-surface);
   word-break: break-all;
+  margin-bottom: .15rem;
 }
-
-.pbar {
-  width: 100%;
-  height: .5rem;
-  background: var(--surface);
-  border-radius: 9999px;
-  overflow: hidden;
+.up-tip-step {
+  font-size: .68rem;
+  color: var(--on-variant);
+  margin-bottom: .35rem;
 }
-
-.pbar-fill {
-  height: 100%;
-  background: var(--primary);
-  border-radius: 9999px;
-  width: 0%;
-  transition: width .3s;
-}
-
-.upload-foot {
+.up-tip-stat {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: .5rem;
-}
-
-.upload-pct {
-  font-size: .75rem;
+  gap: .6rem;
+  font-size: .66rem;
   color: var(--on-variant);
 }
-
-.upload-info {
-  font-size: .7rem;
-  color: var(--on-variant);
-}
+.up-tip-stat .ok b { color: var(--success); }
+.up-tip-stat .dup b { color: var(--warning); }
+.up-tip-stat .bad b { color: var(--error); }
 
 /* ============ Lightbox ============ */
 .lightbox {
@@ -853,6 +858,7 @@ main {
     transform: translateY(20px);
     opacity: 0
   }
+
   to {
     transform: translateY(0);
     opacity: 1
@@ -864,6 +870,7 @@ main {
     transform: translateY(0);
     opacity: 1
   }
+
   to {
     transform: translateY(20px);
     opacity: 0
