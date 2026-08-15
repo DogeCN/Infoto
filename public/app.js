@@ -59,72 +59,25 @@ async function sha256Hex(buf) {
     return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/* ---- 无损压缩（JXL，libjxl WASM；压缩率实测优于 WebP，effort=7 最快） ---- */
-// 编码是 CPU 密集的 WASM 运算，放在 Web Worker 里跑，避免阻塞主线程导致上传时界面卡顿
-let jxlWorker = null;
-function getJxlWorker() {
-    if (!jxlWorker) {
-        jxlWorker = new Worker('/jxl-worker.js', { type: 'module' });
-    }
-    return jxlWorker;
-}
+/* ---- 客户端有损压缩为 WebP（canvas.toBlob 原生编码，零 WASM、秒级） ----
+ * 实测（用户 Favourite 图库 190 张）：quality=0.8 时 97% 照片压到原图 ~46% 且都比原图小，
+ * 观感近无损；少数高细节图压不赢原图，按"比原来小才采用"规则回退原图。 */
+const WEBP_QUALITY = 0.8;
 
-async function fileToImageData(file) {
-    const bmp = await createImageBitmap(file);
-    const canvas = document.createElement('canvas');
-    canvas.width = bmp.width; canvas.height = bmp.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(bmp, 0, 0);
-    bmp.close();
-    return ctx.getImageData(0, 0, canvas.width, canvas.height);
-}
-
-async function compressLossless(file) {
+async function compressToWebp(file, quality = WEBP_QUALITY) {
     try {
-        const data = await fileToImageData(file);
-        const worker = getJxlWorker();
-        const buf = await new Promise((resolve, reject) => {
-            const id = Math.random().toString(36).slice(2);
-            const onMsg = (e) => {
-                if (!e.data || e.data.id !== id) return;
-                worker.removeEventListener('message', onMsg);
-                if (e.data.ok) resolve(e.data.buf);
-                else reject(new Error(e.data.error || 'jxl encode failed'));
-            };
-            worker.addEventListener('message', onMsg);
-            worker.addEventListener('error', (ev) => {
-                worker.removeEventListener('message', onMsg);
-                reject(new Error(ev.message || 'jxl worker error'));
-            }, { once: true });
-            // 把像素缓冲转移（零拷贝）给 Worker 编码，避免大图在主线程额外复制
-            worker.postMessage(
-                { id, width: data.width, height: data.height, buffer: data.data.buffer },
-                [data.data.buffer]
-            );
-        });
-        return new Blob([buf], { type: 'image/jxl' });
+        const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+        const canvas = document.createElement('canvas');
+        canvas.width = bmp.width; canvas.height = bmp.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bmp, 0, 0);
+        bmp.close();
+        const blob = await new Promise(res => canvas.toBlob(res, 'image/webp', quality));
+        return blob;
     } catch (e) {
-        console.warn('[infoto] JXL 压缩失败，使用原文件', e);
+        console.warn('[infoto] WebP 压缩失败，使用原文件', e);
         return null;
     }
-}
-
-/* ---- 旧 JXL 照片解码兜底（浏览器不支持 JXL 时转 PNG 显示） ---- */
-let jxlDecode = null;
-async function loadJxlDecode() {
-    if (jxlDecode) return jxlDecode;
-    const mod = await import('https://cdn.jsdelivr.net/npm/@jsquash/jxl@1.2.0/+esm');
-    jxlDecode = mod.decode;
-    return jxlDecode;
-}
-async function decodeJxlToPng(url) {
-    const decode = await loadJxlDecode();
-    const buf = await (await fetch(url)).arrayBuffer();
-    const data = await decode(buf);
-    const canvas = document.createElement('canvas');
-    canvas.width = data.width; canvas.height = data.height;
-    canvas.getContext('2d').putImageData(data, 0, 0);
-    return new Promise(res => canvas.toBlob(res, 'image/png'));
 }
 
 /* ---- 图床上传 ---- */
@@ -246,6 +199,7 @@ function fileUrl(id) {
 const Store = {
     photos: [],
     _loaded: false,
+    myVotes: Object.create(null),
 
     async load() {
         if (this._loaded) return this.photos;
@@ -257,6 +211,8 @@ const Store = {
         this.photos = [];
         return this.photos;
     },
+
+    getMyVote(id) { return this.myVotes[id] || 0; },
 
     async save(photo) {
         await fetch(apiBase() + '/api/photos', {
@@ -272,7 +228,7 @@ const Store = {
     },
     async setLike(id, delta) {
         const p = this.photos.find(x => x.id === id);
-        if (!p) return { ok: false, already: false };
+        if (!p) return { ok: false };
         try {
             const r = await fetch(apiBase() + '/api/vote', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -281,15 +237,13 @@ const Store = {
             const j = await r.json();
             if (j.ok) {
                 p.likes = j.likes; p.dislikes = j.dislikes;
-                return { ok: true, already: false };
-            }
-            if (j.already) {
-                return { ok: false, already: true };
+                this.myVotes[id] = j.delta || delta;
+                return { ok: true, delta: j.delta || delta };
             }
         } catch (e) {
             console.warn('[infoto] 投票接口失败', e);
         }
-        return { ok: false, already: false };
+        return { ok: false };
     }
 };
 
@@ -325,7 +279,8 @@ function getSorted() {
         arr.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
         if (state.latestDir === 'desc') arr.reverse();
     } else {
-        arr.sort((a, b) => (a.likes || 0) - (b.likes || 0));
+        const score = p => (p.likes || 0) - (p.dislikes || 0);
+        arr.sort((a, b) => score(a) - score(b));
         if (state.hotestDir === 'desc') arr.reverse();
     }
     return arr;
@@ -399,25 +354,27 @@ function makeCard(photo, index) {
         skel.remove();
     };
     img.onerror = () => {
-        // JXL 兼容性兜底：浏览器不支持时解码转 PNG 显示
-        if ((photo.filename || '').endsWith('.jxl')) {
-            decodeJxlToPng(photo.url).then(blob => {
-                if (!blob) return;
-                img.src = URL.createObjectURL(blob);
-            }).catch(() => { skel.remove(); img.classList.add('loaded'); img.style.opacity = '.4'; });
-        } else {
-            skel.remove(); img.classList.add('loaded'); img.style.opacity = '.4';
-        }
+        skel.remove(); img.classList.add('loaded'); img.style.opacity = '.4';
     };
 
     holder.appendChild(skel);
     holder.appendChild(img);
     card.appendChild(holder);
 
-    if ((photo.likes || 0) > 0) {
-        const badge = el('div', 'card-badge', `<svg class="icon" data-i="heart"></svg><span>${photo.likes}</span>`);
-        renderIcons(badge);
-        card.appendChild(badge);
+    const likes = photo.likes || 0;
+    const dislikes = photo.dislikes || 0;
+    const myVote = Store.getMyVote(photo.id);
+
+    const stats = el('div', 'card-stats');
+    if (likes > 0 || dislikes > 0) {
+        const likeBadge = el('div', 'card-badge card-badge-like' + (myVote === 1 ? ' active' : ''),
+            `<svg class="icon" data-i="heart"></svg><span>${likes}</span>`);
+        const dislikeBadge = el('div', 'card-badge card-badge-dislike' + (myVote === -1 ? ' active' : ''),
+            `<svg class="icon" data-i="x-circle"></svg><span>${dislikes}</span>`);
+        stats.appendChild(likeBadge);
+        stats.appendChild(dislikeBadge);
+        renderIcons(stats);
+        card.appendChild(stats);
     }
     const check = el('div', 'multi-check', `<svg class="icon" data-i="check"></svg>`);
     renderIcons(check);
@@ -578,7 +535,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const list = getSorted().filter(p => state.selected.has(p.id));
     if (list.length === 0) { toast('请先选择照片'); return; }
     toast(`开始下载 ${list.length} 张图片`, 'download');
-    list.forEach(p => downloadUrl(p.url + '?raw=1', p.filename || 'image.jpg'));
+    list.forEach(p => downloadUrl(p.url + '?dl=1', p.filename || 'image.jpg'));
 });
 
 /* =========================================================
@@ -593,23 +550,28 @@ $('#fileInput').addEventListener('change', async e => {
 });
 
 /* 上传进度 UI：按钮右下角小圆圈 + 悬停详情 */
+let _uploadTotal = 0;
+let _uploadDoneLike = 0;
 function resetUploadUI() {
     const ind = $('#upIndicator');
     ind.classList.add('hidden');
-    $('#upRing').style.strokeDashoffset = '97.4';
-    $('#upPct').textContent = '0%';
+    $('#upRing').style.strokeDashoffset = '94.25';
+    $('#upPct').textContent = '0';
     $('#upDone').textContent = '0';
     $('#upSkipped').textContent = '0';
     $('#upFailed').textContent = '0';
-    $('#upTipFile').textContent = '准备上传…';
-    $('#upTipStep').textContent = '';
+    $('#upTipFile').textContent = '待上传';
+    $('#upTipStep').textContent = '准备中';
+    _uploadTotal = 0;
+    _uploadDoneLike = 0;
 }
 function setUploadProgress(p, file, step) {
     const ind = $('#upIndicator');
     ind.classList.remove('hidden');
-    const pct = Math.round(p * 100);
-    $('#upRing').style.strokeDashoffset = String(97.4 * (1 - p));
-    $('#upPct').textContent = pct + '%';
+    $('#upRing').style.strokeDashoffset = String(94.25 * (1 - p));
+    const finishedExact = _uploadDoneLike + p;
+    const remaining = Math.max(0, Math.ceil(_uploadTotal - finishedExact));
+    $('#upPct').textContent = String(remaining);
     if (file) $('#upTipFile').textContent = file;
     if (step) $('#upTipStep').textContent = step;
 }
@@ -617,11 +579,14 @@ function setUploadProgress(p, file, step) {
 async function uploadFiles(files) {
     resetUploadUI();
     const total = files.length;
+    _uploadTotal = total;
     let done = 0, failed = 0, skipped = 0;
+    _uploadDoneLike = 0;
     for (let i = 0; i < total; i++) {
         const file = files[i];
         if (file.type === 'image/svg+xml') {
             skipped++;
+            _uploadDoneLike = i + 1;
             $('#upSkipped').textContent = String(skipped);
             toast(`「${file.name}」SVG 暂不支持`, 'alert');
             continue;
@@ -629,18 +594,18 @@ async function uploadFiles(files) {
         // 整体进度 = 已处理 / 总数（单文件内部进度细化为当前文件的进度）
         const base = i / total;
         const span = 1 / total;
-        // 600KB 以下小文件不压缩，直接传原格式到 cdeaa（JXL 压缩对微小文件无收益）
-        const willCompress = file.type.startsWith('image/') && !/gif|svg/.test(file.type) && file.size > CONFIG.CDEAA_LIMIT;
-        let stepMsg = willCompress ? 'JXL 无损压缩…' : '直传（小文件跳过压缩）';
+        // 先压缩为 WebP：只要比原图小就采用，再进入大小分流（≤600KB 直传 cdeaa，否则分片 tc）
+        const canCompress = file.type.startsWith('image/') && !/gif|svg|webp/.test(file.type);
+        let stepMsg = canCompress ? 'WebP 压缩…' : '直传原图';
         setUploadProgress(base, file.name, stepMsg);
         try {
             let upBlob = file;
             let upName = file.name;
-            if (willCompress) {
-                const jxl = await compressLossless(file);
-                if (jxl && jxl.size < file.size * 0.9) {
-                    upBlob = jxl;
-                    upName = file.name.replace(/\.[^.]+$/, '') + '.jxl';
+            if (canCompress) {
+                const webp = await compressToWebp(file, WEBP_QUALITY);
+                if (webp && webp.size < file.size) {
+                    upBlob = webp;
+                    upName = file.name.replace(/\.[^.]+$/, '') + '.webp';
                 }
             }
             const sha = await sha256Hex(await upBlob.arrayBuffer());
@@ -649,6 +614,7 @@ async function uploadFiles(files) {
             const dup = await checkHashExists(sha);
             if (dup) {
                 skipped++;
+                _uploadDoneLike = i + 1;
                 $('#upSkipped').textContent = String(skipped);
                 setUploadProgress(base + span, file.name, '已存在，跳过');
                 toast(`「${file.name}」已存在，跳过`, 'info');
@@ -663,16 +629,17 @@ async function uploadFiles(files) {
             const photo = {
                 id, url: fileUrl(id), parts, sha256: sha,
                 width: 0, height: 0, createdAt: Date.now(),
-                likes: 0, dislikes: 0,
                 filename: upName, originalName: file.name
             };
             await loadDims(photo);
             await Store.add(photo);
             done++;
+            _uploadDoneLike = i + 1;
             $('#upDone').textContent = String(done);
         } catch (err) {
             console.error('upload failed:', file.name, err);
             failed++;
+            _uploadDoneLike = i + 1;
             $('#upFailed').textContent = String(failed);
             toast(`「${file.name}」上传失败: ${err.message}`, 'alert');
         }
@@ -732,6 +699,25 @@ function closeLightbox() {
     resetGestures();
 }
 function curPhoto() { return getSorted()[state.currentIndex]; }
+function updateLightboxVotes(p) {
+    const likes = p.likes || 0;
+    const dislikes = p.dislikes || 0;
+    const myVote = Store.getMyVote(p.id);
+    const likesStr = likes > 0 ? `<span class="lb-vote lb-vote-like${myVote === 1 ? ' active' : ''}"><svg class="icon" data-i="heart"></svg><b>${likes}</b></span>` : '';
+    const dislikesStr = dislikes > 0 ? `<span class="lb-vote lb-vote-dislike${myVote === -1 ? ' active' : ''}"><svg class="icon" data-i="x-circle"></svg><b>${dislikes}</b></span>` : '';
+    let votesBox = $('#lbVotes');
+    if (!votesBox) {
+        votesBox = el('div', 'lb-votes');
+        votesBox.id = 'lbVotes';
+        $('#lbCounter').after(votesBox);
+    }
+    votesBox.innerHTML = likesStr + dislikesStr;
+    renderIcons(votesBox);
+
+    const giLeft = $('#giLeft'), giRight = $('#giRight');
+    giLeft.classList.toggle('voted', myVote === 1);
+    giRight.classList.toggle('voted', myVote === -1);
+}
 function updateLightbox() {
     const p = curPhoto();
     if (!p) return;
@@ -741,14 +727,9 @@ function updateLightbox() {
     img.style.opacity = 1;
     img.src = p.url;
     img.alt = p.filename || 'photo';
-    img.onerror = () => {
-        if ((p.filename || '').endsWith('.jxl')) {
-            decodeJxlToPng(p.url).then(blob => {
-                if (blob) img.src = URL.createObjectURL(blob);
-            }).catch(() => { });
-        }
-    };
+    img.onerror = () => { };
     $('#lbCounter').textContent = `${state.currentIndex + 1} / ${getSorted().length}`;
+    updateLightboxVotes(p);
     renderDots();
 }
 function renderDots() {
@@ -832,19 +813,22 @@ async function triggerGesture(dir) {
     const img = $('#lbImg');
     img.style.transition = 'transform .2s ease';
     img.style.transform = 'translate(0,0)';
+    let updated = false;
     if (dir === 'left') {
         const gi = $('#giLeft'); gi.style.opacity = 1; gi.style.transform = 'translateY(-50%) scale(1.2)';
         const r = await Store.setLike(p.id, +1);
-        toast(r.already ? '你已标记过喜欢这张' : '已标记为喜欢', 'heart');
-        setTimeout(() => { resetGestures(); nextPhoto(); }, 200);
+        toast(r.ok ? '已标记为喜欢' : '标记失败，请重试', r.ok ? 'heart' : 'alert');
+        updated = true;
+        setTimeout(() => { resetGestures(); updateLightboxVotes(p); renderMasonry(); nextPhoto(); }, 200);
     } else if (dir === 'right') {
         const gi = $('#giRight'); gi.style.opacity = 1; gi.style.transform = 'translateY(-50%) scale(1.2)';
         const r = await Store.setLike(p.id, -1);
-        toast(r.already ? '你已标记过不喜欢这张' : '已标记为不喜欢', 'alert');
-        setTimeout(() => { resetGestures(); nextPhoto(); }, 200);
+        toast(r.ok ? '已标记为不喜欢' : '标记失败，请重试', r.ok ? 'alert' : 'alert');
+        updated = true;
+        setTimeout(() => { resetGestures(); updateLightboxVotes(p); renderMasonry(); nextPhoto(); }, 200);
     } else if (dir === 'down') {
         const gi = $('#giDown'); gi.style.opacity = 1; gi.style.transform = 'translateX(-50%) scale(1.2)';
-        downloadUrl(p.url + '?raw=1', p.filename || 'image.jpg');
+        downloadUrl(p.url + '?dl=1', p.filename || 'image.jpg');
         toast('开始下载', 'download');
         setTimeout(() => { resetGestures(); }, 250);
     } else if (dir === 'up') {

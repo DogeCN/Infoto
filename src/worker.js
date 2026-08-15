@@ -6,25 +6,11 @@
  *   2. /api/photos  —— 照片元数据读写（KV 持久化）
  *   3. /api/vote    —— 按 IP 防重的喜欢/不喜欢投票
  *   4. /api/photos/hash —— SHA-256 查重
- *   5. /api/file —— 多分片 JXL 在边缘 Worker 内合并并解码为 PNG 直出（单分片 JXL 仍由浏览器解码兜底）
+ *   5. /api/file —— 多分片文件在边缘 Worker 内合并还原为完整文件（单分片 302 直连图床）
  *
  * 上传由浏览器直连图床（cdeaa OSS），本服务端只接收最终直链；大文件分片经 tc 中转，
- * 取图时由本服务端合并还原（JXL 在此解码为 PNG，省去客户端 WASM 解码）。
+ * 取图时由本服务端合并还原。图片压缩（WebP）在浏览器端完成，服务端不做转码。
  */
-
-// 服务端 JXL 解码所需的 WASM（libjxl 解码 / rust-png 编码），由 wrangler/esbuild 打包为 WebAssembly.Module
-import decode, { init as initJxl } from '@jsquash/jxl/decode.js';
-import encode, { init as initPng } from '@jsquash/png/encode.js';
-import jxlDecWasm from '@jsquash/jxl/codec/dec/jxl_dec.wasm';
-import pngEncWasm from '@jsquash/png/codec/pkg/squoosh_png_bg.wasm';
-
-// Cloudflare Worker 无 DOM ImageData 全局；JXL 解码胶水需要它来包装像素。
-// 解码返回 {data,width,height}，与 PNG 编码所需形态一致，这里做最小兜底。
-if (typeof ImageData === 'undefined') {
-  globalThis.ImageData = class {
-    constructor(data, width, height) { this.data = data; this.width = width; this.height = height; }
-  };
-}
 
 export default {
   async fetch(request, env) {
@@ -47,7 +33,15 @@ export default {
     if (path === '/api/photos') {
       if (request.method === 'GET') {
         const data = await env.PHOTOS.get('photos', 'json');
-        return json(cors, Array.isArray(data) ? data : []);
+        const arr = Array.isArray(data) ? data : [];
+        // 动态计算每张照片的 likes / dislikes（从 votes:<id> 集合）
+        const withCounts = await Promise.all(arr.map(async p => {
+          const v = await env.PHOTOS.get('votes:' + p.id, 'json');
+          const likes = v && Array.isArray(v.likes) ? v.likes.length : 0;
+          const dislikes = v && Array.isArray(v.dislikes) ? v.dislikes.length : 0;
+          return { ...p, likes, dislikes };
+        }));
+        return json(cors, withCounts);
       }
       if (request.method === 'POST') {
         // 按 id upsert 单条，禁止整组覆盖（防止无鉴权清空/篡改整个相册）
@@ -59,8 +53,10 @@ export default {
           if (!body.id) return json(cors, { error: 'missing id' }, 400);
           const data = await env.PHOTOS.get('photos', 'json');
           const arr = Array.isArray(data) ? data : [];
-          const idx = arr.findIndex(x => x.id === body.id);
-          if (idx >= 0) arr[idx] = body; else arr.unshift(body);
+          const clean = { ...body };
+          delete clean.likes; delete clean.dislikes;
+          const idx = arr.findIndex(x => x.id === clean.id);
+          if (idx >= 0) arr[idx] = clean; else arr.unshift(clean);
           await env.PHOTOS.put('photos', JSON.stringify(arr));
           return json(cors, { ok: true, count: arr.length });
         } catch (e) {
@@ -71,7 +67,8 @@ export default {
     }
 
     /* ---------- 投票：POST /api/vote {id, delta} ---------- */
-    // 按 IP 防重：每个 IP 对同一张照片只能投一次（喜欢+1 / 不喜欢-1）
+    // 真值来源：votes:<photoId> = { likes: [ip...], dislikes: [ip...] }
+    // 动态计算数量，不再写冗余计数器到 photos；从集合内查找做 IP 防重
     if (path === '/api/vote' && request.method === 'POST') {
       try {
         const body = await request.json();
@@ -84,23 +81,29 @@ export default {
         const ip = request.headers.get('CF-Connecting-IP')
           || (request.headers.get('X-Forwarded-For') || '').split(',')[0].trim()
           || 'unknown';
-        const vkey = 'vote:' + id + ':' + ip;
-        const existing = await env.PHOTOS.get(vkey);
-        if (existing) {
-          const prev = JSON.parse(existing);
-          return json(cors, { ok: false, already: true, delta: prev.delta });
-        }
-        // 更新照片计数（读-改-写，小数据量可接受）
+
+        // 验证照片存在
         const data = await env.PHOTOS.get('photos', 'json');
         const arr = Array.isArray(data) ? data : [];
-        const p = arr.find(x => x.id === id);
-        if (!p) return json(cors, { error: 'photo not found' }, 404);
-        if (delta > 0) p.likes = (p.likes || 0) + 1;
-        else p.dislikes = (p.dislikes || 0) + 1;
-        await env.PHOTOS.put('photos', JSON.stringify(arr));
-        // 投票记录保留 1 年，防止 KV 无限膨胀
-        await env.PHOTOS.put(vkey, JSON.stringify({ delta, ts: Date.now() }), { expirationTtl: 31536000 });
-        return json(cors, { ok: true, likes: p.likes, dislikes: p.dislikes });
+        if (!arr.some(x => x.id === id)) return json(cors, { error: 'photo not found' }, 404);
+
+        const vkey = 'votes:' + id;
+        const raw = await env.PHOTOS.get(vkey, 'json');
+        const votes = raw && typeof raw === 'object'
+          ? { likes: Array.isArray(raw.likes) ? raw.likes : [], dislikes: Array.isArray(raw.dislikes) ? raw.dislikes : [] }
+          : { likes: [], dislikes: [] };
+
+        // 直接按最新操作方向写入：同方向=保持，反方向=切换；不做取消/拒绝
+        // 先从对侧集合移除（若有），再保证本侧集合包含该 IP
+        if (delta > 0) {
+          votes.dislikes = votes.dislikes.filter(x => x !== ip);
+          if (!votes.likes.includes(ip)) votes.likes.push(ip);
+        } else {
+          votes.likes = votes.likes.filter(x => x !== ip);
+          if (!votes.dislikes.includes(ip)) votes.dislikes.push(ip);
+        }
+        await env.PHOTOS.put(vkey, JSON.stringify(votes));
+        return json(cors, { ok: true, delta, likes: votes.likes.length, dislikes: votes.dislikes.length });
       } catch (e) {
         return json(cors, { error: 'bad json' }, 400);
       }
@@ -154,7 +157,7 @@ export default {
 
     /* ---------- 取图 / 分片还原：GET /api/file/<id> ---------- */
     // 照片以多个分片直链（cdeaa / tc OSS）存储在 KV，本接口动态拉取各分片拼接还原为完整文件。
-    // 多分片且为 JXL 时：在边缘 Worker 内合并后服务端解码为 PNG 直出（流式合并 + 服务端解码）。
+    // 单分片 → 302 直连图床；多分片（tc）在 Worker 内合并后原样回传。不做转码（浏览器已存 WebP/原图）。
     if (path.startsWith('/api/file/')) {
       if (request.method !== 'GET') return json(cors, { error: 'method not allowed' }, 405);
       const id = path.slice('/api/file/'.length);
@@ -164,11 +167,9 @@ export default {
       if (!p) return json(cors, { error: 'not found' }, 404);
       const parts = (Array.isArray(p.parts) && p.parts.length) ? p.parts : (p.url ? [p.url] : []);
       if (!parts.length) return json(cors, { error: 'no parts' }, 404);
-      const isJxl = (p.filename || '').toLowerCase().endsWith('.jxl');
-      const wantRaw = url.searchParams.has('raw') || url.searchParams.has('dl');
+      const forceDownload = url.searchParams.has('dl');
 
-      // 单分片（小/中文件，存于 cdeaa）：Worker 出口被 EdgeOne 封，无法直连，只能 302 让浏览器取。
-      // JXL 由前端 decodeJxlToPng 兜底解码；原图/其它格式浏览器原生渲染。
+      // 单分片（小/中文件，存于 cdeaa）：Worker 出口被 EdgeOne 封，无法直连，只能 302 让浏览器取
       if (parts.length === 1) {
         return Response.redirect(parts[0], 302);
       }
@@ -190,23 +191,6 @@ export default {
         let off = 0;
         for (const c of chunks) { merged.set(c, off); off += c.length; }
 
-        // 服务端 JXL 解码：合并后直出 PNG，浏览器无需再跑 WASM 解码
-        // raw 下载请求跳过，返回原始 JXL 字节（供保存原图）；解码失败回退到原始 JXL（前端兜底）
-        if (isJxl && !wantRaw) {
-          try {
-            const pngBuf = await decodeJxlToPngBytes(merged.buffer);
-            const fhdrs = {
-              ...cors,
-              'Content-Type': 'image/png',
-              'Content-Length': String(pngBuf.byteLength),
-              'Cache-Control': 'public, max-age=86400',
-            };
-            return new Response(pngBuf, { headers: fhdrs });
-          } catch (e) {
-            // 解码失败（wasm/CPU/内存）：回退返回原始 JXL，交由前端 decodeJxlToPng 兜底
-          }
-        }
-
         const ct = mimeFromName(p.filename) || 'application/octet-stream';
         const isSafe = ct.startsWith('image/') || ct.startsWith('video/');
         const fhdrs = {
@@ -215,7 +199,7 @@ export default {
           'Content-Length': String(total),
           'Cache-Control': 'public, max-age=86400',
         };
-        if ((wantRaw || !isSafe) && p.filename) {
+        if ((forceDownload || !isSafe) && p.filename) {
           fhdrs['Content-Disposition'] = `attachment; filename="${p.filename.replace(/"/g, '')}"`;
         }
         return new Response(merged, { headers: fhdrs });
@@ -268,23 +252,4 @@ async function makeTcToken(secret, sha) {
   return `${header}.${payload}.${b64u(sig)}`;
 }
 
-/* ---------- 服务端 JXL 解码（@jsquash/jxl + @jsquash/png，WASM 已在边缘打包） ---------- */
-let _codecsReady = null;
-function ensureCodecs() {
-  if (!_codecsReady) {
-    _codecsReady = (async () => {
-      await initJxl(jxlDecWasm);
-      await initPng(pngEncWasm);
-    })();
-  }
-  return _codecsReady;
-}
-// 把 JXL 字节解码为 PNG ArrayBuffer；任意环节失败都抛出，由 /api/file 回退到原始 JXL
-async function decodeJxlToPngBytes(jxlBytes) {
-  await ensureCodecs();
-  const imageData = await decode(jxlBytes); // { data, width, height } 或 ImageData
-  // 复制像素到独立 buffer：避免 data.data.buffer 带 byteOffset / 填充导致 PNG 编码错位（静默错乱）
-  const pixels = new Uint8ClampedArray(imageData.data);
-  const pngBuf = await encode({ data: pixels, width: imageData.width, height: imageData.height });
-  return pngBuf;
-}
+// 图片服务端解码已移除：WebP 压缩在浏览器端完成，服务端仅做分片合并还原（见 /api/file）。
