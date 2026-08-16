@@ -595,6 +595,26 @@ function makeVolumeBtn({ initiallyMuted = true } = {}) {
 }
 
 /* ---- 投票 badges 公共渲染（updateCardStatsById + updateMasonryStatsOnly 共用，去重）---- */
+/* ---- 卡片视频视口播放：IntersectionObserver 控制，进视口才播、离开暂停（省流量/性能）；
+       无 IO 的旧浏览器回退为自动播放 ---- */
+let _cardVideoObserver = null;
+function _getCardVideoObserver() {
+    if (typeof IntersectionObserver === 'undefined') return null;
+    if (_cardVideoObserver) return _cardVideoObserver;
+    _cardVideoObserver = new IntersectionObserver((entries) => {
+        for (const en of entries) {
+            const v = en.target;
+            if (!(v instanceof HTMLVideoElement)) continue;
+            if (en.isIntersecting) {
+                try { const p = v.play(); if (p && p.catch) p.catch(() => { }); } catch (_) { }
+            } else {
+                try { v.pause(); } catch (_) { }
+            }
+        }
+    }, { rootMargin: '200px 0px' }); // 提前 200px 预热，滚动到前已缓冲
+    return _cardVideoObserver;
+}
+
 function renderCardStatsBadges(p, myVote) {
     const likes = p.likes || 0;
     const dislikes = p.dislikes || 0;
@@ -624,7 +644,6 @@ function makeCard(photo, index) {
         media.muted = true;
         media.loop = true;
         media.playsInline = true;
-        media.autoplay = true;
         media.controls = false;
         media.preload = 'metadata';
         media.setAttribute('playsinline', '');
@@ -644,7 +663,10 @@ function makeCard(photo, index) {
             }
             media.classList.add('loaded');
             skel.remove();
-            try { media.play().catch(e => console.warn('[infoto] card video autoplay fail', e)); } catch (e) { console.warn('[infoto] card video autoplay fail', e); }
+            // 播放由 IntersectionObserver 控制（进视口才播）；无 IO 环境回退自动播放
+            if (!_cardVideoObserver) {
+                try { media.play().catch(e => console.warn('[infoto] card video autoplay fail', e)); } catch (e) { console.warn('[infoto] card video autoplay fail', e); }
+            }
         };
         media.onerror = () => {
             skel.remove(); media.classList.add('loaded'); media.style.opacity = '.4';
@@ -654,7 +676,7 @@ function makeCard(photo, index) {
         media = el('img', 'ph-img');
         media.loading = 'lazy';
         media.draggable = false;
-        media.alt = dlName(photo);
+        media.alt = ''; // 装饰性图片：与相邻图形成语境，alt 留空避免逐张朗读噪音（WCAG）
         media.src = photo.url;
         media.onload = () => {
             const nw = media.naturalWidth, nh = media.naturalHeight;
@@ -691,6 +713,11 @@ function makeCard(photo, index) {
     const check = el('div', 'multi-check', `<svg class="icon" data-i="check"></svg>`);
     renderIcons(check);
     card.appendChild(check);
+    // 视口播放：视频卡注册到 IO（先创建 observer，onloadedmetadata 据此决定是否回退 autoplay）
+    if (animated) {
+        const ob = _getCardVideoObserver();
+        if (ob) { try { ob.observe(media); } catch (_) { } }
+    }
     return card;
 }
 
@@ -728,7 +755,9 @@ function renderMasonry(reset = true) {
     for (let i = renderedCount; i < n; i++) _shortestCol().appendChild(makeCard(sorted[i], i));
     renderedCount = n;
     applySelectUI();
-    updateMasonryStatsOnly();
+    // 不再全量 updateMasonryStatsOnly：makeCard 已按当前 Store 数据渲染 stats，
+    // 增量渲染（滚动加载）时全量遍历已渲染卡是 O(n²) 卡顿源；数据变化路径均有
+    // 显式更新（投票 → updateCardStatsById / 上传收尾 → updateMasonryStatsOnly）。
 }
 
 function prependCardToMasonry(photo) {
@@ -1105,6 +1134,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const list = getSorted().filter(p => state.selected.has(p.id));
     if (list.length === 0) { toast('请先选择照片'); return; }
     if (list.length === 1) {
+        exitMulti(); // 下载触发后退出多选
         return downloadUrl(list[0].url + '?dl=1', dlName(list[0]));
     }
 
@@ -1131,6 +1161,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
                 if (msg.tabId && msg.tabId !== TAB_ID) {
                     toast('下载已在其他页面完成', 'info');
                     setProgress(1, msg.fileName || 'download.zip', '完成');
+                    exitMulti(); // 本页若在多选，下载结束一并退出
                     setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
                     if (_downloadWorkerListener) { _downloadWorkerListener(); _downloadWorkerListener = null; }
                     return;
@@ -1139,6 +1170,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
                 setTimeout(() => URL.revokeObjectURL(msg.zipUrl), 60000);
                 setProgress(1, msg.fileName || 'download.zip', '完成');
                 toast('下载完成', 'success');
+                exitMulti();
                 setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
                 if (_downloadWorkerListener) { _downloadWorkerListener(); _downloadWorkerListener = null; }
             }
@@ -1232,6 +1264,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const finalName = 'download.zip';
     downloadUrl(url, finalName);
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+    exitMulti(); // 下载触发后退出多选
 
     const skipMsg = successCount < total ? `（${total - successCount} 张失败跳过）` : '';
     toast(`下载完成：共 ${successCount} 张${skipMsg} → zip`, 'success');
@@ -1276,6 +1309,7 @@ const PHASE_WEIGHT = { PREP: 0.20, UPLOAD: 0.75 };
 function resetProgressUI() {
     const ind = $('#upIndicator');
     ind.classList.add('hidden');
+    ind.classList.remove('open'); // 收起展开的详情
     $('#upRing').style.strokeDashoffset = '94.25';
     // 重置：用数字 0，清空 check 图标
     $('#upPct').innerHTML = '0';
@@ -1327,6 +1361,20 @@ function setProgress(p, file, step, extra) {
 }
 const resetUploadUI = resetProgressUI;
 const setUploadProgress = (p, file, step, extra) => setProgress(p, file, step, extra);
+
+/* ---- 进度环：点击展开/收起详情（桌面 hover 仍可用，移动端无 hover 靠点击） ---- */
+(() => {
+    const ind = $('#upIndicator');
+    if (!ind) return;
+    ind.addEventListener('click', (e) => {
+        e.stopPropagation();
+        ind.classList.toggle('open');
+    });
+    document.addEventListener('click', (e) => {
+        if (!ind.classList.contains('open')) return;
+        if (!ind.contains(e.target)) ind.classList.remove('open');
+    });
+})();
 
 async function uploadFiles(files) {
     resetUploadUI();
@@ -1651,8 +1699,29 @@ function closeLightbox() {
             vid.load && vid.load();
         } catch (_) { }
     }
+    // 释放相邻图预加载
+    for (const img of _lbPreloadImgs) { try { img.src = ''; } catch (_) { } }
+    _lbPreloadImgs = [];
 }
 function curPhoto() { return getSorted()[state.currentIndex]; }
+
+/* ---- 相邻图预加载：消除切图闪烁（静态图预热进浏览器/SW 缓存；webm 由视频自身缓存） ---- */
+let _lbPreloadImgs = [];
+function preloadLightboxNeighbors(idx) {
+    for (const img of _lbPreloadImgs) { try { img.src = ''; } catch (_) { } }
+    _lbPreloadImgs = [];
+    const list = getSorted();
+    for (const d of [-1, 1]) {
+        const n = idx + d;
+        if (n < 0 || n >= list.length) continue;
+        const p = list[n];
+        if (p && !hasAnimatedMedia(p)) {
+            const img = new Image();
+            img.src = p.url;
+            _lbPreloadImgs.push(img);
+        }
+    }
+}
 /* ---------- 音量按钮显示/隐藏（拖动时隐藏，结束显示）---------- */
 function _setAudioBtnsVisible(v) {
     const list = document.querySelectorAll('.audio-toggle');
@@ -1765,28 +1834,38 @@ function updateLightbox() {
     $('#lbCounter').textContent = `${state.currentIndex + 1} / ${getSorted().length}`;
     updateLightboxVotes(p);
     renderDots();
+    preloadLightboxNeighbors(state.currentIndex);
     _setAudioBtnsVisible(true);
 }
 function renderDots() {
     const d = $('#lbDots');
     const list = getSorted();
-    const max = Math.min(list.length, 20);
+    const len = list.length;
+    const W = 20; // 窗口宽度：照片少时全显，多时以当前为中心滑窗
+    let start = 0;
+    if (len > W) start = Math.max(0, Math.min(state.currentIndex - Math.floor(W / 2), len - W));
+    const count = Math.min(len, W);
     // 1) 保证 dot 数量正确（不够补、多了删），不重建已有 dot
-    while (d.children.length < max) d.appendChild(el('span', 'dot'));
-    while (d.children.length > max) d.removeChild(d.lastChild);
-    // 2) 只切换 active class
-    for (let i = 0; i < max; i++) {
-        d.children[i].classList.toggle('active', i === state.currentIndex);
+    while (d.children.length < count) d.appendChild(el('span', 'dot'));
+    while (d.children.length > count) d.removeChild(d.lastChild);
+    // 2) 只切换 active class（相对窗口偏移）
+    for (let i = 0; i < count; i++) {
+        d.children[i].classList.toggle('active', (start + i) === state.currentIndex);
     }
 }
 function nextPhoto() { state.currentIndex = (state.currentIndex + 1) % getSorted().length; updateLightbox(); }
 
 $('#lbCloseBtn').addEventListener('click', closeLightbox);
-$('#lightbox').addEventListener('click', e => { if (state.menuOpen) return; if (e.target.id === 'lightbox') closeLightbox(); });
+// 点击空白（媒体/顶栏/圆点之外）关闭；菜单开着时不关
+$('#lightbox').addEventListener('click', e => {
+    if (state.menuOpen) return;
+    if (e.target.closest && e.target.closest('.lb-media-wrap,.lb-top,.lb-dots,.audio-toggle,#lbMoreBtn,#lbCloseBtn')) return;
+    closeLightbox();
+});
 
 document.addEventListener('keydown', e => {
     if (!state.lightboxOpen) return;
-    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) e.preventDefault();
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) e.preventDefault();
 });
 document.addEventListener('keyup', e => {
     if (!state.lightboxOpen) return;
@@ -1799,6 +1878,30 @@ document.addEventListener('keyup', e => {
     else if (e.key === 'ArrowRight') triggerGesture('right');
     else if (e.key === 'ArrowUp') triggerGesture('up');
     else if (e.key === 'ArrowDown') triggerGesture('down');
+    else if (e.key === ' ') {
+        // Space：视频播放/暂停，静态图翻下一页
+        const vid = $('#lbVid');
+        if (vid && vid.style.display !== 'none') {
+            if (vid.paused) { const pp = vid.play(); if (pp && pp.catch) pp.catch(() => { }); }
+            else vid.pause();
+        } else nextPhoto();
+    }
+    else if (e.key === 'm' || e.key === 'M') {
+        const p = curPhoto();
+        const vid = $('#lbVid');
+        if (p && p.hasAudio && vid && vid.style.display !== 'none') {
+            vid.muted = !vid.muted;
+            const b = document.querySelector('.audio-toggle--lb');
+            if (b) b.classList.toggle('is-muted', vid.muted);
+            toast(vid.muted ? '已静音' : '已取消静音', vid.muted ? 'volume-x' : 'volume-2');
+        }
+    }
+    else if (e.key === '+' || e.key === '=') {
+        if (stage) { const r = stage.getBoundingClientRect(); zoomTo(state.zoom.s * 1.2, r.width / 2, r.height / 2); }
+    }
+    else if (e.key === '-' || e.key === '_') {
+        if (stage) { const r = stage.getBoundingClientRect(); zoomTo(state.zoom.s / 1.2, r.width / 2, r.height / 2); }
+    }
     else if (e.key === 'Escape') closeLightbox();
 });
 
@@ -2060,13 +2163,14 @@ function onGe(e) {
         _setAudioBtnsVisible(true);
         return;
     }
-    // 触摸双击：放大 / 复位
+    // 触摸双击：放大 / 复位；单击空白：关闭 lightbox
     if (e && e.changedTouches && e.changedTouches.length) {
         const t = e.changedTouches[0];
         const moved = Math.hypot(state.dragCurrent.x - state.dragStart.x, state.dragCurrent.y - state.dragStart.y);
         if (moved < 12) {
             const now = Date.now();
-            if (state._lastTap && (now - state._lastTap.t) < 300 && Math.hypot(t.clientX - state._lastTap.x, t.clientY - state._lastTap.y) < 40) {
+            const isDbl = state._lastTap && (now - state._lastTap.t) < 300 && Math.hypot(t.clientX - state._lastTap.x, t.clientY - state._lastTap.y) < 40;
+            if (isDbl) {
                 const sr = stage.getBoundingClientRect();
                 if (state.zoom.s > 1.01) resetZoom();
                 else zoomTo(2.5, t.clientX - sr.left, t.clientY - sr.top);
@@ -2076,6 +2180,13 @@ function onGe(e) {
                 return;
             }
             state._lastTap = { t: now, x: t.clientX, y: t.clientY };
+            // 单击且落在媒体/顶栏/圆点之外（触摸下合成 click 已被 preventDefault 掐断，须在此处理）
+            const tg = e.target;
+            if (tg && tg.closest && !tg.closest('.lb-media-wrap,.lb-top,.lb-dots,.audio-toggle,#lbMoreBtn,#lbCloseBtn')) {
+                state.dragging = false;
+                closeLightbox();
+                return;
+            }
         }
     }
     state.dragging = false;
@@ -2252,13 +2363,24 @@ async function downloadUrl(url, name) {
         const r = await fetch(url, { cache: 'force-cache' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const blob = await r.blob();
-        a.href = URL.createObjectURL(blob);
+        // Firefox 对 image/* 类型的 blob 下载有已知 bug（即使 download 属性也会直接打开预览）；
+        // 统一强制 application/octet-stream——Firefox/Chrome 对非可预览类型只下载不打开，
+        // 文件名由 download 属性指定（blob: 同源，属性必生效）。
+        const dlBlob = new Blob([blob], { type: 'application/octet-stream' });
+        a.href = URL.createObjectURL(dlBlob);
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 60000);
     } catch (_) {
-        // 兜底：fetch 失败（如 CORS/离线）时回退为老的 <a href> 方式
-        a.href = url;
-        document.body.appendChild(a); a.click(); a.remove();
+        // 兜底：fetch 失败（如 CORS/离线）。仅同源 URL 可用 <a download>（Firefox/Safari
+        // 对跨源 download 属性会完全忽略并导航/打开图片）；跨源一律不裸点，提示代替。
+        let sameOrigin = false;
+        try { sameOrigin = new URL(url, location.href).origin === location.origin; } catch (_) { }
+        if (sameOrigin) {
+            a.href = url;
+            document.body.appendChild(a); a.click(); a.remove();
+        } else {
+            toast('下载失败（网络异常），请重试', 'alert');
+        }
     }
 }
 
