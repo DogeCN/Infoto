@@ -1868,6 +1868,9 @@ function clampPan() {
     if (r.right < sr.right - 1) state.zoom.x += (sr.right - 1 - r.right);
     if (r.top > sr.top + 1) state.zoom.y += (sr.top + 1 - r.top);
     if (r.bottom < sr.bottom - 1) state.zoom.y += (sr.bottom - 1 - r.bottom);
+    // 关键：state 被 clamp 修正后必须同步视觉 transform。否则视觉停留在拖动结束位、
+    // state 已被拉回边界 → 下次拖动按 state 起算，图片瞬间跳变（"下一次拖动被重置到原点"）
+    applyZoomTransform();
 }
 // 以 stage 内坐标 (sx,sy) 为锚点缩放到 ns
 function zoomTo(ns, sx, sy) {
