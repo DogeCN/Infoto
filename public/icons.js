@@ -24,6 +24,20 @@ const ICONS = {
     'volume-2': '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
     'volume-x': '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>',
     'undo': '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>',
+    /* ---- 任务进度 step 图标（lucide 风格，stroke-width=2.25 加粗显眼） ---- */
+    'step-compress': '<rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M3 10V8a2 2 0 0 1 2-2h2"/><path d="M21 10V8a2 2 0 0 0-2-2h-2"/><path d="M10 21h2a2 2 0 0 0 2-2v-2"/><path d="M10 3v2a2 2 0 0 0 2 2h2"/>',
+    'step-transcode': '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 7h6"/><path d="M7 11h4"/>',
+    'step-encode': '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>',
+    'step-hash': '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>',
+    'step-upload': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+    'step-save': '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+    'step-audio': '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+    'step-download': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    'step-delete': '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+    'step-sync': '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+    'step-wait': '<line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>',
+    'step-fail': '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
+    'step-done': '<polyline points="20 6 9 17 4 12"/>',
 };
 
 function renderIcons(root) {
@@ -45,3 +59,26 @@ function renderIcons(root) {
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const el = (tag, cls, html) => { const d = document.createElement(tag); if (cls) d.className = cls; if (html != null) d.innerHTML = html; return d; };
+
+/* 任务进度 step 字符串 → 加粗图标名（"压缩/查重/转码/上传/写库…"对应 lucide 风格 SVG）。
+   渲染按图标名取 ICONS[name] 画 svg，stroke-width 默认 2，step 图标用 .step-ico 类覆盖到 2.25 加粗。 */
+function stepIcon(step) {
+    if (!step) return 'step-wait';
+    const s = String(step).toLowerCase();
+    // 上传步骤
+    if (s === '压缩' || s.includes('compress')) return 'step-compress';
+    if (s === '转码' || s.includes('trans')) return 'step-transcode';
+    if (s === '编码' || s.includes('opus') || s.includes('encode')) return 'step-encode';
+    if (s === '音频' || s.includes('audio') || s.includes('opus编码')) return 'step-audio';
+    if (s === '查重' || s.includes('hash') || s.includes('dup')) return 'step-hash';
+    if (s === '上传' || s.includes('upload') || s.includes('图床')) return 'step-upload';
+    if (s === '写库' || s.includes('save')) return 'step-save';
+    if (s === '同步' || s.includes('sync')) return 'step-sync';
+    // 下载/删除
+    if (s.includes('zip') || s.includes('下载')) return 'step-download';
+    if (s === '删除' || s.includes('delet')) return 'step-delete';
+    // 终态
+    if (s === '完成' || s.includes('done') || s.includes('成功')) return 'step-done';
+    if (s === '失败' || s.includes('fail') || s.includes('部分失败')) return 'step-fail';
+    return 'step-wait';
+}

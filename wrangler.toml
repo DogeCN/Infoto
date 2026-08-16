@@ -6,8 +6,6 @@ compatibility_date = "2026-07-15"
 directory = "./public"
 binding = "ASSETS"
 
-# 照片元数据 KV（本地 wrangler dev / 手动 wrangler deploy 必需；CI 部署由
-# scripts/deploy-variants.js 按 GitHub Repository Variables 动态生成临时配置，不受此块影响）
 [[kv_namespaces]]
 binding = "Infoto"
 id = "e68a923a087b4f47b392c454c31a702a"

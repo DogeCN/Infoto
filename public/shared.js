@@ -555,6 +555,139 @@
         return { interleaved: out, samples: dstN, sr: dstSr, channels: ch };
     }
 
+    /* 抽 mp4 内的 AAC：mp4box 解出音频 sample + 给每帧前补 7 字节 ADTS 头 → WebCodecs AudioDecoder 解码。
+       比 _decodeAudioOnly 用 AudioContext.decodeAudioData 更可靠：
+       - SharedWorker 没有 AudioContext，原来直接 false → worker 转码永远没声音（这就是用户痛点的根因）
+       - 即使在主线程，Chrome 对部分 mp4 容器的 decodeAudioData 也会 reject
+   ADTS 7 字节格式参见 W3C webcodecs-aac-codec-registration §2/§3：
+   比特流不传 description 时按 ADTS 解，sampleRate/numberOfChannels 被忽略（从 ADTS 头读） */
+    const _AAC_FREQ_TABLE = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000];
+    function _adtsHeader(profileIdx, sampleRate, channels, frameBytesLen) {
+        const fIdx = _AAC_FREQ_TABLE.indexOf(sampleRate);
+        if (fIdx < 0 || profileIdx !== 1) return null; // 仅支持 AAC LC（profile=1），其它 profile/采样率回退老路径
+        const adts = new Uint8Array(7);
+        adts[0] = 0xFF;
+        adts[1] = 0xF1; // syncword 高4位 + MPEG4 + layer00 + protection_absent
+        adts[2] = (profileIdx << 6) | (fIdx << 2) | (channels >> 2);
+        adts[3] = ((channels & 3) << 6) | ((frameBytesLen >> 11) & 3);
+        adts[4] = (frameBytesLen >> 3) & 0xFF;
+        adts[5] = ((frameBytesLen & 7) << 5) | 0x1F; // buffer_fullness 高5位
+        adts[6] = 0xFC; // buffer_fullness 低6位(=0x3F<<2) + raw_blocks_minus_one=0
+        return adts;
+    }
+
+    async function _decodeAudioMp4(file, videoDurationSec) {
+        if (typeof AudioDecoder === 'undefined') return null;
+        const { createFile } = await _loadMp4Box();
+        const buf = await file.arrayBuffer();
+        let track = null, sampleRate = 0, channels = 0, timescale = 0;
+        // 先一轮 onReady 拿到 audio track 信息；接着二轮 onSamples 持续 decode
+        let decoder = null;
+        const chunkChunks = []; // 每通道 float32 片段累积，结束时 concat
+        let totalFrames = 0;
+        let fedSamples = 0, nbSamples = 0;
+        let firstSampleSeen = false;
+        let rejected = null;
+        let finishedFlag = false;
+        // resolve/reject 提升到 Promise 外层供 finishAudio 使用（finishAudio 定义在 executor 外，
+        // 直接引用 executor 参数会 ReferenceError）
+        let resolveOuter = null, rejectOuter = null;
+        const finishAudio = async () => {
+            if (finishedFlag || rejected) return;
+            finishedFlag = true;
+            try { if (decoder) await decoder.flush(); } catch (_) { }
+            try { if (decoder) decoder.close(); } catch (_) { }
+            if (totalFrames === 0) { resolveOuter && resolveOuter(null); return; }
+            const ch = Math.min(channels, chunkChunks.length);
+            const merged = [];
+            for (let c = 0; c < ch; c++) {
+                const parts = chunkChunks[c];
+                let len = 0; for (const p of parts) len += p.length;
+                const buf2 = new Float32Array(len);
+                let o = 0; for (const p of parts) { buf2.set(p, o); o += p.length; }
+                merged.push(buf2);
+            }
+            // 与 _decodeAudioOnly 输出格式对齐（resamplePCM 返回 {interleaved, samples, sr, channels}，opus 编码段依赖）
+            resolveOuter && resolveOuter(resamplePCM({ sr: sampleRate, length: totalFrames, channels: merged }, 48000));
+        };
+        return await new Promise((resolve, reject) => {
+            resolveOuter = resolve; rejectOuter = reject;
+            const mp4 = createFile();
+            mp4.onError = (e) => { if (!rejected) { rejected = true; rejectOuter && rejectOuter(new Error('audio mp4 parse: ' + e)); } };
+            mp4.onReady = (info) => {
+                const a = info.audioTracks && info.audioTracks[0];
+                if (!a) { if (!rejected) { rejected = true; resolveOuter && resolveOuter(null); } return; }
+                track = a;
+                sampleRate = (a.audio && (a.audio.sample_rate || a.sample_rate)) || 48000;
+                channels = Math.min(8, (a.audio && (a.audio.channel_count || a.nb_channels)) || 2);
+                timescale = a.timescale || sampleRate;
+                nbSamples = a.nb_samples || 0;
+                try {
+                    decoder = new AudioDecoder({
+                        output: (ad) => {
+                            // AudioData 没有 getChannelData（AudioBuffer 才有）；用 copyTo 按 plane 抽每声道 PCM
+                            // format 强制 'f32-planar'：每个 plane 即一个声道，Float32Array(numberOfFrames) 大小恰好
+                            const n = ad.numberOfFrames;
+                            const ch = ad.numberOfChannels;
+                            for (let c = 0; c < ch; c++) {
+                                const plane = new Float32Array(n);
+                                try { ad.copyTo(plane, { planeIndex: c, format: 'f32-planar' }); }
+                                catch (e) { console.warn('[infoto] AudioData copyTo fail', e); continue; }
+                                chunkChunks[c] = chunkChunks[c] || [];
+                                chunkChunks[c].push(plane);
+                            }
+                            totalFrames += n;
+                            ad.close();
+                        },
+                        error: (e) => { if (!rejected) { rejected = true; rejectOuter && rejectOuter(new Error('AudioDecoder error: ' + (e && e.message || e))); } },
+                    });
+                    decoder.configure({ codec: 'mp4a.40.2', sampleRate, numberOfChannels: channels });
+                    mp4.setExtractionOptions(track.id, null, { nbSamples: 4096 });
+                    mp4.start();
+                } catch (e) { if (!rejected) { rejected = true; rejectOuter && rejectOuter(e); } }
+            };
+            mp4.onSamples = (id, _user, samples) => {
+                if (!decoder || decoder.state !== 'configured') return;
+                for (const s of samples) {
+                    const data = s.data;
+                    if (!data || !data.byteLength) continue;
+                    const adts = _adtsHeader(1, sampleRate, channels, data.byteLength + 7);
+                    if (!adts) continue; // 采样率/格式不支持（仅 AAC LC 走此路径）
+                    const wrapped = new Uint8Array(adts.length + data.byteLength);
+                    wrapped.set(adts, 0);
+                    wrapped.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), adts.length);
+                    const ts = Math.round(1e6 * s.cts / (s.timescale || timescale));
+                    const dur = s.duration ? Math.round(1e6 * s.duration / (s.timescale || timescale)) : Math.round(1e6 * 1024 / sampleRate);
+                    try { decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: ts, duration: dur, data: wrapped })); }
+                    catch (e) { console.warn('[infoto] AudioDecoder decode fail', e); }
+                    firstSampleSeen = true;
+                    fedSamples++;
+                }
+                if (nbSamples > 0 && fedSamples >= nbSamples) finishAudio();
+            };
+            try { buf.fileStart = 0; mp4.appendBuffer(buf); mp4.flush(); }
+            catch (e) { if (!rejected) { rejected = true; rejectOuter && rejectOuter(e); } }
+            // 兜底：nbSamples 未知或文件异常时不能无限等（30s 内若正常会提前 finishAudio）
+            setTimeout(() => { if (!finishedFlag && !rejected) finishAudio(); }, 30000);
+        });
+    }
+
+    /* 音频解码统一入口：MP4 优先 WebCodecs AudioDecoder（Worker/主线程都可用，成功率远高于
+       AudioContext.decodeAudioData——后者在 SharedWorker 里根本不存在，且对 mp4 容器部分浏览器会 reject）。
+       失败回退 _decodeAudioOnly（AudioContext，仅主线程可用）。 */
+    async function _decodeAudioFor(file) {
+        if (g.isMp4File(file) && typeof AudioDecoder !== 'undefined') {
+            try {
+                const r = await _decodeAudioMp4(file);
+                // resamplePCM 输出结构：{interleaved, samples, sr, channels(数字)}
+                if (r && r.interleaved && r.interleaved.length > 0 && r.samples > 0) {
+                    return { hasAudio: true, audio: r };
+                }
+            } catch (e) { console.warn('[infoto] audio mp4 decode fail, fallback AudioContext', e); }
+        }
+        return _decodeAudioOnly(file);
+    }
+
     async function _decodeAudioOnly(file) {
         const AC = (typeof AudioContext !== 'undefined') ? AudioContext : (typeof OfflineAudioContext !== 'undefined') ? OfflineAudioContext : null;
         if (!AC) return { hasAudio: false, audio: null };
@@ -584,15 +717,48 @@
     let _mp4boxMod = null;
     async function _loadMp4Box() {
         if (_mp4boxMod) return _mp4boxMod;
-        const mod = await import('https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm');
-        // 0.5.2 具名导出 createFile/ISOFile/DataStream，没有 MP4Box 导出、没有 getTrackSpecificInfo
-        // （旧实现取 mod.MP4Box 得到 undefined，createFile 调用必抛错 → MP4 恒静默降级 <video> 兜底）
-        const createFile = mod.createFile || (mod.default && mod.default.createFile);
-        const ISOFile = mod.ISOFile || (mod.default && mod.default.ISOFile);
-        const DataStream = mod.DataStream || (mod.default && mod.default.DataStream);
-        if (typeof createFile !== 'function' || typeof ISOFile !== 'function') throw new Error('mp4box load fail');
-        _mp4boxMod = { createFile, ISOFile, DataStream };
-        return _mp4boxMod;
+        // 优先本地 vendor（随站部署，无 CDN 依赖、离线可用）；CDN 仅作兜底。
+        // 实测 jsdelivr 高峰期 import 会持续 503（多标签页/新会话首次加载尤其明显），
+        // 依赖 CDN 会让 MP4 转码静默降级或直接失败——本地化后根治。
+        const CDNS = ['https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm', 'https://unpkg.com/mp4box@0.5.2/dist/mp4box.all.min.js'];
+        let lastErr = null;
+        const tryImport = (spec) => import(spec).then(m => ({
+            createFile: m.createFile || (m.default && m.default.createFile),
+            ISOFile: m.ISOFile || (m.default && m.default.ISOFile),
+            DataStream: m.DataStream || (m.default && m.default.DataStream),
+        })).then(mod => {
+            if (typeof mod.createFile !== 'function' || typeof mod.ISOFile !== 'function') throw new Error('mp4box export missing');
+            return mod;
+        });
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                // 本地 + CDN 依次尝试；本地文件存在时 import 相对路径（相对本 worker/页面 script）
+                let mod = null;
+                try { mod = await tryImport('./vendor/mp4box.esm.js'); }
+                catch (e) { lastErr = e; }
+                if (!mod) {
+                    for (const cdn of CDNS) {
+                        try { mod = await tryImport(cdn); break; } catch (e) { lastErr = e; }
+                    }
+                }
+                if (mod) { _mp4boxMod = mod; return mod; }
+            } catch (e) { lastErr = e; }
+            await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+        }
+        throw lastErr || new Error('mp4box load fail');
+    }
+
+    /* 从 mp4box tkhd.matrix 提取旋转角度（0/90/180/270）。MP4 把传感器/拍摄方向存在 tkhd matrix
+       矩阵 [a,b,u, c,d,v, x,y,w]，顺时针旋转 = atan2(b, a) 弧度；
+       track.video.width/height 是物理宽高（不应用 rotation），需要按 rotation 算出显示宽高。
+       若 rotation != 0，需要在转码 drawImage 时旋转画布，否则输出 WebM 会按物理宽高播——
+       用户看到的是"竖屏被逆时针转 90°、横屏被转 180°"。 */
+    function _matrixToRotation(m) {
+        if (!m || m.length < 2) return 0;
+        // 角度向 0/90/180/270 四舍五入；负角模 360 归正
+        let deg = Math.round(Math.atan2(m[1], m[0]) * 180 / Math.PI / 90) * 90;
+        deg %= 360; if (deg < 0) deg += 360;
+        return deg;
     }
 
     async function _mp4VideoMeta(file) {
@@ -604,29 +770,38 @@
             mp4.onReady = (info) => {
                 const track = info.videoTracks && info.videoTracks[0];
                 if (!track) return reject(new Error('mp4 无视频轨道'));
-                const w = track.video.width, h = track.video.height;
-                const fps = track.video.frameRate || 30;
+                const physW = track.video.width, physH = track.video.height;
                 const codecRaw = (track.codec || '').toLowerCase();
-                // decoder description（官方 w3c/webcodecs demuxer_mp4.js 做法）：
-                // 取 stsd entry 的 avcC/hvcC/vpcC/av1C box，box.write 输出完整 box 字节，
-                // 再去掉 8 字节 box 头（size+type）得到 AVCDecoderConfigurationRecord 等 payload。
-                // 注意 mp4box 0.5.2 没有 getTrackSpecificInfo（旧实现因此恒 null，H.264/HEVC 必解码失败）。
-                let description = null;
+                let description = null, rotation = 0;
                 try {
                     const trak = mp4.getTrackById(track.id);
-                    const entries = trak && trak.mdia && trak.mdia.minf && trak.mdia.minf.stbl && trak.mdia.minf.stbl.stsd ? trak.mdia.minf.stbl.stsd.entries : [];
-                    for (const entry of entries) {
-                        const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C;
-                        if (box) {
-                            const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
-                            box.write(stream);
-                            description = new Uint8Array(stream.buffer, 8);
-                            break;
+                    if (trak) {
+                        // rotation
+                        if (trak.tkhd && trak.tkhd.matrix) {
+                            rotation = _matrixToRotation(trak.tkhd.matrix);
+                        }
+                        // decoder description
+                        const entries = trak && trak.mdia && trak.mdia.minf && trak.mdia.minf.stbl && trak.mdia.minf.stbl.stsd ? trak.mdia.minf.stbl.stsd.entries : [];
+                        for (const entry of entries) {
+                            const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C;
+                            if (box) {
+                                const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+                                box.write(stream);
+                                description = new Uint8Array(stream.buffer, 8);
+                                break;
+                            }
                         }
                     }
-                } catch (e) { console.warn('[infoto] mp4 codec info fail', e); }
+                } catch (e) { console.warn('[infoto] mp4 trak parse fail', e); }
+                // 显示宽高（应用 rotation 后，用于 VideoEncoder 输出尺寸）
+                const rotated = (rotation === 90 || rotation === 270);
+                const displayW = rotated ? physH : physW;
+                const displayH = rotated ? physW : physH;
+                const fps = track.video.frameRate || 30;
                 resolve({
-                    width: w, height: h,
+                    width: displayW, height: displayH,
+                    physWidth: physW, physHeight: physH, // 物理宽高（用于 drawImage dst 尺寸对照）
+                    rotation, // 0/90/180/270
                     durationSec: info.timescale ? info.duration / info.timescale : (track.track_duration / track.timescale),
                     codec: codecRaw.startsWith('vp08') ? 'vp8' : track.codec, // 浏览器不认 vp08.xx 全串，只认 vp8
                     description,
@@ -709,7 +884,7 @@
         const report = (p, label) => { if (progressCb) progressCb(p, label); };
         const isGif = g.isGifFile(file);
 
-        const audioInfo = isGif ? { hasAudio: false, audio: null } : await _decodeAudioOnly(file);
+        const audioInfo = isGif ? { hasAudio: false, audio: null } : await _decodeAudioFor(file);
         const srcAudio = audioInfo ? audioInfo.audio : null;
         const hasAudioSrc = !!srcAudio;
 
@@ -726,7 +901,28 @@
             audio: opusSupported ? { sampleRate: opusConfig.sampleRate, channels: opusConfig.numberOfChannels, codecId: 'A_OPUS', codecPrivate: audioCodecPrivate } : null,
         });
 
-        function makeEncoder(ew, eh) {
+        // 按 mp4 tkhd rotation 旋转绘制。src（VideoFrame）保持物理宽高 physW×physH；
+        // 画布/编码器输出尺寸 = 显示宽高（ew×eh，应用 rotation 后）。
+        // drawImage 的目标矩形必须用**物理尺寸**（旋转后坐标系中画满画布）：
+        //   rotate(90) 后绘制坐标 (x,y)→画布 (eh-y, x)，dst 宽=physW(横向长边)、高=physH 恰好覆盖 ew×eh
+        function _drawRotated(cx, src, ew, eh, rotation, physW, physH) {
+            const dw = physW || ew, dh = physH || eh;
+            if (!rotation) { cx.drawImage(src, 0, 0, ew, eh); return; }
+            cx.save();
+            if (rotation === 90) {
+                cx.translate(eh, 0); cx.rotate(Math.PI / 2);
+                cx.drawImage(src, 0, 0, dw, dh);
+            } else if (rotation === 180) {
+                cx.translate(ew, eh); cx.rotate(Math.PI);
+                cx.drawImage(src, 0, 0, dw, dh);
+            } else if (rotation === 270) {
+                cx.translate(0, ew); cx.rotate(-Math.PI / 2);
+                cx.drawImage(src, 0, 0, dw, dh);
+            }
+            cx.restore();
+        }
+
+        function makeEncoder(ew, eh, rotation, physW, physH) {
             const codec = _av1Codec(ew, eh);
             return VideoEncoder.isConfigSupported({ codec, width: ew, height: eh }).then(support => {
                 if (!support.supported) throw new Error('AV1 not supported: ' + codec);
@@ -743,15 +939,22 @@
                 enc.configure({ codec, width: ew, height: eh, bitrate: Math.max(250_000, ew * eh * AV1_BITRATE_PER_PIXEL), latencyMode: 'quality' });
                 return {
                     enc,
-                    sink(avgStepSec) {
+                    sink(avgStepSec, totalFrames) {
                         const dUs = Math.max(1, Math.round(avgStepSec * 1e6));
+                        let frameIdx = 0;
                         return {
                             push(src) {
-                                cx.drawImage(src, 0, 0, ew, eh);
+                                cx.clearRect(0, 0, ew, eh);
+                                _drawRotated(cx, src, ew, eh, rotation || 0, physW, physH);
                                 if (src.close) src.close();
                                 const vf = new VideoFrame(cv, { timestamp: Math.round(outTs * 1e6), duration: dUs });
                                 enc.encode(vf); vf.close();
                                 outTs += avgStepSec;
+                                frameIdx++;
+                                // 按帧进度（让 task.js 按帧而非按份数算时间预算）
+                                if (totalFrames && (frameIdx % 4 === 0 || frameIdx === totalFrames)) {
+                                    report(0.01 + 0.49 * Math.min(1, frameIdx / totalFrames));
+                                }
                             }
                         };
                     }
@@ -763,10 +966,10 @@
             const decoded = await _decodeGifFrames(file);
             if (!decoded.frames.length) throw new Error('no frames decoded');
             const ew = (decoded.width + 1) & ~1, eh = (decoded.height + 1) & ~1;
-            const { enc, sink } = await makeEncoder(ew, eh);
+            const { enc, sink } = await makeEncoder(ew, eh, 0);
             muxer.w = ew; muxer.h = eh;
             const avgStepSec = decoded.frames.length > 1 ? decoded.durationSec / (decoded.frames.length - 1) : 1 / 30;
-            const s = sink(avgStepSec);
+            const s = sink(avgStepSec, decoded.frames.length);
             for (let i = 0; i < decoded.frames.length; i++) {
                 s.push(decoded.frames[i].bitmap);
                 if ((i & 3) === 0) report(0.01 + 0.49 * Math.min(1, (i + 1) / decoded.frames.length));
@@ -779,11 +982,13 @@
             }
             if (meta) {
                 try {
+                    // meta.width/height 已应用 rotation（显示宽高）；rotation 传进 makeEncoder 决定 drawImage 是否旋转画布
                     const ew = (meta.width + 1) & ~1, eh = (meta.height + 1) & ~1;
-                    const { enc, sink } = await makeEncoder(ew, eh);
+                    const totalFrames = meta.nbSamples || Math.max(1, Math.round((meta.durationSec || 1) * Math.min(meta.fps || FPS_CAP, FPS_CAP)));
+                    const { enc, sink } = await makeEncoder(ew, eh, meta.rotation || 0);
                     muxer.w = ew; muxer.h = eh;
                     const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
-                    const s = sink(1 / targetFps);
+                    const s = sink(1 / targetFps, totalFrames);
                     await withTimeout(_decodeEncodeMp4(file, meta, s, report), 180000);
                     await enc.flush(); enc.close();
                 } catch (e) {

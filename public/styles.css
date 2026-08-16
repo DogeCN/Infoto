@@ -68,22 +68,32 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* 全局滚动条：任务 tip 行 / 多选栏等常出现滚动，但默认 8px 偏厚。任务 tip 区域细到 4px + 半透明，视觉轻。
+   注意：::-webkit-scrollbar 不能用 selector list 共享声明，必须独立写（Chromium/Safari 的伪元素语法限制） */
+.up-tip,
+.up-tip-rows,
+.multi-bar .up-tip,
+.multi-bar .up-tip-rows {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(123, 133, 160, .35) transparent;
 }
-
-::-webkit-scrollbar-track {
-  background: var(--bg);
+.up-tip::-webkit-scrollbar,
+.up-tip-rows::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
 }
-
-::-webkit-scrollbar-thumb {
-  background: var(--outline);
-  border-radius: 4px;
+.up-tip::-webkit-scrollbar-track,
+.up-tip-rows::-webkit-scrollbar-track {
+    background: transparent;
 }
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(34, 211, 238, .4);
+.up-tip::-webkit-scrollbar-thumb,
+.up-tip-rows::-webkit-scrollbar-thumb {
+    background: rgba(123, 133, 160, .35);
+    border-radius: 2px;
+}
+.up-tip::-webkit-scrollbar-thumb:hover,
+.up-tip-rows::-webkit-scrollbar-thumb:hover {
+    background: rgba(34, 211, 238, .55);
 }
 
 .icon {
@@ -603,8 +613,8 @@ main {
 .up-pct {
   font-size: .9rem;
   font-weight: 800;
-  color: #facc15; /* 亮黄：进度环内数字/对勾显眼高亮，与青色环身形成对比 */
-  text-shadow: 0 0 6px rgba(250, 204, 21, .55);
+  color: #d97706; /* amber-600：稍微暗一档的暖黄，与青色环身仍有对比、对深底不刺眼 */
+  text-shadow: 0 0 6px rgba(217, 119, 6, .4);
   z-index: 1;
   line-height: 1;
   letter-spacing: -.03em;
@@ -652,19 +662,9 @@ main {
   }
 }
 
-/* 多选底栏出现时，三个进度环与左下通知统一上浮，避免与底栏按钮重叠 */
-.multi-bar.show~.task-indicator {
-  bottom: 4.75rem;
-}
+/* 三环动态浮动 + 多选底栏让出，位置由 ui.js _recalcTaskLayout() 计算 */
 
-.multi-bar.show~.task-indicator.dl {
-  bottom: 8rem;
-}
-
-.multi-bar.show~.task-indicator.del {
-  bottom: 11.25rem;
-}
-
+/* 多选底栏出现时仅通知 toast 需让位；任务环交给 _recalcTaskLayout */
 .multi-bar.show~.toasts {
   bottom: 4.75rem;
 }
@@ -711,17 +711,24 @@ main {
 
 .up-row-step {
   color: var(--primary);
-  font-weight: 600;
   flex-shrink: 0;
-  letter-spacing: .04em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+}
+.up-row-step .step-ico {
+  width: 1.05em;
+  height: 1.05em;
 }
 
+/* 上三列与下三列失败/重复/成功之间不需要细线分隔：用 padding 拉开间距，整体更整齐 */
 .up-tip-stat {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: .55rem;
-  border-top: 1px solid rgba(123, 133, 160, .18);
-  padding-top: .85rem;
+  padding-top: .4rem;
 }
 
 .up-tip-stat>span {
@@ -1091,30 +1098,7 @@ video.ph-img {
   color: var(--primary);
 }
 
-.lb-dots {
-  position: absolute;
-  bottom: 1.25rem;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10;
-  display: flex;
-  gap: .35rem;
-  max-width: 80vw;
-  overflow: hidden;
-}
-
-.lb-dots .dot {
-  width: .4rem;
-  height: .4rem;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, .3);
-  transition: all .25s;
-  flex-shrink: 0;
-}
-
-.lb-dots .dot.active {
-  background: #fff;
-}
+/* lb-dots 已删除（与"卡片大图预览"功能重复、视觉噪声） */
 
 /* ============ 更多菜单 ============ */
 .mask {

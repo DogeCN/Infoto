@@ -130,9 +130,9 @@ class UploadTask {
         const curOverall = () => {
             let prepSum = 0, upSum = 0, upDen = 0;
             for (const s of fileStates) {
-                prepSum += s.prepP * s.size;
+                prepSum += s.prepP * s.units;
                 const ub = s.uploadBytes || s.size || 1;
-                upSum += s.upP * ub; upDen += ub;
+                upSum += s.upP * s.units; upDen += s.units;
             }
             const prepP = prepSum / (prepTotal || 1);
             const upP = upDen ? upSum / upDen : 0;
@@ -235,8 +235,13 @@ class UploadTask {
 
         const enqueue = (file) => {
             const idx = fileStates.length;
-            fileStates.push({ idx, size: file.size || 0, prepP: 0, upP: 0, uploadBytes: file.size || 0, err: null, active: false, stepLabel: '等待' });
-            prepTotal += (file.size || 0);
+            // 视频/图片混合时视频应占远大于 size 的 progress 份额（转码+上传比图片慢得多）；
+            // 用 units 加权（视频 = max(MIN, size*8)）让 progress 在并发队列里反映"时间预算"。
+            const units = (isVideoFile(file) || isGifFile(file))
+                ? Math.max(6 * 1024 * 1024, (file.size || 0) * 8)
+                : (file.size || 1);
+            fileStates.push({ idx, size: file.size || 0, units, prepP: 0, upP: 0, uploadBytes: file.size || 0, err: null, active: false, stepLabel: '等待' });
+            prepTotal += units;
             this.total = fileStates.length;
             const heavy = av1Ok && (isVideoFile(file) || isGifFile(file));
             (heavy ? av1Q : picQ).push(async () => {

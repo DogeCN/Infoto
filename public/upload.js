@@ -44,8 +44,8 @@ async function _decodeEncodeVideoElSeek(file, meta, sink, report) {
         if (Math.abs(actual - target) > 0.5 / targetFps) continue;
         await new Promise(r => requestAnimationFrame(r));
         const bmp = await createImageBitmap(v);
+        // 进度由 sink 内部按 frameIdx/totalFrames 节流（每 4 帧一次），这里不再独立 report
         sink.push(bmp);
-        if ((i & 3) === 0) report(0.01 + 0.49 * Math.min(1, (i + 1) / nOut));
     }
     v.pause();
     try { v.currentTime = 0; } catch (e) { console.warn('[infoto] video reset fail', e); }
@@ -55,15 +55,29 @@ async function _decodeEncodeVideoElSeek(file, meta, sink, report) {
 async function _transcodeVideoFallback(file, { makeEncoder, muxer, report }) {
     const vmeta = await _videoMetaViaVideoEl(file);
     const ew = (vmeta.width + 1) & ~1, eh = (vmeta.height + 1) & ~1;
-    const { enc, sink } = await makeEncoder(ew, eh);
-    muxer.w = ew; muxer.h = eh;
     const targetFps = Math.min(vmeta.fps || FPS_CAP, FPS_CAP);
-    const s = sink(1 / targetFps);
+    const totalFrames = Math.max(1, Math.round((vmeta.durationSec || 1) * targetFps));
+    // 注意：<video> 无法直接读 tkhd matrix 拿 rotation（且 fallback 主要处理非 MP4 容器）。
+    // MP4 路径已用 meta.rotation 旋转画布；非 MP4 极少触发，方向问题暂不修。
+    const { enc, sink } = await makeEncoder(ew, eh, 0);
+    muxer.w = ew; muxer.h = eh;
+    const s = sink(1 / targetFps, totalFrames);
     await _decodeEncodeVideoElSeek(file, vmeta, s, report);
     await enc.flush(); enc.close();
 }
 
 /* ---- 文件选择 / 拖放入口 ---- */
+// 视频"等效时间预算"估算：同 size 下视频转码+上传耗时比图片高数倍到数十倍，
+// progress 用文件加权（视频项 ≫ 图片项），让同时混合上传时视频占据更大的进度份额。
+// 8× size 起点 + 6 MiB 兜底（短视频文件即便 200KB 也至少有 6MiB 等效预算，避免被图压制）。
+const VIDEO_UNIT_FACTOR = 8;
+const VIDEO_MIN_UNITS = 6 * 1024 * 1024;
+function estUnits(file) {
+    if (isVideoFile(file) || isGifFile(file)) {
+        return Math.max(VIDEO_MIN_UNITS, (file.size || 0) * VIDEO_UNIT_FACTOR);
+    }
+    return file.size || 1;
+}
 $('#uploadBtn').addEventListener('click', () => $('#fileInput').click());
 $('#fileInput').addEventListener('change', async e => {
     const files = [...(e.target.files || [])];
@@ -255,9 +269,9 @@ async function runMainThreadUpload(files) {
     function curOverall() {
         let prepSum = 0, upSum = 0, upDen = 0;
         for (const s of fileStates) {
-            prepSum += s.prepP * s.size;
+            prepSum += s.prepP * s.units;
             const ub = s.uploadBytes || s.size || 1;
-            upSum += s.upP * ub; upDen += ub;
+            upSum += s.upP * s.units; upDen += s.units;
         }
         const prepP = prepSum / (prepTotal || 1);
         const upP = upDen ? upSum / upDen : 0;
@@ -339,8 +353,13 @@ async function runMainThreadUpload(files) {
     const enqueue = (file) => {
         const idx = allFiles.length;
         allFiles.push(file);
-        fileStates.push({ idx, size: file.size || 0, prepP: 0, upP: 0, uploadBytes: file.size || 0, err: null, active: false, stepLabel: '等待' });
-        prepTotal += (file.size || 0);
+        // 视频权重远高于图片：上传/转码耗时通常比同 size 图片高 8~30 倍。
+        // 用 size * VIDEO_UNIT_FACTOR(8) 起步，加最小 VIDEO_MIN_UNITS 兜底（短视频文件极小时不至于被图压制）。
+        // 进度环按"时间预算分配"加权：批量里同时含视频+图片时，视频项应明显占据更大 progress 份额，
+        // 否则视频长时间处理而图片早已完成，进度条视觉上"只剩视频"看着像是卡住了。
+        const units = estUnits(file);
+        fileStates.push({ idx, size: file.size || 0, units, prepP: 0, upP: 0, uploadBytes: file.size || 0, err: null, active: false, stepLabel: '等待' });
+        prepTotal += units;
         const heavy = av1Ok && (isVideoFile(file) || isGifFile(file));
         (heavy ? av1Q : picQ).push(async () => {
             try { await processOne(file, idx); }

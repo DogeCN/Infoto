@@ -1,6 +1,6 @@
 /* Infoto Service Worker —— 离线壳 + 图片 Stale-While-Revalidate 缓存 */
-const V = 'infoto-v6';
-const CORE = ['./', './index.html', './app.js', './styles.css', './shared.js', './task.js', './manifest.webmanifest'];
+const V = 'infoto-v7';
+const CORE = ['./', './index.html', './app.js', './styles.css', './shared.js', './task.js', './manifest.webmanifest', './vendor/mp4box.esm.js'];
 
 // 缓存优先、后台静默刷新（图片字节 / /api/file）
 async function cacheFirst(req, cache) {

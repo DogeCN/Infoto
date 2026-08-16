@@ -19,6 +19,7 @@ function enterMulti(initialId) {
     renderIcons();
     applySelectUI();
     updateCount();
+    _recalcTaskLayout && _recalcTaskLayout();
 }
 function exitMulti() {
     state.multiMode = false;
@@ -32,6 +33,7 @@ function exitMulti() {
     $('#selectionBox').style.display = 'none';
     renderIcons();
     applySelectUI();
+    _recalcTaskLayout && _recalcTaskLayout();
 }
 function toggleSelect(id) {
     if (state.selected.has(id)) state.selected.delete(id);

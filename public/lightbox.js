@@ -12,7 +12,7 @@ function openLightbox(idx) {
     $('#lightbox').classList.add('show');
     document.body.style.overflow = 'hidden';
     updateLightbox();
-    renderDots();
+    /* renderDots removed */;
 }
 function closeLightbox() {
     state.lightboxOpen = false;
@@ -164,25 +164,9 @@ function updateLightbox() {
     }
     $('#lbCounter').textContent = `${state.currentIndex + 1} / ${getSorted().length}`;
     updateLightboxVotes(p);
-    renderDots();
+    /* renderDots removed */;
     preloadLightboxNeighbors(state.currentIndex);
     _setAudioBtnsVisible(true);
-}
-function renderDots() {
-    const d = $('#lbDots');
-    const list = getSorted();
-    const len = list.length;
-    const W = 20; // 窗口宽度：照片少时全显，多时以当前为中心滑窗
-    let start = 0;
-    if (len > W) start = Math.max(0, Math.min(state.currentIndex - Math.floor(W / 2), len - W));
-    const count = Math.min(len, W);
-    // 1) 保证 dot 数量正确（不够补、多了删），不重建已有 dot
-    while (d.children.length < count) d.appendChild(el('span', 'dot'));
-    while (d.children.length > count) d.removeChild(d.lastChild);
-    // 2) 只切换 active class（相对窗口偏移）
-    for (let i = 0; i < count; i++) {
-        d.children[i].classList.toggle('active', (start + i) === state.currentIndex);
-    }
 }
 function nextPhoto() { state.currentIndex = (state.currentIndex + 1) % getSorted().length; updateLightbox(); }
 
@@ -190,7 +174,7 @@ $('#lbCloseBtn').addEventListener('click', closeLightbox);
 // 点击空白（媒体/顶栏/圆点之外）关闭；菜单开着时不关
 $('#lightbox').addEventListener('click', e => {
     if (state.menuOpen) return;
-    if (e.target.closest && e.target.closest('.lb-media-wrap,.lb-top,.lb-dots,.audio-toggle,#lbMoreBtn,#lbCloseBtn')) return;
+    if (e.target.closest && e.target.closest('.lb-media-wrap,.lb-top,,.audio-toggle,#lbMoreBtn,#lbCloseBtn')) return;
     closeLightbox();
 });
 
@@ -505,7 +489,7 @@ function onGe(e) {
             state._lastTap = { t: now, x: t.clientX, y: t.clientY };
             // 单击且落在媒体/顶栏/圆点之外（触摸下合成 click 已被 preventDefault 掐断，须在此处理）
             const tg = e.target;
-            if (tg && tg.closest && !tg.closest('.lb-media-wrap,.lb-top,.lb-dots,.audio-toggle,#lbMoreBtn,#lbCloseBtn')) {
+            if (tg && tg.closest && !tg.closest('.lb-media-wrap,.lb-top,,.audio-toggle,#lbMoreBtn,#lbCloseBtn')) {
                 state.dragging = false; state.panning = false;
                 closeLightbox();
                 return;
@@ -560,7 +544,7 @@ function triggerGesture(dir) {
                 updateLightboxVotes(cp);
                 updateCardStatsById(cp.id);
             }
-            if (state.lightboxOpen) renderDots();
+            if (state.lightboxOpen) /* renderDots removed */;
         }).catch(() => { });
 
         setTimeout(() => { resetGestures(); nextPhoto(); }, 200);
@@ -670,7 +654,7 @@ $('#menuUnmark').addEventListener('click', async () => {
     }).then(() => {
         const cp = curPhoto();
         if (cp) { updateLightboxVotes(cp); updateCardStatsById(cp.id); }
-        if (state.lightboxOpen) renderDots();
+        if (state.lightboxOpen) /* renderDots removed */;
     }).catch(() => { });
 });
 
