@@ -93,7 +93,7 @@ class UploadTask {
     async _run() {
         const files = this.files;
         const total = files.length;
-        const vp9Ok = await supportsVp9WebCodecs();
+        const av1Ok = await supportsAv1WebCodecs();
         const PHASE = { PREP: 0.20, UPLOAD: 0.75, SYNC: 0.05 };
 
         const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null }));
@@ -136,13 +136,13 @@ class UploadTask {
                     if (!webp) { st.err = '图片 WebP 压缩失败'; this.failed++; result(idx, file.name, null, st.err); return; }
                     blob = webp; ext = 'webp';
                 } else if (isV || isG) {
-                    if (!vp9Ok) {
-                        const msg = (isG ? 'GIF' : '视频') + '需要支持 VP9 WebCodecs 的浏览器';
+                    if (!av1Ok) {
+                        const msg = (isG ? 'GIF' : '视频') + '需要支持 AV1 WebCodecs 的浏览器';
                         st.err = msg; this.failed++; result(idx, file.name, null, msg); return;
                     }
                     emit(file.name, (isG ? 'GIF 转码' : '视频转码') + '中…');
-                    // Worker 无 <video> 元素：非 MP4 容器由 transcodeToVp9Webm 抛错（页面已对含非 MP4 视频的批次降级主线程，正常到不了这里）
-                    const r = await transcodeToVp9Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); emit(file.name); });
+                    // Worker 无 <video> 元素：非 MP4 容器由 transcodeToAv1Webm 抛错（页面已对含非 MP4 视频的批次降级主线程，正常到不了这里）
+                    const r = await transcodeToAv1Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); emit(file.name); });
                     blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio;
                 }
                 st.prepP = 1;
@@ -182,16 +182,16 @@ class UploadTask {
         };
 
         // 图片 CONCURRENCY 并发；视频/GIF 单线程（WebCodecs 内部已并行，多开易 OOM）
-        const picTasks = [], vp9Tasks = [];
+        const picTasks = [], av1Tasks = [];
         files.forEach((file, idx) => {
-            const heavy = vp9Ok && (isVideoFile(file) || isGifFile(file));
-            (heavy ? vp9Tasks : picTasks).push(() => processOne(file, idx));
+            const heavy = av1Ok && (isVideoFile(file) || isGifFile(file));
+            (heavy ? av1Tasks : picTasks).push(() => processOne(file, idx));
         });
 
         emit();
         await Promise.all([
             runWithConcurrency(picTasks, CONFIG.CONCURRENCY),
-            runWithConcurrency(vp9Tasks, 1)
+            runWithConcurrency(av1Tasks, 1)
         ]);
 
         this.progress = 1;

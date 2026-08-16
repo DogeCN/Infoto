@@ -131,7 +131,7 @@
     };
 
     /* =========================================================
-       媒体类型判定 & VP9 编码能力探测（页面 + SharedWorker 双环境）
+       媒体类型判定 & AV1 编码能力探测（页面 + SharedWorker 双环境）
        ========================================================= */
     const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|flv|wmv|ogv|ogg)$/i;
     const GIF_EXT_RE = /\.gif$/i;
@@ -143,16 +143,49 @@
     g.hasAnimatedMedia = function (p) { const e = String(p && p.ext || '').toLowerCase(); return e === 'webm'; };
     g.picMediaType = function (p) { return g.hasAnimatedMedia(p) ? 'video' : 'image'; };
 
-    g._vp9Support = null;
-    g.supportsVp9WebCodecs = async function () {
-        if (g._vp9Support !== null) return g._vp9Support;
-        if (typeof VideoEncoder !== 'function') { g._vp9Support = false; return false; }
+    // AV1 编码能力探测：isConfigSupported 有已知的保守误报（部分浏览器/驱动对该 API
+    // 返回 false 但实际可编码），故以「真实 encode 一帧成功」为最终判据。
+    // 只依赖 WebCodecs + OffscreenCanvas，页面与 SharedWorker 双环境均可用。
+    g._av1Support = null;
+    g._probeEncodeAv1 = async function () {
+        if (typeof VideoEncoder !== 'function' || typeof OffscreenCanvas !== 'function') return false;
         try {
-            const cfg = { codec: 'vp09.00.10.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' };
-            const r = await VideoEncoder.isConfigSupported(cfg);
-            g._vp9Support = !!(r && r.supported);
-        } catch (e) { console.warn('[infoto] VP9 support probe fail', e); g._vp9Support = false; }
-        return g._vp9Support;
+            const canvas = new OffscreenCanvas(64, 64);
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#123456';
+            ctx.fillRect(0, 0, 64, 64);
+            const frame = new VideoFrame(canvas, { timestamp: 0 });
+            let ok = false;
+            const enc = new VideoEncoder({
+                output: () => { ok = true; },
+                error: () => { },
+            });
+            enc.configure({
+                codec: 'av01.0.04M.08',
+                width: 64, height: 64,
+                bitrate: 256_000,
+                framerate: 24,
+                hardwareAcceleration: 'no-preference',
+            });
+            enc.encode(frame);
+            await enc.flush();
+            frame.close();
+            enc.close();
+            return ok;
+        } catch (e) { return false; }
+    };
+    g.supportsAv1WebCodecs = async function () {
+        if (g._av1Support !== null) return g._av1Support;
+        // 快速路径：isConfigSupported 支持即视为支持
+        if (typeof VideoEncoder === 'function') {
+            try {
+                const r = await VideoEncoder.isConfigSupported({ codec: 'av01.0.04M.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' });
+                if (r && r.supported) { g._av1Support = true; return true; }
+            } catch (_) { }
+        }
+        // 慢路径：真实编码一帧（isConfigSupported 保守误报时的兜底）
+        g._av1Support = await g._probeEncodeAv1();
+        return g._av1Support;
     };
 
     /* =========================================================
@@ -182,7 +215,7 @@
     };
 
     /* =========================================================
-       轻量 WebM muxer（EBML + SimpleBlock，V_VP9 + A_OPUS 双 track）
+       轻量 WebM muxer（EBML + SimpleBlock，V_AV1 + A_OPUS 双 track）
        ========================================================= */
     function _vint(n, length = 0) {
         if (n < 0 || !isFinite(n)) throw new Error('bad vint');
@@ -235,7 +268,7 @@
     }
 
     class SimpleWebMMuxer {
-        constructor({ width, height, timeDen = 1000, videoCodec = 'V_VP9', audio = null }) {
+        constructor({ width, height, timeDen = 1000, videoCodec = 'V_AV1', audio = null }) {
             this.w = width; this.h = height;
             this.tDen = timeDen;
             this.videoCodec = videoCodec;
@@ -325,21 +358,17 @@
     }
     g.SimpleWebMMuxer = SimpleWebMMuxer;
 
-    /* ---- GIF / 视频 → VP9 WebM（WebCodecs VideoEncoder） ---- */
-    const VP9_BITRATE_PER_PIXEL = 0.35;
+    /* ---- GIF / 视频 → AV1 WebM（WebCodecs VideoEncoder） ---- */
+    const AV1_BITRATE_PER_PIXEL = 0.35;
     const OPUS_BITRATE_PER_CHANNEL = 64000;
     const FPS_CAP = 30;
     g.FPS_CAP = FPS_CAP;
 
-    function _vp9Codec(w, h) {
-        let level = '10';
-        if (h > 2160) level = '51';
-        else if (h > 1440) level = '50';
-        else if (h > 1080) level = '40';
-        else if (h > 720) level = '31';
-        else if (h > 576) level = '30';
-        else if (h > 288) level = '20';
-        return `vp09.00.${level}.08`;
+    function _av1Codec(w, h) {
+        // AV1 codec string: av01.P.LLL.DD（profile 0/1，level，8-bit）
+        let level = '04';
+        if (h > 2304) level = '05';
+        return `av01.00.${level}M.08`;
     }
 
     async function _decodeGifFrames(file) {
@@ -504,10 +533,10 @@
         return new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('mp4 pipeline timeout')), ms); p.then(v => { clearTimeout(t); res(v); }, e => { clearTimeout(t); rej(e); }); });
     }
 
-    /* 统一入口：GIF / MP4 视频 → VP9 WebM（强制转码，不管体积）
+    /* 统一入口：GIF / MP4 视频 → AV1 WebM（强制转码，不管体积）
      * opts.videoFallback: (file, {makeEncoder, muxer, report}) => Promise —— 非 MP4 / MP4 解码失败的兜底；
      *   页面环境传 <video> seek 版；SharedWorker 无 DOM 不传（非 MP4 直接抛错，由调用方降级主线程）。 */
-    g.transcodeToVp9Webm = async function (file, progressCb, opts = {}) {
+    g.transcodeToAv1Webm = async function (file, progressCb, opts = {}) {
         const report = (p, label) => { if (progressCb) progressCb(p, label); };
         const isGif = g.isGifFile(file);
 
@@ -524,14 +553,14 @@
         if (!opusSupported) opusConfig = null;
 
         const muxer = new SimpleWebMMuxer({
-            width: 0, height: 0, timeDen: 1000, videoCodec: 'V_VP9',
+            width: 0, height: 0, timeDen: 1000, videoCodec: 'V_AV1',
             audio: opusSupported ? { sampleRate: opusConfig.sampleRate, channels: opusConfig.numberOfChannels, codecId: 'A_OPUS', codecPrivate: audioCodecPrivate } : null,
         });
 
         function makeEncoder(ew, eh) {
-            const codec = _vp9Codec(ew, eh);
+            const codec = _av1Codec(ew, eh);
             return VideoEncoder.isConfigSupported({ codec, width: ew, height: eh }).then(support => {
-                if (!support.supported) throw new Error('VP9 not supported: ' + codec);
+                if (!support.supported) throw new Error('AV1 not supported: ' + codec);
                 const cv = new OffscreenCanvas(ew, eh);
                 const cx = cv.getContext('2d');
                 let outTs = 0;
@@ -542,7 +571,7 @@
                     },
                     error: e => console.error(e),
                 });
-                enc.configure({ codec, width: ew, height: eh, bitrate: Math.max(250_000, ew * eh * VP9_BITRATE_PER_PIXEL), latencyMode: 'quality' });
+                enc.configure({ codec, width: ew, height: eh, bitrate: Math.max(250_000, ew * eh * AV1_BITRATE_PER_PIXEL), latencyMode: 'quality' });
                 return {
                     enc,
                     sink(avgStepSec) {

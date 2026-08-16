@@ -184,9 +184,9 @@ const TaskWorker = (() => {
 })();
 
 /* =========================================================
-   WebCodecs VP9 探测 / 压缩 / 转码 已迁至 shared.js（页面与 SharedWorker 共用）
+   WebCodecs AV1 探测 / 压缩 / 转码 已迁至 shared.js（页面与 SharedWorker 共用）
    - isVideoFile/isGifFile/isPicFile/isMp4File/hasAnimatedMedia/picMediaType
-   - supportsVp9WebCodecs / compressToWebp / transcodeToVp9Webm / WEBP_QUALITY / FPS_CAP
+   - supportsAv1WebCodecs / compressToWebp / transcodeToAv1Webm / WEBP_QUALITY / FPS_CAP
    shared.js 先于 app.js 加载（index.html），此处仅取引用并保留 DOM 专用兜底。
    ========================================================= */
 const isVideoFile = window.isVideoFile;
@@ -195,20 +195,20 @@ const isPicFile = window.isPicFile;
 const isMp4File = window.isMp4File;
 const hasAnimatedMedia = window.hasAnimatedMedia;
 const picMediaType = window.picMediaType;
-const supportsVp9WebCodecs = window.supportsVp9WebCodecs;
+const supportsAv1WebCodecs = window.supportsAv1WebCodecs;
 const compressToWebp = window.compressToWebp;
-const transcodeToVp9Webm = window.transcodeToVp9Webm;
+const transcodeToAv1Webm = window.transcodeToAv1Webm;
 const WEBP_QUALITY = window.WEBP_QUALITY;
 const FPS_CAP = window.FPS_CAP;
 
 function applyFileInputAccept() {
     const inp = $('#fileInput');
     if (!inp) return;
-    if (window._vp9Support === true) inp.setAttribute('accept', 'image/*,video/*,.gif');
-    else if (window._vp9Support === false) inp.setAttribute('accept', 'image/png,image/jpeg,image/webp');
+    if (window._av1Support === true) inp.setAttribute('accept', 'image/*,video/*,.gif');
+    else if (window._av1Support === false) inp.setAttribute('accept', 'image/png,image/jpeg,image/webp');
 }
 $('#fileInput')?.setAttribute('accept', 'image/*,video/*,.gif');
-supportsVp9WebCodecs().then(applyFileInputAccept);
+supportsAv1WebCodecs().then(applyFileInputAccept);
 
 /* ---- 主线程专用：非 MP4 视频的 <video> 元素解码兜底（SharedWorker 无 DOM，走不到这里） ---- */
 function _videoMetaViaVideoEl(file) {
@@ -245,7 +245,7 @@ async function _decodeEncodeVideoElSeek(file, meta, sink, report) {
     try { v.currentTime = 0; } catch (e) { console.warn('[infoto] video reset fail', e); }
     URL.revokeObjectURL(url);
 }
-// 非 MP4 / MP4 解码失败兜底：注入 shared.js transcodeToVp9Webm 的 opts.videoFallback
+// 非 MP4 / MP4 解码失败兜底：注入 shared.js transcodeToAv1Webm 的 opts.videoFallback
 async function _transcodeVideoFallback(file, { makeEncoder, muxer, report }) {
     const vmeta = await _videoMetaViaVideoEl(file);
     const ew = (vmeta.width + 1) & ~1, eh = (vmeta.height + 1) & ~1;
@@ -1274,7 +1274,7 @@ const setUploadProgress = (p, file, step, extra) => setProgress(p, file, step, e
 async function uploadFiles(files) {
     resetUploadUI();
     _mode = 'upload';
-    await supportsVp9WebCodecs();
+    await supportsAv1WebCodecs();
     applyFileInputAccept();
     const total = files.length;
     if (total === 0) return;
@@ -1356,7 +1356,7 @@ function uploadViaTaskWorker(files) {
 
 async function runMainThreadUpload(files) {
     const t0 = Date.now();
-    const vp9Ok = window._vp9Support === true;
+    const av1Ok = window._av1Support === true;
     _prepBytes = { total: 0, done: 0 };
     _uploadBytes = { total: 0, done: 0 };
 
@@ -1434,13 +1434,13 @@ async function runMainThreadUpload(files) {
                 if (!webp) { st.err = '图片 WebP 压缩失败'; failed++; markReady(idx, null); toast(`「${file.name}」图片 WebP 压缩失败`, 'alert'); return; }
                 blob = webp; ext = 'webp';
             } else if (isV || isG) {
-                if (!vp9Ok) {
-                    const msg = (isG ? 'GIF' : '视频') + '需要支持 VP9 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）';
+                if (!av1Ok) {
+                    const msg = (isG ? 'GIF' : '视频') + '需要支持 AV1 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）';
                     st.err = msg; failed++; markReady(idx, null); toast(`「${file.name}」${msg}`, 'alert'); return;
                 }
                 const label = isG ? 'GIF 转码' : '视频转码';
                 currentFile = file.name; currentStep = label + '中…';
-                const r = await transcodeToVp9Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); }, { videoFallback: _transcodeVideoFallback });
+                const r = await transcodeToAv1Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); }, { videoFallback: _transcodeVideoFallback });
                 blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio;
             }
             st.prepP = 1;
@@ -1481,16 +1481,16 @@ async function runMainThreadUpload(files) {
     }
 
     // 拆分：图片走 CONFIG.CONCURRENCY 并发；视频/GIF 单线程（WebCodecs 内部已并行，多开极易 OOM）
-    const picTasks = [], vp9Tasks = [];
+    const picTasks = [], av1Tasks = [];
     files.forEach((file, idx) => {
-        const heavy = vp9Ok && (isVideoFile(file) || isGifFile(file));
-        (heavy ? vp9Tasks : picTasks).push(() => processOne(file, idx));
+        const heavy = av1Ok && (isVideoFile(file) || isGifFile(file));
+        (heavy ? av1Tasks : picTasks).push(() => processOne(file, idx));
     });
 
     startUiTick();
     await Promise.all([
         runWithConcurrency(picTasks, CONFIG.CONCURRENCY),
-        runWithConcurrency(vp9Tasks, 1)
+        runWithConcurrency(av1Tasks, 1)
     ]);
     stopUiTick();
     flushCards(); // 兜底 flush 剩余卡片
