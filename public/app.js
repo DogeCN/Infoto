@@ -431,7 +431,7 @@ let stage = null;
 const state = {
     sortBy: 'latest', latestDir: 'desc', hotestDir: 'desc',
     multiMode: false, selected: new Set(),
-    longPressTimer: null, longPressTriggered: false,
+    longPressTimer: null, longPressTriggered: false, longPressJustFired: false,
     lightboxOpen: false, currentIndex: 0,
     boxSelecting: false, boxStart: null, boxArm: false, suppressClick: false,
     menuOpen: false,
@@ -823,7 +823,11 @@ window.addEventListener('resize', () => {
    ========================================================= */
 function enterMulti(initialId) {
     state.multiMode = true;
-    state.longPressTriggered = false; // 复位：避免历次长按残留阻断多选单击
+    // 复位 longPressTriggered（避免历次长按残留阻断多选单击）；
+    // 但若本次是「刚长按进入」（longPressJustFired），拦截标志必须保留，
+    // 让松手后的合成 click 被 click handler 吃掉，否则 toggleSelect 会取消刚选中的卡。
+    if (!state.longPressJustFired) state.longPressTriggered = false;
+    state.longPressJustFired = false;
     state.selected.clear();
     if (initialId) state.selected.add(initialId);
     $('#multiSelectBtn').querySelector('svg').setAttribute('data-i', 'x');
@@ -947,7 +951,13 @@ function onCardPress(e) {
     state.longPressTriggered = false;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = setTimeout(() => {
+        // 置两个标志：
+        //  - longPressTriggered：拦截「本次长按松手后浏览器合成的 click」，
+        //    防止它落到 masonry click handler 把刚选中的卡取消（见 click handler）
+        //  - longPressJustFired：供 enterMulti 判断「刚因长按进入多选」，进入后
+        //    不再被 826 行的复位抹掉拦截标志（否则合成 click 会 toggleSelect 取消选中）
         state.longPressTriggered = true;
+        state.longPressJustFired = true;
         if (!state.multiMode) enterMulti(card.dataset.id);
         else toggleSelect(card.dataset.id);
     }, 500);
@@ -989,6 +999,10 @@ document.addEventListener('mousedown', e => {
     state.boxArm = true;
     state.boxSelecting = false;
     state.boxStart = { x: e.clientX, y: e.clientY };
+    // 框选基线：进入框选前已手动选中的卡片集合。
+    // 框选过程中每次重算 = 基线 ∪ 当前矩形命中的卡；矩形移开的卡必须取消选中
+    // （原实现只 add 不 delete，卡片一旦被框过就永久选中，与真实框选语义不符）。
+    state.boxBase = new Set(state.selected);
     state.suppressClick = false;
 });
 document.addEventListener('mousemove', e => {
@@ -1005,6 +1019,8 @@ document.addEventListener('mousemove', e => {
     b.style.display = 'block';
     b.style.left = x + 'px'; b.style.top = y + 'px'; b.style.width = w + 'px'; b.style.height = h + 'px';
     const box = { left: x, right: x + w, top: y, bottom: y + h };
+    // 动态重算：先复位为基线，再并入当前矩形命中的卡（矩形外移出的卡会被取消）
+    state.selected = new Set(state.boxBase);
     $$('.photo-card').forEach(c => {
         const r = c.getBoundingClientRect();
         const hit = !(r.right < box.left || r.left > box.right || r.bottom < box.top || r.top > box.bottom);
@@ -1014,6 +1030,7 @@ document.addEventListener('mousemove', e => {
 });
 document.addEventListener('mouseup', () => {
     state.boxArm = false;
+    state.boxBase = null;
     if (state.boxSelecting) {
         state.boxSelecting = false;
         $('#selectionBox').style.display = 'none';
@@ -1840,6 +1857,14 @@ function _isRotated() {
     const TOL = 0.5;
     return !(r <= TOL || Math.abs(r - 180) <= TOL || Math.abs(r - 360) <= TOL);
 }
+// 图片渲染尺寸（缩放后）是否在任一方向实际超出视口——即"放大到有内容可平移"。
+// 小于视口的图片平移无意义，且 clampPan 会把它拉回居中（表现为拖动弹回锚点）。
+function _isZoomedBeyondViewport() {
+    const w = lbWrap(); if (!w || !stage) return false;
+    const sr = stage.getBoundingClientRect();
+    const wr = w.getBoundingClientRect();
+    return wr.width > sr.width + 1 || wr.height > sr.height + 1;
+}
 function onGs(e) {
     if (!state.lightboxOpen || state.menuOpen) return;
     if (e.target.closest('#lbMoreBtn,#lbCloseBtn,.audio-toggle')) return;
@@ -1850,10 +1875,14 @@ function onGs(e) {
     if (e.touches && e.cancelable) e.preventDefault();
     // 双指捏合缩放
     if (e.touches && e.touches.length === 2) { startPinch(e); state.dragging = true; _setAudioBtnsVisible(false); return; }
-    // 已缩放（放大或缩小）/ 旋转过：单指/鼠标拖动 = 平移看图（不做投票/翻页手势）。
-    // 注意必须覆盖 s<1 的缩小态：此前只判 s>1.01，缩小后拖动走普通手势分支，
-    // 超过 THRESHOLD 会触发翻页并把缩放重置为 1（"拖动到边缘直接重置大小"）。
-    if (Math.abs(state.zoom.s - 1) > 0.01 || _isRotated()) {
+    // 缩放/旋转后：单指/鼠标拖动 = 平移看图（不做投票/翻页手势）。
+    // 判据必须是「图片渲染尺寸实际超出视口」而非 scale 值：
+    // 此前用 Math.abs(s-1)>0.01 会把 1.15x 这种「放大后仍小于视口」的图片也
+    // 拉进平移模式，而 clampPan 对小于视口的图片强制归零居中 → 一拖就弹回锚点。
+    // 只有当图片任一边实际大于视口（放大到有内容可平移）才进 panning；
+    // 缩小态（s<1，图片必然小于视口）走普通手势（翻页），不再有"拖动重置大小"
+    // 问题（普通拖动分支已保留 scale/rotate，且 _resetLbWrapAndGestures 同步 state）。
+    if (_isZoomedBeyondViewport() || _isRotated()) {
         state.dragging = true; state.panning = true;
         const pt = e.touches ? e.touches[0] : e;
         state.dragStart = { x: pt.clientX, y: pt.clientY };
