@@ -126,21 +126,26 @@
   <div class="mask" id="menuMask"></div>
   <div class="menu" id="menu">
     <div class="grab"></div>
-    <button class="menu-item" id="menuCopyImage">
-      <svg class="icon" data-i="copy"></svg><span>复制原图</span>
-    </button>
-    <button class="menu-item" id="menuCopyLink">
-      <svg class="icon" data-i="link"></svg><span>复制直链</span>
-    </button>
-    <button class="menu-item" id="menuShare">
-      <svg class="icon" data-i="share"></svg><span>转发分享</span>
-    </button>
-    <button class="menu-item" id="menuGoogle">
-      <svg class="icon" data-i="search"></svg><span>使用谷歌搜图</span>
-      <svg class="icon ext" data-i="external"></svg>
-    </button>
-    <div class="menu-divider"></div>
-    <button class="menu-item menu-cancel" id="menuCancel"><span>取消</span></button>
+    <div class="menu-grid">
+      <button class="menu-item" id="menuCopyImage">
+        <svg class="icon" data-i="copy"></svg><span>复制原图</span>
+      </button>
+      <button class="menu-item" id="menuCopyLink">
+        <svg class="icon" data-i="link"></svg><span>复制链接</span>
+      </button>
+      <button class="menu-item" id="menuShare">
+        <svg class="icon" data-i="share"></svg><span>分享</span>
+      </button>
+      <button class="menu-item menu-google" id="menuGoogle">
+        <svg class="icon" data-i="search"></svg><span>谷歌搜图</span>
+      </button>
+      <button class="menu-item menu-unmark" id="menuUnmark">
+        <svg class="icon" data-i="undo"></svg><span>取消标记</span>
+      </button>
+      <button class="menu-item menu-cancel" id="menuCancel">
+        <svg class="icon" data-i="x"></svg><span>取消</span>
+      </button>
+    </div>
   </div>
 
   <!-- Toast -->

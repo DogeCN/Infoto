@@ -459,11 +459,17 @@ main {
   justify-content: space-between;
   padding: .75rem 1rem;
   transform: translateY(110%);
-  transition: transform .3s;
+  /* 防移动端橡皮筋滚动：iOS Safari 上 overscroll 时 fixed 元素会跟着移动，
+     transform 藏在屏幕外也会被带进视口 → 隐藏态必须 visibility 兜底
+     （显示立即可见；隐藏动画结束后再 hidden，动画不受影响） */
+  visibility: hidden;
+  transition: transform .3s, visibility 0s linear .3s;
 }
 
 .multi-bar.show {
   transform: translateY(0);
+  visibility: visible;
+  transition: transform .3s, visibility 0s;
 }
 
 .multi-bar .count {
@@ -487,6 +493,7 @@ main {
 
 /* ============ 上传进度：按钮右下角小圆圈 + 悬停详情 ============ */
 .up-indicator {
+  transition: opacity .38s ease; /* 完成淡出用（fading 类） */
   position: fixed;
   right: .65rem;
   bottom: .65rem;
@@ -497,7 +504,7 @@ main {
   align-items: center;
   justify-content: center;
   cursor: default;
-  transition: bottom .3s ease;
+  transition: opacity .38s ease, bottom .3s ease; /* opacity 用于完成淡出（fading 类），bottom 用于多选底栏上浮 */
 }
 
 .up-ring {
@@ -561,6 +568,12 @@ main {
 .up-indicator.open .up-tip {
   display: block;
   animation: tip-in .18s ease-out;
+}
+
+/* 完成淡出：JS 加 fading → opacity 过渡 0.38s → 完成后加 hidden 移除 */
+.up-indicator.fading {
+  opacity: 0;
+  pointer-events: none;
 }
 
 @media (hover: hover) {
@@ -1033,12 +1046,15 @@ video.ph-img {
   border-radius: 1.5rem 1.5rem 0 0;
   box-shadow: var(--shadow-dialog);
   transform: translateY(110%);
-  transition: transform .3s cubic-bezier(.16, 1, .3, 1);
-  padding-bottom: env(safe-area-inset-bottom);
+  /* 同 multi-bar：橡皮筋滚动会把 fixed 元素带进视口，隐藏态必须 visibility 兜底 */
+  visibility: hidden;
+  transition: transform .3s cubic-bezier(.16, 1, .3, 1), visibility 0s linear .3s;
 }
 
 .menu.show {
   transform: translateY(0);
+  visibility: visible;
+  transition: transform .3s cubic-bezier(.16, 1, .3, 1), visibility 0s;
 }
 
 .menu .grab {
@@ -1049,16 +1065,25 @@ video.ph-img {
   margin: .75rem auto .5rem;
 }
 
+/* 两列网格：图标在上、文字在下 */
+.menu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: .35rem;
+  padding: 0 .75rem calc(.85rem + env(safe-area-inset-bottom));
+}
+
 .menu-item {
-  width: 100%;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: .75rem;
-  padding: .9rem 1rem;
+  justify-content: center;
+  gap: .45rem;
+  padding: .85rem .5rem;
   border-radius: var(--r-xl);
-  text-align: left;
+  text-align: center;
   color: var(--on-surface);
-  font-size: .875rem;
+  font-size: .78rem;
   transition: background .2s;
 }
 
@@ -1068,23 +1093,44 @@ video.ph-img {
 
 .menu-item .icon {
   color: var(--on-variant);
+  width: 1.45rem;
+  height: 1.45rem;
 }
 
-.menu-item .ext {
-  margin-left: auto;
-  color: rgba(123, 133, 160, .6);
+/* 谷歌搜图：主色高亮（外部搜索动作） */
+.menu-google .icon {
+  color: var(--primary);
 }
 
-.menu-divider {
-  height: 1px;
-  background: rgba(30, 38, 64, .3);
-  margin: .4rem .5rem;
+.menu-google:hover {
+  background: rgba(34, 211, 238, .12);
+}
+
+/* 取消标记：警示色高亮（撤销我的赞/踩） */
+.menu-unmark .icon {
+  color: var(--warning);
+}
+
+.menu-unmark:hover {
+  background: rgba(245, 158, 11, .12);
+}
+
+/* 未投票时置灰：不可点但保留点击提示 */
+.menu-unmark.disabled {
+  opacity: .4;
+}
+
+.menu-unmark.disabled .icon {
+  color: var(--on-variant);
 }
 
 .menu-cancel {
   color: var(--on-variant);
   font-weight: 500;
-  justify-content: center;
+}
+
+.menu-cancel .icon {
+  color: var(--on-variant);
 }
 
 /* ============ Toast ============ */

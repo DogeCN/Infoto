@@ -165,7 +165,8 @@ export default {
         const body = await request.json();
         const id = body && body.id;
         const delta = body && body.delta;
-        if (!id || (delta !== 1 && delta !== -1)) {
+        // delta: 1=喜欢 / -1=不喜欢 / 0=取消标记（撤销我的投票）
+        if (!id || (delta !== 1 && delta !== -1 && delta !== 0)) {
           return json(cors, { error: 'bad vote payload' }, 400);
         }
 
@@ -181,9 +182,13 @@ export default {
         if (delta > 0) {
           votes.dislikes = votes.dislikes.filter(x => x !== ip);
           if (!votes.likes.includes(ip)) votes.likes.push(ip);
-        } else {
+        } else if (delta < 0) {
           votes.likes = votes.likes.filter(x => x !== ip);
           if (!votes.dislikes.includes(ip)) votes.dislikes.push(ip);
+        } else {
+          // delta === 0：取消标记——从两个数组移除本 IP
+          votes.likes = votes.likes.filter(x => x !== ip);
+          votes.dislikes = votes.dislikes.filter(x => x !== ip);
         }
         await env.Infoto.put(vkey, JSON.stringify(votes));
         const likes = votes.likes.length;

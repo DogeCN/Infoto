@@ -24,6 +24,7 @@ const ICONS = {
     'success': '<circle cx="12" cy="12" r="10"/><polyline points="20 6 9 17 4 12"/>',
     'volume-2': '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
     'volume-x': '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>',
+    'undo': '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>',
 };
 
 function renderIcons(root) {
@@ -2232,14 +2233,43 @@ stage.addEventListener('dblclick', (e) => {
 /* =========================================================
    更多菜单
    ========================================================= */
+// 打开菜单时同步「取消标记」可用态：当前照片已投过票才可点（否则置灰）
+function updateMenuState() {
+    const unmark = $('#menuUnmark');
+    if (!unmark) return;
+    const p = curPhoto();
+    const hasVote = !!p && !!Store.getMyVote(p.id);
+    unmark.classList.toggle('disabled', !hasVote);
+    unmark.setAttribute('aria-disabled', hasVote ? 'false' : 'true');
+}
 function openMenu() {
     if (!state.lightboxOpen) return; // 菜单只在 lightbox 内有效，防异常路径残留在主页
     state.menuOpen = true; $('#menuMask').classList.add('show'); $('#menu').classList.add('show');
+    updateMenuState();
 }
 function closeMenu() { state.menuOpen = false; $('#menuMask').classList.remove('show'); $('#menu').classList.remove('show'); }
 $('#lbMoreBtn').addEventListener('click', e => { e.stopPropagation(); openMenu(); });
 $('#menuMask').addEventListener('click', closeMenu);
 $('#menuCancel').addEventListener('click', closeMenu);
+// 取消标记：撤销当前照片的赞/踩（delta=0，服务端从投票集合移除本 IP）
+$('#menuUnmark').addEventListener('click', async () => {
+    const p = curPhoto();
+    if (!p) return;
+    if (!Store.getMyVote(p.id)) { toast('尚未标记', 'info'); closeMenu(); return; }
+    closeMenu();
+    const rPromise = Store.setLike(p.id, 0);
+    updateLightboxVotes(p);
+    updateCardStatsById(p.id);
+    rPromise.then(r => {
+        toast(r.ok ? '已取消标记' : '取消失败', r.ok ? 'success' : 'alert');
+        if (!r.ok) return Store.photos;
+        try { return Store.load(); } catch (_) { return Store.photos; }
+    }).then(() => {
+        const cp = curPhoto();
+        if (cp) { updateLightboxVotes(cp); updateCardStatsById(cp.id); }
+        if (state.lightboxOpen) renderDots();
+    }).catch(() => { });
+});
 
 async function copyText(txt) {
     try { await navigator.clipboard.writeText(txt); return true; }
