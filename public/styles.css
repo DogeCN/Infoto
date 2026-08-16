@@ -539,7 +539,11 @@ main {
   position: absolute;
   right: 0;
   bottom: calc(100% + .75rem);
+  /* 自适应屏幕：宽上限 20rem，超过视口宽度时收缩（min() 老浏览器兼容差，用 max-width） */
   width: 20rem;
+  max-width: calc(100vw - 1.25rem);
+  max-height: 60vh;
+  overflow-y: auto;
   background: var(--surface-high);
   background-image: linear-gradient(to bottom, rgba(255, 255, 255, .02), transparent);
   border: 1px solid rgba(123, 133, 160, .28);
@@ -551,9 +555,19 @@ main {
   backdrop-filter: blur(14px);
 }
 
-.up-indicator:hover .up-tip {
+/* 点击展开（所有设备）：点进度环展开/再点收回，点外部收起。
+   触摸设备上 :hover 会 sticky（点击后不消失），若 hover 也生效则"再点收回"永远无效，
+   故 hover 展开限定在支持 hover 的设备（桌面） */
+.up-indicator.open .up-tip {
   display: block;
   animation: tip-in .18s ease-out;
+}
+
+@media (hover: hover) {
+  .up-indicator:hover .up-tip {
+    display: block;
+    animation: tip-in .18s ease-out;
+  }
 }
 
 /* 多选底栏出现时，进度环与左下通知统一上浮，避免与底栏按钮重叠 */
@@ -641,13 +655,19 @@ main {
   z-index: 70;
   background: rgba(0, 0, 0, .92);
   backdrop-filter: blur(8px);
-  display: none;
+  /* 打开/关闭淡入淡出（display 硬切无过渡，改 opacity+visibility） */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .28s ease, visibility .28s;
   overflow: hidden;
   touch-action: none;
 }
 
 .lightbox.show {
-  display: block;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .lb-top {
@@ -845,11 +865,12 @@ video.lb-img {
   transform: scale(0.85);
 }
 
-/* 卡片里的 video.ph-img 保持和 img 相同视觉层（已由 ph-img 样式兜底，这里微调 object-fit 居中） */
+/* 卡片里的 video.ph-img 保持和 img 相同视觉层（由 ph-img 样式兜底）。
+   统一 object-fit: contain——卡片高度按视频真实比例计算，cover 会把非等比视频上下裁切。 */
 video.ph-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 
@@ -1071,7 +1092,8 @@ video.ph-img {
   position: fixed;
   bottom: 5rem;
   left: .75rem;
-  z-index: 100;
+  /* 置于进度详情框（up-indicator z-index 90）下层：不遮挡信息框；仍高于 lightbox(70)/底栏(40) */
+  z-index: 85;
   display: flex;
   flex-direction: column;
   gap: .5rem;

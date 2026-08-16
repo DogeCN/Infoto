@@ -930,7 +930,6 @@ async function deleteSelected() {
     resetProgressUI();
 
     if (TaskWorker.isSupported() && TaskWorker.startDelete(ids, apiBase())) {
-        toast(`后台删除 ${ids.length} 张`, 'info');
         if (_deleteWorkerListener) _deleteWorkerListener();
         _deleteWorkerListener = TaskWorker.onMessage((msg) => {
             if (msg.type === 'error') {
@@ -948,7 +947,6 @@ async function deleteSelected() {
             if (msg.type === 'delete-complete') {
                 const s = msg.summary || {};
                 setProgress(1, null, s.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${s.done || 0} · 失败 ${s.failed || 0}` });
-                toast(s.failed === 0 ? `已删除 ${s.done || 0} 张` : `删除完成 ${s.done || 0} 成功 ${s.failed || 0} 失败`, s.failed === 0 ? 'success' : 'alert');
                 (async () => {
                     await Store.load(true);
                     exitMulti();
@@ -982,7 +980,6 @@ async function deleteSelected() {
     await runWithConcurrency(tasks, CONFIG.CONCURRENCY);
 
     setProgress(1, null, fail === 0 ? '完成' : '部分失败', { stat: `成功 ${done} · 失败 ${fail}` });
-    toast(fail === 0 ? `已删除 ${done} 张` : `删除完成 ${done} 成功 ${fail} 失败`, fail === 0 ? 'success' : 'alert');
 
     await Store.load(true);
     exitMulti();
@@ -1145,7 +1142,6 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     resetProgressUI();
 
     if (TaskWorker.isSupported() && TaskWorker.startDownload(list, apiBase(), TAB_ID)) {
-        toast(`后台下载 ${list.length} 张`, 'info');
         if (_downloadWorkerListener) _downloadWorkerListener();
         _downloadWorkerListener = TaskWorker.onMessage((msg) => {
             if (msg.type === 'error') {
@@ -1172,7 +1168,6 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
                 downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
                 setTimeout(() => URL.revokeObjectURL(msg.zipUrl), 60000);
                 setProgress(1, msg.fileName || 'download.zip', '完成');
-                toast('下载完成', 'success');
                 exitMulti();
                 setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
                 if (_downloadWorkerListener) { _downloadWorkerListener(); _downloadWorkerListener = null; }
@@ -1184,8 +1179,6 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const JSZip = await getZipLib();
     const zip = new JSZip();
     const total = list.length;
-
-    toast(`打包 ${total} 张…`, 'download');
 
     const perItemProgress = new Array(total).fill(0);
     const perItemTotal = new Array(total).fill(0);
@@ -1270,7 +1263,6 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     exitMulti(); // 下载触发后退出多选
 
     const finalFailed = total - successCount;
-    toast(`下载完成 ${successCount} 张${finalFailed ? `（跳过 ${finalFailed}）` : ''}`, 'success');
     const finalStat = `成功 ${successCount} 张${finalFailed ? ` · 跳过 ${finalFailed}` : ''} · zip ${formatSize(zipBlob.size)}`;
     setProgress(1, finalName, '完成', { stat: finalStat });
     setTimeout(() => {
@@ -1400,7 +1392,6 @@ async function uploadFiles(files) {
 
 // 后台上传：任务在 SharedWorker 中执行（转码/查重/上传/写库），页面只收进度 + 按序插卡
 function uploadViaTaskWorker(files) {
-    const total = files.length;
     const pendingPhotos = new Map();
     let _nextInsertIdx = 0;
     function flushCards() {
@@ -1453,11 +1444,6 @@ function uploadViaTaskWorker(files) {
         }
         if (msg.type === 'upload-complete') {
             setUploadProgress(1, null, summary.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${summary.done} · 跳过 ${summary.skipped} · 失败 ${summary.failed}`, done: summary.done, skipped: summary.skipped, failed: summary.failed });
-            const parts = [];
-            if (summary.done > 0) parts.push(`成功 ${summary.done}`);
-            if (summary.skipped > 0) parts.push(`跳过 ${summary.skipped}`);
-            if (summary.failed > 0) parts.push(`失败 ${summary.failed}`);
-            toast(`上传完成 ${parts.join('，')}`, summary.done > 0 || summary.skipped > 0 ? 'success' : 'alert');
             setTimeout(resetUploadUI, 2500);
             off();
         }
@@ -1468,7 +1454,6 @@ function uploadViaTaskWorker(files) {
         runMainThreadUpload(files); // 罕见兜底：消息通道异常时回退主线程
         return;
     }
-    toast(`后台上传 ${total} 个文件`, 'info');
 }
 
 async function runMainThreadUpload(files) {
@@ -1633,11 +1618,6 @@ async function runMainThreadUpload(files) {
     clearInterval(finalAnim);
 
     setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`, done, skipped, failed });
-    const summary = [];
-    if (done > 0) summary.push(`成功 ${done}`);
-    if (skipped > 0) summary.push(`跳过 ${skipped}`);
-    if (failed > 0) summary.push(`失败 ${failed}`);
-    if (summary.length) toast(`上传完成 ${summary.join('，')}`, done > 0 || skipped > 0 ? 'success' : 'alert');
     setTimeout(resetUploadUI, 2500);
 }
 
@@ -1926,10 +1906,6 @@ function scheduleZoomRender() {
 function applyZoomTransform() {
     const w = lbWrap(); if (!w) return;
     w.style.transform = `translate(${state.zoom.x}px, ${state.zoom.y}px) scale(${state.zoom.s}) rotate(${(state.zoom.r || 0).toFixed(2)}deg)`;
-}
-function setWillChange(on) {
-    const w = lbWrap(); if (!w) return;
-    w.style.willChange = on ? 'transform' : 'auto';
 }
 function clampPan() {
     const w = lbWrap(); if (!w || !stage) return;
@@ -2363,7 +2339,6 @@ $('#menuShare').addEventListener('click', async () => {
 $('#menuGoogle').addEventListener('click', () => {
     // 使用 Google Lens 新版 URL（旧 searchbyimage 在多数地区会丢失 image_url 参数并重定向到首页）
     window.open('https://lens.google.com/uploadbyurl?url=' + encodeURIComponent(curPhoto().url), '_blank', 'noopener');
-    toast('打开 Google 搜图', 'info');
     closeMenu();
 });
 
@@ -2415,9 +2390,6 @@ function resumeRunningTask() {
     _mode = resumedType;
     resetProgressUI();
     setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
-    var msgMap = { delete: '删除', download: '下载', upload: '上传' };
-    var extraNote = activeTypes.length > 1 ? `（共 ${activeTypes.length} 个）` : '';
-    toast('已恢复 ' + (msgMap[resumedType] || resumedType) + ' 进度' + extraNote, 'info');
     if (_resumeWorkerListener) _resumeWorkerListener();
     _resumeWorkerListener = TaskWorker.onMessage(function (msg) {
         if (msg.type === 'task-update' && msg.task && activeTypes.indexOf(msg.task.type) >= 0) {
@@ -2451,7 +2423,6 @@ function resumeRunningTask() {
             }
             downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
             setTimeout(function () { URL.revokeObjectURL(msg.zipUrl); }, 60000);
-            toast('下载完成', 'success');
         }
         if (msg.type === 'upload-complete') {
             (async function () {

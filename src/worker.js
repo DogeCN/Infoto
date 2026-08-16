@@ -72,6 +72,10 @@ export default {
         return json(cors, arr);
       }
       if (request.method === 'POST') {
+        // 匿名写库防刷：每 IP 每 5 分钟最多 300 次（正常用户批量上传远达不到；
+        // 主线程路径每张一次 POST，200 张并发 3 也只在 100s 内约 200 次）
+        const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+        if (!rlCheck('photos:' + ip, 5 * 60 * 1000, 300)) return json(cors, { error: 'too many requests' }, 429);
         // 按 id upsert 单条（禁止整组覆盖，防止无鉴权清空/篡改整个相册）
         try {
           // 元数据体很小，预检 Content-Length 防超大 JSON 撑爆内存
