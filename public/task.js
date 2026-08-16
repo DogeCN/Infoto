@@ -129,12 +129,14 @@ class UploadTask {
                     st.err = 'SVG 暂不支持'; this.failed++; result(idx, file.name, null, 'SVG 暂不支持'); return;
                 }
                 let ext = 'webp', hasAudio = false;
+                // 尺寸直接来自压缩/转码阶段的位图元数据（SharedWorker 无 DOM，不能二次加载取尺寸）
+                let dimsW = 0, dimsH = 0;
                 const isV = isVideoFile(file), isG = isGifFile(file), isP = isPicFile(file);
                 if (isP) {
                     emit(file.name, '压缩中…');
                     const webp = await compressToWebp(file, WEBP_QUALITY);
-                    if (!webp) { st.err = '图片 WebP 压缩失败'; this.failed++; result(idx, file.name, null, st.err); return; }
-                    blob = webp; ext = 'webp';
+                    if (!webp || !webp.blob) { st.err = '图片 WebP 压缩失败'; this.failed++; result(idx, file.name, null, st.err); return; }
+                    blob = webp.blob; ext = 'webp'; dimsW = webp.width || 0; dimsH = webp.height || 0;
                 } else if (isV || isG) {
                     if (!av1Ok) {
                         const msg = (isG ? 'GIF' : '视频') + '需要支持 AV1 WebCodecs 的浏览器';
@@ -143,7 +145,7 @@ class UploadTask {
                     emit(file.name, (isG ? 'GIF 转码' : '视频转码') + '中…');
                     // Worker 无 <video> 元素：非 MP4 容器由 transcodeToAv1Webm 抛错（页面已对含非 MP4 视频的批次降级主线程，正常到不了这里）
                     const r = await transcodeToAv1Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); emit(file.name); });
-                    blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio;
+                    blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio; dimsW = r.width || 0; dimsH = r.height || 0;
                 }
                 st.prepP = 1;
                 st.uploadBytes = blob.size || st.size || 1;
@@ -160,7 +162,7 @@ class UploadTask {
                 const photo = {
                     id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
                     parts, sha256: sha,
-                    width: 0, height: 0, createdAt: Date.now(),
+                    width: dimsW, height: dimsH, createdAt: Date.now(),
                     ext, hasAudio
                 };
                 emit(file.name, '写库…');
@@ -285,11 +287,12 @@ class DeleteTask {
 
 /* ============ 下载任务 ============ */
 class DownloadTask {
-    constructor(jobId, list, apiBase) {
+    constructor(jobId, list, apiBase, tabId) {
         this.id = jobId;
         this.type = 'download';
         this.list = list;
         this.apiBase = apiBase;
+        this.tabId = tabId || null; // 发起页标识：download-complete 广播带上，各页自行判断是否弹下载
         this.startedAt = Date.now();
         this.status = 'running';
         this.progress = 0;
@@ -371,7 +374,7 @@ class DownloadTask {
             this.done = this.zipBlobUrl ? 1 : 0;
             this.failed = this.zipBlobUrl ? 0 : 1;
             this._emitUpdate();
-            broadcast({ type: 'download-complete', taskId: this.id, zipUrl: this.zipBlobUrl, fileName: this.finalName });
+            broadcast({ type: 'download-complete', taskId: this.id, zipUrl: this.zipBlobUrl, fileName: this.finalName, tabId: this.tabId });
             tasks.download = null;
             return;
         }
@@ -459,7 +462,7 @@ class DownloadTask {
         this.extraStat = `成功 ${successCount} 张${finalFailed ? ` · 跳过 ${finalFailed}` : ''} · zip ${formatSize(zipBlob.size)}`;
         this._emitUpdate();
 
-        broadcast({ type: 'download-complete', taskId: this.id, zipUrl: this.zipBlobUrl, fileName: this.finalName });
+        broadcast({ type: 'download-complete', taskId: this.id, zipUrl: this.zipBlobUrl, fileName: this.finalName, tabId: this.tabId });
 
         tasks.download = null;
         setTimeout(() => broadcast({ type: 'task-clear', taskType: 'download' }), 3000);
@@ -529,7 +532,8 @@ function handleIncomingMessage(msg, replyPort) {
                 tasks.download = new DownloadTask(
                     'dl_' + Date.now().toString(36),
                     msg.list || [],
-                    msg.apiBase || ''
+                    msg.apiBase || '',
+                    msg.tabId || null
                 );
                 reply({ type: 'task-started', taskType: 'download', taskId: tasks.download.id });
             } catch (err) {

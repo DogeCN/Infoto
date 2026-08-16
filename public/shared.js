@@ -181,7 +181,9 @@
         } finally {
             bmp.close();
         }
-        return blob;
+        // 返回尺寸：压缩时 createImageBitmap 已拿到方向修正后的位图尺寸，
+        // 直接带回，避免上传后二次加载图片取尺寸（SharedWorker 无 DOM 更必须）
+        return { blob, width: w, height: h };
     };
 
     /* =========================================================
@@ -350,26 +352,31 @@
         let t = 0;
         const canvas = new OffscreenCanvas(w, h);
         const ctx = canvas.getContext('2d');
-        let prev = ctx.createImageData(w, h);
+        // 按 GIF89a disposal 规范合成帧：
+        //   - prevShot：上一帧"绘制前"的画布快照（disposal=3 的恢复目标）
+        //   - prevDisposal：上一帧的 disposal，决定本帧开始前画布状态
+        // 旧实现把 disposal 0/1/2 一律整屏覆盖，透明帧会黑底/错位；disposal 2（恢复背景）完全未处理。
+        let prevShot = ctx.createImageData(w, h);
+        let prevDisposal = 0;
         for (let i = 0; i < reader.numFrames(); i++) {
             const info = reader.frameInfo(i);
             const delayMs = Math.max(20, (info.delay || 10) * 10);
             const img = ctx.createImageData(w, h);
             reader.decodeAndBlitFrameRGBA(i, img.data);
-            if (info.disposal === 3 && prev) {
-                ctx.putImageData(prev, 0, 0);
-                ctx.globalCompositeOperation = 'source-over';
-                const tmpC = new OffscreenCanvas(w, h);
-                const tmpX = tmpC.getContext('2d');
-                tmpX.putImageData(img, 0, 0);
-                ctx.drawImage(tmpC, info.x, info.y, info.width, info.height);
-            } else {
-                ctx.putImageData(img, 0, 0);
-            }
-            if (info.disposal !== 3) prev = ctx.getImageData(0, 0, w, h);
+            // 1) 应用上一帧的 disposal，把画布恢复到本帧的正确基底
+            if (i > 0 && prevDisposal === 2) ctx.clearRect(0, 0, w, h);              // 恢复背景（透明）
+            else if (i > 0 && prevDisposal === 3) ctx.putImageData(prevShot, 0, 0);  // 恢复上一帧绘制前
+            // 2) 记录本帧绘制前内容（若本帧 disposal=3，下一帧需恢复到这里）
+            const before = ctx.getImageData(0, 0, w, h);
+            // 3) 本帧叠加到基底（帧透明区域透出基底），而非整屏覆盖
+            const tmpC = new OffscreenCanvas(w, h);
+            tmpC.getContext('2d').putImageData(img, 0, 0);
+            ctx.drawImage(tmpC, info.x, info.y, info.width, info.height);
             const bitmap = await createImageBitmap(canvas);
             frames.push({ bitmap, delayMs, ts: t / 1000 });
             t += delayMs;
+            prevDisposal = info.disposal;
+            prevShot = before;
         }
         return { width: w, height: h, frames, durationSec: t / 1000, hasAudio: false };
     }
@@ -636,7 +643,8 @@
         }
         report(1, '完成');
         const blob = muxer.finalize();
-        return { blob, ext: 'webm', hasAudio: opusSupported && !!srcAudio };
+        // 尺寸取编码后的 muxer 尺寸（GIF/MP4/fallback 三分支都设置过 muxer.w/h）
+        return { blob, ext: 'webm', hasAudio: opusSupported && !!srcAudio, width: muxer.w, height: muxer.h };
     };
 
     /* 查重（页面 + Worker 通用） */
