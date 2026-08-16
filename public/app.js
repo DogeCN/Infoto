@@ -890,7 +890,7 @@ async function deleteSelected() {
         _deleteWorkerListener = TaskWorker.onMessage((msg) => {
             if (msg.type === 'task-update' && msg.task && msg.task.type === 'delete') {
                 const t = msg.task;
-                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
             }
             if (msg.type === 'delete-complete') {
                 const s = msg.summary || {};
@@ -1096,7 +1096,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
         _downloadWorkerListener = TaskWorker.onMessage((msg) => {
             if (msg.type === 'task-update' && msg.task && msg.task.type === 'download') {
                 const t = msg.task;
-                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
             }
             if (msg.type === 'download-complete' && msg.zipUrl) {
                 downloadUrl(msg.zipUrl, msg.fileName || 'download.zip');
@@ -1274,6 +1274,10 @@ function setProgress(p, file, step, extra) {
     }
     if (file) $('#upTipFile').textContent = file;
     if (step) $('#upTipStep').textContent = step;
+    // 成功/重复/失败 计数动态更新（上传/下载/删除通用；extra.done/skipped/failed 传入即刷新）
+    if (extra && extra.done !== undefined) $('#upDone').textContent = String(extra.done);
+    if (extra && extra.skipped !== undefined) $('#upSkipped').textContent = String(extra.skipped);
+    if (extra && extra.failed !== undefined) $('#upFailed').textContent = String(extra.failed);
     if (extra && extra.stat !== undefined && extra.stat !== null) {
         $('#upTipStatExtra')?.remove();
         const s = document.createElement('div');
@@ -1295,10 +1299,13 @@ async function uploadFiles(files) {
     applyFileInputAccept();
     const total = files.length;
     if (total === 0) return;
-    // 后台任务路径（SharedWorker）：图片/GIF/MP4 视频均可后台转码、跨页面推进；
-    // 含非 MP4 视频（依赖 <video> 元素解码，Worker 无 DOM）时整批降级主线程流水线。
-    const hasNonMp4Video = files.some(f => isVideoFile(f) && !isMp4File(f));
-    if (TaskWorker.isSupported() && !hasNonMp4Video) {
+    // 后台任务路径（SharedWorker）：仅纯图片可后台转码/上传、跨页面推进。
+    // 视频/GIF 必须走主线程：WebCodecs（VideoEncoder/VideoDecoder/VideoFrame）在
+    // SharedWorker 环境中不可用（Chrome 仅 Window/DedicatedWorker 暴露），Worker 内
+    // 探测 supportsAv1WebCodecs 恒 false、转码必然失败——此前"图片/GIF/MP4 均可后台"
+    // 的假设是错的（实测 SharedWorker 无 VideoEncoder），含视频/GIF 一律降级主线程。
+    const hasVideoOrGif = files.some(f => isVideoFile(f) || isGifFile(f));
+    if (TaskWorker.isSupported() && !hasVideoOrGif) {
         uploadViaTaskWorker(files);
         return;
     }
@@ -1330,7 +1337,7 @@ function uploadViaTaskWorker(files) {
     const off = TaskWorker.onMessage((msg) => {
         if (msg.type === 'task-update' && msg.task && msg.task.type === 'upload') {
             const t = msg.task;
-            setUploadProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+            setUploadProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
         }
         if (msg.type === 'photo-result') {
             if (msg.photo) {
@@ -1352,7 +1359,7 @@ function uploadViaTaskWorker(files) {
             }
         }
         if (msg.type === 'upload-complete') {
-            setUploadProgress(1, null, summary.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${summary.done} · 跳过 ${summary.skipped} · 失败 ${summary.failed}` });
+            setUploadProgress(1, null, summary.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${summary.done} · 跳过 ${summary.skipped} · 失败 ${summary.failed}`, done: summary.done, skipped: summary.skipped, failed: summary.failed });
             const parts = [];
             if (summary.done > 0) parts.push(`成功 ${summary.done}`);
             if (summary.skipped > 0) parts.push(`跳过重复 ${summary.skipped}`);
@@ -1434,7 +1441,7 @@ async function runMainThreadUpload(files) {
     let uiTick = null;
     const startUiTick = () => {
         if (uiTick) return; uiTick = setInterval(() => {
-            setUploadProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed) });
+            setUploadProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
         }, 120);
     };
     const stopUiTick = () => { if (uiTick) { clearInterval(uiTick); uiTick = null; } };
@@ -1517,7 +1524,7 @@ async function runMainThreadUpload(files) {
     const finalDur = 500;
     const finalAnim = setInterval(() => {
         const t = Math.min(1, (Date.now() - finalStart) / finalDur);
-        setUploadProgress(PHASE.PREP + PHASE.UPLOAD + t * PHASE.SYNC, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed) });
+        setUploadProgress(PHASE.PREP + PHASE.UPLOAD + t * PHASE.SYNC, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
     }, 30);
     try {
         updateMasonryStatsOnly();
@@ -1529,7 +1536,7 @@ async function runMainThreadUpload(files) {
     } catch (_) { }
     clearInterval(finalAnim);
 
-    setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s` });
+    setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`, done, skipped, failed });
     const summary = [];
     if (done > 0) summary.push(`成功 ${done}`);
     if (skipped > 0) summary.push(`跳过重复 ${skipped}`);
@@ -2215,7 +2222,7 @@ function resumeRunningTask() {
     var t = TaskWorker.getTask(resumedType);
     _mode = resumedType;
     resetProgressUI();
-    setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed });
+    setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
     var msgMap = { delete: '删除', download: '下载', upload: '上传' };
     var extraNote = activeTypes.length > 1 ? '（同时运行 ' + activeTypes.length + ' 个任务）' : '';
     toast('检测到后台进行中的' + (msgMap[resumedType] || resumedType) + '任务' + extraNote + '，已恢复进度显示', 'info');
@@ -2225,7 +2232,7 @@ function resumeRunningTask() {
             var mt = msg.task;
             if (mt.type === resumedType || !TaskWorker.getTask(resumedType) || TaskWorker.getTask(resumedType).status !== 'running') {
                 _mode = mt.type;
-                setProgress(mt.progress, mt.curFile, mt.step, { stat: mt.extraStat || '', remaining: mt.total - mt.done - mt.skipped - mt.failed });
+                setProgress(mt.progress, mt.curFile, mt.step, { stat: mt.extraStat || '', remaining: mt.total - mt.done - mt.skipped - mt.failed, done: mt.done, skipped: mt.skipped, failed: mt.failed });
             }
         }
         if (msg.type === 'task-clear' && activeTypes.indexOf(msg.taskType) >= 0) {

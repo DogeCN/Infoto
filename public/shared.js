@@ -143,48 +143,18 @@
     g.hasAnimatedMedia = function (p) { const e = String(p && p.ext || '').toLowerCase(); return e === 'webm'; };
     g.picMediaType = function (p) { return g.hasAnimatedMedia(p) ? 'video' : 'image'; };
 
-    // AV1 编码能力探测：isConfigSupported 有已知的保守误报（部分浏览器/驱动对该 API
-    // 返回 false 但实际可编码），故以「真实 encode 一帧成功」为最终判据。
-    // 只依赖 WebCodecs + OffscreenCanvas，页面与 SharedWorker 双环境均可用。
+    // AV1 编码能力探测（简化版）：仅用 isConfigSupported 按典型分辨率探测。
+    // 只在页面主线程调用——SharedWorker 无 WebCodecs（VideoEncoder 不存在），
+    // 视频/GIF 上传已统一降级主线程，Worker 不再探测。
+    // 640x480 / av01.0.05M.08 为常见软编配置（Chrome/Edge/Firefox 均支持）。
     g._av1Support = null;
-    g._probeEncodeAv1 = async function () {
-        if (typeof VideoEncoder !== 'function' || typeof OffscreenCanvas !== 'function') return false;
-        try {
-            const canvas = new OffscreenCanvas(64, 64);
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#123456';
-            ctx.fillRect(0, 0, 64, 64);
-            const frame = new VideoFrame(canvas, { timestamp: 0 });
-            let ok = false;
-            const enc = new VideoEncoder({
-                output: () => { ok = true; },
-                error: () => { },
-            });
-            enc.configure({
-                codec: 'av01.0.04M.08',
-                width: 64, height: 64,
-                bitrate: 256_000,
-                framerate: 24,
-                hardwareAcceleration: 'no-preference',
-            });
-            enc.encode(frame);
-            await enc.flush();
-            frame.close();
-            enc.close();
-            return ok;
-        } catch (e) { return false; }
-    };
     g.supportsAv1WebCodecs = async function () {
         if (g._av1Support !== null) return g._av1Support;
-        // 快速路径：isConfigSupported 支持即视为支持
-        if (typeof VideoEncoder === 'function') {
-            try {
-                const r = await VideoEncoder.isConfigSupported({ codec: 'av01.0.04M.08', width: 64, height: 64, hardwareAcceleration: 'no-preference' });
-                if (r && r.supported) { g._av1Support = true; return true; }
-            } catch (_) { }
-        }
-        // 慢路径：真实编码一帧（isConfigSupported 保守误报时的兜底）
-        g._av1Support = await g._probeEncodeAv1();
+        if (typeof VideoEncoder !== 'function') { g._av1Support = false; return false; }
+        try {
+            const r = await VideoEncoder.isConfigSupported({ codec: 'av01.0.05M.08', width: 640, height: 480, hardwareAcceleration: 'no-preference' });
+            g._av1Support = !!(r && r.supported);
+        } catch (e) { console.warn('[infoto] AV1 probe fail', e && e.message); g._av1Support = false; }
         return g._av1Support;
     };
 
