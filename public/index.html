@@ -16,7 +16,7 @@
 
   <!-- ============ 顶部导航 ============ -->
   <header>
-    <div class="sort-group" id="sortGroup">
+    <div class="sort-group">
       <button class="sort-btn active" id="sortLatest">
         <svg class="icon" data-i="clock-desc"></svg>
         <span id="latestText">最新</span>
@@ -55,6 +55,9 @@
       <button class="nav-btn hidden" id="batchDeleteBtn" title="删除所选">
         <svg class="icon-lg" data-i="trash"></svg>
       </button>
+      <button class="nav-btn" id="batchClearBtn" title="清除标记">
+        <svg class="icon-lg" data-i="undo"></svg>
+      </button>
       <button class="nav-btn" id="batchDownloadBtn" title="批量下载">
         <svg class="icon-lg" data-i="download"></svg>
       </button>
@@ -64,8 +67,8 @@
   <!-- 框选矩形 -->
   <div class="selection-box" id="selectionBox"></div>
 
-  <!-- ============ 上传进度：按钮右下角小圆圈 + 悬停详情 ============ -->
-  <div class="up-indicator hidden" id="upIndicator">
+  <!-- ============ 任务进度：上传/下载/删除 三个独立浮动进度环（不共用、不重叠、配色区分） ============ -->
+  <div class="task-indicator up hidden" id="upIndicator" title="上传进度">
     <svg viewBox="0 0 36 36" class="up-ring">
       <circle class="up-ring-bg" cx="18" cy="18" r="15" />
       <circle class="up-ring-fg" id="upRing" cx="18" cy="18" r="15" />
@@ -77,6 +80,38 @@
         <span class="ok">成功 <b id="upDone">0</b></span>
         <span class="dup">重复 <b id="upSkipped">0</b></span>
         <span class="bad">失败 <b id="upFailed">0</b></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="task-indicator dl hidden" id="dlIndicator" title="下载进度">
+    <svg viewBox="0 0 36 36" class="up-ring">
+      <circle class="up-ring-bg" cx="18" cy="18" r="15" />
+      <circle class="up-ring-fg" id="dlRing" cx="18" cy="18" r="15" />
+    </svg>
+    <span class="up-pct" id="dlPct">0</span>
+    <div class="up-tip" id="dlTip">
+      <div class="up-tip-rows" id="dlRows"></div>
+      <div class="up-tip-stat">
+        <span class="ok">成功 <b id="dlDone">0</b></span>
+        <span class="dup">跳过 <b id="dlSkipped">0</b></span>
+        <span class="bad">失败 <b id="dlFailed">0</b></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="task-indicator del hidden" id="delIndicator" title="删除进度">
+    <svg viewBox="0 0 36 36" class="up-ring">
+      <circle class="up-ring-bg" cx="18" cy="18" r="15" />
+      <circle class="up-ring-fg" id="delRing" cx="18" cy="18" r="15" />
+    </svg>
+    <span class="up-pct" id="delPct">0</span>
+    <div class="up-tip" id="delTip">
+      <div class="up-tip-rows" id="delRows"></div>
+      <div class="up-tip-stat">
+        <span class="ok">成功 <b id="delDone">0</b></span>
+        <span class="dup">跳过 <b id="delSkipped">0</b></span>
+        <span class="bad">失败 <b id="delFailed">0</b></span>
       </div>
     </div>
   </div>
@@ -150,7 +185,18 @@
   <!-- Toast -->
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
+  <!-- 加载顺序即依赖顺序：shared 基础 → 图标/工具 → 桥 → 数据 → UI → 各功能域 → 入口 -->
   <script src="shared.js"></script>
+  <script src="icons.js"></script>
+  <script src="shared-refs.js"></script>
+  <script src="task-worker.js"></script>
+  <script src="store.js"></script>
+  <script src="ui.js"></script>
+  <script src="masonry.js"></script>
+  <script src="multiselect.js"></script>
+  <script src="download.js"></script>
+  <script src="upload.js"></script>
+  <script src="lightbox.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => { }));

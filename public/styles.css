@@ -92,11 +92,6 @@ button:focus-visible {
   flex-shrink: 0;
 }
 
-.icon-sm {
-  width: 1em;
-  height: 1em;
-}
-
 .icon-lg {
   width: 1.75em;
   height: 1.75em;
@@ -482,6 +477,43 @@ main {
   gap: .5rem;
 }
 
+/* 多选栏三个操作按钮语义色高亮——与各自功能的其他入口同色：
+   删除=--error 玫红（Lightbox 踩 gi-left 同色）、清除标记=--warning 琥珀（菜单「取消标记」同色）、
+   下载=--primary 青（Lightbox 下滑手势 gi-down 同色） */
+.multi-bar .actions .nav-btn .icon-lg {
+  transition: color .2s;
+}
+
+#batchDeleteBtn .icon-lg {
+  color: var(--error);
+}
+#batchDeleteBtn:hover {
+  background: rgba(244, 63, 94, .14);
+}
+
+#batchClearBtn .icon-lg {
+  color: var(--warning);
+}
+#batchClearBtn:hover {
+  background: rgba(245, 158, 11, .12);
+}
+
+#batchDownloadBtn .icon-lg {
+  color: var(--primary);
+}
+#batchDownloadBtn:hover {
+  background: rgba(34, 211, 238, .12);
+}
+
+/* 所选照片均未标记时置灰（同菜单「取消标记」disabled 态） */
+#batchClearBtn.disabled {
+  opacity: .4;
+  pointer-events: none;
+}
+#batchClearBtn.disabled .icon-lg {
+  color: var(--on-variant);
+}
+
 .selection-box {
   position: fixed;
   z-index: 30;
@@ -491,8 +523,9 @@ main {
   background: rgba(34, 211, 238, .2);
 }
 
-/* ============ 上传进度：按钮右下角小圆圈 + 悬停详情 ============ */
-.up-indicator {
+/* ============ 任务进度：上传/下载/删除 三个独立浮动进度环（右下竖直排列，配色区分） ============ */
+/* 类型配色：上传=青(--primary)、下载=紫(#8b5cf6)、删除=玫红(--error) */
+.task-indicator {
   transition: opacity .38s ease; /* 完成淡出用（fading 类） */
   position: fixed;
   right: .65rem;
@@ -505,6 +538,41 @@ main {
   justify-content: center;
   cursor: default;
   transition: opacity .38s ease, bottom .3s ease; /* opacity 用于完成淡出（fading 类），bottom 用于多选底栏上浮 */
+}
+
+/* 三个环竖直排列互不重叠：上传在最底、下载上移一档、删除再上移一档 */
+.task-indicator.dl {
+  bottom: 3.9rem;
+}
+
+.task-indicator.del {
+  bottom: 7.15rem;
+}
+
+.task-indicator.dl .up-ring-fg {
+  stroke: #8b5cf6;
+  filter: drop-shadow(0 0 4px rgba(139, 92, 246, .5));
+}
+
+.task-indicator.del .up-ring-fg {
+  stroke: var(--error);
+  filter: drop-shadow(0 0 4px rgba(244, 63, 94, .5));
+}
+
+.task-indicator.dl .up-row-step {
+  color: #8b5cf6;
+}
+
+.task-indicator.del .up-row-step {
+  color: var(--error);
+}
+
+.task-indicator.dl .up-tip {
+  box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .7), 0 8px 24px -12px rgba(139, 92, 246, .2);
+}
+
+.task-indicator.del .up-tip {
+  box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .7), 0 8px 24px -12px rgba(244, 63, 94, .2);
 }
 
 .up-ring {
@@ -535,7 +603,8 @@ main {
 .up-pct {
   font-size: .9rem;
   font-weight: 800;
-  color: var(--on-surface);
+  color: #facc15; /* 亮黄：进度环内数字/对勾显眼高亮，与青色环身形成对比 */
+  text-shadow: 0 0 6px rgba(250, 204, 21, .55);
   z-index: 1;
   line-height: 1;
   letter-spacing: -.03em;
@@ -565,27 +634,35 @@ main {
 /* 点击展开（所有设备）：点进度环展开/再点收回，点外部收起。
    触摸设备上 :hover 会 sticky（点击后不消失），若 hover 也生效则"再点收回"永远无效，
    故 hover 展开限定在支持 hover 的设备（桌面） */
-.up-indicator.open .up-tip {
+.task-indicator.open .up-tip {
   display: block;
   animation: tip-in .18s ease-out;
 }
 
 /* 完成淡出：JS 加 fading → opacity 过渡 0.38s → 完成后加 hidden 移除 */
-.up-indicator.fading {
+.task-indicator.fading {
   opacity: 0;
   pointer-events: none;
 }
 
 @media (hover: hover) {
-  .up-indicator:hover .up-tip {
+  .task-indicator:hover .up-tip {
     display: block;
     animation: tip-in .18s ease-out;
   }
 }
 
-/* 多选底栏出现时，进度环与左下通知统一上浮，避免与底栏按钮重叠 */
-.multi-bar.show~.up-indicator {
+/* 多选底栏出现时，三个进度环与左下通知统一上浮，避免与底栏按钮重叠 */
+.multi-bar.show~.task-indicator {
   bottom: 4.75rem;
+}
+
+.multi-bar.show~.task-indicator.dl {
+  bottom: 8rem;
+}
+
+.multi-bar.show~.task-indicator.del {
+  bottom: 11.25rem;
 }
 
 .multi-bar.show~.toasts {
@@ -1081,12 +1158,29 @@ video.ph-img {
   margin: .75rem auto .5rem;
 }
 
-/* 两列网格：图标在上、文字在下 */
+/* 自适应网格：移动端 2 列 3 行（2x3）；桌面/平板横屏 3 列 2 行（3x2） */
 .menu-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: .35rem;
   padding: 0 .75rem calc(.85rem + env(safe-area-inset-bottom));
+}
+
+@media(min-width:768px) {
+  /* 桌面端底部面板限宽居中，网格切 3 列（6 项 = 3x2 紧凑两行） */
+  .menu {
+    left: 50%;
+    right: auto;
+    width: min(28rem, calc(100vw - 2rem));
+    transform: translate(-50%, 110%);
+    border-radius: 1.5rem;
+  }
+  .menu.show {
+    transform: translate(-50%, 0);
+  }
+  .menu-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 .menu-item {

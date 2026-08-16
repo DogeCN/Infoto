@@ -65,6 +65,37 @@
         return results;
     };
 
+    // 动态任务队列：运行时可 push 追加任务（上传/下载/删除任务进行中再触发同类操作时，
+    // 追加到同一任务而不是新开任务竞争进度环）。任务自身的错误被吞并计数（调用方各自 try/catch）。
+    g.createTaskQueue = function (concurrency) {
+        const queue = [];
+        let running = 0;
+        const idleWaiters = [];
+        function flushIdle() {
+            if (!running && queue.length === 0 && idleWaiters.length) idleWaiters.splice(0).forEach(r => r());
+        }
+        function pump() {
+            while (running < concurrency && queue.length) {
+                const task = queue.shift();
+                running++;
+                (async () => {
+                    try { await task(); }
+                    catch (e) { console.warn('[task-queue] task error:', e && e.message); }
+                    finally { running--; pump(); flushIdle(); }
+                })();
+            }
+        }
+        return {
+            push(task) { queue.push(task); pump(); },
+            get size() { return queue.length; },
+            get busy() { return running > 0 || queue.length > 0; },
+            idle() {
+                if (!running && queue.length === 0) return Promise.resolve();
+                return new Promise(r => idleWaiters.push(r));
+            },
+        };
+    };
+
     // XHR 上传（兼容浏览器主页面 + SharedWorker，都有 XMLHttpRequest）
     g.uploadViaXhr = function (url, fd, headers, onProgress) {
         return new Promise((resolve, reject) => {
@@ -120,44 +151,49 @@
         });
     };
 
-    // 逐张删除 + 进度回调（页面主线程回退 与 SharedWorker DeleteTask 共用，消除两套相同实现）
-    g.runDeletePhotos = async function (ids, apiBase, onUpdate) {
-        const total = ids.length;
+    // 逐张删除 + 进度回调（页面主线程回退 与 SharedWorker DeleteTask 共用，消除两套相同实现）。
+    // createDeleteRunner 支持运行中追加 id（删除任务进行中再触发删除 → 合并到同一任务）。
+    g.createDeleteRunner = function (apiBase, onUpdate) {
+        const q = g.createTaskQueue(g.CONFIG.CONCURRENCY);
         let done = 0, failed = 0;
+        const state = { total: 0, finished: 0 };
         const emit = () => {
-            const finished = done + failed;
-            onUpdate({ progress: total ? finished / total : 1, curFile: `${finished} / ${total} 张`, done, failed, total, finished });
+            const f = state.finished;
+            onUpdate({ progress: state.total ? f / state.total : 1, curFile: `${f} / ${state.total} 张`, done, failed, total: state.total, finished: f });
         };
-        emit();
-        const tasks = ids.map(id => async () => {
+        const delOne = (id) => async () => {
             try {
                 const r = await fetch((apiBase || '') + '/api/photos/' + encodeURIComponent(id), { method: 'DELETE' });
                 if (r.ok) done++; else failed++;
             } catch (e) { console.warn('[infoto] delete fail:', e && e.message); failed++; }
-            emit();
-        });
-        await g.runWithConcurrency(tasks, g.CONFIG.CONCURRENCY);
-        return { done, failed, total };
+            state.finished++; emit();
+        };
+        return {
+            append(ids) { for (const id of ids || []) { state.total++; q.push(delOne(id)); } emit(); return state.total; },
+            done: q.idle().then(() => ({ done, failed, total: state.total })),
+        };
     };
 
     // 批量下载进度汇总器：按字节加权合并「每项下载进度 + zip 打包进度」。
     // 页面主线程 zip 分支 与 SharedWorker DownloadTask 共用，消除两套 recomputeOverall。
+    // 支持 append(n) 动态扩项（下载任务进行中再触发下载 → 追加到同一任务）。
     // onUpdate(snapshot) 同步回调；snapshot = {progress, done, failed, total, curFile, step, extraStat}
     g.createDownloadProgress = function (total, onUpdate) {
-        const perItemProgress = new Array(total).fill(0);
-        const perItemTotal = new Array(total).fill(0);
-        const perItemDone = new Array(total).fill(false);
-        const perItemFail = new Array(total).fill(false);
+        const perItemProgress = [];
+        const perItemTotal = [];
+        const perItemDone = [];
+        const perItemFail = [];
+        let n = 0;
         const ZIP_WEIGHT = 0.12, FETCH_WEIGHT = 1 - ZIP_WEIGHT;
         let zipProgress = 0;
         let zipStat = null;
 
         const snapshot = () => {
             let sumCur = 0, sumTot = 0, finishedItems = 0, failed = 0;
-            for (let i = 0; i < total; i++) {
+            for (let i = 0; i < n; i++) {
                 if (perItemFail[i]) { failed++; continue; } // 失败项不占进度分母（否则永远到不了 0.88）
                 const t = perItemTotal[i] || 1;             // 大小未知项按 1 字节占位，防首项完成即满进度
-                sumCur += perItemProgress[i];
+                sumCur += perItemProgress[i] || 0;
                 sumTot += t;
                 if (perItemDone[i]) finishedItems++;
             }
@@ -166,13 +202,20 @@
                 progress: Math.min(1, fetchPart + zipProgress * ZIP_WEIGHT),
                 done: finishedItems + failed,
                 failed,
-                total,
-                curFile: `${finishedItems + failed} / ${total} 张`,
+                total: n,
+                curFile: `${finishedItems + failed} / ${n} 张`,
                 step: zipProgress > 0 ? '打包 zip 中' : '下载中…',
-                extraStat: zipStat || `下载 ${finishedItems + failed}/${total} 张`,
+                extraStat: zipStat || `下载 ${finishedItems + failed}/${n} 张`,
             };
         };
         const emit = () => onUpdate(snapshot());
+        const extend = (count) => {
+            for (let i = 0; i < count; i++) { perItemProgress.push(0); perItemTotal.push(0); perItemDone.push(false); perItemFail.push(false); }
+            n += count;
+            emit();
+            return n;
+        };
+        extend(total);
 
         return {
             onItemProgress(i, loaded, tot) { perItemProgress[i] = loaded; if (tot > perItemTotal[i]) perItemTotal[i] = tot; emit(); },
@@ -185,6 +228,8 @@
                 emit();
                 return snapshot();
             },
+            // 动态追加 count 项，返回追加后的总项数（新项索引 = 返回值 - count .. 返回值 - 1）
+            append(count) { return extend(count); },
             snapshot,
         };
     };
@@ -236,7 +281,11 @@
     g.isPicFile = function (f) { return !!(f && (f.type?.startsWith?.('image/') || PIC_EXT_RE.test(f.name || ''))) && !g.isGifFile(f); };
     g.isMp4File = function (f) { return /\.(mp4|m4v|mov|3gp|f4v)$/i.test(f.name || ''); };
     g.hasAnimatedMedia = function (p) { const e = String(p && p.ext || '').toLowerCase(); return e === 'webm'; };
-    g.picMediaType = function (p) { return g.hasAnimatedMedia(p) ? 'video' : 'image'; };
+
+    // 照片 id 唯一生成（页面主线程 / SharedWorker / Store.add 三处共用，统一格式防碰撞）
+    g.genPhotoId = function () {
+        return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    };
 
     // AV1 编码能力探测（简化版）：仅用 isConfigSupported 按典型分辨率探测。
     // 只在页面主线程调用——SharedWorker 无 WebCodecs（VideoEncoder 不存在），
@@ -374,8 +423,11 @@
             }
             if (opts.audio) {
                 const { sampleRate, channels } = opts.audio;
+                // 注意：SamplingFrequency(0xB5) 必须带 ID 完整写出。旧实现 _ebmlFloat(0xb5, sr).slice(1)
+                // 砍掉 ID 只剩 size+裸 double → Audio 元素内部错乱，播放器/ffprobe 解析越界
+                // （"Element at 0xa0 exceeds containing master element"、Duration 误读 0.002s、音轨结构损坏）。
                 inner.push(_ebml(0xe1, _concat([
-                    new Uint8Array(_ebmlFloat(0xb5, sampleRate).slice(1)),
+                    _ebmlFloat(0xb5, sampleRate),
                     _ebmlU(0x9f, channels),
                 ])));
                 if (opts.codecPrivate) inner.push(_ebml(0x63a2, opts.codecPrivate));
@@ -386,7 +438,6 @@
         }
         finalize() {
             if (this._curCluster) this._closeCluster();
-            const durationUs = Math.round(this.maxDurationSec * 1e6);
             const clusterParts = [];
             for (const c of this.clusters) {
                 const inner = _concat([_ebmlU(0xe7, c.timecode), ...c.blocks]);
@@ -395,7 +446,9 @@
             const segmentInner = [];
             const infoInner = _concat([
                 _ebmlU(0x2ad7b1, 1e6),
-                _ebmlFloat(0x4489, this.maxDurationSec),
+                // Duration 元素单位 = TimecodeScale 刻度（1e6 ns/刻度），不是秒！
+                // 旧实现直接写 maxDurationSec（秒）→ ffprobe 读成 秒*1e6/1e9 = 千分之一，2s 视频变 0.002s。
+                _ebmlFloat(0x4489, this.maxDurationSec * this.tDen),
                 _ebmlStr(0x4d80, 'Infoto WebCodecs'),
                 _ebmlStr(0x5741, 'Infoto WebCodecs'),
             ]);
@@ -423,7 +476,7 @@
             return new Blob([_concat([ebmlHeader, segment])], { type: 'video/webm' });
         }
     }
-    g.SimpleWebMMuxer = SimpleWebMMuxer;
+    // 注意：SimpleWebMMuxer 仅为 transcodeToAv1Webm 内部使用，不导出到全局（此前导出无任何消费方）
 
     /* ---- GIF / 视频 → AV1 WebM（WebCodecs VideoEncoder） ---- */
     const AV1_BITRATE_PER_PIXEL = 0.35;
@@ -432,10 +485,13 @@
     g.FPS_CAP = FPS_CAP;
 
     function _av1Codec(w, h) {
-        // AV1 codec string: av01.P.LLL.DD（profile 0/1，level，8-bit）
-        let level = '04';
-        if (h > 2304) level = '05';
-        return `av01.00.${level}M.08`;
+        // AV1 codec string 必须与探测串格式一致：av01.P.LL.M.DD（profile 一位、level 两位、tier、bitdepth）。
+        // 旧实现写成 av01.00.xxM.08（profile 两位 "00"）——Chrome/Edge 的 AV1 编码器解析不了，
+        // isConfigSupported 恒 false → 视频转码必走 <video> 兜底。
+        let level = '05';
+        if (h > 1080) level = '06';   // 1080p+ → L6
+        if (h > 2160) level = '07';   // 4K+ → L7
+        return `av01.0.${level}M.08`;
     }
 
     async function _decodeGifFrames(file) {
@@ -505,8 +561,10 @@
         let audioCtx = null;
         try {
             audioCtx = (AC === AudioContext) ? new AC({ sampleRate: 48000 }) : new AC(1, 1, 48000);
-            const ab = await file.arrayBuffer();
-            const decoded = await audioCtx.decodeAudioData(ab.slice(0));
+            // decodeAudioData 对视频容器（非纯音频文件）行为不可靠：部分浏览器可解析 MP4 音轨、
+            // 部分直接 reject，极少数场景可能长时间不返回 —— 必须限时，防止视频转码整体挂起。
+            const ab = await withTimeout(Promise.resolve(file.arrayBuffer()), 30000);
+            const decoded = await withTimeout(audioCtx.decodeAudioData(ab.slice(0)), 20000);
             const hasAudio = decoded.numberOfChannels > 0 && decoded.length > 0;
             let audioResampled = null;
             if (hasAudio) {
@@ -527,43 +585,68 @@
     async function _loadMp4Box() {
         if (_mp4boxMod) return _mp4boxMod;
         const mod = await import('https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm');
-        _mp4boxMod = mod.MP4Box || (mod.default && (mod.default.MP4Box || mod.default)) || (typeof globalThis !== 'undefined' ? globalThis.MP4Box : null);
-        if (!_mp4boxMod) throw new Error('mp4box load fail');
+        // 0.5.2 具名导出 createFile/ISOFile/DataStream，没有 MP4Box 导出、没有 getTrackSpecificInfo
+        // （旧实现取 mod.MP4Box 得到 undefined，createFile 调用必抛错 → MP4 恒静默降级 <video> 兜底）
+        const createFile = mod.createFile || (mod.default && mod.default.createFile);
+        const ISOFile = mod.ISOFile || (mod.default && mod.default.ISOFile);
+        const DataStream = mod.DataStream || (mod.default && mod.default.DataStream);
+        if (typeof createFile !== 'function' || typeof ISOFile !== 'function') throw new Error('mp4box load fail');
+        _mp4boxMod = { createFile, ISOFile, DataStream };
         return _mp4boxMod;
     }
 
     async function _mp4VideoMeta(file) {
-        const MP4Box = await _loadMp4Box();
+        const { createFile, DataStream } = await _loadMp4Box();
         const buf = await file.arrayBuffer();
         return await new Promise((resolve, reject) => {
-            const mp4 = MP4Box.createFile(buf);
+            const mp4 = createFile(); // keepMdatData 默认 true（保留 mdat 供 sample.data 读取）
             mp4.onError = (e) => reject(new Error('mp4 parse error: ' + e));
             mp4.onReady = (info) => {
                 const track = info.videoTracks && info.videoTracks[0];
                 if (!track) return reject(new Error('mp4 无视频轨道'));
                 const w = track.video.width, h = track.video.height;
                 const fps = track.video.frameRate || 30;
+                const codecRaw = (track.codec || '').toLowerCase();
+                // decoder description（官方 w3c/webcodecs demuxer_mp4.js 做法）：
+                // 取 stsd entry 的 avcC/hvcC/vpcC/av1C box，box.write 输出完整 box 字节，
+                // 再去掉 8 字节 box 头（size+type）得到 AVCDecoderConfigurationRecord 等 payload。
+                // 注意 mp4box 0.5.2 没有 getTrackSpecificInfo（旧实现因此恒 null，H.264/HEVC 必解码失败）。
                 let description = null;
-                const codec = (track.codec || '').toLowerCase();
-                if (codec.startsWith('avc') || codec.startsWith('hvc') || codec.startsWith('hev')) {
-                    try { description = MP4Box.getTrackSpecificInfo(mp4, track.id); } catch (e) { console.warn('[infoto] mp4 codec info fail', e); }
-                }
+                try {
+                    const trak = mp4.getTrackById(track.id);
+                    const entries = trak && trak.mdia && trak.mdia.minf && trak.mdia.minf.stbl && trak.mdia.minf.stbl.stsd ? trak.mdia.minf.stbl.stsd.entries : [];
+                    for (const entry of entries) {
+                        const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C;
+                        if (box) {
+                            const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+                            box.write(stream);
+                            description = new Uint8Array(stream.buffer, 8);
+                            break;
+                        }
+                    }
+                } catch (e) { console.warn('[infoto] mp4 codec info fail', e); }
                 resolve({
                     width: w, height: h,
                     durationSec: info.timescale ? info.duration / info.timescale : (track.track_duration / track.timescale),
-                    codec: track.codec, description,
+                    codec: codecRaw.startsWith('vp08') ? 'vp8' : track.codec, // 浏览器不认 vp08.xx 全串，只认 vp8
+                    description,
                     trackId: track.id, timescale: track.timescale,
                     nbSamples: track.nb_samples || 0,
                     fps: fps || 30,
                 });
             };
+            try {
+                buf.fileStart = 0; // mp4box 0.5.2 要求 buffer.fileStart（官方 MP4FileSink 也设置）；缺失会解析错位/抛错
+                mp4.appendBuffer(buf); // 数据必须 appendBuffer 喂入（createFile 只建实例）
+                mp4.flush();
+            } catch (e) { reject(e); }
         });
     }
 
     async function _decodeEncodeMp4(file, meta, sink, report) {
-        const MP4Box = await _loadMp4Box();
+        const { createFile } = await _loadMp4Box();
         const buf = await file.arrayBuffer();
-        const mp4 = MP4Box.createFile(buf);
+        const mp4 = createFile();
         const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
         const avgStep = 1 / targetFps;
         const totalApprox = Math.max(1, Math.round((meta.durationSec || 1) * targetFps));
@@ -583,20 +666,34 @@
 
         await new Promise((resolve, reject) => {
             let done = false;
-            const finish = () => { if (done) return; done = true; decoder.flush().then(() => resolve()).catch(reject); };
-            mp4.onError = (e) => { if (!done) { done = true; reject(new Error('mp4 demux error: ' + e)); } };
+            let guard = null;
+            const finish = () => { if (done) return; done = true; clearTimeout(guard); decoder.flush().then(() => resolve()).catch(reject); };
+            mp4.onError = (e) => { if (!done) { done = true; clearTimeout(guard); reject(new Error('mp4 demux error: ' + e)); } };
+            // 官方时序：onReady 里 setExtractionOptions + start。mp4box 在 appendBuffer 解析时同步触发
+            // onReady；若在 appendBuffer 之后再配置提取，onSamples 永远不会被调用（旧实现即如此，恒拿不到样本）。
+            mp4.onReady = (info) => {
+                const track = info.videoTracks && info.videoTracks[0];
+                if (!track) { if (!done) { done = true; clearTimeout(guard); reject(new Error('mp4 无视频轨道')); } return; }
+                mp4.setExtractionOptions(track.id, null, { nbSamples: 1000 });
+                mp4.start();
+            };
             mp4.onSamples = (id, user, samples) => {
                 for (const s of samples) {
-                    const timestampUs = Math.round((s.cts / meta.timescale) * 1e6);
-                    const durationUs = s.duration ? Math.round((s.duration / meta.timescale) * 1e6) : Math.round(avgStep * 1e6);
+                    // 官方公式：timestamp/duration 除以 sample.timescale（sample 自带，勿用 track timescale）
+                    const timestampUs = Math.round(1e6 * s.cts / s.timescale);
+                    const durationUs = s.duration ? Math.round(1e6 * s.duration / s.timescale) : Math.round(avgStep * 1e6);
                     decoder.decode(new EncodedVideoChunk({ type: s.is_sync ? 'key' : 'delta', timestamp: timestampUs, duration: durationUs, data: s.data }));
                     fed++;
                 }
                 if (meta.nbSamples && fed >= meta.nbSamples) finish();
             };
-            mp4.setExtractionOptions(meta.trackId, null, { nbSamples: Infinity });
-            mp4.start();
-            if (!meta.nbSamples) setTimeout(finish, 200);
+            try {
+                buf.fileStart = 0; // mp4box 0.5.2 要求 buffer.fileStart（官方 MP4FileSink 也设置）；缺失解析错位/抛错
+                mp4.appendBuffer(buf);
+                mp4.flush();
+            } catch (e) { if (!done) { done = true; clearTimeout(guard); reject(e); } }
+            // 兜底：样本数未知或不完整文件时不能无限挂起；30s 足够解码完（nbSamples 已知时通常同步期已 finish）
+            guard = setTimeout(finish, 30000);
         });
         try { decoder.close(); } catch (e) { console.warn('[infoto] decoder close fail', e); }
     }

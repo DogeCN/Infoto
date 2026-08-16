@@ -245,7 +245,7 @@ export default {
         }
         await env.Infoto.put('admin_pw', stored);
       } else {
-        const vr = await verifyPassword(env, pw, stored);
+        const vr = await verifyPassword(pw, stored);
         if (!vr.ok) return json(cors, { error: 'wrong password' }, 401);
       }
       const token = await createSession(env, stored);
@@ -535,7 +535,7 @@ async function hashPasswordForStorage(password) {
   return 'PBKDF2$' + PBKDF2_ITER + '$' + bytesToHex(salt) + '$' + hash;
 }
 
-async function verifyPassword(env, input, stored) {
+async function verifyPassword(input, stored) {
   // 仅支持当前格式：PBKDF2$<iter>$<saltHex>$<hashHex>（不再兼容旧 SHA-256 / 无标记 PBKDF2）
   const str = String(stored || '');
   const m = str.match(/^PBKDF2\$(\d+)\$([0-9a-f]+)\$([0-9a-f]{64})$/i);
@@ -632,7 +632,6 @@ async function getAllPhotos(env, { limit = Infinity, offset = 0 } = {}) {
   return photos;
 }
 
-// tc 图床允许的域名白名单（上传代理仅转发到这些域；取图时也只会 fetch 这些域，防 SSRF/投毒）
 // 只保留受信任字段，剥离客户端传入的 likes/dislikes / 派生值 url 等
 function sanitizePhoto(p) {
   const out = {};
@@ -640,9 +639,9 @@ function sanitizePhoto(p) {
     if (p[k] !== undefined) out[k] = p[k];
   }
   // parts：必须是 https 直链数组（≤512 片）。
-  // 是否可信不在此判断——由调用方用 isUploadedLink 异步校验（KV `up:<url>` 必须是本 worker
-  // 上传代理产出的，见 POST /api/photos）。tc 图床聚合多 CDN（网易/美团等第三方直链），
-  // 按域名白名单过滤会误杀全部新上传（曾导致写库 400 missing valid parts）。
+  // 是否可信由 POST /api/photos 的 isUploadedLink 异步校验（KV `up:<url>` 必须出自本 worker
+  // 上传代理）。tc 图床聚合多 CDN（网易/美团等第三方直链），按域名白名单过滤会误杀全部
+  // 新上传（曾导致写库 400 missing valid parts）。
   if (Array.isArray(out.parts)) {
     out.parts = out.parts.filter(u => typeof u === 'string' && /^https:\/\//i.test(u));
     if (out.parts.length === 0 || out.parts.length > 512) delete out.parts;

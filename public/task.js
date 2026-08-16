@@ -27,11 +27,23 @@ try {
 } catch (e) { bc = null; }
 
 let keepAliveTimer = null;
-let _seq = 0;
+// 广播序号：时间戳基座 + 12 位计数器。跨 worker 重启单调递增（重启后时间戳必然更大），
+// 页面仅凭 _seq 单调性即可去重（同一 _seq 的 port/BC 双通道副本只放行一次），
+// 无需再猜测"seq 大幅回退 = 新 worker 重启"。此前 worker 重启后 _seq 从 1 重计，
+// 页面靠"回退 >128 重置基线"判定新 worker——上传大批次时广播跨度常超 128，
+// 双通道乱序/延迟（页面切后台、BC 积压）会把已处理过的消息副本误判为新 worker 消息
+// 重新放行 → 同一照片重复插卡（KV 按 id upsert 无重复，表现为"刷新后重复卡消失"）。
+let _seqBase = Date.now() * 4096;
+let _seqCount = 0;
+function nextSeq() {
+    const t = Date.now() * 4096;
+    if (t > _seqBase) { _seqBase = t; _seqCount = 0; }
+    return _seqBase + _seqCount++; // base 每毫秒步进 4096，counter 同毫秒内自增；永不回卷
+}
 
 function broadcast(msg) {
     // 每条广播带递增 _seq：页面同时经 port 与 BroadcastChannel 收到同一条消息，用 _seq 去重（防终态消息触发两次下载/toast）
-    const m = { ...msg, _seq: ++_seq };
+    const m = { ...msg, _seq: nextSeq() };
     for (const port of clients) {
         try { port.postMessage(m); } catch (e) { console.warn('[task-worker] broadcast fail:', e && e.message); }
     }
@@ -60,7 +72,7 @@ class UploadTask {
     constructor(jobId, files, apiBase) {
         this.id = jobId;
         this.type = 'upload';
-        this.files = files;      // File[]（页面 structured clone 传入）
+        this.files = files || []; // File[]（页面 structured clone 传入；运行中可 appendFiles 追加）
         this.apiBase = apiBase;
         this.startedAt = Date.now();
         this.status = 'running';
@@ -70,7 +82,19 @@ class UploadTask {
         this.done = 0; this.skipped = 0; this.failed = 0; this.total = files.length;
         this.extraStat = '';
         this.rows = []; // 并发槽位行：[{ key, file, step }]，随 emit 刷新
-        this._promise = this._run();
+        this._append = null; // _run 内闭包赋值：真正执行追加的逻辑
+        // _ready 只表示"闭包初始化完成"（appendFiles 可安全追加），
+        // 不是任务完成——此前 `this._ready = this._run()` 会让 append 等到任务跑完才被放行（永远追加不上）
+        this._ready = new Promise(res => { this._readyResolve = res; });
+        this._run();
+    }
+
+    // 运行中动态追加文件（上传进行中再上传 → 合并进同一任务，不新开任务竞争进度环）
+    async appendFiles(newFiles) {
+        await this._ready;
+        if (!newFiles || !newFiles.length) return;
+        if (this.status !== 'running' || !this._append) throw new Error('上传任务已结束');
+        this._append(newFiles);
     }
 
     snapshot() {
@@ -93,13 +117,15 @@ class UploadTask {
     }
 
     async _run() {
-        const files = this.files;
-        const total = files.length;
         const av1Ok = await supportsAv1WebCodecs();
         const PHASE = { PREP: 0.20, UPLOAD: 0.75, SYNC: 0.05 };
 
-        const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null, active: false, stepLabel: '等待' }));
-        const prepTotal = fileStates.reduce((a, s) => a + s.size, 0) || 1;
+        // 动态状态：运行中可通过 _append（appendFiles）追加文件，全部状态随追加扩展
+        const fileStates = [];
+        let prepTotal = 1;
+        const picQ = createTaskQueue(CONFIG.CONCURRENCY); // 图片并发
+        const av1Q = createTaskQueue(1);                  // 视频/GIF 单线程（WebCodecs 内部已并行，多开易 OOM）
+        let finished = 0;
 
         const curOverall = () => {
             let prepSum = 0, upSum = 0, upDen = 0;
@@ -108,16 +134,16 @@ class UploadTask {
                 const ub = s.uploadBytes || s.size || 1;
                 upSum += s.upP * ub; upDen += ub;
             }
-            const prepP = prepSum / prepTotal;
+            const prepP = prepSum / (prepTotal || 1);
             const upP = upDen ? upSum / upDen : 0;
             return Math.min(1, PHASE.PREP * prepP + PHASE.UPLOAD * upP);
         };
         const emit = (fileName, step) => {
-            this.curFile = fileName || (total > 1 ? `${total} 个文件` : (files[0]?.name || ''));
+            this.curFile = fileName || (this.total > 1 ? `${this.total} 个文件` : (this.files[0]?.name || ''));
             if (step) this.step = step;
             this.progress = curOverall();
             this.extraStat = `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`;
-            this.rows = fileStates.filter(s => s.active).map(s => ({ key: s.idx, file: files[s.idx].name, step: s.stepLabel }));
+            this.rows = fileStates.filter(s => s.active).map(s => ({ key: s.idx, file: this.files[s.idx].name, step: s.stepLabel }));
             this._emitUpdate();
         };
         const result = (idx, name, photo, err, skipped) => {
@@ -163,7 +189,7 @@ class UploadTask {
                 const parts = await uploadToBed(blob, 'upload.' + ext, (p) => { st.upP = 0.02 + p * 0.93; emit(file.name); }, this.apiBase);
                 st.upP = 0.96;
                 const photo = {
-                    id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+                    id: genPhotoId(),
                     parts, sha256: sha,
                     width: dimsW, height: dimsH, createdAt: Date.now(),
                     ext, hasAudio
@@ -187,33 +213,51 @@ class UploadTask {
             }
         };
 
-        // 图片 CONCURRENCY 并发；视频/GIF 单线程（WebCodecs 内部已并行，多开易 OOM）
-        const picTasks = [], av1Tasks = [];
-        files.forEach((file, idx) => {
+        const maybeFinish = () => {
+            // 全部文件已结束且两队列都空闲才算完成（追加的文件会 push 新任务，finished 追不上 total 前不会误判）
+            if (finished < fileStates.length) return;
+            if (picQ.busy || av1Q.busy) return;
+            this.progress = 1;
+            this.status = 'done';
+            this.step = this.failed === 0 ? '完成' : '部分失败';
+            this.extraStat = `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`;
+            this._emitUpdate();
+
+            broadcast({
+                type: 'upload-complete',
+                taskId: this.id,
+                summary: { done: this.done, skipped: this.skipped, failed: this.failed, total: this.total }
+            });
+
+            tasks.upload = null;
+            setTimeout(() => broadcast({ type: 'task-clear', taskType: 'upload' }), 3000);
+        };
+
+        const enqueue = (file) => {
+            const idx = fileStates.length;
+            fileStates.push({ idx, size: file.size || 0, prepP: 0, upP: 0, uploadBytes: file.size || 0, err: null, active: false, stepLabel: '等待' });
+            prepTotal += (file.size || 0);
+            this.total = fileStates.length;
             const heavy = av1Ok && (isVideoFile(file) || isGifFile(file));
-            (heavy ? av1Tasks : picTasks).push(() => processOne(file, idx));
-        });
+            (heavy ? av1Q : picQ).push(async () => {
+                try { await processOne(file, idx); }
+                finally { finished++; maybeFinish(); }
+            });
+        };
 
+        // 动态追加入口：页面 append-upload 消息调用（appendFiles 先 await _ready 保证闭包就绪）
+        this._append = (newFiles) => {
+            for (const f of newFiles || []) { this.files.push(f); enqueue(f); }
+            emit();
+        };
+
+        // 初始批次
+        for (const f of this.files) enqueue(f);
         emit();
-        await Promise.all([
-            runWithConcurrency(picTasks, CONFIG.CONCURRENCY),
-            runWithConcurrency(av1Tasks, 1)
-        ]);
+        this._readyResolve && this._readyResolve(); // 闭包就绪：appendFiles 现在可安全追加
 
-        this.progress = 1;
-        this.status = 'done';
-        this.step = this.failed === 0 ? '完成' : '部分失败';
-        this.extraStat = `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`;
-        this._emitUpdate();
-
-        broadcast({
-            type: 'upload-complete',
-            taskId: this.id,
-            summary: { done: this.done, skipped: this.skipped, failed: this.failed, total }
-        });
-
-        tasks.upload = null;
-        setTimeout(() => broadcast({ type: 'task-clear', taskType: 'upload' }), 3000);
+        await Promise.all([picQ.idle(), av1Q.idle()]);
+        maybeFinish();
     }
 }
 
@@ -222,7 +266,7 @@ class DeleteTask {
     constructor(jobId, ids, apiBase) {
         this.id = jobId;
         this.type = 'delete';
-        this.ids = ids;
+        this.ids = ids || [];
         this.apiBase = apiBase;
         this.startedAt = Date.now();
         this.status = 'running';
@@ -232,7 +276,17 @@ class DeleteTask {
         this.done = 0; this.failed = 0; this.total = ids.length;
         this.skipped = 0;
         this.extraStat = '';
-        this._promise = this._run();
+        this._append = null;
+        this._ready = new Promise(res => { this._readyResolve = res; });
+        this._run();
+    }
+
+    // 运行中动态追加 id（删除进行中再选几张删 → 合并进同一任务）
+    async appendIds(newIds) {
+        await this._ready;
+        if (!newIds || !newIds.length) return;
+        if (this.status !== 'running' || !this._append) throw new Error('删除任务已结束');
+        this._append(newIds);
     }
 
     snapshot() {
@@ -255,26 +309,39 @@ class DeleteTask {
 
     async _run() {
         this._emitUpdate();
-        // 逐张删除 + 进度由 shared.js runDeletePhotos 统一驱动（与页面主线程回退同一实现）
-        await runDeletePhotos(this.ids, this.apiBase, (st) => {
+        // 逐张删除 + 进度由 shared.js createDeleteRunner 统一驱动（与页面主线程回退同一实现），
+        // runner 支持运行中 appendIds 追加
+        const runner = createDeleteRunner(this.apiBase, (st) => {
             this.progress = st.progress;
             this.curFile = st.curFile;
             this.done = st.done; this.failed = st.failed;
+            this.total = st.total;
             this.extraStat = `成功 ${this.done} · 失败 ${this.failed}`;
             this._emitUpdate();
         });
+        this._append = (ids) => {
+            for (const id of ids || []) this.ids.push(id);
+            runner.append(ids);
+            this.total = this.ids.length;
+            this.curFile = `${this.ids.length} 张照片`;
+            this._emitUpdate();
+        };
+        runner.append(this.ids); // 初始批次入队（不再重复 push this.ids）
+        this._readyResolve && this._readyResolve(); // 闭包就绪：appendIds 现在可安全追加
 
+        const r = await runner.done;
         this.progress = 1;
         this.status = 'done';
-        this.step = this.failed === 0 ? '完成' : '部分失败';
-        this.curFile = `${this.done} 成功 / ${this.failed} 失败`;
+        this.step = r.failed === 0 ? '完成' : '部分失败';
+        this.curFile = `${r.done} 成功 / ${r.failed} 失败`;
+        this.total = r.total;
         this._emitUpdate();
 
         broadcast({
             type: 'delete-complete',
             taskId: this.id,
             deletedIds: this.ids,
-            summary: { done: this.done, failed: this.failed, total: this.total }
+            summary: { done: r.done, failed: r.failed, total: r.total }
         });
 
         tasks.delete = null;
@@ -300,7 +367,17 @@ class DownloadTask {
         this.extraStat = '';
         this.zipBlobUrl = null;
         this.finalName = 'download.zip';
-        this._promise = this._run();
+        this._append = null;
+        this._ready = new Promise(res => { this._readyResolve = res; });
+        this._run();
+    }
+
+    // 运行中动态追加条目（下载进行中再选几张 → 合并进同一任务；打包阶段拒绝追加）
+    async appendItems(newList) {
+        await this._ready;
+        if (!newList || !newList.length) return;
+        if (this.status !== 'running' || !this._append) throw new Error('下载任务已结束');
+        this._append(newList);
     }
 
     snapshot() {
@@ -344,6 +421,7 @@ class DownloadTask {
             this.failed = this.zipBlobUrl ? 0 : 1;
             this._emitUpdate();
             broadcast({ type: 'download-complete', taskId: this.id, zipUrl: this.zipBlobUrl, fileName: this.finalName, tabId: this.tabId });
+            this._readyResolve && this._readyResolve();
             tasks.download = null;
             return;
         }
@@ -351,18 +429,22 @@ class DownloadTask {
         const JSZip = (await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm')).default;
         const zip = new JSZip();
 
-        // 下载/打包进度由 shared.js createDownloadProgress 统一汇总（与页面主线程同一实现）
+        // 下载/打包进度由 shared.js createDownloadProgress 统一汇总（与页面主线程同一实现），
+        // dlp 支持 append 动态扩项；fetch 用动态队列，运行中可追加条目
         const dlp = createDownloadProgress(total, (s) => {
             this.progress = s.progress;
             this.done = s.done;
             this.failed = s.failed;
+            this.total = s.total;
             this.curFile = s.curFile;
             this.step = s.step;
             this.extraStat = s.extraStat;
             this._emitUpdate();
         });
+        const q = createTaskQueue(CONFIG.CONCURRENCY);
+        let successCount = 0;
 
-        const dlTasks = list.map((p, i) => async () => {
+        const fetchOne = (p, i) => async () => {
             try {
                 const base = p.id + '.' + String(p.ext || 'webp').toLowerCase();
                 const url = (this.apiBase || '') + '/api/file/' + p.id;
@@ -372,16 +454,33 @@ class DownloadTask {
                 );
                 dlp.onItemDone(i, t || blob.size || 1);
                 zip.file(base, blob, { binary: true });
-                return { ok: true };
+                successCount++;
             } catch (e) {
                 console.warn('[task-worker] dl item fail:', e && e.message);
                 dlp.onItemFail(i);
-                return { ok: false, err: e };
             }
-        });
+        };
+        const enqueue = (p, i) => q.push(() => fetchOne(p, i));
 
-        const results = await runWithConcurrency(dlTasks, CONFIG.CONCURRENCY);
-        const successCount = results.filter(r => r.ok).length;
+        // 初始批次
+        list.forEach((p, i) => enqueue(p, i));
+        this._readyResolve && this._readyResolve(); // 闭包就绪：appendItems 现在可安全追加
+
+        // 动态追加入口：appendItems 调用；打包中（_zipping）拒绝追加
+        this._append = (items) => {
+            if (this._zipping) { console.warn('[task-worker] download zipping, append ignored'); return; }
+            for (const p of items || []) {
+                const i = dlp.append(1) - 1; // 新条目索引
+                this.list.push(p);
+                this.total = this.list.length;
+                enqueue(p, i);
+            }
+            this.curFile = `${this.list.length} 张照片`;
+            this._emitUpdate();
+        };
+
+        await q.idle();
+        this._zipping = true;
 
         if (successCount === 0) {
             this.progress = 1;
@@ -394,8 +493,8 @@ class DownloadTask {
         }
 
         const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
-            const failedCount = total - successCount;
-            dlp.setZip(meta.percent / 100, `${successCount}/${total} 张成功${failedCount ? ` · ${failedCount} 张跳过` : ''} · zip ${meta.percent.toFixed(0)}%`);
+            const failedCount = this.total - successCount;
+            dlp.setZip(meta.percent / 100, `${successCount}/${this.total} 张成功${failedCount ? ` · ${failedCount} 张跳过` : ''} · zip ${meta.percent.toFixed(0)}%`);
         });
         dlp.setZip(1);
 
@@ -403,7 +502,7 @@ class DownloadTask {
         this.progress = 1;
         this.status = 'done';
         this.step = '完成';
-        const finalFailed = total - successCount;
+        const finalFailed = this.total - successCount;
         this.extraStat = `成功 ${successCount} 张${finalFailed ? ` · 跳过 ${finalFailed}` : ''} · zip ${formatSize(zipBlob.size)}`;
         this._emitUpdate();
 
@@ -415,7 +514,7 @@ class DownloadTask {
 }
 
 /* ============ 连接管理 ============ */
-function handleIncomingMessage(msg, replyPort) {
+async function handleIncomingMessage(msg, replyPort) {
     const reply = (obj) => {
         if (replyPort) {
             try { replyPort.postMessage(obj); } catch (_) { }
@@ -483,6 +582,49 @@ function handleIncomingMessage(msg, replyPort) {
                 reply({ type: 'task-started', taskType: 'download', taskId: tasks.download.id });
             } catch (err) {
                 console.warn('[task-worker] start-download err:', err && err.message);
+                reply({ type: 'error', error: err.message });
+            }
+            break;
+
+        /* ---- 运行中追加（上传/下载/删除 进行中再触发同类操作 → 合并进同一任务） ---- */
+        case 'append-upload':
+            if (!tasks.upload || tasks.upload.status !== 'running') {
+                reply({ type: 'error', error: '无进行中的上传任务' });
+                return;
+            }
+            try {
+                await tasks.upload.appendFiles(msg.files || []);
+                reply({ type: 'task-started', taskType: 'upload', taskId: tasks.upload.id, appended: true });
+            } catch (err) {
+                console.warn('[task-worker] append-upload err:', err && err.message);
+                reply({ type: 'error', error: err.message });
+            }
+            break;
+
+        case 'append-delete':
+            if (!tasks.delete || tasks.delete.status !== 'running') {
+                reply({ type: 'error', error: '无进行中的删除任务' });
+                return;
+            }
+            try {
+                await tasks.delete.appendIds(msg.ids || []);
+                reply({ type: 'task-started', taskType: 'delete', taskId: tasks.delete.id, appended: true });
+            } catch (err) {
+                console.warn('[task-worker] append-delete err:', err && err.message);
+                reply({ type: 'error', error: err.message });
+            }
+            break;
+
+        case 'append-download':
+            if (!tasks.download || tasks.download.status !== 'running') {
+                reply({ type: 'error', error: '无进行中的下载任务' });
+                return;
+            }
+            try {
+                await tasks.download.appendItems(msg.list || []);
+                reply({ type: 'task-started', taskType: 'download', taskId: tasks.download.id, appended: true });
+            } catch (err) {
+                console.warn('[task-worker] append-download err:', err && err.message);
                 reply({ type: 'error', error: err.message });
             }
             break;
