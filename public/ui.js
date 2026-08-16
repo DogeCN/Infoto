@@ -101,7 +101,7 @@ function setProgress(p, file, step, extra, type) {
     const pctEl = $('#' + u.pct);
     if (clampedP >= 1) {
         // 完成：统一显示对勾图标（完整 svg，避免裸 <polyline> 不渲染）
-        pctEl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;display:block"><polyline points="20 6 9 17 4 12"/></svg>';
+        pctEl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;display:block"><polyline points="20 6 9 17 4 12"/></svg>';
     } else if (extra && extra.remaining !== undefined && extra.remaining !== null) {
         // 未完成：统一显示剩余数目（不再百分比），上传/下载/删除一致
         pctEl.textContent = String(extra.remaining);
@@ -151,7 +151,15 @@ function renderUpRows(rows, type) {
 // Worker 任务快照 → 对应类型进度环（upload/delete/download 按 snapshot.type 路由到独立环）
 function applyTaskUpdate(t) {
     if (!t) return;
-    setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed }, t.type);
+    // remaining（环内剩余数字）按类型算：
+    // - 上传：done/skipped/failed 互斥，剩余 = total - done - skipped - failed
+    // - 删除：done/failed 互斥（skipped 恒 0），剩余 = total - done - failed
+    // - 下载：createDownloadProgress 的 done 已含 failed（done = 完成项+失败项），
+    //   剩余 = total - done（再减 failed 会双扣，失败多时数字偏小/为负）
+    let remaining;
+    if (t.type === 'download') remaining = t.total - t.done;
+    else remaining = t.total - t.done - t.skipped - t.failed;
+    setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining, done: t.done, skipped: t.skipped, failed: t.failed }, t.type);
     renderUpRows(t.type === 'upload' ? t.rows : null, t.type);
 }
 

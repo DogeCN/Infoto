@@ -476,6 +476,12 @@ function onGe(e) {
         const moved = Math.hypot(state.dragCurrent.x - state.dragStart.x, state.dragCurrent.y - state.dragStart.y);
         if (moved < 12) {
             const now = Date.now();
+            // 落在按钮/顶栏等控件上的 tap 不参与双击判定：不更新 _lastTap、不关闭。
+            // 否则点静音按钮会记录 _lastTap，紧接着的第二次点击（300ms 内）会被误判为双击缩放。
+            // 注意：.lb-media-wrap 是媒体容器，双击缩放的目标，绝不能排除。
+            const tg0 = e.target;
+            const onControl = tg0 && typeof tg0.closest === 'function' && tg0.closest('.audio-toggle,#lbMoreBtn,#lbCloseBtn,.lb-top');
+            if (onControl) return;
             const isDbl = state._lastTap && (now - state._lastTap.t) < 300 && Math.hypot(t.clientX - state._lastTap.x, t.clientY - state._lastTap.y) < 40;
             if (isDbl) {
                 const sr = stage.getBoundingClientRect();
@@ -611,6 +617,8 @@ stage.addEventListener('wheel', (e) => {
 }, { passive: false });
 stage.addEventListener('dblclick', (e) => {
     if (!state.lightboxOpen) return;
+    // 静音按钮/顶栏按钮的双击不应触发缩放（与触摸 tap 排除一致）
+    if (e.target && typeof e.target.closest === 'function' && e.target.closest('.audio-toggle,#lbMoreBtn,#lbCloseBtn,.lb-top')) return;
     e.preventDefault();
     const sr = stage.getBoundingClientRect();
     if (state.zoom.s > 1.01) resetZoom(true);

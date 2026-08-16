@@ -619,8 +619,8 @@ main {
 }
 
 .up-pct {
-  font-size: .9rem;
-  font-weight: 800;
+  font-size: .95rem;
+  font-weight: 900;
   color: #d97706; /* amber-600：稍微暗一档的暖黄，与青色环身仍有对比、对深底不刺眼 */
   text-shadow: 0 0 6px rgba(217, 119, 6, .4);
   z-index: 1;
