@@ -698,9 +698,9 @@ main {
 
 .lb-top-left {
   display: flex;
-  flex-direction: column;
-  gap: .35rem;
-  align-items: flex-start;
+  flex-direction: row;
+  gap: .5rem;
+  align-items: center;
 }
 
 .lb-counter {
@@ -712,7 +712,6 @@ main {
 .lb-votes {
   display: flex;
   gap: .5rem;
-  margin-top: .25rem;
 }
 
 .lb-vote {
