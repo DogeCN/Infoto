@@ -70,36 +70,8 @@ function scheduleProgressFade(type, delayMs = 5000, after) {
     }, delayMs);
 }
 
-/* 任务进度环垂直堆叠：按当前可见的环数从下往上排。
-   - 默认 baseBottom = 0.65rem（环紧贴屏幕右下边）
-   - 多选底栏出现时让出多选栏高度 (4.75rem)
-   - 每个环高度 3rem + 间隙 .25rem = STEP 3.25rem
-   - del 最下、dl 居中、up 最上（DOM 顺序倒过来排，让最早出现的环在屏幕底部、最新出现的在最上） */
-const TASK_STACK_STEP_REM = 3.25;
-const TASK_BASE_DEFAULT_REM = 0.65;
-const TASK_BASE_MULTI_REM = 4.75;
-function _recalcTaskLayout() {
-    const multiOn = $('#multiBar')?.classList.contains('show');
-    const base = multiOn ? TASK_BASE_MULTI_REM : TASK_BASE_DEFAULT_REM;
-    // 倒序：del 在最底（离屏幕底最近），up 在最上
-    const stack = [
-        { type: 'delete', el: $('#delIndicator') },
-        { type: 'download', el: $('#dlIndicator') },
-        { type: 'upload', el: $('#upIndicator') },
-    ];
-    let visibleCount = 0;
-    for (const item of stack) {
-        if (!item.el) continue;
-        const hidden = item.el.classList.contains('hidden');
-        if (!hidden) {
-            // 索引越大越靠下，倒着排：del 序号 0 → 最下、up 序号 2 → 最上
-            item.el.style.bottom = (base + (stack.length - 1 - visibleCount) * TASK_STACK_STEP_REM) + 'rem';
-            visibleCount++;
-        } else {
-            item.el.style.bottom = '';
-        }
-    }
-}
+/* 任务进度环堆叠：纯 CSS 布局（.task-stack flex column-reverse + display:none 让位），
+   见 styles.css .task-stack；无 JS 参与。 */
 
 function resetProgressUI(type) {
     const st = _taskFade[type] || _taskFade.upload;
@@ -119,7 +91,6 @@ function resetProgressUI(type) {
     $('#' + u.skipped).textContent = '0';
     $('#' + u.failed).textContent = '0';
     $('#' + u.rows).innerHTML = '';
-    _recalcTaskLayout();
 }
 function setProgress(p, file, step, extra, type) {
     const u = _ui(type);
@@ -144,7 +115,6 @@ function setProgress(p, file, step, extra, type) {
     if (extra && extra.skipped !== undefined) $('#' + u.skipped).textContent = String(extra.skipped);
     if (extra && extra.failed !== undefined) $('#' + u.failed).textContent = String(extra.failed);
     // 底部 stat 小字已移除：与上方成功/重复/失败三列重复；保留 extra.stat 形参兼容调用方
-    _recalcTaskLayout();
 }
 // 并发槽位行渲染：每行左端文件名、右端步骤图标（keyed diff，只更新变化的文本节点）。
 // rows: [{ key, file, step }]，key 为文件在批次内的下标；结束后从列表移除即不再渲染
@@ -183,7 +153,6 @@ function applyTaskUpdate(t) {
     if (!t) return;
     setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed }, t.type);
     renderUpRows(t.type === 'upload' ? t.rows : null, t.type);
-    _recalcTaskLayout();
 }
 
 /* ---- 进度环：点击展开/收起详情（桌面 hover 仍可用，移动端无 hover 靠点击） ---- */

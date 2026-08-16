@@ -67,7 +67,9 @@
   <!-- 框选矩形 -->
   <div class="selection-box" id="selectionBox"></div>
 
-  <!-- ============ 任务进度：上传/下载/删除 三个独立浮动进度环（不共用、不重叠、配色区分） ============ -->
+  <!-- ============ 任务进度：上传/下载/删除 三个独立浮动进度环（不共用、不重叠、配色区分）
+       容器纵向 flex 排列：有几个环可见就占几层，隐藏的 display:none 自动让位，无需 JS 手算位置 ============ -->
+  <div class="task-stack" id="taskStack">
   <div class="task-indicator up hidden" id="upIndicator" title="上传进度">
     <svg viewBox="0 0 36 36" class="up-ring">
       <circle class="up-ring-bg" cx="18" cy="18" r="15" />
@@ -114,6 +116,7 @@
         <span class="bad">失败 <b id="delFailed">0</b></span>
       </div>
     </div>
+  </div>
   </div>
 
   <!-- ============ Lightbox ============ -->

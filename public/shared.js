@@ -337,7 +337,11 @@
         if (n < 0 || !isFinite(n)) throw new Error('bad vint');
         if (!length) {
             length = 1;
-            while ((n >= (1 << (7 * length))) && length < 8) length++;
+            // EBML vint 数据位全 1 保留给 "unknown size"（1 字节 vint 的 0xFF、2 字节的 0x7FFF...），
+            // 不能编码为数据值！否则 127/16383/2097151... 字节的 body 会写出 unknown-size 块，
+            // 播放器解析 "Unknown-sized element inside parent with finite size" 报错、整个文件损坏。
+            // 长度 L 的 vint 最大合法值 = (1 << (7*L)) - 2；n >= (1 << (7*L)) - 1 时必须加长。
+            while ((n >= ((1 << (7 * length)) - 1)) && length < 8) length++;
         }
         const b = new Uint8Array(length);
         let v = n;
@@ -835,7 +839,9 @@
             },
             error: (e) => console.error('[infoto] VideoDecoder error', e),
         });
-        const cfg = { codec: meta.codec, codedWidth: meta.width, codedHeight: meta.height };
+        // codedWidth/Height 必须是**物理尺寸**（码流里实际编码尺寸）——meta.width/height 已应用 rotation 是显示尺寸，
+        // 用它 configure 会让解码器按错误尺寸输出（90/270 旋转视频尺寸错乱）。
+        const cfg = { codec: meta.codec, codedWidth: meta.physWidth || meta.width, codedHeight: meta.physHeight || meta.height };
         if (meta.description) cfg.description = meta.description;
         decoder.configure(cfg);
 
@@ -910,13 +916,16 @@
             if (!rotation) { cx.drawImage(src, 0, 0, ew, eh); return; }
             cx.save();
             if (rotation === 90) {
-                cx.translate(eh, 0); cx.rotate(Math.PI / 2);
+                // 顺时针 90°：原点移到画布右上角 (ew, 0)。注意用 **显示宽 ew** 不是 eh！
+                // 用 eh 会把原点推出画布（240x320 画布 translate(320,0) 超出 80px）→ 内容错位/裁剪
+                cx.translate(ew, 0); cx.rotate(Math.PI / 2);
                 cx.drawImage(src, 0, 0, dw, dh);
             } else if (rotation === 180) {
                 cx.translate(ew, eh); cx.rotate(Math.PI);
                 cx.drawImage(src, 0, 0, dw, dh);
             } else if (rotation === 270) {
-                cx.translate(0, ew); cx.rotate(-Math.PI / 2);
+                // 逆时针 90°：原点移到画布左下角 (0, eh)。用 **显示高 eh** 不是 ew！
+                cx.translate(0, eh); cx.rotate(-Math.PI / 2);
                 cx.drawImage(src, 0, 0, dw, dh);
             }
             cx.restore();
@@ -985,7 +994,9 @@
                     // meta.width/height 已应用 rotation（显示宽高）；rotation 传进 makeEncoder 决定 drawImage 是否旋转画布
                     const ew = (meta.width + 1) & ~1, eh = (meta.height + 1) & ~1;
                     const totalFrames = meta.nbSamples || Math.max(1, Math.round((meta.durationSec || 1) * Math.min(meta.fps || FPS_CAP, FPS_CAP)));
-                    const { enc, sink } = await makeEncoder(ew, eh, meta.rotation || 0);
+                    // 必须传 physW/physH：_drawRotated 的 drawImage 目标矩形要用**物理尺寸**（旋转坐标变换后画满显示画布），
+                    // 不传会退回显示尺寸 → 90/270 旋转时画不满/错位（v90 尺寸 pass 是假阳性，像素级对比才暴露）
+                    const { enc, sink } = await makeEncoder(ew, eh, meta.rotation || 0, meta.physWidth, meta.physHeight);
                     muxer.w = ew; muxer.h = eh;
                     const targetFps = Math.min(meta.fps || FPS_CAP, FPS_CAP);
                     const s = sink(1 / targetFps, totalFrames);
@@ -1008,9 +1019,15 @@
             const enc2 = new AudioEncoder({
                 output: (chunk, meta) => {
                     const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
-                    if (meta && meta.decoderConfig && meta.decoderConfig.description && !audioCodecPrivate) {
+                    // Opus 的 CodecPrivate（OpusHead）必须在 finalize 前写进 muxer，否则 WebM 音轨无法解码（没声音）。
+                    // muxer 构造时 codecPrivate 还是 null（那时还没编码），必须在这里回写 muxer.audio.codecPrivate。
+                    if (meta && meta.decoderConfig && meta.decoderConfig.description) {
                         const d = meta.decoderConfig.description;
-                        audioCodecPrivate = (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) ? new Uint8Array(d) : null;
+                        const cp = (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) ? new Uint8Array(d) : null;
+                        if (cp && cp.byteLength) {
+                            audioCodecPrivate = cp;
+                            if (muxer.audio) muxer.audio.codecPrivate = cp;
+                        }
                     }
                     muxer.addChunk(buf, { timestampSec: chunk.timestamp / 1e6, trackNum: 2 });
                 },

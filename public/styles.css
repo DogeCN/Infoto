@@ -535,28 +535,36 @@ main {
 
 /* ============ 任务进度：上传/下载/删除 三个独立浮动进度环（右下竖直排列，配色区分） ============ */
 /* 类型配色：上传=青(--primary)、下载=紫(#8b5cf6)、删除=玫红(--error) */
-.task-indicator {
-  transition: opacity .38s ease; /* 完成淡出用（fading 类） */
+/* 容器方案：.task-stack fixed 定位 + flex column-reverse，三个环按 DOM 顺序
+   （del 最下 → up 最上）从底部向上堆叠；隐藏环 display:none 不占位，
+   有几个环可见就自动占几层——纯 CSS 布局，无需 JS 手算 bottom。
+   多选底栏出现时 .multi-bar.show ~ .task-stack 整体上移让位。 */
+.task-stack {
   position: fixed;
   right: .65rem;
   bottom: .65rem;
   z-index: 90;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: .25rem;
+  transition: bottom .3s ease;
+  pointer-events: none; /* 容器不拦事件，环自身恢复 */
+}
+
+.task-stack > .task-indicator {
+  pointer-events: auto;
+}
+
+.task-indicator {
+  transition: opacity .38s ease; /* 完成淡出用（fading 类） */
+  position: relative; /* up-tip absolute 定位锚点 */
   width: 3rem;
   height: 3rem;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: default;
-  transition: opacity .38s ease, bottom .3s ease; /* opacity 用于完成淡出（fading 类），bottom 用于多选底栏上浮 */
-}
-
-/* 三个环竖直排列互不重叠：上传在最底、下载上移一档、删除再上移一档 */
-.task-indicator.dl {
-  bottom: 3.9rem;
-}
-
-.task-indicator.del {
-  bottom: 7.15rem;
 }
 
 .task-indicator.dl .up-ring-fg {
@@ -662,9 +670,8 @@ main {
   }
 }
 
-/* 三环动态浮动 + 多选底栏让出，位置由 ui.js _recalcTaskLayout() 计算 */
-
-/* 多选底栏出现时仅通知 toast 需让位；任务环交给 _recalcTaskLayout */
+/* 多选底栏出现：任务环容器与 toast 统一上移让位（纯 CSS 兄弟选择器） */
+.multi-bar.show~.task-stack,
 .multi-bar.show~.toasts {
   bottom: 4.75rem;
 }
