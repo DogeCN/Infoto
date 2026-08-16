@@ -250,22 +250,15 @@ class DeleteTask {
     }
 
     async _run() {
-        const ids = this.ids;
-        const total = ids.length;
         this._emitUpdate();
-
-        const tasksArr = ids.map(id => async () => {
-            try {
-                const r = await fetch(this.apiBase + '/api/photos/' + encodeURIComponent(id), { method: 'DELETE' });
-                if (r.ok) this.done++; else this.failed++;
-            } catch (e) { console.warn('[task-worker] delete fail:', e && e.message); this.failed++; }
-            const finished = this.done + this.failed;
-            this.progress = total ? finished / total : 1;
-            this.curFile = `${finished} / ${total} 张`;
+        // 逐张删除 + 进度由 shared.js runDeletePhotos 统一驱动（与页面主线程回退同一实现）
+        await runDeletePhotos(this.ids, this.apiBase, (st) => {
+            this.progress = st.progress;
+            this.curFile = st.curFile;
+            this.done = st.done; this.failed = st.failed;
+            this.extraStat = `成功 ${this.done} · 失败 ${this.failed}`;
             this._emitUpdate();
         });
-
-        await runWithConcurrency(tasksArr, CONFIG.CONCURRENCY);
 
         this.progress = 1;
         this.status = 'done';
@@ -276,8 +269,8 @@ class DeleteTask {
         broadcast({
             type: 'delete-complete',
             taskId: this.id,
-            deletedIds: ids,
-            summary: { done: this.done, failed: this.failed, total }
+            deletedIds: this.ids,
+            summary: { done: this.done, failed: this.failed, total: this.total }
         });
 
         tasks.delete = null;
@@ -325,34 +318,6 @@ class DownloadTask {
         broadcast({ type: 'task-update', task: this.snapshot() });
     }
 
-    _fetchWithProgress(url, onProgress) {
-        return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', url, true);
-            xhr.responseType = 'blob';
-            let knownTotal = 0;
-            xhr.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    knownTotal = e.total;
-                    onProgress?.(e.loaded, e.total);
-                } else if (knownTotal) {
-                    onProgress?.(e.loaded, knownTotal);
-                }
-            };
-            xhr.onload = () => {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve({ blob: xhr.response, total: knownTotal || xhr.response?.size || 0 });
-                } else {
-                    reject(new Error('HTTP ' + xhr.status));
-                }
-            };
-            xhr.onerror = () => reject(new Error('网络错误'));
-            xhr.timeout = 60000;
-            xhr.ontimeout = () => reject(new Error('下载超时（60s）'));
-            xhr.send();
-        });
-    }
-
     async _run() {
         const list = this.list;
         const total = list.length;
@@ -382,52 +347,31 @@ class DownloadTask {
         const JSZip = (await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm')).default;
         const zip = new JSZip();
 
-        const perItemProgress = new Array(total).fill(0);
-        const perItemTotal = new Array(total).fill(0);
-        const perItemDone = new Array(total).fill(false);
-        let zipProgress = 0;
-        const ZIP_WEIGHT = 0.12;
-        const FETCH_WEIGHT = 1 - ZIP_WEIGHT;
-
-        const recomputeOverall = () => {
-            let sumCur = 0, sumTot = 0, finishedItems = 0;
-            for (let i = 0; i < total; i++) {
-                const t = perItemTotal[i] || 1;
-                sumCur += perItemProgress[i];
-                sumTot += t;
-                if (perItemDone[i]) finishedItems++;
-            }
-            const fetchPart = sumTot > 0 ? (sumCur / sumTot) * FETCH_WEIGHT : 0;
-            const zipPart = zipProgress * ZIP_WEIGHT;
-            this.progress = Math.min(1, fetchPart + zipPart);
-            this.done = finishedItems;
-            this.curFile = `${finishedItems} / ${total} 张`;
-            this.step = zipProgress > 0 ? '打包 zip 中' : '下载中…';
-            this.extraStat = `下载 ${finishedItems}/${total} 张`;
+        // 下载/打包进度由 shared.js createDownloadProgress 统一汇总（与页面主线程同一实现）
+        const dlp = createDownloadProgress(total, (s) => {
+            this.progress = s.progress;
+            this.done = s.done;
+            this.failed = s.failed;
+            this.curFile = s.curFile;
+            this.step = s.step;
+            this.extraStat = s.extraStat;
             this._emitUpdate();
-        };
+        });
 
         const dlTasks = list.map((p, i) => async () => {
             try {
                 const base = p.id + '.' + String(p.ext || 'webp').toLowerCase();
                 const url = (this.apiBase || '') + '/api/file/' + p.id;
-                const { blob, total: t } = await this._fetchWithProgress(
+                const { blob, total: t } = await fetchWithProgress(
                     url,
-                    (loaded, tot) => {
-                        perItemProgress[i] = loaded;
-                        if (tot > perItemTotal[i]) perItemTotal[i] = tot;
-                        recomputeOverall();
-                    }
+                    (loaded, tot) => dlp.onItemProgress(i, loaded, tot)
                 );
-                perItemProgress[i] = perItemTotal[i] = t || blob.size || 1;
-                perItemDone[i] = true;
+                dlp.onItemDone(i, t || blob.size || 1);
                 zip.file(base, blob, { binary: true });
-                recomputeOverall();
                 return { ok: true };
             } catch (e) {
                 console.warn('[task-worker] dl item fail:', e && e.message);
-                perItemDone[i] = true;
-                this.failed++;
+                dlp.onItemFail(i);
                 return { ok: false, err: e };
             }
         });
@@ -446,13 +390,10 @@ class DownloadTask {
         }
 
         const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
-            zipProgress = meta.percent / 100;
-            recomputeOverall();
             const failedCount = total - successCount;
-            this.extraStat = `${successCount}/${total} 张成功${failedCount ? ` · ${failedCount} 张跳过` : ''} · zip ${meta.percent.toFixed(0)}%`;
+            dlp.setZip(meta.percent / 100, `${successCount}/${total} 张成功${failedCount ? ` · ${failedCount} 张跳过` : ''} · zip ${meta.percent.toFixed(0)}%`);
         });
-        zipProgress = 1;
-        recomputeOverall();
+        dlp.setZip(1);
 
         this.zipBlobUrl = URL.createObjectURL(zipBlob);
         this.progress = 1;

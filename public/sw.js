@@ -2,6 +2,20 @@
 const V = 'infoto-v6';
 const CORE = ['./', './index.html', './app.js', './styles.css', './shared.js', './task.js', './manifest.webmanifest'];
 
+// 缓存优先、后台静默刷新（图片字节 / /api/file）
+async function cacheFirst(req, cache) {
+    const cached = await cache.match(req);
+    if (cached) {
+        fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); }).catch(() => { });
+        return cached;
+    }
+    try {
+        const network = await fetch(req);
+        if (network.ok) cache.put(req, network.clone());
+        return network;
+    } catch (e) { return cached || Response.error(); }
+}
+
 self.addEventListener('install', e => {
     e.waitUntil(caches.open(V).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
 });
@@ -22,15 +36,7 @@ self.addEventListener('fetch', event => {
         if (url.pathname.startsWith('/api/')) {
             if (url.pathname.startsWith('/api/file/')) {
                 // 图片字节：缓存优先秒开，后台静默刷新
-                if (cached) {
-                    fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); }).catch(() => { });
-                    return cached;
-                }
-                try {
-                    const network = await fetch(req);
-                    if (network.ok) cache.put(req, network.clone());
-                    return network;
-                } catch (e) { return cached || Response.error(); }
+                return cacheFirst(req, cache);
             }
             // JSON API：网络优先；仅照片列表写入缓存（离线可见），其余 JSON 不缓存（避免查重/管理员状态返回陈旧结果）
             try {
@@ -42,15 +48,7 @@ self.addEventListener('fetch', event => {
             }
         }
         if (req.destination === 'image') {
-            if (cached) {
-                fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); }).catch(() => { });
-                return cached;
-            }
-            try {
-                const network = await fetch(req);
-                if (network.ok) cache.put(req, network.clone());
-                return network;
-            } catch (e) { return cached || Response.error(); }
+            return cacheFirst(req, cache);
         }
         // 其它静态资源：网络优先，失败回退缓存
         try {

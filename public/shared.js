@@ -94,6 +94,101 @@
         }, g.CONFIG.MAX_RETRY);
     };
 
+    // XHR GET 带字节级进度下载（页面主线程 + SharedWorker 共用；无 content-length 时降级为整文件完成）
+    g.fetchWithProgress = function (url, onProgress) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', url, true);
+            xhr.responseType = 'blob';
+            let knownTotal = 0;
+            xhr.onprogress = (e) => {
+                if (e.lengthComputable) { knownTotal = e.total; onProgress?.(e.loaded, e.total); }
+                else if (knownTotal) onProgress?.(e.loaded, knownTotal);
+            };
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    if (!knownTotal && xhr.response?.size) onProgress?.(xhr.response.size, xhr.response.size);
+                    resolve({ blob: xhr.response, total: knownTotal || xhr.response?.size || 0 });
+                } else {
+                    reject(new Error('HTTP ' + xhr.status));
+                }
+            };
+            xhr.onerror = () => reject(new Error('网络错误'));
+            xhr.timeout = 60000;
+            xhr.ontimeout = () => reject(new Error('下载超时（60s）'));
+            xhr.send();
+        });
+    };
+
+    // 逐张删除 + 进度回调（页面主线程回退 与 SharedWorker DeleteTask 共用，消除两套相同实现）
+    g.runDeletePhotos = async function (ids, apiBase, onUpdate) {
+        const total = ids.length;
+        let done = 0, failed = 0;
+        const emit = () => {
+            const finished = done + failed;
+            onUpdate({ progress: total ? finished / total : 1, curFile: `${finished} / ${total} 张`, done, failed, total, finished });
+        };
+        emit();
+        const tasks = ids.map(id => async () => {
+            try {
+                const r = await fetch((apiBase || '') + '/api/photos/' + encodeURIComponent(id), { method: 'DELETE' });
+                if (r.ok) done++; else failed++;
+            } catch (e) { console.warn('[infoto] delete fail:', e && e.message); failed++; }
+            emit();
+        });
+        await g.runWithConcurrency(tasks, g.CONFIG.CONCURRENCY);
+        return { done, failed, total };
+    };
+
+    // 批量下载进度汇总器：按字节加权合并「每项下载进度 + zip 打包进度」。
+    // 页面主线程 zip 分支 与 SharedWorker DownloadTask 共用，消除两套 recomputeOverall。
+    // onUpdate(snapshot) 同步回调；snapshot = {progress, done, failed, total, curFile, step, extraStat}
+    g.createDownloadProgress = function (total, onUpdate) {
+        const perItemProgress = new Array(total).fill(0);
+        const perItemTotal = new Array(total).fill(0);
+        const perItemDone = new Array(total).fill(false);
+        const perItemFail = new Array(total).fill(false);
+        const ZIP_WEIGHT = 0.12, FETCH_WEIGHT = 1 - ZIP_WEIGHT;
+        let zipProgress = 0;
+        let zipStat = null;
+
+        const snapshot = () => {
+            let sumCur = 0, sumTot = 0, finishedItems = 0, failed = 0;
+            for (let i = 0; i < total; i++) {
+                if (perItemFail[i]) { failed++; continue; } // 失败项不占进度分母（否则永远到不了 0.88）
+                const t = perItemTotal[i] || 1;             // 大小未知项按 1 字节占位，防首项完成即满进度
+                sumCur += perItemProgress[i];
+                sumTot += t;
+                if (perItemDone[i]) finishedItems++;
+            }
+            const fetchPart = sumTot > 0 ? (sumCur / sumTot) * FETCH_WEIGHT : 0;
+            return {
+                progress: Math.min(1, fetchPart + zipProgress * ZIP_WEIGHT),
+                done: finishedItems + failed,
+                failed,
+                total,
+                curFile: `${finishedItems + failed} / ${total} 张`,
+                step: zipProgress > 0 ? '打包 zip 中' : '下载中…',
+                extraStat: zipStat || `下载 ${finishedItems + failed}/${total} 张`,
+            };
+        };
+        const emit = () => onUpdate(snapshot());
+
+        return {
+            onItemProgress(i, loaded, tot) { perItemProgress[i] = loaded; if (tot > perItemTotal[i]) perItemTotal[i] = tot; emit(); },
+            onItemDone(i, size) { perItemProgress[i] = perItemTotal[i] = size || 1; perItemDone[i] = true; emit(); },
+            onItemFail(i) { perItemDone[i] = true; perItemFail[i] = true; emit(); },
+            // zip 打包阶段：更新权重进度；stat 为 zip 阶段统计文案（成功/跳过/百分比），设置后持续生效。返回最新 snapshot
+            setZip(p, stat) {
+                zipProgress = p;
+                if (stat !== undefined && stat !== null) zipStat = stat;
+                emit();
+                return snapshot();
+            },
+            snapshot,
+        };
+    };
+
     g.uploadToBed = async function (blob, name, onProgress, apiBase) {
         onProgress(0.05);
         const parts = [];

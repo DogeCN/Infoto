@@ -211,6 +211,9 @@ const picMediaType = window.picMediaType;
 const supportsAv1WebCodecs = window.supportsAv1WebCodecs;
 const compressToWebp = window.compressToWebp;
 const transcodeToAv1Webm = window.transcodeToAv1Webm;
+const fetchWithProgress = window.fetchWithProgress;
+const runDeletePhotos = window.runDeletePhotos;
+const createDownloadProgress = window.createDownloadProgress;
 const WEBP_QUALITY = window.WEBP_QUALITY;
 const FPS_CAP = window.FPS_CAP;
 
@@ -269,8 +272,6 @@ async function _transcodeVideoFallback(file, { makeEncoder, muxer, report }) {
     await _decodeEncodeVideoElSeek(file, vmeta, s, report);
     await enc.flush(); enc.close();
 }
-
-function _safeForWebp(file) { return isPicFile(file); }
 
 function apiBase() { return CONFIG.API_BASE || ''; }
 
@@ -451,7 +452,7 @@ const state = {
     isAdmin: false,
     dragging: false, dragStart: null, dragCurrent: null,
     batchSize: 60, loadedCount: 60,
-    zoom: { s: 1, x: 0, y: 0 },
+    zoom: { s: 1, x: 0, y: 0, r: 0 },
     panning: false,
     _lastTap: null
 };
@@ -660,10 +661,7 @@ function makeCard(photo, index) {
                     Store.markDimsDirty(photo, nw, nh);
                 }
             }
-            if (photo.hasAudio && !card.querySelector('.audio-toggle')) {
-                const vbtn = makeVolumeBtn({ initiallyMuted: true });
-                holder.appendChild(vbtn);
-            }
+            // 音量按钮由下方 makeCard 同步创建（animated && photo.hasAudio），无需在此再建
             media.classList.add('loaded');
             skel.remove();
             // 播放由 IntersectionObserver 控制（进视口才播）；无 IO 环境回退自动播放
@@ -819,19 +817,23 @@ function installInfiniteScroll() {
     setTimeout(fill, 150);
 }
 
+// 单卡投票徽章渲染（updateCardStatsById / updateMasonryStatsOnly 共用）
+function _renderCardStats(c, p) {
+    const myVote = Store.getMyVote(p.id);
+    const { html, haveVotes } = renderCardStatsBadges(p, myVote);
+    const oldStats = c.querySelector('.card-stats');
+    if (!haveVotes) { if (oldStats) oldStats.remove(); return; }
+    if (oldStats) { oldStats.innerHTML = html; renderIcons(oldStats); }
+    else { const s = el('div', 'card-stats', html); renderIcons(s); c.appendChild(s); }
+}
+
 function updateCardStatsById(id) {
     const p = Store.photos.find(x => x.id === id);
     if (!p) return;
-    const myVote = Store.getMyVote(id);
-    $$(`.photo-card[data-id="${id}"]`).forEach(c => {
-        const oldStats = c.querySelector('.card-stats');
-        const { html, haveVotes } = renderCardStatsBadges(p, myVote);
-        if (!haveVotes) { if (oldStats) oldStats.remove(); return; }
-        if (oldStats) { oldStats.innerHTML = html; renderIcons(oldStats); }
-        else { const s = el('div', 'card-stats', html); renderIcons(s); c.appendChild(s); }
-    });
+    $$(`.photo-card[data-id="${id}"]`).forEach(c => _renderCardStats(c, p));
     if (state.lightboxOpen) {
         const likes = p.likes || 0, dislikes = p.dislikes || 0;
+        const myVote = Store.getMyVote(id);
         const lbLikes = document.querySelector('#lbLikes');
         const lbDislikes = document.querySelector('#lbDislikes');
         if (lbLikes) { lbLikes.classList.toggle('active', myVote === 1); lbLikes.querySelector('span').textContent = likes; lbLikes.style.display = likes > 0 ? '' : 'none'; }
@@ -841,15 +843,8 @@ function updateCardStatsById(id) {
 
 function updateMasonryStatsOnly() {
     $$('.photo-card').forEach(c => {
-        const id = c.dataset.id;
-        const p = Store.photos.find(x => x.id === id);
-        if (!p) return;
-        const myVote = Store.getMyVote(id);
-        const { html, haveVotes } = renderCardStatsBadges(p, myVote);
-        const oldStats = c.querySelector('.card-stats');
-        if (!haveVotes) { if (oldStats) oldStats.remove(); return; }
-        if (oldStats) { oldStats.innerHTML = html; renderIcons(oldStats); }
-        else { const s = el('div', 'card-stats', html); renderIcons(s); c.appendChild(s); }
+        const p = Store.photos.find(x => x.id === c.dataset.id);
+        if (p) _renderCardStats(c, p);
     });
 }
 
@@ -941,8 +936,7 @@ async function deleteSelected() {
                 return;
             }
             if (msg.type === 'task-update' && msg.task && msg.task.type === 'delete') {
-                const t = msg.task;
-                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
+                applyTaskUpdate(msg.task);
             }
             if (msg.type === 'delete-complete') {
                 const s = msg.summary || {};
@@ -952,7 +946,7 @@ async function deleteSelected() {
                     exitMulti();
                     renderMasonry();
                 })();
-                setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
+                scheduleProgressFade(5000, () => { _mode = 'upload'; });
                 if (_deleteWorkerListener) { _deleteWorkerListener(); _deleteWorkerListener = null; }
                 _deleting = false;
             }
@@ -960,31 +954,16 @@ async function deleteSelected() {
         return;
     }
 
-    const total = ids.length;
-    let done = 0, fail = 0;
-
-    const tasks = ids.map(id => async () => {
-        try {
-            const r = await fetch(apiBase() + '/api/photos/' + encodeURIComponent(id), { method: 'DELETE' });
-            if (r.ok) done++; else fail++;
-        } catch (e) { fail++; }
-        const finished = done + fail;
-        setProgress(
-            total ? finished / total : 1,
-            `${finished} / ${total} 张`,
-            '删除中…',
-            { stat: `成功 ${done} · 失败 ${fail}`, remaining: total - finished }
-        );
+    const { done, failed } = await runDeletePhotos(ids, apiBase(), (st) => {
+        setProgress(st.progress, st.curFile, '删除中…', { stat: `成功 ${st.done} · 失败 ${st.failed}`, remaining: st.total - st.finished });
     });
 
-    await runWithConcurrency(tasks, CONFIG.CONCURRENCY);
-
-    setProgress(1, null, fail === 0 ? '完成' : '部分失败', { stat: `成功 ${done} · 失败 ${fail}` });
+    setProgress(1, null, failed === 0 ? '完成' : '部分失败', { stat: `成功 ${done} · 失败 ${failed}` });
 
     await Store.load(true);
     exitMulti();
     renderMasonry();
-    setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
+    scheduleProgressFade(5000, () => { _mode = 'upload'; });
     _deleting = false;
 }
 
@@ -1097,38 +1076,6 @@ async function getZipLib() {
     return _jszip;
 }
 
-// 带字节级进度的 fetch（利用 XHR 读取 content-length，不支持则降级为整文件完成）
-function fetchWithProgress(url, opts, onProgress) {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        xhr.responseType = 'blob';
-        let knownTotal = 0;
-        xhr.onprogress = (e) => {
-            if (e.lengthComputable) {
-                knownTotal = e.total;
-                onProgress?.(e.loaded, e.total);
-            } else if (knownTotal) {
-                onProgress?.(e.loaded, knownTotal);
-            }
-        };
-        xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-                if (!knownTotal && xhr.response?.size) {
-                    onProgress?.(xhr.response.size, xhr.response.size);
-                }
-                resolve({ blob: xhr.response, total: knownTotal || xhr.response?.size || 0 });
-            } else {
-                reject(new Error('HTTP ' + xhr.status));
-            }
-        };
-        xhr.onerror = () => reject(new Error('网络错误'));
-        xhr.timeout = 60000;
-        xhr.ontimeout = () => reject(new Error('下载超时（60s）'));
-        xhr.send();
-    });
-}
-
 let _downloadWorkerListener = null;
 $('#batchDownloadBtn').addEventListener('click', async () => {
     const list = getSorted().filter(p => state.selected.has(p.id));
@@ -1152,8 +1099,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
                 return;
             }
             if (msg.type === 'task-update' && msg.task && msg.task.type === 'download') {
-                const t = msg.task;
-                setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
+                applyTaskUpdate(msg.task);
             }
             if (msg.type === 'download-complete' && msg.zipUrl) {
                 // 多标签页去重：仅发起页弹下载，其他页提示即可（zip blob URL 各页共享，双端弹窗重复）
@@ -1161,7 +1107,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
                     toast('已在其他页面完成下载', 'info');
                     setProgress(1, msg.fileName || 'download.zip', '完成');
                     exitMulti(); // 本页若在多选，下载结束一并退出
-                    setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
+                    scheduleProgressFade(5000, () => { _mode = 'upload'; });
                     if (_downloadWorkerListener) { _downloadWorkerListener(); _downloadWorkerListener = null; }
                     return;
                 }
@@ -1169,7 +1115,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
                 setTimeout(() => URL.revokeObjectURL(msg.zipUrl), 60000);
                 setProgress(1, msg.fileName || 'download.zip', '完成');
                 exitMulti();
-                setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
+                scheduleProgressFade(5000, () => { _mode = 'upload'; });
                 if (_downloadWorkerListener) { _downloadWorkerListener(); _downloadWorkerListener = null; }
             }
         });
@@ -1180,52 +1126,23 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const zip = new JSZip();
     const total = list.length;
 
-    const perItemProgress = new Array(total).fill(0);
-    const perItemTotal = new Array(total).fill(0);
-    const perItemDone = new Array(total).fill(false);
-    let downloadedBytes = 0;
-    let estimatedTotalBytes = 0;
-    let zipProgress = 0;
-    const ZIP_WEIGHT = 0.12;
-    const FETCH_WEIGHT = 1 - ZIP_WEIGHT;
-
-    const recomputeOverall = () => {
-        let sumCur = 0, sumTot = 0;
-        let finishedItems = 0;
-        for (let i = 0; i < total; i++) {
-            const t = perItemTotal[i] || 1;
-            sumCur += perItemProgress[i];
-            sumTot += t;
-            if (perItemDone[i]) finishedItems++;
-        }
-        const fetchPart = sumTot > 0 ? (sumCur / sumTot) * FETCH_WEIGHT : 0;
-        const zipPart = zipProgress * ZIP_WEIGHT;
-        const overall = Math.min(1, fetchPart + zipPart);
-        downloadedBytes = sumCur;
-        estimatedTotalBytes = sumTot;
-        const stat = `下载 ${finishedItems}/${total} 张`;
-        setProgress(overall, `${finishedItems} / ${total} 张`, zipProgress > 0 ? '打包 zip 中' : '下载中…', { stat, remaining: total - finishedItems });
-    };
+    // 下载/打包进度由 shared.js createDownloadProgress 统一汇总（与 DownloadTask 同一实现）
+    const dlp = createDownloadProgress(total, (s) => {
+        setProgress(s.progress, s.curFile, s.step, { stat: s.extraStat, remaining: total - s.done });
+    });
 
     const dlTasks = list.map((p, i) => async () => {
         try {
             const base = dlName(p);
             const { blob, total: t } = await fetchWithProgress(
                 p.url,
-                { cache: 'force-cache' },
-                (loaded, tot) => {
-                    perItemProgress[i] = loaded;
-                    if (tot > perItemTotal[i]) perItemTotal[i] = tot;
-                    recomputeOverall();
-                }
+                (loaded, tot) => dlp.onItemProgress(i, loaded, tot)
             );
-            perItemProgress[i] = perItemTotal[i] = t || blob.size || 1;
-            perItemDone[i] = true;
+            dlp.onItemDone(i, t || blob.size || 1);
             zip.file(base, blob, { binary: true });
-            recomputeOverall();
             return { ok: true };
         } catch (e) {
-            perItemDone[i] = true;
+            dlp.onItemFail(i);
             toast(`${dlName(p)} 下载失败`, 'alert');
             return { ok: false, err: e };
         }
@@ -1236,25 +1153,24 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     if (successCount === 0) {
         toast('全部下载失败', 'alert');
         setProgress(1, null, '失败', { stat: null });
-        setTimeout(resetProgressUI, 2500);
+        scheduleProgressFade();
         _mode = 'upload';
         return;
     }
 
     const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
-        zipProgress = meta.percent / 100;
-        recomputeOverall();
+        const p = meta.percent / 100;
         const failedCount = total - successCount;
-        const stat = `${successCount}/${total} 张成功${failedCount ? ` · ${failedCount} 张跳过` : ''} · zip ${meta.percent.toFixed(0)}%`;
+        const s = dlp.setZip(p, `${successCount}/${total} 张成功${failedCount ? ` · ${failedCount} 张跳过` : ''} · zip ${meta.percent.toFixed(0)}%`);
+        // zip 阶段补充更细的 curFile/step 文案（snapshot 只提供通用「打包 zip 中」）
         setProgress(
-            Math.min(1, (1 - ZIP_WEIGHT) + zipProgress * ZIP_WEIGHT),
+            s.progress,
             `生成 zip ${meta.percent.toFixed(0)}%`,
             failedCount ? `打包中（${successCount}/${total} 张成功）` : '打包 zip…',
-            { stat, remaining: total - successCount }
+            { stat: s.extraStat, remaining: total - successCount }
         );
     });
-    zipProgress = 1;
-    recomputeOverall();
+    dlp.setZip(1);
 
     const url = URL.createObjectURL(zipBlob);
     const finalName = 'download.zip';
@@ -1300,8 +1216,34 @@ let _uploadBytes = { total: 0, done: 0 };
 // 阶段权重（总和≈1）：预处理20% → 查重+上传75% → 收尾同步5%（收尾进度动画内联）
 const PHASE_WEIGHT = { PREP: 0.20, UPLOAD: 0.75 };
 
+/* 进度环完成淡出：任务完成后 5s 自动淡出，期间可被展开 / 新任务打断。
+   - scheduleProgressFade(delay, after)：完成路径统一调用；after 为淡出完成后回调（如 _mode 复位）
+   - 展开中到点不淡出，挂起 _fadePending，收起后重新计时
+   - 新任务 resetProgressUI 会清掉计时器与 fading，进度环继续为新任务服务 */
+let _fadeTimer = null;
+let _fadePending = false;
+function scheduleProgressFade(delayMs = 5000, after) {
+    if (_fadeTimer) clearTimeout(_fadeTimer);
+    _fadePending = false;
+    _fadeTimer = setTimeout(() => {
+        _fadeTimer = null;
+        const ind = $('#upIndicator');
+        if (ind.classList.contains('open')) { _fadePending = true; return; } // 展开中：挂起，收起后重排
+        ind.classList.add('fading');
+        setTimeout(() => {
+            ind.classList.remove('fading');
+            if (ind.classList.contains('open')) { _fadePending = true; return; } // 过渡中又被展开：取消淡出
+            resetProgressUI();
+            if (after) after();
+        }, 380);
+    }, delayMs);
+}
+
 function resetProgressUI() {
+    if (_fadeTimer) { clearTimeout(_fadeTimer); _fadeTimer = null; }
+    _fadePending = false;
     const ind = $('#upIndicator');
+    ind.classList.remove('fading');
     ind.classList.add('hidden');
     ind.classList.remove('open'); // 收起展开的详情
     $('#upRing').style.strokeDashoffset = '94.25';
@@ -1353,8 +1295,12 @@ function setProgress(p, file, step, extra) {
         $('#upTipStatExtra')?.remove();
     }
 }
-const resetUploadUI = resetProgressUI;
-const setUploadProgress = (p, file, step, extra) => setProgress(p, file, step, extra);
+// Worker 任务快照 → 进度 UI 通用桥（upload/delete/download 三类型共用同一渲染逻辑）
+function applyTaskUpdate(t) {
+    if (!t) return;
+    _mode = t.type;
+    setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
+}
 
 /* ---- 进度环：点击展开/收起详情（桌面 hover 仍可用，移动端无 hover 靠点击） ---- */
 (() => {
@@ -1362,7 +1308,12 @@ const setUploadProgress = (p, file, step, extra) => setProgress(p, file, step, e
     if (!ind) return;
     ind.addEventListener('click', (e) => {
         e.stopPropagation();
+        const wasOpen = ind.classList.contains('open');
         ind.classList.toggle('open');
+        if (wasOpen && _fadePending) { // 收起且之前因展开挂起淡出：重新计时
+            _fadePending = false;
+            scheduleProgressFade(5000);
+        }
     });
     document.addEventListener('click', (e) => {
         if (!ind.classList.contains('open')) return;
@@ -1371,7 +1322,7 @@ const setUploadProgress = (p, file, step, extra) => setProgress(p, file, step, e
 })();
 
 async function uploadFiles(files) {
-    resetUploadUI();
+    resetProgressUI();
     _mode = 'upload';
     await supportsAv1WebCodecs();
     applyFileInputAccept();
@@ -1415,13 +1366,12 @@ function uploadViaTaskWorker(files) {
         if (msg.type === 'error') {
             // 多为"已有上传任务进行中"：提示即可，不能回退主线程（会造成重复上传）
             toast(msg.error || '上传启动失败', 'alert');
-            resetUploadUI();
+            resetProgressUI();
             off();
             return;
         }
         if (msg.type === 'task-update' && msg.task && msg.task.type === 'upload') {
-            const t = msg.task;
-            setUploadProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
+            applyTaskUpdate(msg.task);
         }
         if (msg.type === 'photo-result') {
             if (msg.photo) {
@@ -1443,8 +1393,8 @@ function uploadViaTaskWorker(files) {
             }
         }
         if (msg.type === 'upload-complete') {
-            setUploadProgress(1, null, summary.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${summary.done} · 跳过 ${summary.skipped} · 失败 ${summary.failed}`, done: summary.done, skipped: summary.skipped, failed: summary.failed });
-            setTimeout(resetUploadUI, 2500);
+            setProgress(1, null, summary.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${summary.done} · 跳过 ${summary.skipped} · 失败 ${summary.failed}`, done: summary.done, skipped: summary.skipped, failed: summary.failed });
+            scheduleProgressFade();
             off();
         }
     });
@@ -1519,7 +1469,7 @@ async function runMainThreadUpload(files) {
     let uiTick = null;
     const startUiTick = () => {
         if (uiTick) return; uiTick = setInterval(() => {
-            setUploadProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
+            setProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
         }, 120);
     };
     const stopUiTick = () => { if (uiTick) { clearInterval(uiTick); uiTick = null; } };
@@ -1531,7 +1481,7 @@ async function runMainThreadUpload(files) {
             let blob = file, ext = 'webp', hasAudio = false;
             // 尺寸直接来自压缩/转码阶段的位图元数据（loadDims 仅在两者缺失时兜底）
             let dimsW = 0, dimsH = 0;
-            const isV = isVideoFile(file), isG = isGifFile(file), isP = _safeForWebp(file);
+            const isV = isVideoFile(file), isG = isGifFile(file), isP = isPicFile(file);
             if (isP) {
                 currentFile = file.name; currentStep = '压缩中…';
                 const webp = await compressToWebp(file, WEBP_QUALITY);
@@ -1605,7 +1555,7 @@ async function runMainThreadUpload(files) {
     const finalDur = 500;
     const finalAnim = setInterval(() => {
         const t = Math.min(1, (Date.now() - finalStart) / finalDur);
-        setUploadProgress(PHASE.PREP + PHASE.UPLOAD + t * PHASE.SYNC, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
+        setProgress(PHASE.PREP + PHASE.UPLOAD + t * PHASE.SYNC, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
     }, 30);
     try {
         updateMasonryStatsOnly();
@@ -1617,8 +1567,8 @@ async function runMainThreadUpload(files) {
     } catch (_) { }
     clearInterval(finalAnim);
 
-    setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`, done, skipped, failed });
-    setTimeout(resetUploadUI, 2500);
+    setProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`, done, skipped, failed });
+    scheduleProgressFade();
 }
 
 // 查重：shared.js 统一实现，页面侧只需补 apiBase
@@ -1935,8 +1885,9 @@ function zoomTo(ns, sx, sy) {
     applyZoomTransform();
     clampPan();
 }
-function resetZoom() {
-    state.zoom = { s: 1, x: 0, y: 0, r: 0 };
+function resetZoom(keepRotate) {
+    // 双击缩小只复位缩放/平移，保留用户显式旋转的角度（与 clampPan 语义一致）
+    state.zoom = { s: 1, x: 0, y: 0, r: keepRotate ? (state.zoom.r || 0) : 0 };
     const w = lbWrap(); if (w) {
         w.style.transition = 'transform .2s ease';
         w.style.transformOrigin = '50% 50%';
@@ -2019,20 +1970,15 @@ function onGs(e) {
     // 问题（普通拖动分支已保留 scale/rotate，且 _resetLbWrapAndGestures 同步 state）。
     if (_isZoomedBeyondViewport() || _isRotated()) {
         state.dragging = true; state.panning = true;
-        const pt = e.touches ? e.touches[0] : e;
-        state.dragStart = { x: pt.clientX, y: pt.clientY };
-        state.dragCurrent = { x: pt.clientX, y: pt.clientY };
-        const w = lbWrap(); if (w) w.style.transition = 'none';
-        _setAudioBtnsVisible(false);
-        return;
+    } else {
+        state.dragging = true;
+        resetGestures();
     }
-    state.dragging = true;
     const pt = e.touches ? e.touches[0] : e;
     state.dragStart = { x: pt.clientX, y: pt.clientY };
     state.dragCurrent = { x: pt.clientX, y: pt.clientY };
     const w = lbWrap(); if (w) w.style.transition = 'none';
     _setAudioBtnsVisible(false);
-    resetGestures();
 }
 function onGm(e) {
     if (!state.dragging || state.menuOpen) return;
@@ -2145,7 +2091,7 @@ function onGe(e) {
             const isDbl = state._lastTap && (now - state._lastTap.t) < 300 && Math.hypot(t.clientX - state._lastTap.x, t.clientY - state._lastTap.y) < 40;
             if (isDbl) {
                 const sr = stage.getBoundingClientRect();
-                if (state.zoom.s > 1.01) resetZoom();
+                if (state.zoom.s > 1.01) resetZoom(true);
                 else zoomTo(2.5, t.clientX - sr.left, t.clientY - sr.top);
                 state._lastTap = null;
                 state.dragging = false; state.panning = false;
@@ -2221,7 +2167,12 @@ function triggerGesture(dir) {
         setTimeout(() => { resetGestures(); }, 250);
     } else if (dir === 'up') {
         const gi = $('#giUp'); gi.style.opacity = 1; gi.style.transform = 'translateX(-50%) scale(1.2)';
-        setTimeout(() => { resetGestures(); openMenu(); }, 200);
+        setTimeout(() => {
+            resetGestures();
+            // 防御：手势触发到延时打开之间的窗口内 lightbox 可能已被关闭（如快速点关闭），
+            // 此时不再打开菜单，避免菜单残留在主页底部（"滑动时菜单一直有"）
+            if (state.lightboxOpen) openMenu();
+        }, 200);
     }
 }
 function onGeMouse() {
@@ -2274,14 +2225,17 @@ stage.addEventListener('dblclick', (e) => {
     if (!state.lightboxOpen) return;
     e.preventDefault();
     const sr = stage.getBoundingClientRect();
-    if (state.zoom.s > 1.01) resetZoom();
+    if (state.zoom.s > 1.01) resetZoom(true);
     else zoomTo(2.5, e.clientX - sr.left, e.clientY - sr.top);
 });
 
 /* =========================================================
    更多菜单
    ========================================================= */
-function openMenu() { state.menuOpen = true; $('#menuMask').classList.add('show'); $('#menu').classList.add('show'); }
+function openMenu() {
+    if (!state.lightboxOpen) return; // 菜单只在 lightbox 内有效，防异常路径残留在主页
+    state.menuOpen = true; $('#menuMask').classList.add('show'); $('#menu').classList.add('show');
+}
 function closeMenu() { state.menuOpen = false; $('#menuMask').classList.remove('show'); $('#menu').classList.remove('show'); }
 $('#lbMoreBtn').addEventListener('click', e => { e.stopPropagation(); openMenu(); });
 $('#menuMask').addEventListener('click', closeMenu);
@@ -2403,7 +2357,7 @@ function resumeRunningTask() {
             var i2 = activeTypes.indexOf(msg.taskType);
             if (i2 >= 0) activeTypes.splice(i2, 1);
             if (activeTypes.length === 0) {
-                setTimeout(function () { resetProgressUI(); _mode = 'upload'; }, 2500);
+                scheduleProgressFade(5000, () => { _mode = 'upload'; });
                 if (_resumeWorkerListener) { var l = _resumeWorkerListener; _resumeWorkerListener = null; l(); }
             }
         }
