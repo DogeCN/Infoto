@@ -69,6 +69,7 @@ class UploadTask {
         this.curFile = files.length > 1 ? `${files.length} 个文件` : (files[0]?.name || '');
         this.done = 0; this.skipped = 0; this.failed = 0; this.total = files.length;
         this.extraStat = '';
+        this.rows = []; // 并发槽位行：[{ key, file, step }]，随 emit 刷新
         this._promise = this._run();
     }
 
@@ -82,6 +83,7 @@ class UploadTask {
             curFile: this.curFile,
             done: this.done, skipped: this.skipped, failed: this.failed, total: this.total,
             extraStat: `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`,
+            rows: this.rows,
             startedAt: this.startedAt,
         };
     }
@@ -96,7 +98,7 @@ class UploadTask {
         const av1Ok = await supportsAv1WebCodecs();
         const PHASE = { PREP: 0.20, UPLOAD: 0.75, SYNC: 0.05 };
 
-        const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null }));
+        const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null, active: false, stepLabel: '等待' }));
         const prepTotal = fileStates.reduce((a, s) => a + s.size, 0) || 1;
 
         const curOverall = () => {
@@ -115,6 +117,7 @@ class UploadTask {
             if (step) this.step = step;
             this.progress = curOverall();
             this.extraStat = `成功 ${this.done} · 跳过 ${this.skipped} · 失败 ${this.failed}`;
+            this.rows = fileStates.filter(s => s.active).map(s => ({ key: s.idx, file: files[s.idx].name, step: s.stepLabel }));
             this._emitUpdate();
         };
         const result = (idx, name, photo, err, skipped) => {
@@ -133,7 +136,7 @@ class UploadTask {
                 let dimsW = 0, dimsH = 0;
                 const isV = isVideoFile(file), isG = isGifFile(file), isP = isPicFile(file);
                 if (isP) {
-                    emit(file.name, '压缩中…');
+                    st.active = true; st.stepLabel = '压缩'; emit(file.name);
                     const webp = await compressToWebp(file, WEBP_QUALITY);
                     if (!webp || !webp.blob) { st.err = '图片 WebP 压缩失败'; this.failed++; result(idx, file.name, null, st.err); return; }
                     blob = webp.blob; ext = 'webp'; dimsW = webp.width || 0; dimsH = webp.height || 0;
@@ -142,7 +145,7 @@ class UploadTask {
                         const msg = (isG ? 'GIF' : '视频') + '需要支持 AV1 WebCodecs 的浏览器';
                         st.err = msg; this.failed++; result(idx, file.name, null, msg); return;
                     }
-                    emit(file.name, (isG ? 'GIF 转码' : '视频转码') + '中…');
+                    st.active = true; st.stepLabel = '转码'; emit(file.name);
                     // Worker 无 <video> 元素：非 MP4 容器由 transcodeToAv1Webm 抛错（页面已对含非 MP4 视频的批次降级主线程，正常到不了这里）
                     const r = await transcodeToAv1Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); emit(file.name); });
                     blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio; dimsW = r.width || 0; dimsH = r.height || 0;
@@ -151,12 +154,12 @@ class UploadTask {
                 st.uploadBytes = blob.size || st.size || 1;
                 const ab = await blob.arrayBuffer();
                 const sha = await sha256Hex(ab);
-                emit(file.name, '查重…'); st.upP = 0.02;
+                st.stepLabel = '查重'; emit(file.name); st.upP = 0.02;
                 const dup = await checkHashExists(sha, this.apiBase);
                 if (dup) {
                     this.skipped++; st.upP = 1; result(idx, file.name, null, null, true); return;
                 }
-                emit(file.name, '上传到图床');
+                st.stepLabel = '上传'; emit(file.name);
                 const parts = await uploadToBed(blob, 'upload.' + ext, (p) => { st.upP = 0.02 + p * 0.93; emit(file.name); }, this.apiBase);
                 st.upP = 0.96;
                 const photo = {
@@ -165,7 +168,7 @@ class UploadTask {
                     width: dimsW, height: dimsH, createdAt: Date.now(),
                     ext, hasAudio
                 };
-                emit(file.name, '写库…');
+                st.stepLabel = '写库'; emit(file.name);
                 const saveR = await fetch((this.apiBase || '') + '/api/photos', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(photo)
                 });
@@ -179,6 +182,7 @@ class UploadTask {
                 result(idx, file.name, null, st.err);
             } finally {
                 blob = null; // 转完即释放，内存只绑并发数
+                st.active = false; // 结束即移出并发槽位行
                 emit(file.name);
             }
         };

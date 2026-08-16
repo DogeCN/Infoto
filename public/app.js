@@ -1255,12 +1255,12 @@ function resetProgressUI() {
     $('#upDone').textContent = '0';
     $('#upSkipped').textContent = '0';
     $('#upFailed').textContent = '0';
-    $('#upTipFile').textContent = _mode === 'download' ? '等待下载' : _mode === 'delete' ? '等待删除' : '待上传';
-    $('#upTipStep').textContent = _mode === 'download' ? '准备下载' : _mode === 'delete' ? '准备删除' : '准备中';
+    $('#upRows').innerHTML = '';
     _prepBytes = { total: 0, done: 0 };
     _uploadBytes = { total: 0, done: 0 };
     $('#upTipStatExtra')?.remove();
 }
+// file/step 参数已不再渲染到 UI（并发行列表 renderUpRows 取代单行提示），保留签名兼容各调用点
 function setProgress(p, file, step, extra) {
     const ind = $('#upIndicator');
     ind.classList.remove('hidden');
@@ -1279,9 +1279,6 @@ function setProgress(p, file, step, extra) {
         pctEl.textContent = Math.round(clampedP * 100) + '%';
         pctEl.style.fontSize = '';
     }
-    if (file) $('#upTipFile').textContent = file;
-    if (step) $('#upTipStep').textContent = step;
-    // 成功/重复/失败 计数动态更新（上传/下载/删除通用；extra.done/skipped/failed 传入即刷新）
     if (extra && extra.done !== undefined) $('#upDone').textContent = String(extra.done);
     if (extra && extra.skipped !== undefined) $('#upSkipped').textContent = String(extra.skipped);
     if (extra && extra.failed !== undefined) $('#upFailed').textContent = String(extra.failed);
@@ -1296,11 +1293,37 @@ function setProgress(p, file, step, extra) {
         $('#upTipStatExtra')?.remove();
     }
 }
+// 并发槽位行渲染：每行左端文件名、右端步骤（keyed diff，只更新变化的文本节点）。
+// rows: [{ key, file, step }]，key 为文件在批次内的下标；结束后从列表移除即不再渲染
+function renderUpRows(rows) {
+    const box = $('#upRows');
+    if (!box) return;
+    if (!rows || !rows.length) { box.innerHTML = ''; return; }
+    const rowsByKey = new Map();
+    for (const c of box.children) rowsByKey.set(c.dataset.key, c);
+    for (const r of rows) {
+        const k = String(r.key);
+        let row = rowsByKey.get(k);
+        if (!row) {
+            row = document.createElement('div');
+            row.className = 'up-row';
+            row.dataset.key = k;
+            row.innerHTML = '<span class="up-row-file"></span><span class="up-row-step"></span>';
+            box.appendChild(row);
+        }
+        const [f, s] = row.children;
+        if (f.textContent !== r.file) f.textContent = r.file;
+        if (s.textContent !== r.step) s.textContent = r.step;
+        rowsByKey.delete(k);
+    }
+    for (const el of rowsByKey.values()) el.remove(); // 已结束/换批次的旧行
+}
 // Worker 任务快照 → 进度 UI 通用桥（upload/delete/download 三类型共用同一渲染逻辑）
 function applyTaskUpdate(t) {
     if (!t) return;
     _mode = t.type;
     setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
+    renderUpRows(t.type === 'upload' ? t.rows : null);
 }
 
 /* ---- 进度环：点击展开/收起详情（桌面 hover 仍可用，移动端无 hover 靠点击） ---- */
@@ -1408,6 +1431,9 @@ function uploadViaTaskWorker(files) {
 }
 
 async function runMainThreadUpload(files) {
+    // total 必须在函数内定义：uploadFiles 的局部 total 在此作用域不可见。
+    // 缺失会导致 ReferenceError —— 含视频/GIF 的批次整批降级主线程时，整个上传不触发。
+    const total = files.length;
     const t0 = Date.now();
     const av1Ok = window._av1Support === true;
     _prepBytes = { total: 0, done: 0 };
@@ -1417,8 +1443,13 @@ async function runMainThreadUpload(files) {
     const PHASE = { PREP: 0.20, UPLOAD: 0.75, SYNC: 0.05 };
 
     // 每文件独立状态：各自写入自己的进度，整体进度统一汇总（并发写入互不干扰，不会互相覆盖）
-    const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null }));
+    // active：是否正在并发槽位中（结束后置 false，行从信息框移除）；stepLabel：该行右端简写步骤
+    const fileStates = files.map((f, i) => ({ idx: i, size: f.size || 0, prepP: 0, upP: 0, uploadBytes: f.size || 0, err: null, active: false, stepLabel: '等待' }));
     const prepTotal = fileStates.reduce((a, s) => a + s.size, 0) || 1;
+
+    const activeRows = () => fileStates
+        .filter(s => s.active)
+        .map(s => ({ key: s.idx, file: files[s.idx].name, step: s.stepLabel }));
 
     // 并发保序缓冲：按原始下标顺序 flush 卡片，避免乱序插入造成视觉抖动
     const pendingPhotos = new Map();
@@ -1441,9 +1472,13 @@ async function runMainThreadUpload(files) {
         flushCards();
     }
 
-    let currentFile = total > 1 ? `${total} 个文件` : (files[0] && files[0].name || '');
-    let currentStep = '准备中…';
-
+    let uiTick = null;
+    const startUiTick = () => {
+        if (uiTick) return; uiTick = setInterval(() => {
+            setProgress(curOverall(), null, null, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
+            renderUpRows(activeRows());
+        }, 120);
+    };
     function curOverall() {
         let prepSum = 0, upSum = 0, upDen = 0;
         for (const s of fileStates) {
@@ -1467,12 +1502,6 @@ async function runMainThreadUpload(files) {
         if (elapsed > 4 && remain > 0 && remain < 3600 * 6) parts.push(`剩 ${mm ? mm + '分' : ''}${ss}秒`);
         return parts.join(' · ');
     }
-    let uiTick = null;
-    const startUiTick = () => {
-        if (uiTick) return; uiTick = setInterval(() => {
-            setProgress(curOverall(), currentFile, currentStep, { stat: buildStat(), remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
-        }, 120);
-    };
     const stopUiTick = () => { if (uiTick) { clearInterval(uiTick); uiTick = null; } };
 
     async function processOne(file, idx) {
@@ -1484,7 +1513,7 @@ async function runMainThreadUpload(files) {
             let dimsW = 0, dimsH = 0;
             const isV = isVideoFile(file), isG = isGifFile(file), isP = isPicFile(file);
             if (isP) {
-                currentFile = file.name; currentStep = '压缩中…';
+                st.active = true; st.stepLabel = '压缩';
                 const webp = await compressToWebp(file, WEBP_QUALITY);
                 if (!webp || !webp.blob) { st.err = '图片 WebP 压缩失败'; failed++; markReady(idx, null); toast(`${file.name} 压缩失败`, 'alert'); return; }
                 blob = webp.blob; ext = 'webp'; dimsW = webp.width || 0; dimsH = webp.height || 0;
@@ -1493,8 +1522,7 @@ async function runMainThreadUpload(files) {
                     const msg = (isG ? 'GIF' : '视频') + '需要支持 AV1 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）';
                     st.err = msg; failed++; markReady(idx, null); toast(`${file.name}: 需 AV1 编码支持`, 'alert'); return;
                 }
-                const label = isG ? 'GIF 转码' : '视频转码';
-                currentFile = file.name; currentStep = label + '中…';
+                st.active = true; st.stepLabel = '转码';
                 const r = await transcodeToAv1Webm(file, (p) => { st.prepP = Math.max(0, Math.min(1, p || 0)); }, { videoFallback: _transcodeVideoFallback });
                 blob = r.blob; ext = 'webm'; hasAudio = !!r.hasAudio; dimsW = r.width || 0; dimsH = r.height || 0;
             }
@@ -1502,17 +1530,17 @@ async function runMainThreadUpload(files) {
             st.uploadBytes = blob.size || st.size || 1;
             const ab = await blob.arrayBuffer();
             const sha = await sha256Hex(ab);
-            currentStep = '查重…'; st.upP = 0.02;
-            const dup = await checkHashExists(sha);
+            st.stepLabel = '查重'; st.upP = 0.02;
+            const dup = await window.checkHashExists(sha, apiBase());
             if (dup) {
-                skipped++; st.upP = 1;
+                skipped++; st.upP = 1; st.active = false;
                 markReady(idx, null);
                 toast(`${file.name} 已存在，跳过`, 'info');
                 return;
             }
-            currentFile = file.name; currentStep = '上传到图床';
+            st.stepLabel = '上传';
             const parts = await uploadToBed(blob, 'upload.' + ext, (p) => { st.upP = 0.02 + p * 0.93; }, apiBase());
-            st.upP = 0.96; currentStep = '获取尺寸…';
+            st.upP = 0.96; st.stepLabel = '取尺寸';
             const photo = {
                 id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
                 url: '', parts, sha256: sha,
@@ -1524,13 +1552,13 @@ async function runMainThreadUpload(files) {
             if (!dimsW || !dimsH) await loadDims(photo);
             st.upP = 0.98;
             await Store.add(photo); // add 内部已带尺寸写库（loadDims 先于 add 执行）
-            st.upP = 1; done++;
+            st.upP = 1; done++; st.active = false;
             markReady(idx, photo);
             blob = null; // 立即释放字节，降低内存峰值
         } catch (e) {
             console.error('upload failed:', file.name, e);
             st.err = e && e.message ? e.message : String(e);
-            failed++;
+            failed++; st.active = false;
             markReady(idx, null);
             toast(`${file.name} 上传失败: ${st.err}`, 'alert');
         }
@@ -1557,6 +1585,7 @@ async function runMainThreadUpload(files) {
     const finalAnim = setInterval(() => {
         const t = Math.min(1, (Date.now() - finalStart) / finalDur);
         setProgress(PHASE.PREP + PHASE.UPLOAD + t * PHASE.SYNC, null, '同步服务器…', { remaining: Math.max(0, total - done - skipped - failed), done, skipped, failed });
+        renderUpRows([]);
     }, 30);
     try {
         updateMasonryStatsOnly();
@@ -1566,16 +1595,18 @@ async function runMainThreadUpload(files) {
             renderDots();
         }
     } catch (_) { }
+    // 让 5% 同步动画完整跑完再清理——原实现 clearInterval 在同步代码中立即执行，
+    // setInterval 回调一次都没触发（同步动画/行清空从未生效，靠最终 setProgress(1) 兜底）
+    await new Promise(r => setTimeout(r, finalDur + 30));
     clearInterval(finalAnim);
 
     setProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`, done, skipped, failed });
     scheduleProgressFade();
 }
 
-// 查重：shared.js 统一实现，页面侧只需补 apiBase
-async function checkHashExists(sha) {
-    return window.checkHashExists(sha, apiBase());
-}
+// 查重：shared.js 统一实现（window.checkHashExists），页面侧补 apiBase 直接调用。
+// 注意不可再声明同名顶层函数——顶层 function 声明会提升并覆盖 window 上的 shared 导出，
+// 造成"包装函数调自己"无限递归（9a685ac 起的潜伏 bug，主线程上传路径必炸）。
 
 function loadDims(photo) {
     return new Promise(resolve => {
@@ -2376,14 +2407,14 @@ function resumeRunningTask() {
     var t = TaskWorker.getTask(resumedType);
     _mode = resumedType;
     resetProgressUI();
-    setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
+    applyTaskUpdate(t);
     if (_resumeWorkerListener) _resumeWorkerListener();
     _resumeWorkerListener = TaskWorker.onMessage(function (msg) {
         if (msg.type === 'task-update' && msg.task && activeTypes.indexOf(msg.task.type) >= 0) {
             var mt = msg.task;
             if (mt.type === resumedType || !TaskWorker.getTask(resumedType) || TaskWorker.getTask(resumedType).status !== 'running') {
                 _mode = mt.type;
-                setProgress(mt.progress, mt.curFile, mt.step, { stat: mt.extraStat || '', remaining: mt.total - mt.done - mt.skipped - mt.failed, done: mt.done, skipped: mt.skipped, failed: mt.failed });
+                applyTaskUpdate(mt);
             }
         }
         if (msg.type === 'task-clear' && activeTypes.indexOf(msg.taskType) >= 0) {

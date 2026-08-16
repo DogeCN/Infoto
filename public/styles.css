@@ -604,22 +604,39 @@ main {
   }
 }
 
-.up-tip-step {
-  font-size: .72rem;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--primary);
-  font-weight: 700;
-  margin-bottom: .4rem;
+.up-tip-rows {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  margin-bottom: .9rem;
+  max-height: 42vh;
+  overflow-y: auto;
 }
 
-.up-tip-file {
-  font-size: .92rem;
-  font-weight: 600;
+.up-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .75rem;
+  font-size: .8rem;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.up-row-file {
   color: var(--on-surface);
-  word-break: break-all;
-  line-height: 1.4;
-  margin-bottom: 1rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.up-row-step {
+  color: var(--primary);
+  font-weight: 600;
+  flex-shrink: 0;
+  letter-spacing: .04em;
 }
 
 .up-tip-stat {
