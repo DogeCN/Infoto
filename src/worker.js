@@ -84,6 +84,10 @@ export default {
           if (!body.id) return json(cors, { error: 'missing id' }, 400);
           const clean = sanitizePhoto(body);
           if (!clean.parts) return json(cors, { error: 'missing valid parts' }, 400);
+          // parts 必须全部出自本 worker 上传代理（防任意 URL 投毒/SSRF）
+          if (!(await isUploadedLink(env, clean.parts))) {
+            return json(cors, { error: 'invalid parts: not uploaded via proxy' }, 400);
+          }
           // 保留服务端权威计数（图片 onload 回写尺寸时也走这里，不能清掉投票数）
           const existing = await env.Infoto.get('p:' + clean.id, 'json');
           const merged = {
@@ -311,7 +315,22 @@ export default {
         clearTimeout(timer);
         const outHeaders = new Headers(cors);
         outHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json');
-        return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
+        // 记录本次上传产出的直链（KV `up:<url>`，TTL 7 天）。写库（POST /api/photos）时校验
+        // parts 必须全部出自本 worker 上传（见 sanitizePhoto 的 isUploadedLink），防任意 URL 投毒/SSRF。
+        // 注意：tc 图床是聚合多 CDN 的（返回网易/美团等第三方直链），不能按域名白名单过滤。
+        try {
+          const bodyText = await upstream.text();
+          try {
+            const j = JSON.parse(bodyText);
+            const data = j && typeof j.data === 'string' ? j.data : '';
+            if (data && /^https:\/\//i.test(data)) {
+              await env.Infoto.put('up:' + data, '1', { expirationTtl: 7 * 24 * 3600 });
+            }
+          } catch (_) { /* 非 JSON 响应不记录 */ }
+          return new Response(bodyText, { status: upstream.status, headers: outHeaders });
+        } catch (e) {
+          return json(cors, { error: 'proxy upstream read failed: ' + e.message }, 502);
+        }
       } catch (e) {
         clearTimeout(timer);
         const timedOut = ac.signal.aborted;
@@ -605,25 +624,18 @@ async function getAllPhotos(env, { limit = Infinity, offset = 0 } = {}) {
 }
 
 // tc 图床允许的域名白名单（上传代理仅转发到这些域；取图时也只会 fetch 这些域，防 SSRF/投毒）
-const TC_HOST_SUFFIXES = ['0147258.xyz', 'yn12377.cn'];
-function isTcLink(u) {
-  if (typeof u !== 'string') return false;
-  let url;
-  try { url = new URL(u); } catch { return false; }
-  if (url.protocol !== 'https:') return false;
-  const host = url.hostname.toLowerCase();
-  return TC_HOST_SUFFIXES.some(s => host === s || host.endsWith('.' + s));
-}
-
 // 只保留受信任字段，剥离客户端传入的 likes/dislikes / 派生值 url 等
 function sanitizePhoto(p) {
   const out = {};
   for (const k of ['id', 'parts', 'sha256', 'width', 'height', 'createdAt', 'ext', 'hasAudio']) {
     if (p[k] !== undefined) out[k] = p[k];
   }
-  // parts：必须是通过白名单校验的 https 直链数组（防 SSRF：/api/file 会 fetch 这些 URL）
+  // parts：必须是 https 直链数组（≤512 片）。
+  // 是否可信不在此判断——由调用方用 isUploadedLink 异步校验（KV `up:<url>` 必须是本 worker
+  // 上传代理产出的，见 POST /api/photos）。tc 图床聚合多 CDN（网易/美团等第三方直链），
+  // 按域名白名单过滤会误杀全部新上传（曾导致写库 400 missing valid parts）。
   if (Array.isArray(out.parts)) {
-    out.parts = out.parts.filter(isTcLink);
+    out.parts = out.parts.filter(u => typeof u === 'string' && /^https:\/\//i.test(u));
     if (out.parts.length === 0 || out.parts.length > 512) delete out.parts;
   } else {
     delete out.parts;
@@ -645,6 +657,15 @@ function sanitizePhoto(p) {
   // ext：仅允许字母数字（≤12 字符），防 Content-Disposition 文件名注入
   if (typeof out.ext !== 'string' || !/^[a-z0-9]{1,12}$/i.test(out.ext)) delete out.ext;
   return out;
+}
+
+// 校验 parts 是否全部出自本 worker 上传代理（KV `up:<url>` 有记录）。防 SSRF/投毒。
+async function isUploadedLink(env, parts) {
+  for (const u of parts) {
+    const rec = await env.Infoto.get('up:' + u);
+    if (!rec) return false;
+  }
+  return true;
 }
 
 // tc 图床上传签名（仅服务端使用，切勿暴露到前端）
