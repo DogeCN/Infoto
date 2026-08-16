@@ -60,6 +60,16 @@ export default {
       return new Response(null, { status: 204, headers: cors });
     }
 
+    // ---- 照片列表边缘缓存（省 KV 读）----
+    // GET /api/photos 读 KV 是 1+N 次（photo_ids + 每张 p:<id>），大相册每次刷新都打爆免费 KV 配额。
+    // 方案：Cache API 显式缓存列表响应（读命中 = 0 KV），写操作（上传/删除/dims/vote）成功后主动 purge；
+    // 响应带 s-maxage=30 短 TTL 兜底（即使 purge 在个别边缘 colo 未即时传播，陈旧窗口也 ≤30s）。
+    // 与 KV cacheTtl 的区别：那个无法主动失效，删除后旧数据会一直服务到 TTL 到期（本项目曾因此踩 SWR 7 天坑）。
+    const listCacheKey = () => new Request(url.origin + url.pathname + url.search, { method: 'GET' });
+    const purgePhotoListCache = async () => {
+      try { await caches.default.delete(listCacheKey()); } catch (e) { console.warn('[infoto] cache purge fail', e); }
+    };
+
     // 注：写接口不设同源校验——CORS * 的设计意图就是"前端可部署到其它域名"，
     // 匿名上传/投票本身接受公开写入，速率限制（rlCheck）已兜底防滥用。
 
@@ -68,8 +78,24 @@ export default {
       if (request.method === 'GET') {
         const limit = Math.max(0, Math.min(100000, Number(url.searchParams.get('limit') || 'Infinity')));
         const offset = Math.max(0, Number(url.searchParams.get('offset') || '0'));
+        // 读路径走边缘缓存：命中直接返回（0 KV 请求）；未命中读 KV 并回填。
+        // 注意必须按 limit/offset 区分缓存 key（前端虽然不带参数，但接口支持分页，防止缓存串页）
+        try {
+          const ckey = listCacheKey();
+          const hit = await caches.default.match(ckey);
+          if (hit) return hit;
+        } catch (e) { console.warn('[infoto] cache match fail', e); }
         const arr = await getAllPhotos(env, { limit, offset });
-        return json(cors, arr);
+        const resp = json(cors, arr);
+        // 回填缓存：body 只能消费一次，put 用 clone
+        try {
+          const cacheable = new Response(resp.clone().body, {
+            status: resp.status,
+            headers: { ...resp.headers, 'Cache-Control': 'public, s-maxage=30' },
+          });
+          await caches.default.put(listCacheKey(), cacheable);
+        } catch (e) { console.warn('[infoto] cache put fail', e); }
+        return resp;
       }
       if (request.method === 'POST') {
         // 匿名写库防刷：每 IP 每 5 分钟最多 300 次（正常用户批量上传远达不到；
@@ -114,6 +140,8 @@ export default {
           if (clean.sha256 && /^[0-9a-f]{64}$/.test(clean.sha256)) {
             await env.Infoto.put('sha:' + clean.sha256, clean.id);
           }
+          // 列表已变：清边缘缓存（上传/写库都影响 GET /api/photos 内容）
+          await purgePhotoListCache();
           return json(cors, { ok: true, count: idList.length });
         } catch (e) {
           return json(cors, { error: 'bad json' }, 400);
@@ -149,6 +177,8 @@ export default {
           await env.Infoto.put(key, JSON.stringify(existing));
           updated++;
         }
+        // 尺寸回写影响列表内容（GET /api/photos 含 width/height）
+        if (updated > 0) await purgePhotoListCache();
         return json(cors, { ok: true, updated });
       } catch (e) {
         return json(cors, { error: 'bad json' }, 400);
@@ -198,6 +228,8 @@ export default {
           const cur = (await getPhoto(env, id)) || { id };
           await env.Infoto.put('p:' + id, JSON.stringify({ ...cur, likes, dislikes }));
         });
+        // 投票数挂在列表响应里（GET /api/photos 返回含 likes/dislikes）：清缓存
+        await purgePhotoListCache();
         return json(cors, { ok: true, delta, likes, dislikes });
       } catch (e) {
         return json(cors, { error: 'bad json' }, 400);
@@ -295,6 +327,8 @@ export default {
         const idx = list.indexOf(id);
         if (idx >= 0) { list.splice(idx, 1); await env.Infoto.put('photo_ids', JSON.stringify(list)); }
       });
+      // 删除影响列表：清边缘缓存（否则已删照片会继续出现在 GET /api/photos 直到 TTL 过期）
+      await purgePhotoListCache();
       return json(cors, { ok: true });
     }
 
