@@ -52,7 +52,7 @@ export default {
     const cors = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-File-Sha256',
+      'Access-Control-Allow-Headers': 'Content-Type, X-File-Sha256, X-Anon-Id',
       'Access-Control-Max-Age': '86400',
     };
     // 图片资源需要 CORS 放行（前端跨域取尺寸/复制图片），由 /api/file 单独追加
@@ -192,6 +192,12 @@ export default {
         // 每 IP 每 10 秒最多 10 票（防脚本刷）
         if (!rlCheck('vote:' + ip, 10 * 1000, 10)) return json(cors, { error: 'too many votes' }, 429);
 
+        // 投票身份：匿名 ID（前端 localStorage 持久化的 UUID）优先，IP 兜底。
+        // IP 动态的用户换 IP 后靠 IP 认不出"我投过"，取消/切换标记会失效；
+        // 匿名 ID 是设备级、跨 IP 稳定。旧数据（按 IP 记的票）不受影响，计数照常。
+        const anon = String(request.headers.get('X-Anon-Id') || '').slice(0, 128);
+        const voter = anon || ip;
+
         const body = await request.json();
         const id = body && body.id;
         const delta = body && body.delta;
@@ -210,15 +216,15 @@ export default {
           : { likes: [], dislikes: [] };
 
         if (delta > 0) {
-          votes.dislikes = votes.dislikes.filter(x => x !== ip);
-          if (!votes.likes.includes(ip)) votes.likes.push(ip);
+          votes.dislikes = votes.dislikes.filter(x => x !== voter);
+          if (!votes.likes.includes(voter)) votes.likes.push(voter);
         } else if (delta < 0) {
-          votes.likes = votes.likes.filter(x => x !== ip);
-          if (!votes.dislikes.includes(ip)) votes.dislikes.push(ip);
+          votes.likes = votes.likes.filter(x => x !== voter);
+          if (!votes.dislikes.includes(voter)) votes.dislikes.push(voter);
         } else {
-          // delta === 0：取消标记——从两个数组移除本 IP
-          votes.likes = votes.likes.filter(x => x !== ip);
-          votes.dislikes = votes.dislikes.filter(x => x !== ip);
+          // delta === 0：取消标记——从两个数组移除本投票者（匿名 ID 或 IP）
+          votes.likes = votes.likes.filter(x => x !== voter);
+          votes.dislikes = votes.dislikes.filter(x => x !== voter);
         }
         await env.Infoto.put(vkey, JSON.stringify(votes));
         const likes = votes.likes.length;

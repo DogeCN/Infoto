@@ -13,6 +13,22 @@ function dlName(p) {
     return p.id + '.' + String(p.ext).toLowerCase();
 }
 
+/* ---- 匿名身份：设备级 UUID（localStorage 持久化）----
+   投票身份用匿名 ID 而非 IP——动态 IP 用户换 IP 后服务端认不出"我投过"，
+   取消/切换标记会失效。ID 在首次访问生成、跨刷新/跨 IP 稳定；
+   清 localStorage / 换浏览器 / 隐私模式才会变（可接受）。 */
+const anonId = (() => {
+    try {
+        const KEY = 'infoto_anon_id';
+        let id = localStorage.getItem(KEY);
+        if (!id || !/^[0-9a-f-]{8,}$/i.test(id)) {
+            id = (crypto.randomUUID && crypto.randomUUID()) || ('a' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+            localStorage.setItem(KEY, id);
+        }
+        return id;
+    } catch (_) { return 'anon-' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+})();
+
 const Store = {
     photos: [],
     _loaded: false,
@@ -22,6 +38,25 @@ const Store = {
     _pendingDims: Object.create(null), // id -> {width, height}
     _dimsTimer: null,
     _dimFlushRunning: false,
+
+    // myVotes 持久化：刷新后恢复"我投过什么"的展示（配合匿名 ID，
+    // 即使 IP 变了也能显示自己的标记状态）。值 {id: 1|-1}
+    _mvKey: 'infoto_myvotes',
+    _loadMyVotes() {
+        try {
+            const raw = localStorage.getItem(this._mvKey);
+            if (!raw) return;
+            const obj = JSON.parse(raw);
+            if (obj && typeof obj === 'object') {
+                this.myVotes = Object.create(null);
+                for (const [k, v] of Object.entries(obj)) if (v === 1 || v === -1) this.myVotes[k] = v;
+            }
+        } catch (_) { /* 损坏忽略 */ }
+    },
+    _saveMyVotes() {
+        try { localStorage.setItem(this._mvKey, JSON.stringify(this.myVotes)); }
+        catch (_) { /* 隐私模式忽略 */ }
+    },
 
     _hydrate(p) {
         if (!p) return p;
@@ -34,6 +69,7 @@ const Store = {
         if (this._loaded && !force) return this.photos;
         if (this._loadPromise) return this._loadPromise;
         this._loaded = true;
+        this._loadMyVotes(); // 刷新后恢复"我投过什么"（匿名 ID 持久化配套）
         const doFetch = async () => {
             try {
                 const r = await fetch(apiBase() + '/api/photos', { cache: 'no-store' });
@@ -122,16 +158,19 @@ const Store = {
             if (delta === 1) p.likes = (p.likes || 0) + 1;
             else if (delta === -1) p.dislikes = (p.dislikes || 0) + 1;
             this.myVotes[id] = delta;
+            this._saveMyVotes();
         }
         const rollback = () => {
             if (!p) return;
             p.likes = prevLikes; p.dislikes = prevDislikes;
             if (prevMy) this.myVotes[id] = prevMy; else delete this.myVotes[id];
+            this._saveMyVotes();
         };
         return (async () => {
             try {
                 const r = await fetch(apiBase() + '/api/vote', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Anon-Id': anonId },
                     body: JSON.stringify({ id, delta })
                 });
                 if (!r.ok) throw new Error('http ' + r.status);
@@ -141,6 +180,7 @@ const Store = {
                 if (j.ok) {
                     if (p) { p.likes = j.likes; p.dislikes = j.dislikes; }
                     this.myVotes[id] = delta;
+                    this._saveMyVotes();
                     return { ok: true, already: false, delta };
                 }
                 rollback();
