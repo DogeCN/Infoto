@@ -10,8 +10,12 @@
 
     g.CONFIG = {
         API_BASE: '',
-        SINGLE_PART_LIMIT: 600 * 1024,
-        CHUNK_SIZE: 1024 * 1024,
+        // 分片上限按实测（2026-08-16）：tc 图床单文件 20MB 实测成功、上限远高于此；
+        // 真正瓶颈是 worker 上传代理 45s 超时（已同步放宽）——3MB 冷传约 21s、4MB 52s 必超。
+        // 故 CHUNK_SIZE 取 3MB（请求次数为原来 1MB 分片的 1/3，省免费额度），
+        // SINGLE_PART_LIMIT 提到 2MB（≤2MB 的文件整传单请求，不分片）。
+        SINGLE_PART_LIMIT: 2 * 1024 * 1024,
+        CHUNK_SIZE: 3 * 1024 * 1024,
         CONCURRENCY: 3,
         MAX_RETRY: 3,
     };

@@ -347,7 +347,9 @@ export default {
       const limitedBody = request.body ? limitBodySize(request.body, MAX_PAYLOAD) : null;
       const sha = request.headers.get('X-File-Sha256') || '';
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 30000);
+      // 上传代理超时：配合前端 3MB 分片（实测 3MB 冷传约 21s，4MB 52s 必超）。
+      // 45s 给足余量（前端 CONFIG.CHUNK_SIZE 已同步调整为 3MB）
+      const timer = setTimeout(() => ac.abort(), 45000);
       try {
         const token = await makeTcToken(tcSecret, sha);
         const headers = new Headers();
