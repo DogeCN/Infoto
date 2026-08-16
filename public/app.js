@@ -521,13 +521,23 @@ function buildColumns() {
 }
 
 // 根据 .masonry 实际宽度与 gap 计算每列像素宽度并显式设置（绕开 flex 0 宽 bug）
+let _colWidthRetry = 0;
 function applyColWidths() {
     if (!cols.length) return;
     const m = $('#masonry');
     const cs = getComputedStyle(m);
     const gap = parseFloat(cs.gap || cs.columnGap) || 0;
     const containerW = m.clientWidth || m.getBoundingClientRect().width;
-    if (!containerW) return;
+    if (!containerW) {
+        // 容器不可测（display:none / 布局未稳定）：下一帧重试，最多 5 次。
+        // 否则列宽永久缺失，flex:1 1 0% 在部分浏览器塌缩成单列。
+        if (_colWidthRetry < 5) {
+            _colWidthRetry++;
+            requestAnimationFrame(applyColWidths);
+        }
+        return;
+    }
+    _colWidthRetry = 0;
     const n = cols.length;
     const colW = Math.max(0, (containerW - gap * (n - 1)) / n);
     for (const c of cols) {
@@ -692,15 +702,20 @@ function renderMasonry(reset = true) {
     if (!cols || cols.length !== expectedCols || curColsDom !== expectedCols) {
         reset = true;
     }
-    if (reset) { buildColumns(); renderedCount = 0; }
+    // 先按数据量决定 empty/masonry 显隐，再建列。
+    // 若此时 masonry 仍带 hidden（display:none），clientWidth=0 会让 applyColWidths
+    // 提前 return（列宽缺失，flex:1 1 0% 在部分浏览器塌缩成单列），且 _shortestCol
+    // 在 display:none 下所有列高都是 0 永远选中第 0 列 → 刷新后瀑布流变单列；
+    // 直到点击排序触发重新渲染（masonry 已可见）才恢复。先移 hidden 即可根治。
     const sorted = getSorted();
+    $('#emptyState').classList.toggle('hidden', sorted.length > 0);
+    $('#masonry').classList.toggle('hidden', sorted.length === 0);
+    if (reset) { buildColumns(); renderedCount = 0; }
     const n = Math.min(sorted.length, state.loadedCount);
     for (let i = renderedCount; i < n; i++) _shortestCol().appendChild(makeCard(sorted[i], i));
     renderedCount = n;
     applySelectUI();
     updateMasonryStatsOnly();
-    $('#emptyState').classList.toggle('hidden', sorted.length > 0);
-    $('#masonry').classList.toggle('hidden', sorted.length === 0);
 }
 
 function prependCardToMasonry(photo) {
