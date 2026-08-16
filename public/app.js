@@ -461,7 +461,10 @@ function toast(msg, icon = 'info') {
     const t = el('div', 'toast', `<svg class="icon" data-i="${icon}"></svg><span></span>`);
     renderIcons(t);
     t.querySelector('span').textContent = msg;
-    $('#toasts').appendChild(t);
+    const box = $('#toasts');
+    box.appendChild(t);
+    // 最多同时显示 3 条：超出直接顶掉最旧的（防堆积，干扰最小）
+    while (box.children.length > 3) box.removeChild(box.firstChild);
     setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 320); }, 2600);
 }
 
@@ -927,11 +930,11 @@ async function deleteSelected() {
     resetProgressUI();
 
     if (TaskWorker.isSupported() && TaskWorker.startDelete(ids, apiBase())) {
-        toast('删除已在后台启动（切换页面不中断）', 'info');
+        toast(`后台删除 ${ids.length} 张`, 'info');
         if (_deleteWorkerListener) _deleteWorkerListener();
         _deleteWorkerListener = TaskWorker.onMessage((msg) => {
             if (msg.type === 'error') {
-                toast(msg.error || '删除任务启动失败', 'alert');
+                toast(msg.error || '删除启动失败', 'alert');
                 _deleting = false;
                 _mode = 'upload';
                 resetProgressUI();
@@ -945,7 +948,7 @@ async function deleteSelected() {
             if (msg.type === 'delete-complete') {
                 const s = msg.summary || {};
                 setProgress(1, null, s.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${s.done || 0} · 失败 ${s.failed || 0}` });
-                toast(s.failed === 0 ? `已删除 ${s.done || 0} 张照片` : `删除完成：${s.done || 0} 成功 / ${s.failed || 0} 失败`, s.failed === 0 ? 'success' : 'alert');
+                toast(s.failed === 0 ? `已删除 ${s.done || 0} 张` : `删除完成 ${s.done || 0} 成功 ${s.failed || 0} 失败`, s.failed === 0 ? 'success' : 'alert');
                 (async () => {
                     await Store.load(true);
                     exitMulti();
@@ -979,7 +982,7 @@ async function deleteSelected() {
     await runWithConcurrency(tasks, CONFIG.CONCURRENCY);
 
     setProgress(1, null, fail === 0 ? '完成' : '部分失败', { stat: `成功 ${done} · 失败 ${fail}` });
-    toast(fail === 0 ? `已删除 ${done} 张照片` : `删除完成：${done} 成功 / ${fail} 失败`, fail === 0 ? 'success' : 'alert');
+    toast(fail === 0 ? `已删除 ${done} 张` : `删除完成 ${done} 成功 ${fail} 失败`, fail === 0 ? 'success' : 'alert');
 
     await Store.load(true);
     exitMulti();
@@ -1142,11 +1145,11 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     resetProgressUI();
 
     if (TaskWorker.isSupported() && TaskWorker.startDownload(list, apiBase(), TAB_ID)) {
-        toast('下载已在后台启动（切换页面不中断）', 'info');
+        toast(`后台下载 ${list.length} 张`, 'info');
         if (_downloadWorkerListener) _downloadWorkerListener();
         _downloadWorkerListener = TaskWorker.onMessage((msg) => {
             if (msg.type === 'error') {
-                toast(msg.error || '下载任务启动失败', 'alert');
+                toast(msg.error || '下载启动失败', 'alert');
                 _mode = 'upload';
                 resetProgressUI();
                 if (_downloadWorkerListener) { _downloadWorkerListener(); _downloadWorkerListener = null; }
@@ -1159,7 +1162,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
             if (msg.type === 'download-complete' && msg.zipUrl) {
                 // 多标签页去重：仅发起页弹下载，其他页提示即可（zip blob URL 各页共享，双端弹窗重复）
                 if (msg.tabId && msg.tabId !== TAB_ID) {
-                    toast('下载已在其他页面完成', 'info');
+                    toast('已在其他页面完成下载', 'info');
                     setProgress(1, msg.fileName || 'download.zip', '完成');
                     exitMulti(); // 本页若在多选，下载结束一并退出
                     setTimeout(() => { resetProgressUI(); _mode = 'upload'; }, 3000);
@@ -1182,7 +1185,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const zip = new JSZip();
     const total = list.length;
 
-    toast(`正在打包 ${total} 张图片…`, 'download');
+    toast(`打包 ${total} 张…`, 'download');
 
     const perItemProgress = new Array(total).fill(0);
     const perItemTotal = new Array(total).fill(0);
@@ -1230,7 +1233,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
             return { ok: true };
         } catch (e) {
             perItemDone[i] = true;
-            toast(`下载失败: ${dlName(p)}`, 'alert');
+            toast(`${dlName(p)} 下载失败`, 'alert');
             return { ok: false, err: e };
         }
     });
@@ -1238,7 +1241,7 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     const results = await runWithConcurrency(dlTasks, CONFIG.CONCURRENCY);
     const successCount = results.filter(r => r.ok).length;
     if (successCount === 0) {
-        toast('所有图片下载失败', 'alert');
+        toast('全部下载失败', 'alert');
         setProgress(1, null, '失败', { stat: null });
         setTimeout(resetProgressUI, 2500);
         _mode = 'upload';
@@ -1266,9 +1269,8 @@ $('#batchDownloadBtn').addEventListener('click', async () => {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
     exitMulti(); // 下载触发后退出多选
 
-    const skipMsg = successCount < total ? `（${total - successCount} 张失败跳过）` : '';
-    toast(`下载完成：共 ${successCount} 张${skipMsg} → zip`, 'success');
     const finalFailed = total - successCount;
+    toast(`下载完成 ${successCount} 张${finalFailed ? `（跳过 ${finalFailed}）` : ''}`, 'success');
     const finalStat = `成功 ${successCount} 张${finalFailed ? ` · 跳过 ${finalFailed}` : ''} · zip ${formatSize(zipBlob.size)}`;
     setProgress(1, finalName, '完成', { stat: finalStat });
     setTimeout(() => {
@@ -1421,7 +1423,7 @@ function uploadViaTaskWorker(files) {
     const off = TaskWorker.onMessage((msg) => {
         if (msg.type === 'error') {
             // 多为"已有上传任务进行中"：提示即可，不能回退主线程（会造成重复上传）
-            toast(msg.error || '上传任务启动失败', 'alert');
+            toast(msg.error || '上传启动失败', 'alert');
             resetUploadUI();
             off();
             return;
@@ -1442,20 +1444,20 @@ function uploadViaTaskWorker(files) {
             } else if (msg.skipped) {
                 summary.skipped++;
                 markReady(msg.idx, null);
-                toast(`「${msg.name || ''}」已存在，跳过`, 'info');
+                toast(`${msg.name || ''} 已存在，跳过`, 'info');
             } else {
                 summary.failed++;
                 markReady(msg.idx, null);
-                toast(`「${msg.name || ''}」上传失败: ${msg.err || '未知错误'}`, 'alert');
+                toast(`${msg.name || ''} 上传失败: ${msg.err || '未知错误'}`, 'alert');
             }
         }
         if (msg.type === 'upload-complete') {
             setUploadProgress(1, null, summary.failed === 0 ? '完成' : '部分失败', { stat: `成功 ${summary.done} · 跳过 ${summary.skipped} · 失败 ${summary.failed}`, done: summary.done, skipped: summary.skipped, failed: summary.failed });
             const parts = [];
             if (summary.done > 0) parts.push(`成功 ${summary.done}`);
-            if (summary.skipped > 0) parts.push(`跳过重复 ${summary.skipped}`);
+            if (summary.skipped > 0) parts.push(`跳过 ${summary.skipped}`);
             if (summary.failed > 0) parts.push(`失败 ${summary.failed}`);
-            toast(`上传完成：${parts.join('，')}`, summary.done > 0 || summary.skipped > 0 ? 'success' : 'alert');
+            toast(`上传完成 ${parts.join('，')}`, summary.done > 0 || summary.skipped > 0 ? 'success' : 'alert');
             setTimeout(resetUploadUI, 2500);
             off();
         }
@@ -1466,7 +1468,7 @@ function uploadViaTaskWorker(files) {
         runMainThreadUpload(files); // 罕见兜底：消息通道异常时回退主线程
         return;
     }
-    toast(`上传已在后台启动（${total} 个文件，切换页面不中断）`, 'info');
+    toast(`后台上传 ${total} 个文件`, 'info');
 }
 
 async function runMainThreadUpload(files) {
@@ -1540,7 +1542,7 @@ async function runMainThreadUpload(files) {
     async function processOne(file, idx) {
         const st = fileStates[idx];
         try {
-            if (file.type === 'image/svg+xml') { st.err = 'SVG 暂不支持'; failed++; markReady(idx, null); toast(`「${file.name}」SVG 暂不支持`, 'alert'); return; }
+            if (file.type === 'image/svg+xml') { st.err = 'SVG 暂不支持'; failed++; markReady(idx, null); toast(`${file.name} 不支持 SVG`, 'alert'); return; }
             let blob = file, ext = 'webp', hasAudio = false;
             // 尺寸直接来自压缩/转码阶段的位图元数据（loadDims 仅在两者缺失时兜底）
             let dimsW = 0, dimsH = 0;
@@ -1548,12 +1550,12 @@ async function runMainThreadUpload(files) {
             if (isP) {
                 currentFile = file.name; currentStep = '压缩中…';
                 const webp = await compressToWebp(file, WEBP_QUALITY);
-                if (!webp || !webp.blob) { st.err = '图片 WebP 压缩失败'; failed++; markReady(idx, null); toast(`「${file.name}」图片 WebP 压缩失败`, 'alert'); return; }
+                if (!webp || !webp.blob) { st.err = '图片 WebP 压缩失败'; failed++; markReady(idx, null); toast(`${file.name} 压缩失败`, 'alert'); return; }
                 blob = webp.blob; ext = 'webp'; dimsW = webp.width || 0; dimsH = webp.height || 0;
             } else if (isV || isG) {
                 if (!av1Ok) {
                     const msg = (isG ? 'GIF' : '视频') + '需要支持 AV1 WebCodecs 的浏览器（Chrome/Edge/Firefox 等）';
-                    st.err = msg; failed++; markReady(idx, null); toast(`「${file.name}」${msg}`, 'alert'); return;
+                    st.err = msg; failed++; markReady(idx, null); toast(`${file.name}: 需 AV1 编码支持`, 'alert'); return;
                 }
                 const label = isG ? 'GIF 转码' : '视频转码';
                 currentFile = file.name; currentStep = label + '中…';
@@ -1569,7 +1571,7 @@ async function runMainThreadUpload(files) {
             if (dup) {
                 skipped++; st.upP = 1;
                 markReady(idx, null);
-                toast(`「${file.name}」已存在，跳过`, 'info');
+                toast(`${file.name} 已存在，跳过`, 'info');
                 return;
             }
             currentFile = file.name; currentStep = '上传到图床';
@@ -1594,7 +1596,7 @@ async function runMainThreadUpload(files) {
             st.err = e && e.message ? e.message : String(e);
             failed++;
             markReady(idx, null);
-            toast(`「${file.name}」上传失败: ${st.err}`, 'alert');
+            toast(`${file.name} 上传失败: ${st.err}`, 'alert');
         }
     }
 
@@ -1633,9 +1635,9 @@ async function runMainThreadUpload(files) {
     setUploadProgress(1, null, '完成', { stat: `共 ${formatSize(prepTotal)} · 耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`, done, skipped, failed });
     const summary = [];
     if (done > 0) summary.push(`成功 ${done}`);
-    if (skipped > 0) summary.push(`跳过重复 ${skipped}`);
+    if (skipped > 0) summary.push(`跳过 ${skipped}`);
     if (failed > 0) summary.push(`失败 ${failed}`);
-    if (summary.length) toast(`上传完成：${summary.join('，')}`, done > 0 || skipped > 0 ? 'success' : 'alert');
+    if (summary.length) toast(`上传完成 ${summary.join('，')}`, done > 0 || skipped > 0 ? 'success' : 'alert');
     setTimeout(resetUploadUI, 2500);
 }
 
@@ -2156,14 +2158,9 @@ function onGe(e) {
         pinch = null; state.dragging = false; _setAudioBtnsVisible(true);
         return;
     }
-    // 平移结束
-    if (state.panning) {
-        state.dragging = false; state.panning = false;
-        clampPan();
-        _setAudioBtnsVisible(true);
-        return;
-    }
-    // 触摸双击：放大 / 复位；单击空白：关闭 lightbox
+    // 触摸轻点：双击缩放 / 单击空白关闭。
+    // 必须放在 panning 分支之前：放大后（图片超出视口）onGs 会把单指触摸判为平移
+    // （panning=true），若 panning 先 return，双击缩小和单击空白关闭都永远到不了。
     if (e && e.changedTouches && e.changedTouches.length) {
         const t = e.changedTouches[0];
         const moved = Math.hypot(state.dragCurrent.x - state.dragStart.x, state.dragCurrent.y - state.dragStart.y);
@@ -2175,7 +2172,7 @@ function onGe(e) {
                 if (state.zoom.s > 1.01) resetZoom();
                 else zoomTo(2.5, t.clientX - sr.left, t.clientY - sr.top);
                 state._lastTap = null;
-                state.dragging = false;
+                state.dragging = false; state.panning = false;
                 _setAudioBtnsVisible(true);
                 return;
             }
@@ -2183,11 +2180,18 @@ function onGe(e) {
             // 单击且落在媒体/顶栏/圆点之外（触摸下合成 click 已被 preventDefault 掐断，须在此处理）
             const tg = e.target;
             if (tg && tg.closest && !tg.closest('.lb-media-wrap,.lb-top,.lb-dots,.audio-toggle,#lbMoreBtn,#lbCloseBtn')) {
-                state.dragging = false;
+                state.dragging = false; state.panning = false;
                 closeLightbox();
                 return;
             }
         }
+    }
+    // 平移结束
+    if (state.panning) {
+        state.dragging = false; state.panning = false;
+        clampPan();
+        _setAudioBtnsVisible(true);
+        return;
     }
     state.dragging = false;
     const dx = state.dragCurrent.x - state.dragStart.x;
@@ -2215,7 +2219,7 @@ function triggerGesture(dir) {
         // 本地乐观更新后立刻刷新 UI（不阻塞，不等服务器）
         const rPromise = Store.setLike(p.id, delta);
 
-        toast(alreadyLocal ? `你已标记过${dirLabel}这张` : `已标记为${dirLabel}`,
+        toast(alreadyLocal ? `已标记过${dirLabel}` : `已标记${dirLabel}`,
             delta === 1 ? 'heart' : 'alert');
 
         updateLightboxVotes(p);
@@ -2313,29 +2317,38 @@ async function copyText(txt) {
 }
 $('#menuCopyLink').addEventListener('click', async () => {
     const ok = await copyText(curPhoto().url);
-    toast(ok ? '已复制直链到剪贴板' : '复制失败', 'success');
+    toast(ok ? '已复制直链' : '复制失败', ok ? 'success' : 'alert');
     closeMenu();
 });
 $('#menuCopyImage').addEventListener('click', async () => {
+    closeMenu();
+    toast('正在准备图片…', 'info'); // 提前反馈，处理在后台进行
     try {
         let blob = await (await fetch(curPhoto().url)).blob();
         // ClipboardItem 的 type 必须与 blob 实际 MIME 一致（Chrome 校验，不匹配直接抛错）。
         // 图库是 webp：webp 在系统剪贴板支持有限，统一 canvas 转 png 保证复制成功率。
         if (blob.type !== 'image/png') {
             const bmp = await createImageBitmap(blob);
-            const c = document.createElement('canvas');
-            c.width = bmp.width; c.height = bmp.height;
-            c.getContext('2d').drawImage(bmp, 0, 0);
-            blob = await new Promise(res => c.toBlob(res, 'image/png'));
+            if (typeof OffscreenCanvas !== 'undefined') {
+                // OffscreenCanvas.convertToBlob 编码异步执行，不阻塞主线程；
+                // 移动端 document canvas 的 toBlob 同步编码大图会卡 UI（卡顿主因）
+                const oc = new OffscreenCanvas(bmp.width, bmp.height);
+                oc.getContext('2d').drawImage(bmp, 0, 0);
+                blob = await oc.convertToBlob({ type: 'image/png' });
+            } else {
+                const c = document.createElement('canvas');
+                c.width = bmp.width; c.height = bmp.height;
+                c.getContext('2d').drawImage(bmp, 0, 0);
+                blob = await new Promise(res => c.toBlob(res, 'image/png'));
+            }
             bmp.close();
         }
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-        toast('已复制图片到剪贴板', 'success');
+        toast('已复制图片', 'success');
     } catch (e) {
-        toast('复制图片失败（浏览器限制），已复制直链', 'alert');
+        toast('复制失败，已复制直链', 'alert');
         copyText(curPhoto().url);
     }
-    closeMenu();
 });
 $('#menuShare').addEventListener('click', async () => {
     const p = curPhoto();
@@ -2343,14 +2356,14 @@ $('#menuShare').addEventListener('click', async () => {
         try { await navigator.share({ title: dlName(p), url: p.url }); } catch (e) { }
     } else {
         await copyText(p.url);
-        toast('已复制链接，去分享吧', 'success');
+        toast('已复制链接', 'success');
     }
     closeMenu();
 });
 $('#menuGoogle').addEventListener('click', () => {
     // 使用 Google Lens 新版 URL（旧 searchbyimage 在多数地区会丢失 image_url 参数并重定向到首页）
     window.open('https://lens.google.com/uploadbyurl?url=' + encodeURIComponent(curPhoto().url), '_blank', 'noopener');
-    toast('即将打开 Google 搜图', 'info');
+    toast('打开 Google 搜图', 'info');
     closeMenu();
 });
 
@@ -2379,7 +2392,7 @@ async function downloadUrl(url, name) {
             a.href = url;
             document.body.appendChild(a); a.click(); a.remove();
         } else {
-            toast('下载失败（网络异常），请重试', 'alert');
+            toast('下载失败，请重试', 'alert');
         }
     }
 }
@@ -2403,8 +2416,8 @@ function resumeRunningTask() {
     resetProgressUI();
     setProgress(t.progress, t.curFile, t.step, { stat: t.extraStat || '', remaining: t.total - t.done - t.skipped - t.failed, done: t.done, skipped: t.skipped, failed: t.failed });
     var msgMap = { delete: '删除', download: '下载', upload: '上传' };
-    var extraNote = activeTypes.length > 1 ? '（同时运行 ' + activeTypes.length + ' 个任务）' : '';
-    toast('检测到后台进行中的' + (msgMap[resumedType] || resumedType) + '任务' + extraNote + '，已恢复进度显示', 'info');
+    var extraNote = activeTypes.length > 1 ? `（共 ${activeTypes.length} 个）` : '';
+    toast('已恢复 ' + (msgMap[resumedType] || resumedType) + ' 进度' + extraNote, 'info');
     if (_resumeWorkerListener) _resumeWorkerListener();
     _resumeWorkerListener = TaskWorker.onMessage(function (msg) {
         if (msg.type === 'task-update' && msg.task && activeTypes.indexOf(msg.task.type) >= 0) {
@@ -2432,7 +2445,7 @@ function resumeRunningTask() {
         if (msg.type === 'download-complete' && msg.zipUrl) {
             // 多标签去重：仅发起页弹下载。resume 页 tabId 不匹配（刷新后 TAB_ID 已变）时提示但不下载，避免双端弹窗。
             if (msg.tabId && msg.tabId !== TAB_ID) {
-                toast('下载已在其他页面完成', 'info');
+                toast('已在其他页面完成下载', 'info');
                 setTimeout(function () { URL.revokeObjectURL(msg.zipUrl); }, 60000);
                 return;
             }
