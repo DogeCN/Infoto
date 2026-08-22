@@ -1,24 +1,53 @@
-name: Deploy Infoto to Cloudflare Workers
+name: Deploy Infoto
 
 on:
-  workflow_dispatch:   # 手动触发（配好 Variables 后手动跑）
   push:
-    branches: [main]   # push 到 main 自动部署
+    branches: [main]
+    tags:
+      - "v*"
+
+  workflow_dispatch:
+    inputs:
+      cloudflare_api_token:
+        description: "Cloudflare API Token（留空则复用仓库 Secrets）"
+        required: false
+        type: string
+        default: ""
+      cloudflare_account_id:
+        description: "Cloudflare Account ID（留空则复用仓库 Secrets）"
+        required: false
+        type: string
+        default: ""
+      worker_name:
+        description: "Worker 名称 (例如 infoto / infoto-dev / infoto-test)"
+        required: true
+        type: string
+      turnstile_site_key:
+        description: "Turnstile Site Key（可选，留空复用仓库 Variable；换域名后填新站点 key）"
+        required: false
+        type: string
+        default: ""
+      turnstile_secret_key:
+        description: "Turnstile Secret Key（可选，留空复用仓库 Secrets；注意：dispatch 输入对有读权限者可见，长期请走仓库 Secrets）"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
-  group: deploy
+  group: deploy-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
 jobs:
   deploy:
+    name: Deploy (${{ github.event_name == 'workflow_dispatch' && inputs.worker_name || (startsWith(github.ref, 'refs/tags/') && 'infoto' || 'infoto-dev') }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -28,9 +57,287 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Deploy variants defined in Repository Variables (KV, KV_1, KV1...)
+      - name: Resolve deployment target
+        id: resolve
+        shell: bash
         env:
-          VARS_JSON: ${{ toJson(vars) }}
+          SEC_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SEC_CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -e
-          node scripts/deploy-variants.js
+          EVENT="${{ github.event_name }}"
+          REF="${{ github.ref }}"
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            WORKER_NAME="${{ inputs.worker_name }}"
+            CF_TOKEN="${{ inputs.cloudflare_api_token }}"
+            CF_ACCOUNT="${{ inputs.cloudflare_account_id }}"
+            [ -z "$CF_TOKEN" ] && CF_TOKEN="$SEC_CF_TOKEN"
+            [ -z "$CF_ACCOUNT" ] && CF_ACCOUNT="$SEC_CF_ACCOUNT"
+          elif [[ "$REF" == refs/tags/v* ]]; then
+            WORKER_NAME="infoto"
+            CF_TOKEN="$SEC_CF_TOKEN"
+            CF_ACCOUNT="$SEC_CF_ACCOUNT"
+          else
+            WORKER_NAME="infoto-dev"
+            CF_TOKEN="$SEC_CF_TOKEN"
+            CF_ACCOUNT="$SEC_CF_ACCOUNT"
+          fi
+
+          if [ -z "$CF_TOKEN" ] || [ "$CF_TOKEN" = "null" ]; then
+          echo "::error::Cloudflare API Token is not set. Configure secrets.CLOUDFLARE_API_TOKEN or fill it in manual dispatch."
+            exit 1
+          fi
+          if [ -z "$CF_ACCOUNT" ] || [ "$CF_ACCOUNT" = "null" ]; then
+          echo "::error::Cloudflare Account ID is not set. Configure secrets.CLOUDFLARE_ACCOUNT_ID or fill it in manual dispatch."
+            exit 1
+          fi
+          if [ -z "$WORKER_NAME" ]; then
+          echo "::error::Worker name is empty."
+            exit 1
+          fi
+
+          {
+            echo "worker_name=$WORKER_NAME"
+            echo "cf_token=$CF_TOKEN"
+            echo "cf_account=$CF_ACCOUNT"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "--- Deployment Target ---"
+          echo "Worker:    $WORKER_NAME"
+          echo "Account:   ${CF_ACCOUNT:0:8}...${CF_ACCOUNT: -4}"
+
+      - name: Build (Vite + Cloudflare Workers)
+        run: npm run build
+
+      - name: Resolve / create D1 database
+        id: d1
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.resolve.outputs.cf_token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.resolve.outputs.cf_account }}
+        run: |
+          set -e
+          WORKER="${{ steps.resolve.outputs.worker_name }}"
+
+          LIST=$(curl -sS --fail-with-body -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database?per_page=100" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          EXISTING=$(node -e '
+            const j=JSON.parse(process.argv[1]||"{}");
+            const hit=((j&&j.result)||[]).find(x=>x.name===process.argv[2]);
+            process.stdout.write(hit?hit.id||hit.uuid:"");
+          ' "$LIST" "$WORKER")
+          if [ -n "$EXISTING" ]; then
+            echo "Found existing D1: $WORKER ($EXISTING)"
+            echo "d1_id=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CREATE=$(curl -sS --fail-with-body -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e 'console.log(JSON.stringify({name:process.argv[1]}))' "$WORKER")")
+          NEW=$(node -e '
+            const j=JSON.parse(process.argv[1]||"{}");
+            process.stdout.write((j&&j.result&&(j.result.uuid||j.result.id))||"");
+          ' "$CREATE")
+          if [ -z "$NEW" ]; then
+          echo "::error::Failed to create D1 database. Response: $CREATE"
+            exit 1
+          fi
+          echo "Created new D1: $WORKER ($NEW)"
+          echo "d1_id=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Patch generated wrangler.json (D1 id / sitekey / worker name)
+        shell: bash
+        env:
+          # 手动输入优先（换域名场景），留空回退仓库 Variable
+          D1_ID: ${{ steps.d1.outputs.d1_id }}
+          WORKER: ${{ steps.resolve.outputs.worker_name }}
+          SITE_KEY: ${{ inputs.turnstile_site_key || vars.TURNSTILE_SITE_KEY }}
+        run: |
+          set -e
+          export CFG="client/dist/infoto/wrangler.json"
+          node -e '
+            const fs=require("fs");
+            const cfg=JSON.parse(fs.readFileSync(process.env.CFG,"utf8"));
+            cfg.name=process.env.WORKER;
+            if(cfg.d1_databases&&cfg.d1_databases[0]){cfg.d1_databases[0].database_id=process.env.D1_ID;}
+            if(process.env.SITE_KEY){cfg.vars=cfg.vars||{};cfg.vars.TURNSTILE_SITE_KEY=process.env.SITE_KEY;}
+            fs.writeFileSync(process.env.CFG,JSON.stringify(cfg,null,2));
+            console.log("Patched "+process.env.CFG+" -> worker="+cfg.name+" d1="+process.env.D1_ID);
+          '
+          echo "--- $CFG ---"
+          cat "$CFG"
+
+      - name: Apply D1 schema (fresh database)
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.resolve.outputs.cf_token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.resolve.outputs.cf_account }}
+          D1_ID: ${{ steps.d1.outputs.d1_id }}
+        run: |
+          set -e
+          WORKER="${{ steps.resolve.outputs.worker_name }}"
+          cat > /tmp/d1.toml <<EOF
+          name = "infoto"
+          compatibility_date = "2026-07-15"
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "$WORKER"
+          database_id = "$D1_ID"
+          EOF
+          # schema 为全新建表；已存在时（重复部署）报错可忽略
+          npx wrangler d1 execute "$WORKER" --remote --yes --config /tmp/d1.toml --file=src/db/schema.sql \
+            || echo "::warning::D1 schema apply skipped or partially applied (tables may already exist)"
+
+      - name: Deploy to Cloudflare Workers
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.resolve.outputs.cf_token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.resolve.outputs.cf_account }}
+        run: |
+          set -e
+          npx wrangler deploy --config client/dist/infoto/wrangler.json
+
+      - name: Sync Worker secrets (auto when provided)
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.resolve.outputs.cf_token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.resolve.outputs.cf_account }}
+          # 手动输入优先（换域名场景），留空回退仓库 Secrets
+          SEC_TURNSTILE: ${{ inputs.turnstile_secret_key || secrets.TURNSTILE_SECRET_KEY }}
+          SEC_TC: ${{ secrets.TC_SECRET }}
+          SEC_CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          SEC_CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -e
+          # 仓库 Secrets 存在即自动下发（幂等）；CF_* 缺省自动复用 CI 凭据，不阻塞部署。
+          put_secret() {
+            local NAME="$1" VAL="$2"
+            if [ -n "$VAL" ]; then
+              printf '%s' "$VAL" | npx wrangler secret put "$NAME" --config client/dist/infoto/wrangler.json
+              echo "::notice::secret $NAME synced"
+            else
+              echo "::warning::secret $NAME not set in repo secrets - skipped"
+            fi
+          }
+          put_secret TURNSTILE_SECRET_KEY "$SEC_TURNSTILE"
+          put_secret TC_SECRET "$SEC_TC"
+          # 运行时凭据缺省复用 CI 凭据（同一账号；token 需同时含 Analytics:Read 权限）
+          put_secret CF_ACCOUNT_ID "${SEC_CF_ACCOUNT_ID:-$CLOUDFLARE_ACCOUNT_ID}"
+          put_secret CF_API_TOKEN "${SEC_CF_API_TOKEN:-$CLOUDFLARE_API_TOKEN}"
+      - name: Determine Worker URL
+        id: url
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.resolve.outputs.cf_token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.resolve.outputs.cf_account }}
+        run: |
+          set -e
+          WORKER="${{ steps.resolve.outputs.worker_name }}"
+          SUBDOMAIN=""
+          TRY=$(curl -sS -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" || true)
+          SUBDOMAIN=$(node -e '
+            try{const j=JSON.parse(process.argv[1]||"{}");process.stdout.write((j&&j.result&&j.result.subdomain)||"")}catch(e){}
+          ' "$TRY")
+          if [ -n "$SUBDOMAIN" ]; then
+            URL="https://${WORKER}.${SUBDOMAIN}.workers.dev"
+          else
+            URL="(custom domain or subdomain query unavailable)"
+          fi
+          echo "worker_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Worker URL: $URL"
+
+      - name: Write deployment summary
+        shell: bash
+        env:
+          S_WORKER: ${{ steps.resolve.outputs.worker_name }}
+          S_D1_ID: ${{ steps.d1.outputs.d1_id }}
+          S_URL: ${{ steps.url.outputs.worker_url }}
+        run: |
+          set -e
+          SHA="${GITHUB_SHA:0:7}"
+          REF="${GITHUB_REF_NAME}"
+          node -e '
+            const fs=require("fs");
+            const lines=[
+              "## ✅ Deployment Complete",
+              "",
+              "| Item | Value |",
+              "|------|-------|",
+              "| Worker Name | `"+process.env.S_WORKER+"` |",
+              "| Git Ref | `"+process.argv[1]+"` |",
+              "| Commit | `"+process.argv[2]+"` |",
+              "| D1 Database | `"+process.env.S_D1_ID+"` |",
+              "| URL | "+process.env.S_URL+" |",
+              "",
+              "> secrets 已随部署自动同步：TURNSTILE_SECRET_KEY / TC_SECRET 取自仓库 Secrets；CF_ACCOUNT_ID / CF_API_TOKEN 缺省自动复用部署凭据。",
+              ""
+            ];
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n"));
+          ' "$REF" "$SHA"
+
+  release:
+    name: Create GitHub Release
+    needs: deploy
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag & body
+        id: rel
+        shell: bash
+        env:
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          PREV=""
+          LOG=""
+          TAG_BODY=$(git tag -l --format='%(contents)' "$TAG" 2>/dev/null || true)
+
+          if [ -z "$TAG_BODY" ] || [ "$TAG_BODY" = $'\n' ]; then
+            PREV=$(git describe --tags --abbrev=0 --match "v*" "$TAG^" 2>/dev/null || true)
+            if [ -n "$PREV" ]; then
+              LOG=$(git log --pretty=format:"- %s (%h) @%an" "$PREV..$TAG" 2>/dev/null || true)
+            else
+              LOG=$(git log --pretty=format:"- %s (%h) @%an" "$TAG" 2>/dev/null || true)
+            fi
+          fi
+
+          node -e '
+            const fs=require("fs");
+            const tag=process.argv[1];
+            const prev=process.argv[2]||"";
+            const log=process.argv[3]||"";
+            let body=process.argv[4]||"";
+            if(body==="" || body==="\n"){
+              body = "## Changelog\n\n"+log+"\n\n> 自动生成："+prev+" → "+tag+"\n";
+            }
+            const gh = process.env.GITHUB_OUTPUT;
+            fs.appendFileSync(gh, "tag="+tag+"\n");
+            fs.appendFileSync(gh, "body<<RELEOF\n"+body+"\nRELEOF\n");
+            console.log("--- Release ("+tag+") ---");
+            console.log(body);
+          ' "$TAG" "$PREV" "$LOG" "$TAG_BODY"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: Infoto ${{ steps.rel.outputs.tag }}
+          body: ${{ steps.rel.outputs.body }}
+          generate_release_notes: false
+          make_latest: true
+          prerelease: ${{ contains(steps.rel.outputs.tag, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
