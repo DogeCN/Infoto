@@ -110,12 +110,18 @@ jobs:
             || echo "::warning::D1 schema apply skipped or partially applied (tables may already exist)"
 
       - name: Deploy Worker
+        id: deploy
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          npx wrangler deploy
+          set -o pipefail
+          OUT=$(npx wrangler deploy 2>&1 | tee /tmp/deploy.log)
+          echo "$OUT"
+          # 从输出中解析 workers.dev URL（wrangler deploy 会打印 "  https://<name>.*.workers.dev"）
+          URL=$(grep -oE 'https://[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.workers\.dev' /tmp/deploy.log | head -n1 || echo "")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Sync secrets (if present)
         shell: bash
@@ -140,18 +146,11 @@ jobs:
 
       - name: Show URL
         shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           NAME="${{ steps.meta.outputs.name }}"
-          SUBDOMAIN=$(npx wrangler workers subdomain get --json 2>/dev/null | node -e '
-            try{const j=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write((j&&j.subdomain)||"")}catch(e){}
-          ' || echo "")
-          if [ -n "$SUBDOMAIN" ]; then
-            URL="https://${NAME}.${SUBDOMAIN}.workers.dev"
-          else
-            URL="(custom domain or subdomain unavailable)"
+          URL="${{ steps.deploy.outputs.url }}"
+          if [ -z "$URL" ]; then
+            URL="(custom domain or no workers.dev route)"
           fi
           echo ""
           echo "================================"
@@ -160,3 +159,6 @@ jobs:
           echo "URL:     $URL"
           echo "================================"
           echo ""
+          if [ -n "$URL" ] && command -v gh >/dev/null 2>&1; then
+            gh -R "${{ github.repository }}" run note "${{ github.run_id }}" --body "**Deployment URL:** $URL" 2>/dev/null || true
+          fi
