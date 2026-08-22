@@ -1,11 +1,12 @@
 name = "infoto"
-main = "src/worker.js"
+main = "src/index.js"
 compatibility_date = "2026-07-15"
 
 [assets]
 directory = "./public"
 binding = "ASSETS"
 
-[[kv_namespaces]]
-binding = "Infoto"
-id = "e68a923a087b4f47b392c454c31a702a"
+[[d1_databases]]
+binding = "DB"
+database_name = "infoto"
+database_id = "REPLACE_WITH_D1_ID"
