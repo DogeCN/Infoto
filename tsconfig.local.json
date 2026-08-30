@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/local/**/*.ts", "src/shared/**/*.ts", "src/worker/**/*.ts"],
+  "exclude": ["src/worker/index.ts", "src/worker/db-d1.ts", "src/worker/**/*.test.ts"]
+}

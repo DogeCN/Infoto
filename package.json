@@ -1,0 +1,27 @@
+{
+  "name": "infoto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Full-stack shared photo album deployed on Cloudflare Workers",
+  "scripts": {
+    "start": "node --watch src/local/server.ts",
+    "gen-schema": "node scripts/gen-schema-ddl.mjs",
+    "test:layout": "node --test src/ui/lib/layout.test.ts",
+    "test:pipeline": "node --test src/ui/upload/pipeline.test.ts",
+    "test:media": "node --test src/ui/lib/media.test.ts",
+    "test:worker": "node --test src/worker/schema-alignment.test.ts src/worker/routes/sync.test.ts src/worker/routes/migrate.test.ts",
+    "test": "node --test src/ui/lib/layout.test.ts src/ui/upload/pipeline.test.ts src/ui/lib/media.test.ts src/worker/schema-alignment.test.ts src/worker/routes/sync.test.ts src/worker/routes/migrate.test.ts",
+    "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260829.1",
+    "@types/node": "^26.4.0",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.127.1"
+  }
+}

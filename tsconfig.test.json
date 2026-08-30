@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "types": ["node"]
+  },
+	"include": [
+		"src/shared/types.ts",
+		"src/ui/lib/format.ts",
+		"src/ui/lib/id36.ts",
+		"src/ui/lib/layout.ts",
+		"src/ui/lib/layout.test.ts",
+		"src/ui/lib/marquee.ts",
+		"src/ui/lib/media.test.ts",
+		"src/ui/upload/pipeline.ts",
+		"src/ui/upload/pipeline.test.ts",
+		"src/worker/**/*.ts",
+		"src/local/d1-shim.ts"
+	],
+	"exclude": ["src/worker/index.ts", "src/worker/db-d1.ts"]
+}

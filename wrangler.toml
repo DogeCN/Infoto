@@ -1,0 +1,19 @@
+# Wrangler configuration for Infoto.
+# NOTE: `name`, `database_name` and `database_id` below are placeholders —
+# the GitHub Actions deploy workflow patches them per deploy target
+# (tag v* -> "infoto" production, branch -> "infoto-dev" test).
+name = "infoto-dev"
+main = "src/worker/index.ts"
+compatibility_date = "2026-08-01"
+
+[assets]
+directory = "dist"
+binding = "ASSETS"
+# Deep links / refresh of SPA routes fall back to the app shell. API routes
+# (/sync, /upload, /l/*, /admin*) are matched by the Worker before assets.
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "infoto-dev"
+database_id = "00000000-0000-0000-0000-000000000000"

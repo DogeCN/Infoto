@@ -1,0 +1,123 @@
+name: deploy
+
+# The workflow does NOT build — dist/ is committed to the repo.
+# Pipeline: checkout -> ensure same-name D1 -> patch wrangler.toml
+#        -> apply schema (idempotent) -> wrangler deploy -> inject secrets.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      deploy_name:
+        description: 'Deploy target name (Worker & D1 share this name)'
+        required: true
+        type: string
+      CLOUDFLARE_API_TOKEN:
+        description: 'Override repo secret CLOUDFLARE_API_TOKEN (optional)'
+        required: false
+        type: string
+      CLOUDFLARE_ACCOUNT_ID:
+        description: 'Override repo secret CLOUDFLARE_ACCOUNT_ID (optional)'
+        required: false
+        type: string
+      TURNSTILE_SITE_KEY:
+        description: 'Override repo variable TURNSTILE_SITE_KEY (optional)'
+        required: false
+        type: string
+      TURNSTILE_SECRET_KEY:
+        description: 'Override repo secret TURNSTILE_SECRET_KEY (optional)'
+        required: false
+        type: string
+
+env:
+  DEPLOY_NAME: ${{ inputs.deploy_name || (github.ref_type == 'tag' && 'infoto' || 'infoto-dev') }}
+  CLOUDFLARE_API_TOKEN: ${{ inputs.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ inputs.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install wrangler
+        run: npm i -g wrangler
+
+      - name: Ensure same-name D1 exists
+        run: |
+          set -e
+          get_db_id() {
+            wrangler d1 list --json 2>/dev/null | node -e '
+              let d = "";
+              process.stdin.on("data", c => d += c).on("end", () => {
+                const m = d.match(/\[[\s\S]*\]/);
+                if (!m) { console.error("no JSON array in wrangler output"); process.exit(1); }
+                const list = JSON.parse(m[0]);
+                const hit = list.find(x => x.name === process.env.DEPLOY_NAME);
+                console.log(hit ? hit.uuid : "");
+              });'
+          }
+          DB_ID="$(get_db_id)"
+          if [ -z "$DB_ID" ]; then
+            echo "D1 '$DEPLOY_NAME' not found — creating"
+            wrangler d1 create "$DEPLOY_NAME"
+            DB_ID="$(get_db_id)"
+          fi
+          if [ -z "$DB_ID" ]; then
+            echo "::error::failed to resolve database_id for '$DEPLOY_NAME'"
+            exit 1
+          fi
+          echo "DB_ID=$DB_ID" >> "$GITHUB_ENV"
+          echo "D1 '$DEPLOY_NAME' ready (database_id resolved)"
+
+      - name: Patch wrangler.toml
+        run: |
+          sed -i "s/^name = .*/name = \"$DEPLOY_NAME\"/" wrangler.toml
+          sed -i "s/^database_name = .*/database_name = \"$DEPLOY_NAME\"/" wrangler.toml
+          sed -i "s/^database_id = .*/database_id = \"$DB_ID\"/" wrangler.toml
+          SITE_KEY="${{ inputs.TURNSTILE_SITE_KEY || vars.TURNSTILE_SITE_KEY }}"
+          if [ -n "$SITE_KEY" ]; then
+            printf '\n[vars]\nTURNSTILE_SITE_KEY = "%s"\n' "$SITE_KEY" >> wrangler.toml
+          fi
+          cat wrangler.toml
+
+      - name: Apply schema (idempotent)
+        run: |
+          set -e
+          CHECK="$(wrangler d1 execute "$DEPLOY_NAME" --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name='users'" --json)"
+          COUNT="$(printf '%s' "$CHECK" | node -e '
+            let d = "";
+            process.stdin.on("data", c => d += c).on("end", () => {
+              try {
+                const m = d.match(/\[[\s\S]*\]/);
+                console.log(JSON.parse(m[0])[0].results.length);
+              } catch { console.log("ERR"); }
+            });')"
+          if [ "$COUNT" = "0" ]; then
+            echo "Tables missing — applying schema.sql"
+            wrangler d1 execute "$DEPLOY_NAME" --remote --file=schema.sql
+          else
+            echo "Schema already applied (users table exists) — skipping"
+          fi
+
+      - name: Deploy Worker
+        run: wrangler deploy
+
+      - name: Inject Worker secrets
+        env:
+          TC_SECRET_VALUE: ${{ secrets.TC_SECRET }}
+          TURNSTILE_SECRET_VALUE: ${{ inputs.TURNSTILE_SECRET_KEY || secrets.TURNSTILE_SECRET_KEY }}
+        run: |
+          printf '%s' "$TC_SECRET_VALUE" | wrangler secret put TC_SECRET
+          printf '%s' "$TURNSTILE_SECRET_VALUE" | wrangler secret put TURNSTILE_SECRET_KEY
