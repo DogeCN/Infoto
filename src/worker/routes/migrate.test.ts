@@ -25,7 +25,7 @@ async function rootCookie(app: ReturnType<typeof createApp>): Promise<string> {
 					type: 'upload',
 					payload: { sha256: 'aa', url: 'https://h/a.webp', width: 1, height: 1, size: 2, type: 0 },
 				},
-				{ type: 'ann_create', payload: { title: 't', contentMd: 'md' } },
+				{ type: 'ann_create', payload: { title: 't', contentMd: `md\\slash --- ; /* c */ it's` } },
 				{ type: 'react', target: 1, payload: { emoji: '🔥' } },
 				{ type: 'fb_create', payload: { contentMd: 'fb' } },
 			],
@@ -55,6 +55,17 @@ test('parseSqlStatements keeps only INSERT', () => {
 	assert.equal(stmts.length, 2);
 	assert.ok(/^INSERT INTO users/i.test(stmts[0]!));
 	assert.ok(/^INSERT INTO feedback/i.test(stmts[1]!));
+});
+
+test('parseSqlStatements is quote-aware: ; -- /* and quotes inside literals survive', () => {
+	const stmts = parseSqlStatements(
+		`INSERT INTO announcements (title, content_md) VALUES ('t; --- /* c */', 'it''s -- a; b'); -- trailing`,
+	);
+	assert.equal(stmts.length, 1);
+	assert.equal(
+		stmts[0],
+		`INSERT INTO announcements (title, content_md) VALUES ('t; --- /* c */', 'it''s -- a; b');`,
+	);
 });
 
 test('export → import round-trip restores rows', async () => {
@@ -89,6 +100,8 @@ test('export → import round-trip restores rows', async () => {
 	assert.ok(json.imported >= 4);
 	const title = await db.prepare('SELECT title FROM announcements').first<{ title: string }>('title');
 	assert.equal(title, 't');
+	const md = await db.prepare('SELECT content_md FROM announcements').first<{ content_md: string }>('content_md');
+	assert.equal(md, `md\\slash --- ; /* c */ it's`, 'backslash / ; / -- / /* and quotes must survive the round-trip');
 	assert.deepEqual(await counts(db), before);
 });
 

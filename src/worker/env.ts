@@ -9,7 +9,7 @@ export interface AppEnv {
 	tcSecret?: string;
 	/** Cloudflare Turnstile secret key. */
 	turnstileSecret?: string;
-	/** Public Turnstile site key — served verbatim to the frontend via GET /config. */
+	/** Public Turnstile site key — delivered in the /sync 401 `turnstile_required` body. */
 	turnstileSiteKey?: string;
 	/** Worker: static fallback via the ASSETS binding. */
 	assets?: (req: Request) => Promise<Response>;

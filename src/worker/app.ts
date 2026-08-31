@@ -13,8 +13,6 @@ import { migrateExportHandler, migrateImportHandler } from './routes/migrate.ts'
 export function createApp(env: AppEnv): Hono {
 	const app = new Hono();
 
-	app.get('/config', (c) => c.json({ turnstileSiteKey: env.turnstileSiteKey ?? null }));
-
 	app.post('/sync', syncHandler(env));
 	app.post('/upload', uploadHandler(env));
 	app.get('/l/:id36', mediaHandler(env));

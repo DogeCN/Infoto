@@ -137,6 +137,16 @@ export interface SyncResponse {
 }
 
 /**
+ * 401 `turnstile_required` body — carries the public site key so the client
+ * can render the Turnstile widget without any extra config endpoint.
+ */
+export interface TurnstileRequiredError {
+	ok: false;
+	error: 'turnstile_required';
+	turnstileSiteKey: string | null;
+}
+
+/**
  * Image-host JSON returned verbatim by POST /upload.
  * Success: URL lives in `data`. Failure: human message in `msg` / `error`.
  */

@@ -1,0 +1,9 @@
+{
+  "//": "IDE-facing config only (tsserver picks tsconfig.json by name). npm run ts-check stays authoritative via tsconfig.worker/local/test.json.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "types": ["node", "@cloudflare/workers-types"]
+  },
+  "include": ["src/**/*.ts"]
+}

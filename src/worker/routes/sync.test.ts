@@ -68,16 +68,20 @@ test('secret configured, no token → turnstile_required', async () => {
 	const app = createApp({ db, turnstileSecret: 'sk' });
 	const res = await sync(app, { ops: [] });
 	assert.equal(res.status, 401);
-	assert.deepEqual(await res.json(), { ok: false, error: 'turnstile_required' });
+	assert.deepEqual(await res.json(), { ok: false, error: 'turnstile_required', turnstileSiteKey: null });
 });
 
 test('body uuid is ignored; still requires turnstile', async () => {
 	const db = openLocalDb(':memory:');
 	db.exec(schema);
-	const app = createApp({ db, turnstileSecret: 'sk' });
+	const app = createApp({ db, turnstileSecret: 'sk', turnstileSiteKey: 'site-key' });
 	const res = await sync(app, { uuid: '00000000-0000-4000-8000-000000000000', ops: [] });
 	assert.equal(res.status, 401);
-	assert.deepEqual(await res.json(), { ok: false, error: 'turnstile_required' });
+	assert.deepEqual(await res.json(), {
+		ok: false,
+		error: 'turnstile_required',
+		turnstileSiteKey: 'site-key',
+	});
 });
 
 test('bad turnstile token → turnstile_failed', async () => {
@@ -223,7 +227,7 @@ test('announcements embed reactions; missing update silent; delete cascades; reo
 	const reordered = (await (
 		await sync(
 			app,
-			{ ops: [{ type: 'ann_reorder', payload: ['not-a-number', 3, 2] as unknown as number[] }] },
+			{ ops: [{ type: 'ann_reorder', payload: ['3', 3, null, { x: 1 }, 'not-a-number', 2] as unknown as number[] }] },
 			cookie,
 		)
 	).json()) as SyncResponse;

@@ -150,7 +150,8 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
 			case 'ann_reorder': {
 				if (!isRoot) return;
 				const raw = Array.isArray(op.payload) ? op.payload : [];
-				const ids = raw.map(Number).filter(Number.isFinite);
+				// Type-first cleaning: numeric strings like "3" are NOT numbers here — strip them.
+				const ids = raw.filter((x): x is number => typeof x === 'number' && Number.isFinite(x));
 				await db.batch(ids.map((id, i) => db.prepare('UPDATE announcements SET sort = ? WHERE id = ?').bind(i, id)));
 				return;
 			}
@@ -261,7 +262,11 @@ export function syncHandler(env: AppEnv) {
 		if (!user) {
 			const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
 			if (env.turnstileSecret && !token) {
-				return c.json({ ok: false, error: 'turnstile_required' }, 401);
+				// The public site key rides along so the client can render the widget.
+				return c.json(
+					{ ok: false, error: 'turnstile_required', turnstileSiteKey: env.turnstileSiteKey ?? null },
+					401,
+				);
 			}
 			const passed = await verifyTurnstile(token, env.turnstileSecret, c.req.header('cf-connecting-ip'));
 			if (!passed) return c.json({ ok: false, error: 'turnstile_failed' }, 401);

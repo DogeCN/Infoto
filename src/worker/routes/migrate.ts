@@ -19,16 +19,55 @@ async function requireRoot(env: AppEnv, c: Context) {
 }
 
 export function escapeSql(s: unknown): string {
-	return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "''");
+	// SQLite string literals have no backslash escapes — doubling single quotes is the only escaping.
+	return String(s ?? '').replace(/'/g, "''");
 }
 
 export function parseSqlStatements(sql: string): string[] {
-	const stripped = sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
-	return stripped
-		.split(';')
-		.map((s) => s.trim())
-		.filter((s) => s.length > 0 && /^insert\s+into/i.test(s))
-		.map((s) => (s.endsWith(';') ? s : `${s};`));
+	const stmts: string[] = [];
+	let cur = '';
+	let inStr = false;
+	for (let i = 0; i < sql.length; i++) {
+		const ch = sql[i]!;
+		if (inStr) {
+			cur += ch;
+			if (ch === "'") {
+				if (sql[i + 1] === "'") {
+					cur += "'"; // '' escape inside a literal — keep verbatim
+					i++;
+				} else {
+					inStr = false;
+				}
+			}
+			continue;
+		}
+		if (ch === "'") {
+			inStr = true;
+			cur += ch;
+			continue;
+		}
+		if (ch === '-' && sql[i + 1] === '-') {
+			while (i < sql.length && sql[i] !== '\n') i++; // line comment, outside literals only
+			cur += ' ';
+			continue;
+		}
+		if (ch === '/' && sql[i + 1] === '*') {
+			const end = sql.indexOf('*/', i + 2);
+			i = end === -1 ? sql.length : end + 1; // block comment, outside literals only
+			cur += ' ';
+			continue;
+		}
+		if (ch === ';') {
+			const s = cur.trim();
+			if (s) stmts.push(s.endsWith(';') ? s : `${s};`);
+			cur = '';
+			continue;
+		}
+		cur += ch;
+	}
+	const tail = cur.trim();
+	if (tail) stmts.push(tail.endsWith(';') ? tail : `${tail};`);
+	return stmts.filter((s) => /^insert\s+into/i.test(s));
 }
 
 export async function restoreOldTables(db: Db): Promise<void> {
@@ -130,11 +169,12 @@ export function migrateImportHandler(env: AppEnv) {
 		if (!(await requireRoot(env, c))) return notFoundPage();
 		let sqlText: string;
 		try {
-			sqlText = await c.req.text();
+			const buf = await c.req.arrayBuffer();
+			if (buf.byteLength > MAX_IMPORT_BYTES) return c.json({ error: 'payload too large' }, 413);
+			sqlText = new TextDecoder().decode(buf);
 		} catch {
 			return c.json({ error: 'bad body' }, 400);
 		}
-		if (sqlText.length > MAX_IMPORT_BYTES) return c.json({ error: 'payload too large' }, 413);
 		if (!sqlText.trim()) return c.json({ error: 'empty body' }, 400);
 
 		const stmts = parseSqlStatements(sqlText);
