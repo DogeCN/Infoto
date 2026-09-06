@@ -1,10 +1,11 @@
 // POST /upload — streaming proxy to the image host (spec: "图床上传代理").
+// Two host origins share one backend; each request picks one at random.
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../env.ts';
 import { resolveUser } from '../identity.ts';
 
-const HOST_UPLOAD_URL = 'https://tc.0147258.xyz/upload';
+const HOST_UPLOAD_URLS = ['https://tc.0147258.xyz/upload', 'https://tc.qdqqd.com/upload'];
 
 const b64u = (buf: ArrayBuffer | Uint8Array): string => {
 	const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -49,7 +50,7 @@ export function uploadHandler(env: AppEnv) {
 
 		let upstream: Response;
 		try {
-			upstream = await fetch(HOST_UPLOAD_URL, init);
+			upstream = await fetch(HOST_UPLOAD_URLS[Math.floor(Math.random() * HOST_UPLOAD_URLS.length)], init);
 		} catch {
 			return c.json({ ok: false, error: 'image_host_unreachable' }, 502);
 		}

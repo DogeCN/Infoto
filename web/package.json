@@ -1,0 +1,32 @@
+{
+  "name": "infoto-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Infoto SPA (built into ../dist, served by the Worker ASSETS binding)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "ts-check": "tsc -p tsconfig.json --noEmit && svelte-check --tsconfig tsconfig.json --fail-on-warnings",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "ci": "npm run ts-check && npm run test && npm run e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "fake-indexeddb": "^6.0.0",
+    "svelte": "^5.15.0",
+    "svelte-check": "^4.1.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.11.0",
+    "mediabunny": "^1.0.0"
+  }
+}

@@ -17,9 +17,9 @@ function makeApp() {
 
 function cookieFrom(res: Response): string {
 	const raw = res.headers.get('set-cookie') ?? '';
-	const m = raw.match(/infoto_id=([^;]+)/);
-	assert.ok(m, 'Set-Cookie infoto_id');
-	return `infoto_id=${m[1]}`;
+	const m = raw.match(/uuid=([^;]+)/);
+	assert.ok(m, 'Set-Cookie uuid');
+	return `uuid=${m[1]}`;
 }
 
 async function sync(app: ReturnType<typeof createApp>, body: unknown, cookie?: string): Promise<Response> {

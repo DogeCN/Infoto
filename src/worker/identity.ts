@@ -4,7 +4,7 @@
 
 import type { Db } from './db.ts';
 
-export const COOKIE_NAME = 'infoto_id';
+export const COOKIE_NAME = 'uuid';
 /** ~10 years — effectively permanent, refreshed (sliding) on every /sync. */
 export const COOKIE_MAX_AGE = 315360000;
 export const ROOT_ID = 0;
@@ -50,7 +50,7 @@ export async function findUserByUuid(db: Db, uuid: string | undefined): Promise<
 	return db.prepare('SELECT id, uuid, created_at FROM users WHERE uuid = ?').bind(uuid).first<UserRow>();
 }
 
-/** Resolve identity from Cookie `infoto_id` only. */
+/** Resolve identity from Cookie `uuid` only. */
 export async function resolveUser(db: Db, cookieHeader: string | undefined): Promise<UserRow | null> {
 	const fromCookie = parseCookies(cookieHeader)[COOKIE_NAME];
 	return findUserByUuid(db, fromCookie);

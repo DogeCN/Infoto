@@ -170,15 +170,15 @@ export function migrateImportHandler(env: AppEnv) {
 		let sqlText: string;
 		try {
 			const buf = await c.req.arrayBuffer();
-			if (buf.byteLength > MAX_IMPORT_BYTES) return c.json({ error: 'payload too large' }, 413);
+			if (buf.byteLength > MAX_IMPORT_BYTES) return c.json({ ok: false, error: 'payload too large' }, 413);
 			sqlText = new TextDecoder().decode(buf);
 		} catch {
-			return c.json({ error: 'bad body' }, 400);
+			return c.json({ ok: false, error: 'bad body' }, 400);
 		}
-		if (!sqlText.trim()) return c.json({ error: 'empty body' }, 400);
+		if (!sqlText.trim()) return c.json({ ok: false, error: 'empty body' }, 400);
 
 		const stmts = parseSqlStatements(sqlText);
-		if (stmts.length === 0) return c.json({ error: 'no valid sql' }, 400);
+		if (stmts.length === 0) return c.json({ ok: false, error: 'no valid sql' }, 400);
 
 		try {
 			await renameToOld(env.db);
@@ -201,7 +201,7 @@ export function migrateImportHandler(env: AppEnv) {
 						}
 					}
 					await restoreOldTables(env.db);
-					return c.json({ error: 'import failed', detail, statement: sFail }, 500);
+					return c.json({ ok: false, error: 'import failed', detail, statement: sFail }, 500);
 				}
 			}
 
@@ -212,7 +212,7 @@ export function migrateImportHandler(env: AppEnv) {
 		} catch (e) {
 			await restoreOldTables(env.db);
 			return c.json(
-				{ error: 'import failed', detail: e instanceof Error ? e.message : String(e) },
+				{ ok: false, error: 'import failed', detail: e instanceof Error ? e.message : String(e) },
 				500,
 			);
 		}

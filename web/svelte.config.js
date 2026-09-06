@@ -1,0 +1,4 @@
+export default {
+	compilerOptions: {},
+	vitePlugin: {},
+};

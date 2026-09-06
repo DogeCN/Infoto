@@ -31,9 +31,9 @@ async function rootCookie(app: ReturnType<typeof createApp>): Promise<string> {
 			],
 		}),
 	});
-	const m = (res.headers.get('set-cookie') ?? '').match(/infoto_id=([^;]+)/);
+	const m = (res.headers.get('set-cookie') ?? '').match(/uuid=([^;]+)/);
 	assert.ok(m);
-	return `infoto_id=${m[1]}`;
+	return `uuid=${m[1]}`;
 }
 
 async function counts(db: LocalDb) {
@@ -118,7 +118,8 @@ test('bad INSERT returns exact statement and leaves five tables intact', async (
 		body: bad,
 	});
 	assert.equal(imp.status, 500);
-	const err = (await imp.json()) as { error: string; statement: string; detail: string };
+	const err = (await imp.json()) as { ok: boolean; error: string; statement: string; detail: string };
+	assert.equal(err.ok, false);
 	assert.equal(err.error, 'import failed');
 	assert.ok(/INSERT INTO photos \(id\) VALUES \(999\)/i.test(err.statement));
 	assert.deepEqual(await counts(db), before);
