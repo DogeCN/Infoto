@@ -111,6 +111,9 @@ export class UploadPipeline {
 
 	private onSwMessage(m: SwToPageMessage): void {
 		if (m.t === 'jobStatus') {
+			// capture before emit() — emit stores m.url in the snapshot, which would
+			// make the "not yet written" guard below always false
+			const alreadyWritten = !!this.snapshots.get(m.jobId)?.url;
 			if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
 			this.emit({
 				jobId: m.jobId,
@@ -121,7 +124,7 @@ export class UploadPipeline {
 				error: m.error,
 				meta: m.meta,
 			});
-			if (m.phase === 'done' && m.url && m.meta && !this.snapshots.get(m.jobId)?.url) {
+			if (m.phase === 'done' && m.url && m.meta && !alreadyWritten) {
 				void this.writeUploadOp(m.jobId, m.url, m.meta);
 			} else if (m.phase === 'failed') {
 				this.log(`job ${m.jobId} failed: ${m.error ?? 'unknown'} (artifact kept in OPFS, manual retry available)`);
