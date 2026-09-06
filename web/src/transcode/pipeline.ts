@@ -9,6 +9,10 @@ import { openOplogDb, appendOp } from '../core/oplog/store';
 import { LeaseClient } from './lease';
 import { isSwToPage, type JobMeta, type SwToPageMessage } from './shared/protocol';
 import type { Op, UploadPayload } from '$shared/types';
+// ?sharedworker puts the SW through Vite's bundler (a bare new URL('./sw.ts',
+// import.meta.url) is copied verbatim as an untranspiled .ts asset — broken
+// both by TS syntax and by the .ts -> video/mp2t MIME on static hosting).
+import SharedWorkerCtor from './sw?sharedworker';
 
 export interface PipelineTaskSnapshot {
 	jobId: string;
@@ -71,7 +75,9 @@ export class UploadPipeline {
 	/** Connect SharedWorker + BroadcastChannel, register triggers. */
 	start(): void {
 		if (this.sw) return;
-		this.sw = new SharedWorker(this.io.swUrl ?? new URL('./sw.ts', import.meta.url), { type: 'module' });
+		this.sw = this.io.swUrl
+			? new SharedWorker(this.io.swUrl, { type: 'module' })
+			: new SharedWorkerCtor();
 		this.lease = new LeaseClient(this.sw.port, {
 			onGranted: (m) => this.startVideoWorker(m.jobId, m.file, m.mime, routeEngine(m.mime)),
 			onRevoked: (m) => {
