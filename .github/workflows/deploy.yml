@@ -86,7 +86,18 @@ jobs:
           sed -i "s/^name = .*/name = \"$DEPLOY_NAME\"/" wrangler.toml
           sed -i "s/^database_name = .*/database_name = \"$DEPLOY_NAME\"/" wrangler.toml
           sed -i "s/^database_id = .*/database_id = \"$DB_ID\"/" wrangler.toml
-          SITE_KEY="${{ inputs.TURNSTILE_SITE_KEY || vars.TURNSTILE_SITE_KEY }}"
+          SITE_KEY="${{ inputs.TURNSTILE_SITE_KEY }}"
+          # Production (tag): the real site key from repo variables. Test
+          # deployment: Cloudflare's official always-pass TEST site key — it is
+          # the only key whose tokens the always-pass test secret accepts, so
+          # the real widget in a real browser verifies end-to-end.
+          if [ -z "$SITE_KEY" ]; then
+            if [ "${{ github.ref_type }}" = "tag" ]; then
+              SITE_KEY="${{ vars.TURNSTILE_SITE_KEY }}"
+            else
+              SITE_KEY="1x00000000000000000000AA"
+            fi
+          fi
           if [ -n "$SITE_KEY" ]; then
             printf '\n[vars]\nTURNSTILE_SITE_KEY = "%s"\n' "$SITE_KEY" >> wrangler.toml
           fi
