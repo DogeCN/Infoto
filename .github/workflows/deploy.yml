@@ -117,7 +117,16 @@ jobs:
       - name: Inject Worker secrets
         env:
           TC_SECRET_VALUE: ${{ secrets.TC_SECRET }}
-          TURNSTILE_SECRET_VALUE: ${{ inputs.TURNSTILE_SECRET_KEY || secrets.TURNSTILE_SECRET_KEY }}
         run: |
           printf '%s' "$TC_SECRET_VALUE" | wrangler secret put TC_SECRET
+
+      # Production only: the real Turnstile secret (contract: 生产 secret 由工作流注入).
+      # The test deployment keeps the Cloudflare always-pass test secret
+      # (1x0000000000000000000000000000000AA) so the e2e harness's fake token
+      # passes while token-less first entries still get 401 turnstile_required.
+      - name: Inject Turnstile secret (production only)
+        if: github.ref_type == 'tag'
+        env:
+          TURNSTILE_SECRET_VALUE: ${{ inputs.TURNSTILE_SECRET_KEY || secrets.TURNSTILE_SECRET_KEY }}
+        run: |
           printf '%s' "$TURNSTILE_SECRET_VALUE" | wrangler secret put TURNSTILE_SECRET_KEY
