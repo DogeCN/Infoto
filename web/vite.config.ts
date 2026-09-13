@@ -37,6 +37,7 @@ export default defineConfig({
 			'/sync': proxy(),
 			'/upload': proxy({ proxyTimeout: 120_000 }),
 			'/l': proxy({ cookieDomainRewrite: false }),
+			'/admin': proxy(),
 		},
 	},
 	test: {

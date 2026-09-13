@@ -8,8 +8,8 @@
 **完成**的定义是：改动在测试部署 `dev.infoto.cc.cd` 的线上环境走通。流程：改动完成 → `npm run ts-check` 零错误（后端包（仓库根目录）与前端包 `web/` 各跑一次）→ 在 `web/` 执行 `npm run build` 并确认 `dist/` 产物完整 → 提交推送 → 等待 GitHub Actions 部署 → 线上验证该阶段 happy path。静态类型检查是提交前置条件，**最终判定一律以线上为准**。
 
 **本地验证只运行前端**（必做）：
-- 本地只启动 Vite 开发服务器（`web/`）；`/sync`、`/upload`、`/l/*`、`/admin/migrate` 等所有 API 请求经 Vite dev proxy 转发到测试部署 `dev.infoto.cc.cd`，数据面与鉴权均为线上真实行为
-- 本地不运行 Worker、不使用本地数据库实现（wrangler dev、node:sqlite shim 均禁止）
+- 本地只启动 Vite 开发服务器（`web/`）；`/sync`、`/upload`、`/l/*`、`/admin*` 等所有 API 请求经 Vite dev proxy 转发到测试部署 `dev.infoto.cc.cd`，数据面与鉴权均为线上真实行为
+- 本地不运行 Worker、不使用本地数据库做验证（wrangler dev 禁止，无本地 Worker 服务器）；`src/local/d1-shim.ts` 的 node:sqlite shim **仅限单元测试**模拟 D1，不构成本地运行时
 - 代理目标读环境变量 `INFOTO_API_ORIGIN`（默认 `https://dev.infoto.cc.cd`），配置在 `web/vite.config.ts` 的 `server.proxy`，禁止硬编码
 - 本地走通只代表满足提交条件；推送后必须在线上重复同一套验证，结论冲突时以线上为准
 
@@ -21,7 +21,7 @@
 - 按「实现顺序」逐阶段推进，阶段 N 线上走通前不得开始阶段 N+1
 - 建议用 Playwright 操控浏览器截图验证
 
-**环境自检**：生产（tag `v*` → `infoto`）与测试（分支 → `infoto-dev`）各绑独立 D1（`database_name` 不同），用 `wrangler d1 list` 核对；工作流不执行构建，`dist/` 提交进仓库，push 前在 `web/` 执行 `npm run build` 确认产物完整。**Turnstile 采用配套键方案**：token 缺失一律 401 `turnstile_required`（响应带 `turnstileSiteKey`）；secret 未配置时校验一律失败并 `console.warn`（401 `turnstile_failed`）。生产（tag 部署）由工作流注入真实 `TURNSTILE_SECRET_KEY` 与真实 site key（仓库 Variables）；测试部署由工作流写入 Cloudflare 官方 always-pass 测试 site key（`1x00000000000000000000AA`）并配置配套测试 secret（siteverify 恒真），真实浏览器与 e2e 均可自动化走通首次建号全流程；本地 `npm run start` 在未配置时默认使用同一对测试键。
+**环境自检**：生产（tag `v*` → `infoto`）与测试（分支 → `infoto-dev`）各绑独立 D1（`database_name` 不同），用 `wrangler d1 list` 核对。**Turnstile 采用配套键方案**：无 Cookie 且未携带 token 的 /sync 一律 401 `turnstile_required`（响应带 `turnstileSiteKey`），携带有效 Cookie 的请求不要求 token；secret 未配置时校验一律失败并 `console.warn`（401 `turnstile_failed`），无绕过校验的建号路径。生产（tag 部署）由工作流注入真实 `TURNSTILE_SECRET_KEY` 与真实 site key（仓库 Variables）；测试部署由工作流写入 Cloudflare 官方 always-pass 测试 site key（`1x00000000000000000000AA`）并配置配套测试 secret（siteverify 恒真），真实浏览器与 e2e 均可自动化走通首次建号全流程。
 ## 共享基底
 以下纯函数资产位于后端包 `src/`，是实现前提，不得重写：
 - `src/ui/lib`：layout / marquee / id36 / format（DOM-free，含测试）
@@ -101,7 +101,7 @@ fontFamily: {
   sans: ['"Space Grotesk"', '"Inter"', '"Noto Sans SC"', 'system-ui', '-apple-system', 'sans-serif']
 }
 ```
-经 Google Fonts 国内镜像（`fonts.googleapis.cn`）加载 400–700 字重，在 `web/index.html` `<head>` 中引入 `<link>`。英文数字走 Space Grotesk → Inter，中文走 Noto Sans SC。排版一律 Tailwind `text-*` + `leading-*` + `tracking-*`。
+经 Google Fonts 国内镜像（`fonts.googleapis.cn`）加载 400–700 字重，在 `web/index.html` `<head>` 中引入 `<link>`。英文数字走 Space Grotesk → Inter，中文走 Noto Sans SC。排版一律 Tailwind `text-*` + `leading-*` + `tracking-*`。**待实测项**：该镜像近年稳定性口碑一般，接入前实测连通性与速度；不可靠时降级为 `fonts.loli.net` 或自托管字体文件，不阻塞其余工作。
 ### 全局自定义
 **滚动条**（`web/src/app.css` 全局层）：
 ```css
@@ -142,7 +142,7 @@ fontFamily: {
 - zip：fflate；Markdown：markdown-it + DOMPurify
 - 编码参数：VP9 quantizer 30（恒定质量），VP8 兜底 `Quality('high')`；Opus 128kbps；分辨率、帧率、声道原样保留
 ## 设计理念
-只在用户间同步媒体元信息，最小化请求次数。**上传数据面经 Worker 的 `/upload` 流式代理中转**（图床不可跨域），Worker 只做鉴权、现签 token 与请求体流式透传，不缓冲、不解析文件内容；站内加载直接使用元信息中的图床 URL（浏览器直连图床，享受图床 CDN）。`/l/:id36` 流式代理仅服务于**站外场景**（复制链接、谷歌搜图传参），防止站外直连图床。图床为外部服务，单文件单次直传（无分片、无断点续传）、不清理文件。**所有写操作（含根用户管理操作）统一走 op-log → /sync 管线**，服务端唯一写入口是 /sync；SQL 导入导出为全库整体替换，与增量 op 语义不兼容，使用独立端点。所有 API 端点不做代码层限速。所有删除操作均直接执行，不弹确认。
+只在用户间同步媒体元信息，最小化请求次数。**上传数据面经 Worker 的 `/upload` 流式代理中转**（图床不可跨域），Worker 只做鉴权、现签 token 与请求体流式透传，不缓冲、不解析文件内容；站内加载直接使用元信息中的图床 URL（浏览器直连图床，享受图床 CDN）。`/l/:id36` 流式代理仅服务于**站外场景**（复制链接、谷歌搜图传参），防止站外直连图床。图床为外部服务，单文件单次直传（无分片、无断点续传）、不清理文件。**所有写操作（含根用户管理操作）统一走 op-log → /sync 管线**，服务端唯一写入口是 /sync；SQL 导入导出为全库整体替换，与增量 op 语义不兼容，使用独立端点。所有 API 端点不做代码层限速（删除操作确认策略见视觉风格一节）。
 ## 数据模型
 ```sql
 CREATE TABLE users (
@@ -192,7 +192,7 @@ CREATE TABLE feedback (
 ```
 - 照片标记以 JSON 数组内嵌于 photos 行：唯一读取路径是随 /sync 全量下发，写入为单行单列读-改-写（add/remove 前 contains 检查）。**同一用户重复标记幂等安全**；不同用户并发标记同一照片时，读-改-写之间存在窗口，后写可能覆盖先写。该窗口极小（D1 单库写入串行、同批 op 顺序 await 应用），接受此风险，不做原子化改造
 - 转码产物只有 WebP 与 WebM，type 已隐含扩展名（type=0 → `.webp`，type=1/2 → `.webm`），不存 ext 字段
-- 投票选项文本不落库：`votes.option` 为选项序号，选项列表由前端从公告 contentMd 解析
+- 投票选项文本不落库：`votes.option` 为选项序号，**0 起始**（与前端解析 `:::vote` 选项列表的数组下标一致），`null` 表示撤回；选项列表由前端从公告 contentMd 解析
 - `TC_SECRET`、`TURNSTILE_SITE_KEY`、`TURNSTILE_SECRET_KEY` 为 Worker 环境变量（wrangler secrets），不落库
 - 存储层列名为 snake_case；**API 边界（/sync 请求与响应、所有 JSON 字段）一律 camelCase**，转换在序列化层完成
 - **匿名站**：管理面板（仅根用户可见）可直接展示用户 ID（建议页用户徽标、反馈元信息）。普通用户不可见任何用户列表，数字 id 仅供前端判断「我上传的」「我喜欢的」等归属（与 `selfId` 比较）。uuid 只存在于 Cookie 与 `users` 表，**永不进入 /sync 响应**。非根用户只能在照片元数据里看到他人数字 id，不可接触 uuid
@@ -210,7 +210,7 @@ CREATE TABLE feedback (
 - **校验顺序固定：Cookie → Content-Type**。先校验 Cookie（失败 401 `unauthorized`），再校验 `Content-Type` 须为 `multipart/form-data`（否则 400 `bad_content_type`）
 - **图床为多节点池**：`HOST_UPLOAD_URLS = ['https://tc.0147258.xyz/upload', 'https://tc.qdqqd.com/upload']`，每次请求随机选取一个接入点；两个地址是同一图床服务的不同接入点，返回的 `data` URL 语义等价。随机选择不做健康探测，某一接入点整体不可用时约一半请求失败；接受此行为，失败由手动重试兜底，不实现健康检查与故障转移
 - 校验通过后基于 `TC_SECRET` 以 HMAC-SHA256（HS256 JWT）现签 token 置于 `X-Auth-Token` 头（claims 仅 `{ timestamp }`），**请求体流式透传**至随机选中的图床地址（`body: request.body` + `duplex: 'half'`，透传 `Content-Type` 保留 boundary），不缓冲、不解析 multipart
-- **响应体同样流式透传**；图床响应 JSON 原样转发，URL 位于 `data` 字段；失败时读取 `msg` / `error` 字段提示
+- **响应体同样流式透传**；图床响应 JSON 原样转发，URL 位于 `data` 字段；失败时读取 `msg` / `error` 字段提示。**上游错误语义写死：fetch 请求本身异常（网络/DNS）→ Worker 转为 502 `image_host_unreachable`；上游返回的任何状态码（含 4xx/5xx）原样透传，不做包装**，客户端按透传后的 JSON `msg`/`error` 提示
 - `TC_SECRET` 未配置 → 500 `tc_secret_missing`
 - 客户端请求超时 45s（AbortController），超时按失败处理
 - **上传失败（含超时）直接标记该文件失败，不做自动重试**；产物留 OPFS，上传卡片提供手动重试按钮，每次点击为一次独立上传尝试
@@ -219,15 +219,16 @@ CREATE TABLE feedback (
 ### 统一错误码表
 | 端点 | HTTP | error | 触发条件 |
 |---|---|---|---|
-| /sync | 401 | `turnstile_required` | 无 Cookie 且未携带 Turnstile token；响应体附 `turnstileSiteKey`（公开 site key，前端据此渲染验证码；站点不设独立 config 下发端点） |
+| /sync | 401 | `turnstile_required` | 无 Cookie 且未携带 Turnstile token；响应体附 `turnstileSiteKey`（公开 site key，前端据此渲染验证码；站点不设独立 config 下发端点）。**携带有效 Cookie 的请求不要求 token** |
 | /sync | 401 | `turnstile_failed` | Turnstile token 校验失败 |
+| /sync | 500 | `internal` | /sync 未捕获异常（JSON，见下方错误响应分层） |
 | /upload | 401 | `unauthorized` | Cookie 无效或缺失 |
 | /upload | 400 | `bad_content_type` | Content-Type 非 multipart/form-data（校验顺序在 Cookie 之后） |
 | /upload | 500 | `tc_secret_missing` | TC_SECRET 未配置 |
-| /upload | 502 | `image_host_unreachable` | 上游图床请求异常 |
-| /admin | 404 | 自定义错误页 | 非 root（含未登录），不暴露端点存在性；root 返回 SPA 入口 |
-| /admin/migrate | 404 | 自定义错误页 | 非 root（含未登录），不暴露端点存在性 |
-**返回自定义错误页的路径不适用 JSON 约定**：`/admin`、`/admin/*`、`/admin/migrate` 的非 root 访问，以及所有未匹配路由，一律返回自定义 404 页。**其余 Worker 自身错误响应**统一为 `{ ok:false, error: '...' }`。
+| /upload | 502 | `image_host_unreachable` | 上游图床请求异常（fetch 抛错；上游 4xx/5xx 原样透传，不走此码） |
+| /upload | 500 | `internal` | /upload 其余未捕获异常（JSON） |
+| /admin、/admin/* | 404 | 自定义错误页 | 非 root（含未登录），不暴露端点存在性；root 返回 SPA 入口 |
+**错误响应分层**：`/sync`、`/upload` 是 JSON 端点，**未捕获异常也必须返回 JSON**（`{ ok:false, error: 'internal' }`，500）；自定义 404/5xx HTML 错误页仅用于页面类路由——`/admin*` 非 root、`/l/:id36` 非法 id、以及未匹配路径。**其余 Worker 自身错误响应**统一为 `{ ok:false, error: '...' }`。
 ### 服务端签名示例（Worker，WebCrypto）
 ```js
 async function makeTcToken(secret) {
@@ -314,7 +315,7 @@ feedback[i]: { id, userId, contentMd, createdAt } // 仅 root 非空
 ## 媒体 ID 与地址策略
 - 每张照片有自增数字 ID；**站内 API（/sync 响应、op target）一律数字表示**
 - **id36 是对外表示的编码，不进入 API 层**：仅用于 `/l/:id36` 路由与下载文件名。站外场景使用 `{origin}/l/{id36}`，origin 取自当前访问域名；图床地址不离开元信息与 Worker
-- **站内加载**（瀑布流、卡片预览、`<img>`/`<video>` src、站内下载 fetch）：直接使用元信息中的图床 URL，浏览器直连图床，Worker 不参与数据面
+- **站内加载**（瀑布流、卡片预览、`<img>`/`<video>` src、站内下载 fetch）：直接使用元信息中的图床 URL，浏览器直连图床，Worker 不参与数据面。**已实测前提：图床仅在上传路径限制跨域，GET 下载不受限**——多张打包（fflate 需读响应字节）与 fetch 下载依赖图床 GET 允许跨域读取，此为整条下载链路的显式前提
 - 单张下载文件名沿用 `{id36}.webp` / `{id36}.webm`
 ## 媒体代理（/l/:id36）
 - 服务端将 id36 解码为数字 ID（正则 `[0-9a-z]+` → `parseInt(id36, 36)` → 安全整数校验）后命中元数据，fetch 图床 URL，**响应体流式转发**（不缓冲完整文件），设置 `Content-Type` 与 `Content-Length`
@@ -329,7 +330,7 @@ feedback[i]: { id, userId, contentMd, createdAt } // 仅 root 非空
 - 视频与 GIF → WebM。**type 由转码阶段探测原始媒体是否含音频轨决定**：无音频轨（含 GIF）→ type=1，有音频轨 → type=2
 - 读取宽高、大小 + 流式计算 SHA-256，本地元数据缓存查重，命中则跳过阶段二并通知「重复」
 **阶段二**（上传）：从 OPFS 取产物，按 /upload 节的 100MB 大小限制前置判断（超限直接标记失败、产物留 OPFS）；否则按 `uploadMedia` 经 `{origin}/upload` 上传，获得 URL 后元信息写入 op-log，等待同步提交。上传失败（含超时）标记失败，产物留 OPFS，卡片提供手动重试按钮。
-上传期间，**信息卡片与进行中的媒体卡片均作为瀑布流内的真实布局单元呈现**，不使用浮层：
+上传期间，**信息卡片与进行中的媒体卡片均作为瀑布流内的真实布局单元呈现**，不使用浮层（本节先行定义行为与布局规则，UI 落地在阶段三一并实现）：
 - **信息卡片**：固定宽高比 16:10 的虚拟媒体条目，钉在瀑布流条目序列最前（任何排序模式下都在最前），**与普通媒体同规则参与 Justified / Masonry 布局与缩放**，布局尺寸不随内容增减变化。卡片内容自适应渲染尺寸：上方为成功/失败/重复/剩余计数，下方为阶段一媒体列表（每行一个并发槽，显示文件名和进度条）；列表超出卡片高度时内部滚动
 - **阶段二媒体**：以真实条目形式**插入布局序列（紧随信息卡片、先于其他媒体）**，宽高使用真实元信息。条目上覆盖半透明蒙版，**蒙版本身即进度条——随上传进度自下而上消失**。上传成功后蒙版消失、条目转为普通媒体；因 SHA 撞车被静默丢弃的条目直接移除
 - 全部上传结束后，信息卡片从瀑布流移除，全部条目回归正常排序，布局一次性重算收尾
@@ -364,7 +365,7 @@ feedback[i]: { id, userId, contentMd, createdAt } // 仅 root 非空
 ```
 <Card class="relative overflow-hidden rounded-[var(--radius)] bg-card">
 ```
-- 图片/视频原生 `<img>` / `<video>`（`muted loop autoplay playsinline`），`loading="lazy"`，失败时渲染 `<PhotoFallback>`
+- 图片/视频原生 `<img>` / `<video>`；视频统一 `muted loop autoplay playsinline`，图片仅 `loading="lazy"`，失败时渲染 `<PhotoFallback>`
 - 卡片信息底栏：绝对定位 `absolute bottom-0 inset-x-0 p-2 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent`（渐变白名单第 1 项，见「组件基座」）
 - 左下角显示喜欢、不喜欢、请求删除的线条图标和数量，数量为零时隐藏该项，用户标记过则对应图标高亮（主题青色）
 - type=2 则右下角显示 volume-x 图标，默认静音，单击切换
@@ -398,7 +399,7 @@ feedback[i]: { id, userId, contentMd, createdAt } // 仅 root 非空
 - `Textarea`（`rows={5}`，`resize: vertical`，背景 `--muted`，placeholder「写下你的建议」）
 - 发送按钮：`Button variant="default" class="absolute right-6 bottom-8 rounded-full"`，**输入框有文本时才显示**，为空时 `opacity-0 pointer-events-none transition-opacity`
 - Markdown 预览：检测到 `#`、`**`、`- `、`[link](` 特征后，在 `Textarea` 上方叠加同高度预览面板
-- 发送提交为 `fb_create` op，进入 op-log 等待同步
+- 发送提交为 `fb_create` op，进入 op-log 等待同步。**非根用户的反馈生命周期**：`feedback` 仅随 /sync 下发给根用户，非根用户的快照中恒为空数组——因此非根用户发送后，乐观条目随下一次同步成功被校正移除，**不做「已提交成功」回执**，发送动作本身即视为成功（输入框清空即反馈）。根用户在管理面板可见全部反馈
 ## Markdown 编辑器
 - 编辑器工具栏：粗体、斜体、下划线、删除线、引用、代码块、列表、链接、图片、投票，`ToggleGroup` 实现，分屏实时预览
 - **文件上传（含图片）走同一条上传管线**：经 100MB 前置判断后由 `{origin}/upload` 代理上传 → 成功后将返回 URL 以 Markdown 图片/链接语法直接嵌入编辑器光标处
@@ -434,8 +435,7 @@ feedback[i]: { id, userId, contentMd, createdAt } // 仅 root 非空
 **全部写操作走统一 op-log 管线**：本地立即应用（乐观更新）→ 写入 op-log → 触发 /sync 提交。与主页面共享同一个同步触发器与 SharedWorker，跨标签页广播。同步失败时操作保留在 op-log 中等待下次同步；同步成功后本地状态以服务端全量下发为准校正。
 **乐观更新的临时 id**：ann_create 在本地使用负数临时 id（-1、-2 递减），/sync 响应后按提交顺序映射回服务端分配的真实 id；同批 op 中引用临时 id 的 ann_update / ann_delete，客户端在构造 op 序列时已知映射关系，直接写入序列中的对应位置。
 ### 顶栏
-- 左端：`Tabs` 胶囊切换「公告」「建议」两个页面
-- 中部：**同步图标**（`SyncButton.svelte`，与主页面同款）
+- 左端：`Tabs` 胶囊切换「公告」「建议」两个页面、同步图标（`SyncButton.svelte`，与主页面同款）
 - 右端：新增公告图标（`Plus`）、导入图标、导出图标；**SQL 导入导出以 SQL 格式下载或上传**：
   - **导出**：`Button variant="ghost" size="icon"`（`Download`）→ 服务端遍历全部表生成 SQL 文本（CREATE TABLE + INSERT 语句），作为附件下载；DDL 与 schema.sql 单一真源对齐；字符串转义按 SQLite 语义（仅单引号双写，不做反斜杠转义）；导出响应设置 `Cache-Control: no-store`
   - **导入**：`Button variant="ghost" size="icon"`（`Upload`）→ `Popover` + `Input type="file"` 选 `.sql` + 上传 `Progress`
@@ -469,7 +469,7 @@ feedback[i]: { id, userId, contentMd, createdAt } // 仅 root 非空
   - 同一时间仅一条展开
 - **删除**：点击删除图标直接执行——本地立即移除，同时写入 `fb_delete` op（target: id）触发 /sync；失败则恢复卡片并提示
 ## 构建与部署
-- **本地构建并提交产物**：在 `web/` 执行 `npm run build`，产物输出到 `dist/` 并提交进仓库，工作流不执行构建；工作流仅做 checkout → 确保同名 D1 → patch wrangler.toml → 应用 schema → `wrangler deploy` → 透传 Secrets
+- **本地构建并提交产物**：在 `web/` 执行 `npm run build`，产物输出到 `dist/` 并提交进仓库，工作流不执行构建；工作流仅做 checkout → 确保同名 D1 → patch wrangler.toml → 应用 schema → `wrangler deploy` → **注入 Secrets（`printf '%s' "$VALUE" | wrangler secret put TC_SECRET`；`TURNSTILE_SECRET_KEY` 仅 tag（生产）部署注入，测试部署使用配套 always-pass 测试 secret，见环境自检）**
 - 工作流（`.github/workflows/deploy.yml`）：push `main` 或 `v*` 标签自动触发，支持 `workflow_dispatch`。Worker 与 D1 同名，已有同名 D1 时直接使用、不覆盖不重建。标签 → `infoto`（生产），分支 → `infoto-dev`（测试），各自独立 D1
 - 所需仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`TC_SECRET`、`TURNSTILE_SECRET_KEY`；Variables：`TURNSTILE_SITE_KEY`
 ## 端点清单
@@ -480,10 +480,10 @@ feedback[i]: { id, userId, contentMd, createdAt } // 仅 root 非空
 | GET | `/l/:id36` | 无 | 流式代理图床媒体，供站外分享与外站传参，长缓存 |
 | GET | `/admin` | 仅根用户 | 管理面板入口：非 root 返回自定义 404 页，root 返回 SPA 入口 |
 | GET | `/admin/migrate` | 仅根用户 | SQL 导出 |
-| POST | `/admin/migrate` | 仅根用户 | SQL 导入（改名交换法，失败不损坏原数据并返回精确失败语句；成功后清空 op-log） |
-| GET | `/*` | — | ASSETS 静态资源服务：命中静态文件按原样返回；无扩展名的前端深链回退 `index.html`（SPA fallback）；其余未匹配返回自定义 404 页。`/admin` 在 fallback 之前已被服务端鉴权拦截 |
+| POST | `/admin/migrate` | 仅根用户 | SQL 导入（改名交换法，失败不损坏原数据并返回精确失败语句）。导入成功后的善后是**客户端动作**：清空本地 op-log 并强制一次全量 /sync（见管理面板一节），服务端不参与 |
+| GET | `/*` | — | ASSETS 静态资源服务：命中静态文件按原样返回；**其余任何未匹配路径（含带扩展名者）一律由 `not_found_handling = "single-page-application"` 回退 `index.html`（200，SPA shell）**，Worker 侧不做 404 判定——前端路由未命中由 `ErrorPage.svelte` 渲染 404。Worker 自定义 404 页仅出现于 `/admin*` 非 root 与 `/l/:id36` 非法 id。`/admin` 在 fallback 之前已被服务端鉴权拦截 |
 ## 路由顺序
-`/sync` → `/upload` → `/l/:id36` → `/admin` → `/admin/migrate`（GET 导出 / POST 导入）→ `/admin/*`（非 root 自定义 404）→ `/*`（ASSETS → SPA fallback → 自定义 404）
+`/sync` → `/upload` → `/l/:id36` → `/admin` → `/admin/migrate`（GET 导出 / POST 导入）→ `/admin/*`（非 root 自定义 404）→ `/*`（ASSETS → SPA fallback）
 ## 实现顺序
 分三阶段推进，每阶段在线上走通后才进入下一阶段。本契约是唯一实现标准。
 
@@ -505,6 +505,7 @@ npx shadcn-svelte@latest add button card tabs sheet sidebar dropdown-menu \
 npm i @lucide/svelte svelte-sonner fflate markdown-it dompurify hash-wasm mediabunny
 npm i -D @types/markdown-it @types/dompurify
 ```
+注：`label` / `separator` / `skeleton` 为基建预留（正文未直接使用）；`sidebar` 仅作 `PushSidebar` 的布局参考，不直接引用。组件是否存在以 `add` 后落地源码为准（与 Button 尺寸速查同规则）。
 ## 项目内自定义组件清单（`web/src/lib/components/custom/`）
 所有自定义组件**必须使用 shadcn 的 UI 基元组合**（不得绕开 shadcn 直接手写样式体系）：
 - `PushSidebar.svelte`：推挤式侧边栏布局容器（桌面 flex，移动端降级 `Sheet`），side 左/右，受控开合
@@ -513,7 +514,7 @@ npm i -D @types/markdown-it @types/dompurify
 - `SortTabs.svelte`：响应式排序胶囊（`Tabs` → `DropdownMenu`）
 - `SyncButton.svelte`：带旋转动画与 `Badge` 计数角标的同步按钮
 - `MultiSelectBar.svelte`：多选毛玻璃胶囊底栏
-- `PhotoFallback.svelte`：图片加载失败兜底（emoji + 文件名缩略 ≤8 字符，底色 `--card`，文字 `--muted-foreground`）
+- `PhotoFallback.svelte`：图片加载失败兜底（emoji + `id36` 标识或 `sha256` 前 8 字符，底色 `--card`，文字 `--muted-foreground`）
 - `MarkdownEditor.svelte`：工具栏（`ToggleGroup`）+ 分屏预览内核
 - `MarkdownView.svelte`：`prose prose-invert` 改造 + DOMPurify 消毒
 - `ReactionBar.svelte`：公告表情反应条（GitHub 风格计数按钮组 + 添加反应按钮）

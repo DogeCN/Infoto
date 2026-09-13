@@ -5,7 +5,6 @@
   "type": "module",
   "description": "Full-stack shared photo album deployed on Cloudflare Workers",
   "scripts": {
-    "start": "node --watch src/local/server.ts",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
     "test:layout": "node --test src/ui/lib/layout.test.ts",
     "test:pipeline": "node --test src/ui/upload/pipeline.test.ts",

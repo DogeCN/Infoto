@@ -26,16 +26,16 @@ export function createApp(env: AppEnv): Hono {
 			if (res.status !== 404) return res;
 			return notFoundPage();
 		}
-		if (env.serveStatic) {
-			const res = await env.serveStatic(new URL(c.req.url).pathname);
-			if (res) return res;
-		}
 		return notFoundPage();
 	});
 
 	app.notFound(() => notFoundPage());
 	app.onError((err, c) => {
 		console.error('[infoto]', err);
+		// JSON endpoints must fail as JSON (contract: clients parse bodies) —
+		// the custom 5xx page is for page-class routes only
+		const p = new URL(c.req.url).pathname;
+		if (p === '/sync' || p === '/upload') return c.json({ ok: false, error: 'internal' }, 500);
 		return serverErrorPage();
 	});
 
