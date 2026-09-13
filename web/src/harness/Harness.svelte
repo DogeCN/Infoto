@@ -57,8 +57,8 @@ async function runIdentity() {
 		try {
 			const { response, firstEntry } = await ensureIdentity([], {
 				postSyncFn: postSync,
-				// E2E: skip the real widget; the dev deployment's allow-branch
-				// (Turnstile secret unset) accepts the fake token
+				// E2E: skip the real widget; the test deployment runs the Cloudflare
+				// always-pass test secret, which accepts any token
 				...(e2e ? { getTokenFn: async () => 'e2e-token' } : {}),
 			});
 		selfId = response.selfId;

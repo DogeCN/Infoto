@@ -293,9 +293,10 @@ export function syncHandler(env: AppEnv) {
 
 		let user = await resolveUser(env.db, c.req.header('cookie'));
 		if (!user) {
+			// first entry: tokenless /sync only hands out the site key; the token
+			// rides exactly one follow-up /sync (spec "身份与 Cookie")
 			const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
-			if (env.turnstileSecret && !token) {
-				// The public site key rides along so the client can render the widget.
+			if (!token) {
 				return c.json(
 					{ ok: false, error: 'turnstile_required', turnstileSiteKey: env.turnstileSiteKey ?? null },
 					401,

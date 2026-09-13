@@ -84,11 +84,14 @@ async function serveStatic(pathname: string): Promise<Response | null> {
 	}
 }
 
+// Turnstile defaults to Cloudflare's official always-pass test keys so the
+// local first-entry flow works with zero configuration (contract: the test
+// deployment runs the same pair; production injects the real secrets).
 const appEnv: AppEnv = {
 	db,
 	tcSecret: dotenv.TC_SECRET,
-	turnstileSecret: dotenv.TURNSTILE_SECRET_KEY,
-	turnstileSiteKey: dotenv.TURNSTILE_SITE_KEY,
+	turnstileSecret: dotenv.TURNSTILE_SECRET_KEY ?? '1x0000000000000000000000000000000AA',
+	turnstileSiteKey: dotenv.TURNSTILE_SITE_KEY ?? '1x00000000000000000000AA',
 	serveStatic,
 };
 

@@ -25,6 +25,10 @@ const alias = {
 export default defineConfig({
 	plugins: [svelte()],
 	resolve: { alias },
+	// Pre-bundle at server start: discovering these deps mid-session (first page
+	// that loads the video worker) re-optimizes deps and full-reloads the page —
+	// fatal for e2e (execution contexts destroyed mid-test).
+	optimizeDeps: { include: ['mediabunny', 'hash-wasm'] },
 	// Build straight into the Worker ASSETS directory (dist/ is committed).
 	build: { outDir: '../dist', emptyOutDir: true },
 	server: {

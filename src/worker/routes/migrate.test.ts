@@ -8,10 +8,19 @@ import { MIGRATE_TABLES, parseSqlStatements, restoreOldTables, setRenameBatchOk 
 
 const schema = readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'schema.sql'), 'utf8');
 
+// Siteverify stub — identity creation always verifies (contract: no allow-branch).
+const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+const origFetch = globalThis.fetch;
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+	const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+	if (url === VERIFY_URL) return new Response(JSON.stringify({ success: true }), { status: 200 });
+	return origFetch(input as never, init);
+}) as typeof fetch;
+
 function make() {
 	const db = openLocalDb(':memory:');
 	db.exec(schema);
-	const app = createApp({ db });
+	const app = createApp({ db, turnstileSecret: 'test-secret' });
 	return { db, app };
 }
 
@@ -20,6 +29,7 @@ async function rootCookie(app: ReturnType<typeof createApp>): Promise<string> {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({
+			turnstileToken: 'ok',
 			ops: [
 				{
 					type: 'upload',

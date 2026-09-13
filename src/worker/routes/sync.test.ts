@@ -8,11 +8,32 @@ import type { SyncResponse } from '../../shared/types.ts';
 
 const schema = readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'schema.sql'), 'utf8');
 
+// Siteverify stub (contract: no allow-branch — identity creation always goes
+// through verification). Toggle via siteverifySuccess; everything else passes
+// through to the real fetch.
+const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+let siteverifySuccess = true;
+const origFetch = globalThis.fetch;
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+	const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+	if (url === VERIFY_URL) {
+		return new Response(JSON.stringify({ success: siteverifySuccess }), { status: 200 });
+	}
+	return origFetch(input as never, init);
+}) as typeof fetch;
+
+const TEST_SECRET = 'test-secret';
+
 function makeApp() {
 	const db = openLocalDb(':memory:');
 	db.exec(schema);
-	const app = createApp({ db });
+	const app = createApp({ db, turnstileSecret: TEST_SECRET });
 	return { db, app };
+}
+
+/** Identity-creating empty sync (fake token; the stub verifies it as ok). */
+function syncNew(app: ReturnType<typeof createApp>, cookie?: string): Promise<Response> {
+	return sync(app, { ops: [], turnstileToken: 'ok' }, cookie);
 }
 
 function cookieFrom(res: Response): string {
@@ -33,33 +54,38 @@ async function sync(app: ReturnType<typeof createApp>, body: unknown, cookie?: s
 	});
 }
 
-test('no cookie, no secret: warn-allow, selfId 0, camelCase, no users, empty feedback', async () => {
-	const warns: string[] = [];
-	const orig = console.warn;
-	console.warn = (...args: unknown[]) => {
-		warns.push(String(args[0]));
-	};
-	try {
-		const { app } = makeApp();
-		const res = await sync(app, { ops: [] });
-		assert.equal(res.status, 200);
-		const json = (await res.json()) as SyncResponse & { users?: unknown; reactions?: unknown };
-		assert.equal(json.ok, true);
-		assert.equal(json.selfId, 0);
-		assert.equal(typeof json.serverTime, 'number');
-		assert.deepEqual(json.photos, []);
-		assert.deepEqual(json.announcements, []);
-		assert.deepEqual(json.feedback, []);
-		assert.equal('users' in json, false);
-		assert.equal('reactions' in json, false);
-		assert.ok(warns.some((w) => w.includes('[turnstile] secret 未配置，放行')));
-		const set = res.headers.get('set-cookie') ?? '';
-		assert.ok(set.includes('HttpOnly'));
-		assert.ok(set.includes('SameSite=Lax'));
-		assert.ok(!set.includes('Secure'));
-	} finally {
-		console.warn = orig;
-	}
+test('no token → 401 turnstile_required; secret-less deployments fail closed (no allow branch)', async () => {
+	const { app } = makeApp();
+	const res = await sync(app, { ops: [] });
+	assert.equal(res.status, 401);
+	assert.deepEqual(await res.json(), { ok: false, error: 'turnstile_required', turnstileSiteKey: null });
+
+	// a token against a secret-less deployment must NOT slip through either
+	const db = openLocalDb(':memory:');
+	db.exec(schema);
+	const bare = createApp({ db });
+	const res2 = await sync(bare, { ops: [], turnstileToken: 'ok' });
+	assert.equal(res2.status, 401);
+	assert.deepEqual(await res2.json(), { ok: false, error: 'turnstile_failed' });
+});
+
+test('first identity: fake token ok, selfId 0, camelCase, no users, empty feedback', async () => {
+	const { app } = makeApp();
+	const res = await syncNew(app);
+	assert.equal(res.status, 200);
+	const json = (await res.json()) as SyncResponse & { users?: unknown; reactions?: unknown };
+	assert.equal(json.ok, true);
+	assert.equal(json.selfId, 0);
+	assert.equal(typeof json.serverTime, 'number');
+	assert.deepEqual(json.photos, []);
+	assert.deepEqual(json.announcements, []);
+	assert.deepEqual(json.feedback, []);
+	assert.equal('users' in json, false);
+	assert.equal('reactions' in json, false);
+	const set = res.headers.get('set-cookie') ?? '';
+	assert.ok(set.includes('HttpOnly'));
+	assert.ok(set.includes('SameSite=Lax'));
+	assert.ok(!set.includes('Secure'));
 });
 
 test('secret configured, no token → turnstile_required', async () => {
@@ -85,23 +111,20 @@ test('body uuid is ignored; still requires turnstile', async () => {
 });
 
 test('bad turnstile token → turnstile_failed', async () => {
-	const orig = globalThis.fetch;
-	globalThis.fetch = (async () => new Response(JSON.stringify({ success: false }), { status: 200 })) as typeof fetch;
+	siteverifySuccess = false;
 	try {
-		const db = openLocalDb(':memory:');
-		db.exec(schema);
-		const app = createApp({ db, turnstileSecret: 'sk' });
+		const { app } = makeApp();
 		const res = await sync(app, { turnstileToken: 'bad', ops: [] });
 		assert.equal(res.status, 401);
 		assert.deepEqual(await res.json(), { ok: false, error: 'turnstile_failed' });
 	} finally {
-		globalThis.fetch = orig;
+		siteverifySuccess = true;
 	}
 });
 
 test('upload, sha collision silent, missing fields silent, created_at/uploader ignored', async () => {
 	const { app } = makeApp();
-	const first = await sync(app, { ops: [] });
+	const first = await syncNew(app);
 	const cookie = cookieFrom(first);
 	const payload = {
 		sha256: 'abc',
@@ -135,7 +158,7 @@ test('upload, sha collision silent, missing fields silent, created_at/uploader i
 
 test('unupload is discarded; like from same batch still applies', async () => {
 	const { app } = makeApp();
-	const cookie = cookieFrom(await sync(app, { ops: [] }));
+	const cookie = cookieFrom(await syncNew(app));
 	const res = await sync(
 		app,
 		{
@@ -157,7 +180,7 @@ test('unupload is discarded; like from same batch still applies', async () => {
 
 test('non-root delete/ann_create silent; like in same batch works; feedback hidden', async () => {
 	const { app } = makeApp();
-	const rootCookie = cookieFrom(await sync(app, { ops: [] }));
+	const rootCookie = cookieFrom(await syncNew(app));
 	await sync(
 		app,
 		{
@@ -170,7 +193,7 @@ test('non-root delete/ann_create silent; like in same batch works; feedback hidd
 		},
 		rootCookie,
 	);
-	const guest = await sync(app, { ops: [] });
+	const guest = await syncNew(app);
 	assert.equal(((await guest.json()) as SyncResponse).selfId, 1);
 	const guestCookie = cookieFrom(guest);
 	const res = await sync(
@@ -191,7 +214,7 @@ test('non-root delete/ann_create silent; like in same batch works; feedback hidd
 	assert.deepEqual(json.photos[0]!.likes, [1]);
 	assert.deepEqual(json.announcements, []);
 	assert.deepEqual(json.feedback, []);
-	const asRoot = (await (await sync(app, { ops: [] }, rootCookie)).json()) as SyncResponse;
+	const asRoot = (await (await syncNew(app, rootCookie)).json()) as SyncResponse;
 	assert.equal(asRoot.feedback.length, 1);
 	assert.equal(asRoot.feedback[0]!.userId, 1);
 	assert.equal(asRoot.feedback[0]!.contentMd, 'hello');
@@ -199,7 +222,7 @@ test('non-root delete/ann_create silent; like in same batch works; feedback hidd
 
 test('announcements embed reactions; missing update silent; delete cascades; reorder strips NaN', async () => {
 	const { app } = makeApp();
-	const cookie = cookieFrom(await sync(app, { ops: [] }));
+	const cookie = cookieFrom(await syncNew(app));
 	await sync(
 		app,
 		{
@@ -243,9 +266,9 @@ test('announcements embed reactions; missing update silent; delete cascades; reo
 
 test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete cascades', async () => {
 	const { app } = makeApp();
-	const rootCookie = cookieFrom(await sync(app, { ops: [] }));
+	const rootCookie = cookieFrom(await syncNew(app));
 	await sync(app, { ops: [{ type: 'ann_create', payload: { title: 'poll', contentMd: ':::vote 好 | 不好' } }] }, rootCookie);
-	const guest = cookieFrom(await sync(app, { ops: [] }));
+	const guest = cookieFrom(await syncNew(app));
 
 	// any user may vote; target = announcement id, option = 0-based choice
 	let snap = (await (
@@ -284,7 +307,7 @@ test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete c
 	snap = (await (await sync(app, { ops: [{ type: 'ann_delete', target: 1 }] }, rootCookie)).json()) as SyncResponse;
 	assert.equal(snap.announcements.length, 0);
 	await sync(app, { ops: [{ type: 'ann_create', payload: { title: 'next', contentMd: 'n' } }] }, rootCookie);
-	const fresh = (await (await sync(app, { ops: [] }, rootCookie)).json()) as SyncResponse;
+	const fresh = (await (await syncNew(app, rootCookie)).json()) as SyncResponse;
 	assert.deepEqual(fresh.announcements[0]!.votes, []);
 	assert.deepEqual(fresh.announcements[0]!.reactions, []);
 });
@@ -293,7 +316,7 @@ test('upload without multipart → 400; no cookie → 401', async () => {
 	const { app } = makeApp();
 	const noAuth = await app.request('http://localhost/upload', { method: 'POST', body: 'x' });
 	assert.equal(noAuth.status, 401);
-	const cookie = cookieFrom(await sync(app, { ops: [] }));
+	const cookie = cookieFrom(await syncNew(app));
 	const badCt = await app.request('http://localhost/upload', {
 		method: 'POST',
 		headers: { Cookie: cookie, 'Content-Type': 'application/json' },
@@ -312,8 +335,8 @@ test('upload without multipart → 400; no cookie → 401', async () => {
 
 test('non-root admin and migrate are custom 404', async () => {
 	const { app } = makeApp();
-	cookieFrom(await sync(app, { ops: [] }));
-	const guest = cookieFrom(await sync(app, { ops: [] }));
+	cookieFrom(await syncNew(app));
+	const guest = cookieFrom(await syncNew(app));
 	for (const url of ['http://localhost/admin', 'http://localhost/admin/migrate']) {
 		const res = await app.request(url, { headers: { Cookie: guest } });
 		assert.equal(res.status, 404);
@@ -328,7 +351,7 @@ test('https Set-Cookie includes Secure', async () => {
 	const res = await app.request('https://example.com/sync', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ ops: [] }),
+		body: JSON.stringify({ ops: [], turnstileToken: 'ok' }),
 	});
 	const set = res.headers.get('set-cookie') ?? '';
 	assert.ok(set.includes('Secure'));

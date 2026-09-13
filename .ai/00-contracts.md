@@ -21,7 +21,7 @@
 - 按「实现顺序」逐阶段推进，阶段 N 线上走通前不得开始阶段 N+1
 - 建议用 Playwright 操控浏览器截图验证
 
-**环境自检**：生产（tag `v*` → `infoto`）与测试（分支 → `infoto-dev`）各绑独立 D1（`database_name` 不同），用 `wrangler d1 list` 核对；工作流不执行构建，`dist/` 提交进仓库，push 前在 `web/` 执行 `npm run build` 确认产物完整；生产 `TURNSTILE_SECRET_KEY` 由工作流注入。后端实现「Turnstile secret 未配置则放行」分支并 `console.warn`，供全新 Worker 在 Secrets 注入完成前跑通链路；生产 secret 由工作流注入，线上不会走到该分支。
+**环境自检**：生产（tag `v*` → `infoto`）与测试（分支 → `infoto-dev`）各绑独立 D1（`database_name` 不同），用 `wrangler d1 list` 核对；工作流不执行构建，`dist/` 提交进仓库，push 前在 `web/` 执行 `npm run build` 确认产物完整。**Turnstile 采用配套键方案**：token 缺失一律 401 `turnstile_required`（响应带 `turnstileSiteKey`）；secret 未配置时校验一律失败并 `console.warn`（401 `turnstile_failed`）。生产（tag 部署）由工作流注入真实 `TURNSTILE_SECRET_KEY` 与真实 site key（仓库 Variables）；测试部署由工作流写入 Cloudflare 官方 always-pass 测试 site key（`1x00000000000000000000AA`）并配置配套测试 secret（siteverify 恒真），真实浏览器与 e2e 均可自动化走通首次建号全流程；本地 `npm run start` 在未配置时默认使用同一对测试键。
 ## 共享基底
 以下纯函数资产位于后端包 `src/`，是实现前提，不得重写：
 - `src/ui/lib`：layout / marquee / id36 / format（DOM-free，含测试）
