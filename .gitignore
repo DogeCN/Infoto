@@ -5,3 +5,4 @@ node_modules/
 .trae/
 .svelte-check/
 web/test-results/
+test-results/
