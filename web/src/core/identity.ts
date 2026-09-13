@@ -11,7 +11,7 @@ const TURNSTILE_SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?
 const DEV_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined;
 
 export interface TurnstileFlowDeps {
-	/** Injected for unit tests and local wrangler dev. */
+	/** Injected for unit tests and E2E. */
 	postSyncFn?: typeof postSync;
 	/** Token getter; injectable to skip the real widget (E2E / test key). */
 	getTokenFn?: (siteKey: string, container: HTMLElement) => Promise<string>;

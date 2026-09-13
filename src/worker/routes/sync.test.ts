@@ -241,6 +241,54 @@ test('announcements embed reactions; missing update silent; delete cascades; reo
 	);
 });
 
+test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete cascades', async () => {
+	const { app } = makeApp();
+	const rootCookie = cookieFrom(await sync(app, { ops: [] }));
+	await sync(app, { ops: [{ type: 'ann_create', payload: { title: 'poll', contentMd: ':::vote 好 | 不好' } }] }, rootCookie);
+	const guest = cookieFrom(await sync(app, { ops: [] }));
+
+	// any user may vote; target = announcement id, option = 0-based choice
+	let snap = (await (
+		await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: 1 } }] }, guest)
+	).json()) as SyncResponse;
+	assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 1 }]);
+
+	// re-vote overwrites the single per-user row
+	snap = (await (await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: 0 } }] }, guest)).json()) as SyncResponse;
+	assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 0 }]);
+
+	// option null retracts; a second retract is a silent no-op
+	snap = (await (await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: null } }] }, guest)).json()) as SyncResponse;
+	assert.deepEqual(snap.announcements[0]!.votes, []);
+	snap = (await (await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: null } }] }, guest)).json()) as SyncResponse;
+	assert.deepEqual(snap.announcements[0]!.votes, []);
+
+	// nonexistent announcement → silently skipped (no orphan rows);
+	// malformed option (non-integer) → silently dropped
+	snap = (await (
+		await sync(
+			app,
+			{
+				ops: [
+					{ type: 'vote', target: 999, payload: { option: 0 } },
+					{ type: 'vote', target: 1, payload: { option: 1.5 } },
+					{ type: 'vote', target: 1, payload: { option: 1 } },
+				],
+			},
+			guest,
+		)
+	).json()) as SyncResponse;
+	assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 1 }]);
+
+	// ann_delete cascades the votes rows too
+	snap = (await (await sync(app, { ops: [{ type: 'ann_delete', target: 1 }] }, rootCookie)).json()) as SyncResponse;
+	assert.equal(snap.announcements.length, 0);
+	await sync(app, { ops: [{ type: 'ann_create', payload: { title: 'next', contentMd: 'n' } }] }, rootCookie);
+	const fresh = (await (await sync(app, { ops: [] }, rootCookie)).json()) as SyncResponse;
+	assert.deepEqual(fresh.announcements[0]!.votes, []);
+	assert.deepEqual(fresh.announcements[0]!.reactions, []);
+});
+
 test('upload without multipart → 400; no cookie → 401', async () => {
 	const { app } = makeApp();
 	const noAuth = await app.request('http://localhost/upload', { method: 'POST', body: 'x' });

@@ -45,6 +45,8 @@ export interface Announcement {
 	/** Millisecond epoch. */
 	updatedAt: number;
 	reactions: Array<{ userId: number; emoji: string }>;
+	/** One row per user per announcement; option is the 0-based choice index. */
+	votes: Array<{ userId: number; option: number }>;
 }
 
 export interface Feedback {
@@ -70,6 +72,8 @@ export type OpType =
 	| 'ann_update'
 	| 'ann_delete'
 	| 'ann_reorder'
+	// vote area (everyone, targets an announcement)
+	| 'vote'
 	// feedback area
 	| 'fb_create' // everyone
 	| 'fb_delete' // root only
@@ -103,11 +107,17 @@ export interface ReactPayload {
 	emoji?: string | null;
 }
 
+/** Payload for `vote`; option is the 0-based choice index, null retracts the vote. */
+export interface VotePayload {
+	option: number | null;
+}
+
 export type OpPayload =
 	| UploadPayload
 	| AnnouncementPayload
 	| FeedbackPayload
 	| ReactPayload
+	| VotePayload
 	| number[] // ann_reorder: full ordered id sequence
 	| Record<string, unknown>;
 

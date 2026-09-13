@@ -1,9 +1,8 @@
-// Line A: local backend (wrangler dev / node local stack) + Turnstile
-// allow-branch. Verifies identity and op semantics: 401 → siteKey →
-// identity creation → cookie → op → snapshot.
+// Identity & op semantics against the real test deployment (via the Vite
+// dev proxy): 401 → siteKey → identity creation → cookie → op → snapshot.
 import { expect, test } from '@playwright/test';
 
-test.describe('line A: identity & op semantics (local backend)', () => {
+test.describe('identity & op semantics (test deployment)', () => {
 	test('first entry: 401 turnstile_required → identity created → HttpOnly cookie lands', async ({ page, context }) => {
 		await page.goto('/');
 		// first /sync without a cookie must return 401 turnstile_required + siteKey (proxied through)
@@ -61,7 +60,7 @@ test.describe('line A: identity & op semantics (local backend)', () => {
 			});
 			return { status: first.status, body: await first.json() };
 		});
-		// B1 contract re-check: a forged uuid without a cookie still goes through Turnstile
+		// contract re-check: a forged uuid without a cookie still goes through Turnstile
 		expect(r.status).toBe(401);
 		expect(r.body.error).toBe('turnstile_required');
 	});

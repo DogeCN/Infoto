@@ -1,6 +1,6 @@
 // Upload pipeline — pure logic shared by the main thread, the SharedWorker
-// scheduler and the nested DedicatedWorker. No DOM/browser APIs here: every
-// function is runnable under Node for unit assertions.
+// scheduler and the page's top-level video DedicatedWorker. No DOM/browser
+// APIs here: every function is runnable under Node for unit assertions.
 
 import type { Op, UploadPayload } from '../../shared/types.ts';
 
@@ -14,21 +14,8 @@ export const VP9_QUANTIZER = 30;
 export const OPUS_BITRATE = 128_000;
 /** Cloudflare request-body ceiling — artifacts above this never hit /upload. */
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-/** Per-attempt upload timeout; timeouts count as failed attempts. */
+/** Per-attempt upload timeout; timeouts count as upload failure. */
 export const UPLOAD_TIMEOUT_MS = 45_000;
-/** Upload attempts before a task is marked failed (product stays in OPFS). */
-export const MAX_UPLOAD_ATTEMPTS = 3;
-/**
- * VideoEncoder.isConfigSupported can hang forever in some worker
- * environments; every probe races against this timeout and loses → treat
- * the codec/thread as unsupported (never stall the batch).
- */
-export const CODEC_PROBE_TIMEOUT_MS = 5_000;
-
-/** Exponential backoff between upload attempts (0-based attempt index). */
-export function retryDelayMs(attempt: number): number {
-	return 1000 * 2 ** Math.max(0, attempt);
-}
 
 // ---- file type routing (single exit point) ----------------------------------
 
@@ -84,12 +71,26 @@ export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: numbe
 	return cap;
 }
 
-/** Video/GIF pool: hardware encoders are scarce — one global locked slot. */
-export const VIDEO_POOL_SIZE = 1;
+/**
+ * Video/GIF token pool size (spec: "架构"), decision order:
+ * 1. deviceMemory present → ≥ 8 GB: 2 tokens; < 8 GB: 1 token
+ * 2. deviceMemory absent (Firefox/Safari) → hardwareConcurrency ≥ 8: 2; < 8: 1
+ * 3. both unavailable → 1 (conservative)
+ * Hard cap is 2: video encoding is memory- and CPU-dense, higher concurrency
+ * freezes low-end devices. deviceMemory is window-only, so the page reports
+ * both readings to the SharedWorker (see the poolHint protocol message).
+ */
+export function videoPoolSize(nav: { deviceMemory?: unknown; hardwareConcurrency?: unknown }): number {
+	const dm = nav.deviceMemory;
+	if (typeof dm === 'number' && Number.isFinite(dm) && dm > 0) return dm >= 8 ? 2 : 1;
+	const hc = nav.hardwareConcurrency;
+	if (typeof hc === 'number' && Number.isFinite(hc) && hc > 0) return hc >= 8 ? 2 : 1;
+	return 1;
+}
 
 // ---- stage-2 gates -------------------------------------------------------------
 
-/** Oversize check runs before any /upload attempt (never counted as a retry). */
+/** Oversize check runs before any /upload attempt; a hit fails the file directly. */
 export function isOversize(bytes: number): boolean {
 	return bytes > MAX_UPLOAD_BYTES;
 }
@@ -114,86 +115,6 @@ export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: num
 	const height = bytes[8] | (bytes[9] << 8);
 	if (width <= 0 || height <= 0) return null;
 	return { width, height };
-}
-
-// ---- nested-transcode watchdog state machine (revalidation fix #5) ----------------
-
-/**
- * Run watchdog: a nested transcode that broadcasts no progress for this long
- * is considered hung (mediabunny hangs forever on garbage containers — the
- * probe alone cannot detect that, because probe only exercises isConfigSupported).
- */
-export const TRANSCODE_RUN_IDLE_MS = 45_000;
-
-export type WatchdogPhase = 'probe' | 'run' | 'degraded' | 'settled';
-
-export interface WatchdogState {
-	phase: WatchdogPhase;
-	/** Timestamp of the last activity that justifies keeping the worker alive. */
-	lastActivity: number;
-}
-
-export type WatchdogEvent =
-	| { t: 'probe-ok'; at: number }
-	| { t: 'probe-fail' }
-	| { t: 'progress'; at: number }
-	| { t: 'result' }
-	| { t: 'tick'; at: number };
-
-export type WatchdogAction = 'none' | 'degrade' | 'settle';
-
-export interface WatchdogLimits {
-	probeMs: number;
-	runIdleMs: number;
-}
-
-export const watchdogInit = (at: number): WatchdogState => ({ phase: 'probe', lastActivity: at });
-
-/**
- * Pure decision step of the two watchdogs guarding one nested worker:
- *   probe phase — healthy `probe-result` in time → run phase; timeout/fail →
- *                 degrade (main-thread fallback)
- *   run phase   — every progress broadcast refreshes lastActivity; a tick
- *                 finding `runIdleMs` of silence → degrade; a result → settle
- *   degraded/settled are terminal — a late event from the OTHER watchdog is a
- *   silent no-op, so the two watchdogs never interfere after either decides.
- */
-export function watchdogNext(
-	state: WatchdogState,
-	event: WatchdogEvent,
-	limits: WatchdogLimits,
-): { state: WatchdogState; action: WatchdogAction } {
-	switch (state.phase) {
-		case 'probe':
-			switch (event.t) {
-				case 'probe-ok':
-					return { state: { phase: 'run', lastActivity: event.at }, action: 'none' };
-				case 'probe-fail':
-					return { state: { phase: 'degraded', lastActivity: state.lastActivity }, action: 'degrade' };
-				case 'tick':
-					return event.at - state.lastActivity >= limits.probeMs
-						? { state: { phase: 'degraded', lastActivity: state.lastActivity }, action: 'degrade' }
-						: { state, action: 'none' };
-				default:
-					return { state, action: 'none' };
-			}
-		case 'run':
-			switch (event.t) {
-				case 'progress':
-					return { state: { phase: 'run', lastActivity: event.at }, action: 'none' };
-				case 'result':
-					return { state: { phase: 'settled', lastActivity: state.lastActivity }, action: 'settle' };
-				case 'tick':
-					return event.at - state.lastActivity >= limits.runIdleMs
-						? { state: { phase: 'degraded', lastActivity: state.lastActivity }, action: 'degrade' }
-						: { state, action: 'none' };
-				default:
-					return { state, action: 'none' };
-			}
-		default:
-			// Terminal phase — nothing can revive or double-degrade it.
-			return { state, action: 'none' };
-	}
 }
 
 // ---- error summary translation (全量中文化, revalidation fix #4) -----------------

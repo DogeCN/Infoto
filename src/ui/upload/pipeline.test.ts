@@ -1,29 +1,22 @@
 // Node-side assertions for the pipeline's pure logic (spec: "验证 · 本地"):
-// type routing, concurrency pools, oversize gate, retry schedule, op shape.
+// type routing, concurrency pools, oversize gate, op shape.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	artifactExt,
 	buildUploadOp,
-	CODEC_PROBE_TIMEOUT_MS,
 	imagePoolSize,
 	isOversize,
-	MAX_UPLOAD_ATTEMPTS,
 	MAX_UPLOAD_BYTES,
 	OPUS_BITRATE,
 	parseGifLsdSize,
-	retryDelayMs,
 	routeByMime,
-	TRANSCODE_RUN_IDLE_MS,
 	translateTaskError,
 	uid,
 	UPLOAD_TIMEOUT_MS,
-	VIDEO_POOL_SIZE,
+	videoPoolSize,
 	VP9_QUANTIZER,
-	watchdogInit,
-	watchdogNext,
-	type WatchdogLimits,
 	WEBP_QUALITY,
 } from './pipeline.ts';
 
@@ -35,9 +28,6 @@ test('spec constants are exact', () => {
 	assert.equal(OPUS_BITRATE, 128_000);
 	assert.equal(MAX_UPLOAD_BYTES, 100 * 1024 * 1024);
 	assert.equal(UPLOAD_TIMEOUT_MS, 45_000);
-	assert.equal(MAX_UPLOAD_ATTEMPTS, 3);
-	assert.equal(VIDEO_POOL_SIZE, 1);
-	assert.equal(CODEC_PROBE_TIMEOUT_MS, 5_000);
 });
 
 // ---- MIME routing: single exit, accept-aligned ---------------------------------
@@ -109,21 +99,34 @@ test('imagePoolSize: downlink under 2 Mbps caps the pool at 2', () => {
 	assert.equal(imagePoolSize(4, 0.5), 2);
 });
 
+// ---- video token pool (spec "架构": deviceMemory → hardwareConcurrency → 1) ------
+
+test('videoPoolSize: deviceMemory wins when present (≥8 GB → 2, else 1)', () => {
+	assert.equal(videoPoolSize({ deviceMemory: 8, hardwareConcurrency: 2 }), 2);
+	assert.equal(videoPoolSize({ deviceMemory: 32, hardwareConcurrency: 2 }), 2); // Edge 32 GB machines
+	assert.equal(videoPoolSize({ deviceMemory: 4, hardwareConcurrency: 16 }), 1);
+	assert.equal(videoPoolSize({ deviceMemory: 0.5 }), 1);
+});
+
+test('videoPoolSize: hardwareConcurrency fallback (Firefox / Safari)', () => {
+	assert.equal(videoPoolSize({ hardwareConcurrency: 8 }), 2);
+	assert.equal(videoPoolSize({ hardwareConcurrency: 16 }), 2);
+	assert.equal(videoPoolSize({ hardwareConcurrency: 4 }), 1);
+});
+
+test('videoPoolSize: both unreadable → conservative 1; invalid values skipped', () => {
+	assert.equal(videoPoolSize({}), 1);
+	assert.equal(videoPoolSize({ deviceMemory: Number.NaN, hardwareConcurrency: 8 }), 2);
+	assert.equal(videoPoolSize({ deviceMemory: 0, hardwareConcurrency: 4 }), 1); // 0 is not a real reading
+	assert.equal(videoPoolSize({ deviceMemory: -1, hardwareConcurrency: -4 }), 1);
+});
+
 // ---- oversize gate ---------------------------------------------------------------------
 
 test('isOversize: strictly greater than 100 MB', () => {
 	assert.equal(isOversize(MAX_UPLOAD_BYTES), false);
 	assert.equal(isOversize(MAX_UPLOAD_BYTES + 1), true);
 	assert.equal(isOversize(0), false);
-});
-
-// ---- retry schedule ---------------------------------------------------------------------
-
-test('retryDelayMs: exponential backoff 1s / 2s / 4s…', () => {
-	assert.equal(retryDelayMs(0), 1000);
-	assert.equal(retryDelayMs(1), 2000);
-	assert.equal(retryDelayMs(2), 4000);
-	assert.equal(retryDelayMs(-1), 1000); // never below the floor
 });
 
 // ---- GIF header geometry fallback (E2E fix #P1) ----------------------------------
@@ -145,76 +148,6 @@ test('parseGifLsdSize: rejects non-GIF data, short buffers, degenerate sizes', (
 	assert.equal(parseGifLsdSize(gifHeader(0, 100)), null);
 	assert.equal(parseGifLsdSize(gifHeader(100, 0)), null);
 	assert.equal(parseGifLsdSize(new Uint8Array([0x47, 0x49, 0x46, 0x39, 0x37, 0x61, 1, 0, 1, 0])), null); // bad version
-});
-
-// ---- nested-transcode watchdog state machine (revalidation fix #5) ---------
-
-const LIMITS: WatchdogLimits = { probeMs: 4_000, runIdleMs: 45_000 };
-
-test('watchdog: probe-ok enters the run leg and resets the activity clock', () => {
-	const s0 = watchdogInit(1000);
-	assert.equal(s0.phase, 'probe');
-	const r = watchdogNext(s0, { t: 'probe-ok', at: 1200 }, LIMITS);
-	assert.deepEqual(r.state, { phase: 'run', lastActivity: 1200 });
-	assert.equal(r.action, 'none');
-});
-
-test('watchdog: probe timeout / probe-fail → degrade', () => {
-	const s0 = watchdogInit(1000);
-	const timeout = watchdogNext(s0, { t: 'tick', at: 1000 + LIMITS.probeMs }, LIMITS);
-	assert.equal(timeout.action, 'degrade');
-	assert.equal(timeout.state.phase, 'degraded');
-	// a tick before the deadline is a silent no-op
-	assert.equal(watchdogNext(s0, { t: 'tick', at: 1000 + LIMITS.probeMs - 1 }, LIMITS).action, 'none');
-	assert.equal(watchdogNext(s0, { t: 'probe-fail' }, LIMITS).action, 'degrade');
-});
-
-test('watchdog: run progress refreshes the silence window; idle beyond it degrades', () => {
-	let s = watchdogNext(watchdogInit(0), { t: 'probe-ok', at: 1000 }, LIMITS).state;
-	// progress at t=20000 restarts the window…
-	s = watchdogNext(s, { t: 'progress', at: 20_000 }, LIMITS).state;
-	assert.equal(s.lastActivity, 20_000);
-	// …so a tick just short of runIdleMs after the LAST progress stays alive
-	assert.equal(watchdogNext(s, { t: 'tick', at: 20_000 + TRANSCODE_RUN_IDLE_MS - 1 }, LIMITS).action, 'none');
-	// …but silence for the full window degrades
-	const hung = watchdogNext(s, { t: 'tick', at: 20_000 + TRANSCODE_RUN_IDLE_MS }, LIMITS);
-	assert.equal(hung.action, 'degrade');
-	assert.equal(hung.state.phase, 'degraded');
-});
-
-test('watchdog: result settles the run leg', () => {
-	const s = watchdogNext(watchdogInit(0), { t: 'probe-ok', at: 10 }, LIMITS).state;
-	const r = watchdogNext(s, { t: 'result' }, LIMITS);
-	assert.equal(r.action, 'settle');
-	assert.equal(r.state.phase, 'settled');
-});
-
-test('watchdog: terminal phases ignore late events — the two watchdogs never interfere', () => {
-	const degraded = watchdogNext(watchdogInit(0), { t: 'probe-fail' }, LIMITS).state;
-	// the run watchdog's late tick / late progress / stray result: all no-ops
-	assert.equal(watchdogNext(degraded, { t: 'tick', at: 999_999 }, LIMITS).action, 'none');
-	assert.equal(watchdogNext(degraded, { t: 'progress', at: 5 }, LIMITS).action, 'none');
-	assert.equal(watchdogNext(degraded, { t: 'result' }, LIMITS).action, 'none');
-	assert.equal(watchdogNext(degraded, { t: 'probe-ok', at: 5 }, LIMITS).action, 'none');
-	// settled likewise absorbs a late probe tick
-	const settled = watchdogNext(watchdogNext(watchdogInit(0), { t: 'probe-ok', at: 1 }, LIMITS).state, { t: 'result' }, LIMITS).state;
-	assert.equal(watchdogNext(settled, { t: 'tick', at: 10_000 }, LIMITS).action, 'none');
-	assert.equal(watchdogNext(settled, { t: 'probe-fail' }, LIMITS).action, 'none');
-});
-
-test('watchdog: a late probe tick after the run leg started is a no-op', () => {
-	// probe-ok at 1200 refreshes the clock, so the 4 s probe deadline computed
-	// from run activity does not fire
-	const s = watchdogNext(watchdogInit(0), { t: 'probe-ok', at: 1_200 }, LIMITS).state;
-	const r = watchdogNext(s, { t: 'tick', at: 4_500 }, LIMITS);
-	assert.equal(r.action, 'none');
-	assert.equal(r.state.phase, 'run');
-});
-
-test('watchdog: ignored events never change the phase', () => {
-	const s0 = watchdogInit(0);
-	assert.equal(watchdogNext(s0, { t: 'result' }, LIMITS).state.phase, 'probe');
-	assert.equal(watchdogNext(s0, { t: 'progress', at: 1 }, LIMITS).state.phase, 'probe');
 });
 
 // ---- error summary translation (revalidation fix #4) ---------------------------

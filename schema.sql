@@ -1,4 +1,4 @@
--- Infoto data model (see docs/Construct.md "Data Model")
+-- Infoto data model (see .ai/00-contracts.md "数据模型")
 -- users.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT): first insert gets id 0.
 -- IF NOT EXISTS keeps re-application idempotent for the deploy workflow.
 CREATE TABLE IF NOT EXISTS users (
@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS reactions (
   ann_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
   emoji TEXT NOT NULL,
+  PRIMARY KEY (ann_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS votes (
+  ann_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  option INTEGER NOT NULL,
   PRIMARY KEY (ann_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS feedback (

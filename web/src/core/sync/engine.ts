@@ -7,6 +7,36 @@ import type { Op, SyncResponse } from '$shared/types';
 import { postSync } from '../api/syncClient';
 import { OPLOG_SYNC_THRESHOLD, appendOp, clearOps, countOps, openOplogDb, readOps } from '../oplog/store';
 
+/** Browser hard limit for a keepalive request body (spec: "/sync 协议"). */
+export const KEEPALIVE_BODY_LIMIT = 65_536;
+
+/**
+ * Longest op prefix whose serialized SyncRequest fits the keepalive byte
+ * budget. Measurement is exact: TextEncoder over the already-serialized JSON
+ * (the `{"ops":[…]}` wrapper and commas are accounted for). Returns null when
+ * even the first op alone busts the budget (only possible via a giant
+ * ann_create body — abnormal; caller warns and keeps the op for next time).
+ */
+export function keepalivePrefix(ops: Op[], budget: number = KEEPALIVE_BODY_LIMIT): { ops: Op[]; body: string } | null {
+	const enc = new TextEncoder();
+	const wrapper = enc.encode('{"ops":[]}').length;
+	let bytes = wrapper;
+	const picked: Op[] = [];
+	const parts: string[] = [];
+	for (const op of ops) {
+		const s = JSON.stringify(op);
+		const n = enc.encode(s).length + (picked.length > 0 ? 1 : 0); // comma
+		if (bytes + n > budget) {
+			if (picked.length === 0) return null; // first op alone is oversize
+			break;
+		}
+		bytes += n;
+		picked.push(op);
+		parts.push(s);
+	}
+	return { ops: picked, body: `{"ops":[${parts.join(',')}]}` };
+}
+
 export interface EngineIo {
 	db?: IDBDatabase;
 	fetchFn?: typeof fetch;
@@ -68,20 +98,30 @@ export class SyncEngine {
 		return `${window.location.origin}/sync`;
 	}
 
-	/** pagehide dump: keepalive fetch, fire-and-forget. */
+	/** pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule (spec). */
 	private flushOnPagehide(): void {
 		if (!this.db || this.pending === 0) return;
 		const db = this.db;
+		const fetchFn = this.io.fetchFn ?? fetch;
 		void readOps(db).then((entries) => {
 			if (entries.length === 0) return;
-			const body = JSON.stringify({ ops: entries.map((e) => e.op) });
-			const keys = entries.map((e) => e.key);
+			const fit = keepalivePrefix(entries.map((e) => e.op));
+			if (!fit) {
+				// a single op alone exceeds 64KB (only a giant ann_create body can
+				// do this) — abandon this flush; the op stays queued, not lost
+				console.warn('[infoto] first op exceeds the 64KB keepalive budget; kept for the next sync');
+				return;
+			}
+			// only the ops actually sent may be removed after an ok response;
+			// the rest wait for the next sync (all ops are idempotent, the
+			// server applies them in order — a partial commit is safe)
+			const keys = entries.slice(0, fit.ops.length).map((e) => e.key);
 			// keepalive results are unknowable; on failure ops stay in the log
-			// and are resent on the next sync (ops are idempotent)
-			void this.io.fetchFn?.(this.pagehideUrl(), {
+			// and are resent on the next sync
+			void fetchFn(this.pagehideUrl(), {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body,
+				body: fit.body,
 				credentials: 'include',
 				keepalive: true,
 			})
@@ -129,15 +169,17 @@ export class SyncEngine {
 	}
 
 	/**
-	 * Register all triggers. pagehide is registered separately (spec);
-	 * never merged with visibilitychange→hidden.
+	 * Register all triggers (spec "同步触发点" / "主动降级"): pagehide carries the
+	 * keepalive last-resort dump and is registered separately; a hidden page has
+	 * not unloaded yet and can await, so visibilitychange→hidden runs a normal
+	 * awaited /sync instead. Never merge the two handlers.
 	 */
 	install(windowObj: Window = window): void {
 		windowObj.addEventListener('pagehide', () => {
 			this.flushOnPagehide();
 		});
 		document.addEventListener('visibilitychange', () => {
-			if (document.visibilityState === 'hidden') this.flushOnPagehide();
+			if (document.visibilityState === 'hidden') void this.sync();
 		});
 	}
 }

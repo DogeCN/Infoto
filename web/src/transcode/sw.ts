@@ -6,16 +6,14 @@
 // transcoding happens in the page's top-level DedicatedWorker.)
 
 import type { MediaType } from '$shared/types';
-import { artifactExt, imagePoolSize, isOversize, retryDelayMs, routeByMime, MAX_UPLOAD_ATTEMPTS } from '$base/upload/pipeline';
+import { artifactExt, imagePoolSize, isOversize, routeByMime, videoPoolSize } from '$base/upload/pipeline';
 import { postUpload } from '../core/api/uploadClient';
 import { lookupSha } from '../core/oplog/cache';
-import { appendOp, openOplogDb } from '../core/oplog/store';
-import { hashBlob } from './hash';
+import { openOplogDb } from '../core/oplog/store';
 import { readArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
 import {
 	LEASE_TIMEOUT_MS,
-	VIDEO_LEASE_LIMIT,
 	isPageToSw,
 	type JobMeta,
 	type JobPhase,
@@ -42,7 +40,6 @@ interface JobRec {
 	file: Blob;
 	engine: 'image' | 'video' | 'gif';
 	phase: JobPhase;
-	attempt: number;
 	/** Stage-1 artifact metadata (needed by stage 2). */
 	artifact?: { ext: 'webp' | 'webm'; size: number };
 	sha256?: string;
@@ -72,6 +69,14 @@ interface Lease {
 	lastBeat: number;
 }
 const leases = new Map<string, Lease>();
+
+/**
+ * Global video concurrency (1–2, contract "架构"). Computed from the SW's own
+ * navigator at startup; refined by each page's poolHint (deviceMemory is
+ * window-only). Pages on one machine report identical readings, so a
+ * last-write-wins update is exact in practice.
+ */
+let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
 
 function uid(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -110,7 +115,7 @@ function pumpImage(): void {
 }
 
 function pumpVideoLeases(): void {
-	while (leases.size < VIDEO_LEASE_LIMIT && videoQueue.length > 0) {
+	while (leases.size < videoLimit && videoQueue.length > 0) {
 		const jobId = videoQueue.shift()!;
 		const rec = jobs.get(jobId);
 		if (!rec || rec.cancelled || rec.phase !== 'lease-wait') continue;
@@ -191,7 +196,8 @@ async function afterStage1(rec: JobRec): Promise<void> {
 	await runUpload(rec);
 }
 
-/** Stage 2: 100MB pre-check + /upload + 3 exponential-backoff attempts (spec). */
+/** Stage 2: 100MB pre-check + one /upload attempt (contract: no auto-retry — a
+ *  failure marks the file, the artifact stays in OPFS, retryJob is manual-only). */
 async function runUpload(rec: JobRec): Promise<void> {
 	const ext = artifactExt(rec.meta!.type === 0 ? 'image' : 'webm');
 	const blob = await readArtifact(rec.jobId, ext);
@@ -201,37 +207,23 @@ async function runUpload(rec: JobRec): Promise<void> {
 		notify(rec);
 		return;
 	}
-	// >100MB fails immediately, not counted as a retry, artifact stays in OPFS (spec size limit)
+	// >100MB fails immediately, artifact stays in OPFS (spec size limit)
 	if (isOversize(blob.size)) {
 		rec.phase = 'failed';
 		rec.error = 'oversize';
 		notify(rec);
 		return;
 	}
-	for (let attempt = 0; attempt < MAX_UPLOAD_ATTEMPTS; attempt++) {
-		const r = await postUpload(blob, { origin: self.location.origin });
-		if (r.ok) {
-			rec.url = r.url;
-			rec.phase = 'done';
-			notify(rec);
-			return;
-		}
-		rec.error = r.error;
-		if (attempt < MAX_UPLOAD_ATTEMPTS - 1) {
-			const delay = retryDelayMs(attempt);
-			notify(rec, { fraction: 0 });
-			await sleep(delay);
-			if (rec.cancelled) return;
-			notify(rec);
-		}
+	const r = await postUpload(blob, { origin: self.location.origin });
+	if (r.ok) {
+		rec.url = r.url;
+		rec.phase = 'done';
+		notify(rec);
+		return;
 	}
-	// exhausted: mark failed, keep the artifact in OPFS, expose the manual retry handle (retryJob)
 	rec.phase = 'failed';
+	rec.error = r.error;
 	notify(rec);
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, ms));
 }
 
 // ---- video: page callbacks ---------------------------------------------------------
@@ -346,7 +338,6 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
 				file: m.file,
 				engine: route.engine,
 				phase: route.engine === 'image' ? 'queued' : 'lease-wait',
-				attempt: 0,
 				opWritten: false,
 				cancelled: false,
 			};
@@ -414,6 +405,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
 		case 'opWritten': {
 			const rec = jobs.get(m.jobId);
 			if (rec) rec.opWritten = true;
+			return;
+		}
+		case 'poolHint': {
+			videoLimit = videoPoolSize(m);
+			pumpVideoLeases();
 			return;
 		}
 	}

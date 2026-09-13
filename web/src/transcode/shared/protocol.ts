@@ -91,6 +91,17 @@ export interface OpWrittenRequest {
 	jobId: string;
 }
 
+/**
+ * Video token pool hint: the page reports its navigator readings on connect
+ * (deviceMemory is window-only — the SW cannot see it). The SW computes the
+ * pool size with the base videoPoolSize() pure function.
+ */
+export interface PoolHintRequest {
+	t: 'poolHint';
+	deviceMemory?: number;
+	hardwareConcurrency?: number;
+}
+
 export type PageToSwMessage =
 	| AddJobRequest
 	| CancelJobRequest
@@ -100,7 +111,8 @@ export type PageToSwMessage =
 	| VideoProgressRequest
 	| VideoResultRequest
 	| VideoFailedRequest
-	| OpWrittenRequest;
+	| OpWrittenRequest
+	| PoolHintRequest;
 
 // ---- response / progress / lease: SharedWorker → page --------------------------
 
@@ -151,8 +163,6 @@ export type SwToPageMessage = JobStatusMessage | LeaseGrantedMessage | LeaseRevo
 export const LEASE_HEARTBEAT_MS = 5_000;
 /** Forced revocation threshold. */
 export const LEASE_TIMEOUT_MS = 15_000;
-/** Global video concurrency cap. */
-export const VIDEO_LEASE_LIMIT = 1;
 
 // ---- runtime guards (protocol unit tests) ---------------------------------------
 
@@ -166,6 +176,7 @@ const PAGE_TYPES = new Set([
 	'videoResult',
 	'videoFailed',
 	'opWritten',
+	'poolHint',
 ]);
 const SW_TYPES = new Set(['jobStatus', 'leaseGranted', 'leaseRevoked', 'jobRemoved']);
 

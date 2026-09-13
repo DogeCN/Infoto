@@ -41,6 +41,11 @@ interface ReactRow {
 	user_id: number;
 	emoji: string;
 }
+interface VoteRow {
+	ann_id: number;
+	user_id: number;
+	option: number;
+}
 
 const idList = (json: string): number[] => {
 	try {
@@ -145,6 +150,7 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
 				if (!isRoot || op.target == null) return;
 				await db.prepare('DELETE FROM announcements WHERE id = ?').bind(op.target).run();
 				await db.prepare('DELETE FROM reactions WHERE ann_id = ?').bind(op.target).run();
+				await db.prepare('DELETE FROM votes WHERE ann_id = ?').bind(op.target).run();
 				return;
 			}
 			case 'ann_reorder': {
@@ -185,6 +191,25 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
 				}
 				return;
 			}
+			case 'vote': {
+				if (op.target == null) return;
+				// the announcement must exist (no orphan rows); one row per user,
+				// overwritten on every re-vote, deleted when option is null
+				const ann = await db.prepare('SELECT id FROM announcements WHERE id = ?').bind(op.target).first();
+				if (!ann) return;
+				const raw = rec(op.payload).option;
+				const option = raw === null ? null : num(raw);
+				if (raw !== null && (option === null || option < 0 || !Number.isInteger(option))) return;
+				if (option === null) {
+					await db.prepare('DELETE FROM votes WHERE ann_id = ? AND user_id = ?').bind(op.target, user.id).run();
+				} else {
+					await db
+						.prepare('INSERT OR REPLACE INTO votes (ann_id, user_id, option) VALUES (?, ?, ?)')
+						.bind(op.target, user.id, option)
+						.run();
+				}
+				return;
+			}
 			default:
 				return;
 		}
@@ -213,16 +238,23 @@ async function snapshot(db: Db, selfId: number): Promise<{
 	announcements: Announcement[];
 	feedback: Feedback[];
 }> {
-	const [photoRows, annRows, reactRows] = await Promise.all([
+	const [photoRows, annRows, reactRows, voteRows] = await Promise.all([
 		db.prepare('SELECT * FROM photos ORDER BY id ASC').all<PhotoRow>(),
 		db.prepare('SELECT * FROM announcements ORDER BY sort ASC, id ASC').all<AnnRow>(),
 		db.prepare('SELECT ann_id, user_id, emoji FROM reactions').all<ReactRow>(),
+		db.prepare('SELECT ann_id, user_id, option FROM votes').all<VoteRow>(),
 	]);
 	const byAnn = new Map<number, Array<{ userId: number; emoji: string }>>();
 	for (const r of reactRows.results) {
 		const list = byAnn.get(r.ann_id) ?? [];
 		list.push({ userId: r.user_id, emoji: r.emoji });
 		byAnn.set(r.ann_id, list);
+	}
+	const votesByAnn = new Map<number, Array<{ userId: number; option: number }>>();
+	for (const r of voteRows.results) {
+		const list = votesByAnn.get(r.ann_id) ?? [];
+		list.push({ userId: r.user_id, option: r.option });
+		votesByAnn.set(r.ann_id, list);
 	}
 	const photos = photoRows.results.map(rowToPhoto);
 	const announcements: Announcement[] = annRows.results.map((r) => ({
@@ -232,6 +264,7 @@ async function snapshot(db: Db, selfId: number): Promise<{
 		sort: r.sort,
 		updatedAt: r.updated_at,
 		reactions: byAnn.get(r.id) ?? [],
+		votes: votesByAnn.get(r.id) ?? [],
 	}));
 	let feedback: Feedback[] = [];
 	if (selfId === ROOT_ID) {

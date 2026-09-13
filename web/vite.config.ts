@@ -4,10 +4,9 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 // Single-origin SPA: every backend call goes to {origin} (the Worker sends no
-// CORS headers). Dev proxy forwards API paths to the backend stack;
-// INFOTO_BACKEND lets E2E point the proxy at a local wrangler/node stack
-// (default: the real test domain).
-const backend = process.env.INFOTO_BACKEND ?? 'https://dev.infoto.cc.cd';
+// CORS headers). Dev proxy forwards API paths to the test deployment;
+// INFOTO_API_ORIGIN overrides the proxy target (default: the test domain).
+const backend = process.env.INFOTO_API_ORIGIN ?? 'https://dev.infoto.cc.cd';
 
 const proxy = (extra: Record<string, unknown> = {}) => ({
 	target: backend,

@@ -52,14 +52,15 @@ onMount(() => {
 });
 
 async function runIdentity() {
-	log('identity flow: probing with an empty /sync for 401…');
-	const e2e = new URLSearchParams(window.location.search).has('e2e');
-	try {
-		const { response, firstEntry } = await ensureIdentity([], {
-			postSyncFn: postSync,
-			// E2E: local wrangler dev allow-branch + fake token, no real widget
-			...(e2e ? { getTokenFn: async () => 'e2e-token' } : {}),
-		});
+		log('identity flow: probing with an empty /sync for 401…');
+		const e2e = new URLSearchParams(window.location.search).has('e2e');
+		try {
+			const { response, firstEntry } = await ensureIdentity([], {
+				postSyncFn: postSync,
+				// E2E: skip the real widget; the dev deployment's allow-branch
+				// (Turnstile secret unset) accepts the fake token
+				...(e2e ? { getTokenFn: async () => 'e2e-token' } : {}),
+			});
 		selfId = response.selfId;
 		photoCount = response.photos.length;
 		log(`identity flow done firstEntry=${firstEntry} selfId=${response.selfId}`);
@@ -90,7 +91,7 @@ function phaseText(p: string): string {
 </script>
 
 <div style="font-family: monospace; padding: 16px; background: #0a0e1a; color: #e2e8f0; min-height: 100vh">
-	<h1 style="font-size: 18px; margin: 0 0 12px">Infoto B2 Harness (dev only)</h1>
+	<h1 style="font-size: 18px; margin: 0 0 12px">Infoto dev harness (not shipped)</h1>
 
 	<section style="margin-bottom: 12px">
 		<button onclick={runIdentity}>identity (Turnstile → /sync)</button>

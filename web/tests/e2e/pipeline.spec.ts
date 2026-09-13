@@ -1,7 +1,9 @@
-// Line B: real test domain dev.infoto.cc.cd (via the Vite proxy) — the
-// contract's highest-risk area. Covers image/gif/video transcode + upload,
-// the 100MB pre-check, retries, cross-tab progress, lease revocation, pagehide.
+// Transcode + upload pipeline against the real test domain (via the Vite
+// proxy) — the contract's highest-risk area. Covers image/gif/video transcode
+// + upload, the 100MB pre-check, the manual retry handle, cross-tab progress,
+// lease revocation, pagehide.
 import { expect, test } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
 
 /** Harness task row element. */
 const taskRow = (page: import('@playwright/test').Page, name: string) =>
@@ -27,7 +29,7 @@ async function makeImage(page: import('@playwright/test').Page, opts: { w: numbe
 	return { name: opts.name, mimeType: opts.type, buffer: buf };
 }
 
-test.describe('line B: transcode + upload pipeline (real test domain)', () => {
+test.describe('transcode + upload pipeline (real test domain)', () => {
 	test('environment probe: WebP support / VP9-VP8 encode support (drives the codec table)', async ({ page }) => {
 		await page.goto('/');
 		const probe = await page.evaluate(async () => {
@@ -105,19 +107,21 @@ test.describe('line B: transcode + upload pipeline (real test domain)', () => {
 
 	test('100MB pre-check: fails immediately, no retry, artifact stays in OPFS', async ({ page }) => {
 		await page.goto('/?e2e=1');
-		// exercise the pipeline's pure function directly (base pipeline module)
-		const r = await page.evaluate(async () => {
-			// @ts-expect-error dynamic import resolved by Vite; tsc cannot check statically
-			const mod = await import('/src/shared/upload/pipeline.ts');
+		// exercise the pipeline's pure function directly (base pipeline module
+		// served from the repo src/ tree through the $base alias target)
+		const pipelineFs = fileURLToPath(new URL('../../../src/ui/upload/pipeline.ts', import.meta.url)).replace(/\\/g, '/');
+		const r = await page.evaluate(async (url) => {
+			const mod = await import(/* @vite-ignore */ `/@fs/${url}`);
 			return { over: mod.isOversize(mod.MAX_UPLOAD_BYTES + 1), at: mod.isOversize(mod.MAX_UPLOAD_BYTES) };
-		});
+		}, pipelineFs);
 		expect(r.over).toBe(true);
 		expect(r.at).toBe(false);
 	});
 
 	test('retry handle: failed tasks expose a retry button', async ({ page }) => {
 		await page.goto('/?e2e=1');
-		// take /upload offline: intercept with 500, mark failed after 3 backoffs
+		// take /upload offline: intercept with 500 — one failed attempt, then the
+		// job is marked failed (contract: no auto-retry, manual retry only)
 		await page.route('**/upload', (r) => r.fulfill({ status: 500, body: JSON.stringify({ error: 'image_host_unreachable' }) }));
 		const file = await makeImage(page, { w: 60, h: 40, type: 'image/png', name: 'retry.png' });
 		const chooser = page.waitForEvent('filechooser').then((fc) => fc.setFiles(file));

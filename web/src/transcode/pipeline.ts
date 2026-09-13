@@ -92,6 +92,10 @@ export class UploadPipeline {
 			this.onSwMessage(m);
 		};
 		this.sw.port.start();
+		// deviceMemory is window-only — report both readings so the SW can size
+		// the global video token pool with the base videoPoolSize() pure function
+		const nav = navigator as Navigator & { deviceMemory?: number };
+		this.sw.port.postMessage({ t: 'poolHint', deviceMemory: nav.deviceMemory, hardwareConcurrency: nav.hardwareConcurrency });
 		// cross-tab: other tabs' progress enters the local view via BroadcastChannel
 		this.bc = 'BroadcastChannel' in window ? new BroadcastChannel(CH) : null;
 		this.bc?.addEventListener('message', (e: MessageEvent) => {
