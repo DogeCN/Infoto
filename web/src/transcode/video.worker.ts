@@ -16,6 +16,7 @@ import {
 	Conversion,
 	Input,
 	Output,
+	Quality,
 	VideoSample,
 	VideoSampleSource,
 	WebMOutputFormat,
@@ -47,16 +48,17 @@ function progress(jobId: string, fraction: number): void {
 	self.postMessage({ t: 'videoProgress', jobId, fraction });
 }
 
-/** VP9 (quantizer 30 constant quality) → VP8 (quality 'high') probe table. */
-async function pickVideoCodec(width: number, height: number): Promise<{ codec: 'vp9' | 'vp8'; quality: { quantizer: number } | { quality: 'high' } }> {
+/** VP9 (quantizer 30 constant quality) → VP8 (quality 'high') probe table.
+ * quality must be a mediabunny `Quality` instance — plain objects throw. */
+async function pickVideoCodec(width: number, height: number): Promise<{ codec: 'vp9' | 'vp8'; quality: Quality }> {
 	const vp9 = await getFirstEncodableVideoCodec(['vp9'], {
 		width,
 		height,
-		quality: { quantizer: VP9_QUANTIZER },
+		quality: new Quality({ quantizer: VP9_QUANTIZER }),
 	});
-	if (vp9 === 'vp9') return { codec: 'vp9', quality: { quantizer: VP9_QUANTIZER } };
+	if (vp9 === 'vp9') return { codec: 'vp9', quality: new Quality({ quantizer: VP9_QUANTIZER }) };
 	const vp8 = await getFirstEncodableVideoCodec(['vp8'], { width, height });
-	if (vp8 === 'vp8') return { codec: 'vp8', quality: { quality: 'high' } };
+	if (vp8 === 'vp8') return { codec: 'vp8', quality: new Quality({ quality: 'high' }) };
 	throw new Error('no_supported_video_codec');
 }
 
@@ -108,10 +110,10 @@ async function transcodeVideo(jobId: string, file: Blob): Promise<VideoWorkerRes
 async function pickVideoCodecFallback(
 	width: number,
 	height: number,
-): Promise<{ codec: 'vp8'; quality: { quality: 'high' } }> {
+): Promise<{ codec: 'vp8'; quality: Quality }> {
 	const vp8 = await getFirstEncodableVideoCodec(['vp8'], { width, height });
 	if (vp8 !== 'vp8') throw new Error('no_supported_video_codec');
-	return { codec: 'vp8', quality: { quality: 'high' } };
+	return { codec: 'vp8', quality: new Quality({ quality: 'high' }) };
 }
 
 /** GIF: ImageDecoder frame-by-frame → VideoSampleSource (internal VideoEncoder). */

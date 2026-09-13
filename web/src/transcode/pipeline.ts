@@ -103,7 +103,7 @@ export class UploadPipeline {
 			if (!isSwToPage(m) || m.t !== 'jobStatus') return;
 			this.emit({
 				jobId: m.jobId,
-				fileName: this.snapshots.get(m.jobId)?.fileName ?? m.jobId,
+				fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
 				phase: m.phase,
 				fraction: m.fraction,
 				url: m.url,
@@ -121,7 +121,7 @@ export class UploadPipeline {
 			if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
 			this.emit({
 				jobId: m.jobId,
-				fileName: this.snapshots.get(m.jobId)?.fileName ?? m.jobId,
+				fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
 				phase: m.phase,
 				fraction: m.fraction,
 				url: m.url,

@@ -5,6 +5,7 @@
 
 import type { Op, SyncResponse } from '$shared/types';
 import { postSync } from '../api/syncClient';
+import { rebuildCache } from '../oplog/cache';
 import { OPLOG_SYNC_THRESHOLD, appendOp, clearOps, countOps, openOplogDb, readOps } from '../oplog/store';
 
 /** Browser hard limit for a keepalive request body (spec: "/sync 协议"). */
@@ -132,6 +133,12 @@ export class SyncEngine {
 		});
 	}
 
+	/** Deliver a snapshot to the sink and refresh the local sha dedupe cache. */
+	private async applySnapshot(db: IDBDatabase, response: SyncResponse): Promise<void> {
+		this.io.onSyncResponse?.(response);
+		await rebuildCache(db, response.photos).catch(() => undefined);
+	}
+
 	/** Manual / threshold / site-open triggered sync. */
 	async sync(): Promise<void> {
 		if (this.syncing) return; // ops accumulate during sync; operations never block
@@ -143,7 +150,7 @@ export class SyncEngine {
 			// expiry) and pull the full snapshot
 			try {
 				const { response } = await (this.io.postSyncFn ?? postSync)({ ops: [] });
-				this.io.onSyncResponse?.(response);
+				await this.applySnapshot(db, response);
 			} catch (e) {
 				this.io.onError?.('submit', e);
 			}
@@ -159,7 +166,7 @@ export class SyncEngine {
 			// at the snapshot so no op is lost.
 			await clearAfter(db, entries.map((e) => e.key));
 			this.pending = await countOps(db);
-			this.io.onSyncResponse?.(response);
+			await this.applySnapshot(db, response);
 		} catch (e) {
 			this.io.onError?.('submit', e);
 		} finally {

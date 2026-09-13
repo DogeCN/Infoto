@@ -32,11 +32,15 @@ export interface SyncCallResult {
 	status: number;
 }
 
+/** 429 backoff attempts (Cloudflare edge rate limit bursts); 0-indexed delays. */
+export const RATE_LIMIT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+
 /**
  * POST {origin}/sync. Contract edges:
  * - request body never carries a uuid field (the server distrusts body identity);
  * - 401 turnstile_required → read body turnstileSiteKey, throw TurnstileRequiredError;
  * - 401 turnstile_failed → throw TurnstileFailedError;
+ * - 429 → brief backoff retry (edge rate limit), then surface as any other error;
  * - any other non-ok response → throw Error (with the error field).
  */
 export async function postSync(
@@ -45,12 +49,17 @@ export async function postSync(
 ): Promise<SyncCallResult> {
 	const fetchFn = io.fetchFn ?? fetch;
 	const origin = io.origin ?? window.location.origin;
-	const res = await fetchFn(`${origin}/sync`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(body),
-		credentials: 'include',
-	});
+	let res: Response;
+	for (let attempt = 0; ; attempt++) {
+		res = await fetchFn(`${origin}/sync`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+			credentials: 'include',
+		});
+		if (res.status !== 429 || attempt >= RATE_LIMIT_DELAYS_MS.length) break;
+		await new Promise((r) => setTimeout(r, RATE_LIMIT_DELAYS_MS[attempt]));
+	}
 	let json: unknown = null;
 	try {
 		json = await res.json();

@@ -86,6 +86,7 @@ function notify(rec: JobRec, extra: Partial<Extract<SwToPageMessage, { t: 'jobSt
 	broadcast({
 		t: 'jobStatus',
 		jobId: rec.jobId,
+		fileName: rec.fileName,
 		phase: rec.phase,
 		url: rec.url,
 		error: rec.error,

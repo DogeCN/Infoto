@@ -7,6 +7,9 @@ export default defineConfig({
 	testDir: './tests/e2e',
 	timeout: 120_000,
 	retries: 0,
+	// Serial: every test hits the one shared test deployment — parallel workers
+	// trip Cloudflare edge rate limiting (HTTP 429 bursts on /sync).
+	workers: 1,
 	use: {
 		baseURL: 'http://localhost:5173',
 		browserName: 'chromium',

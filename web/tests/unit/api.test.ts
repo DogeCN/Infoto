@@ -34,6 +34,16 @@ describe('syncClient', () => {
 		const { response } = await postSync({ ops: [] }, { fetchFn, origin: 'http://x' });
 		expect(response).toEqual(body);
 	});
+
+	it('retries 429 with backoff, then succeeds', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(okResponse({ error: 'rate_limited' }, 429))
+			.mockResolvedValueOnce(okResponse({ ok: true, selfId: 3, photos: [], announcements: [], feedback: [] }));
+		const { response } = await postSync({ ops: [] }, { fetchFn, origin: 'http://x' });
+		expect(response.selfId).toBe(3);
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+	});
 });
 
 // ---- uploadClient ---------------------------------------------------------------

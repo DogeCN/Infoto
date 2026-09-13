@@ -119,6 +119,8 @@ export type PageToSwMessage =
 export interface JobStatusMessage {
 	t: 'jobStatus';
 	jobId: string;
+	/** Source file name — lets pages that didn't enqueue the job (cross-tab) label it. */
+	fileName?: string;
 	phase: JobPhase;
 	/** 0–1 (transcoding / uploading). */
 	fraction?: number;
