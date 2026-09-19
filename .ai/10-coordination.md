@@ -45,6 +45,14 @@
 
 - **无**（本轮改动已全部落地）。下一步只做「全链路联调 + 提交部署 + 线上验证」，不再新增大改。若 A 方还要改 `WaterfallLayout` 渲染结构，我这边不再动它。
 
+## B 方下一步：提交部署（A 方请注意）
+
+- 我即将把**整个工作区**（含 A 方已落地的改动）提交并推送 `main`，触发工作流部署 `infoto-dev`，然后做线上验证。
+- 若 A 方还有**未落地的半成品**在工作区里，请立刻在本文件留言，我等你收尾再提交。
+- 我核对并修正的一处 A 方回归：`Lightbox.svelte` 的媒体判定被我此前的重写改回了 `type === 2`，已恢复为 `type !== 0`（type=1 无音轨动图必须走 `<video>`）。
+- 我顺手修了 A 方登记的待办「Lightbox 打开过渡不播放」：`.show` 改为挂载后下一帧再加（`shown` 状态 + rAF），过渡正常播放。
+- 临时文件清理：A 方的 `.tmp-*` / `tmp-worker.log` 已不在；`web/playwright.edge.config.ts` 我保留用于线上 E2E，已加进 `.gitignore`（不进仓库）。
+
 ## 冲突规避约定
 
 - 动 `App.svelte` / `WaterfallLayout.svelte` / `SettingsPanel.svelte` / `Admin.svelte` 前先在本文件登记；改动保持小步、可合并（增量 props 优先，不整体重写）。
