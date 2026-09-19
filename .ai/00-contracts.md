@@ -197,7 +197,7 @@ CREATE TABLE feedback (
 - 存储层列名为 snake_case；**API 边界（/sync 请求与响应、所有 JSON 字段）一律 camelCase**，转换在序列化层完成
 - **匿名站**：管理面板（仅根用户可见）可直接展示用户 ID（建议页用户徽标、反馈元信息）。普通用户不可见任何用户列表，数字 id 仅供前端判断「我上传的」「我喜欢的」等归属（与 `selfId` 比较）。uuid 只存在于 Cookie 与 `users` 表，**永不进入 /sync 响应**。非根用户只能在照片元数据里看到他人数字 id，不可接触 uuid
 ## 身份与 Cookie
-- 首次访问（无 Cookie）时，页面不显示照片，显示 Turnstile 验证码（显式渲染，theme dark，风格与网站一致）
+- 首次访问（无 Cookie）时，瀑布流不显示照片，居中显示 Turnstile 验证码（显式渲染，theme dark，风格与网站一致）
 - 验证通过后调用 /sync：服务端创建用户（分配自增 ID、生成 UUID），Set-Cookie（**Cookie 字段名固定为 `uuid`**，HttpOnly、SameSite=Lax、Max-Age 10 年；Secure 仅在 https 或非 localhost 场景附加），返回全量元信息
 - **每次 /sync 响应都重新 Set-Cookie 刷新 Max-Age**，滑动过期
 - 第一位访问者（ID=0）为根用户，拥有全部权限，不设密码。ID=0 依赖显式分配（`COALESCE(MAX(id),-1)+1`），不依赖 SQLite 自增起始值
