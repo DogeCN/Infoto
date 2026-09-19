@@ -36,6 +36,18 @@ export interface Photo {
 	reports: number[];
 }
 
+/** One reaction row: one emoji per user per announcement. */
+export interface Reaction {
+	userId: number;
+	emoji: string;
+}
+
+/** One vote row: one option per user per announcement (0-based index). */
+export interface Vote {
+	userId: number;
+	option: number;
+}
+
 export interface Announcement {
 	id: number;
 	title: string;
@@ -44,9 +56,8 @@ export interface Announcement {
 	sort: number;
 	/** Millisecond epoch. */
 	updatedAt: number;
-	reactions: Array<{ userId: number; emoji: string }>;
-	/** One row per user per announcement; option is the 0-based choice index. */
-	votes: Array<{ userId: number; option: number }>;
+	reactions: Reaction[];
+	votes: Vote[];
 }
 
 export interface Feedback {

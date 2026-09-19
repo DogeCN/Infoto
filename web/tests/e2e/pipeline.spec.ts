@@ -1,4 +1,4 @@
-// Transcode + upload pipeline against the real test domain (via the Vite
+// Transcode + upload pipeline against the local Worker (via the Vite dev
 // proxy) — the contract's highest-risk area. Covers image/gif/video transcode
 // + upload, the 100MB pre-check, the manual retry handle, cross-tab progress,
 // lease revocation, pagehide.
@@ -29,7 +29,7 @@ async function makeImage(page: import('@playwright/test').Page, opts: { w: numbe
 	return { name: opts.name, mimeType: opts.type, buffer: buf };
 }
 
-test.describe('transcode + upload pipeline (real test domain)', () => {
+test.describe('transcode + upload pipeline (local Worker)', () => {
 	test('environment probe: WebP support / VP9-VP8 encode support (drives the codec table)', async ({ page }) => {
 		await page.goto('/');
 		const probe = await page.evaluate(async () => {
@@ -145,7 +145,7 @@ test.describe('transcode + upload pipeline (real test domain)', () => {
 		await a.goto('/?e2e=1');
 		await a.getByRole('button', { name: /identity/ }).click();
 		await expect(a.getByText(/selfId=\d+/)).toBeVisible({ timeout: 30_000 });
-		// stagger B's load: two pages firing /sync at once invites edge 429s
+		// stagger B's load so the BroadcastChannel/SharedWorker wiring is exercised
 		await b.goto('/?e2e=1');
 
 		const file = await makeImage(a, { w: 100, h: 70, type: 'image/jpeg', name: 'bc.jpg' });

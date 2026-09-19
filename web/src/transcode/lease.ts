@@ -82,15 +82,14 @@ export class LeaseClient {
 	}
 
 	/**
-	 * Register the global safety net. pagehide is registered separately
-	 * (contract audit clause); never merged with visibilitychange.
+	 * Register the global safety net. Contract audit clause: pagehide is
+	 * registered separately and never merged with visibilitychange — a hidden
+	 * page has not unloaded yet, its video worker is still encoding, so the
+	 * token must stay held until the page actually goes away.
 	 */
-	install(scope: { addEventListener: Window['addEventListener'] } = window, doc: Document = document): void {
+	install(scope: { addEventListener: Window['addEventListener'] } = window): void {
 		if (this.installed) return;
 		this.installed = true;
 		scope.addEventListener('pagehide', () => this.release());
-		doc.addEventListener('visibilitychange', () => {
-			if (doc.visibilityState === 'hidden') this.release();
-		});
 	}
 }

@@ -37,6 +37,7 @@ async function rootCookie(app: ReturnType<typeof createApp>): Promise<string> {
 				},
 				{ type: 'ann_create', payload: { title: 't', contentMd: `md\\slash --- ; /* c */ it's` } },
 				{ type: 'react', target: 1, payload: { emoji: '🔥' } },
+				{ type: 'vote', target: 1, payload: { option: 1 } },
 				{ type: 'fb_create', payload: { contentMd: 'fb' } },
 			],
 		}),
@@ -87,6 +88,7 @@ test('export → import round-trip restores rows', async () => {
 	assert.equal(before.photos, 1);
 	assert.equal(before.announcements, 1);
 	assert.equal(before.reactions, 1);
+	assert.equal(before.votes, 1);
 	assert.equal(before.feedback, 1);
 
 	const dump = await app.request('http://localhost/admin/migrate', { headers: { Cookie: cookie } });
@@ -112,10 +114,13 @@ test('export → import round-trip restores rows', async () => {
 	assert.equal(title, 't');
 	const md = await db.prepare('SELECT content_md FROM announcements').first<{ content_md: string }>('content_md');
 	assert.equal(md, `md\\slash --- ; /* c */ it's`, 'backslash / ; / -- / /* and quotes must survive the round-trip');
+	// votes must survive too — it is part of MIGRATE_TABLES and the export dump
+	const vote = await db.prepare('SELECT option FROM votes WHERE ann_id = 1 AND user_id = 0').first<{ option: number }>('option');
+	assert.equal(vote, 1);
 	assert.deepEqual(await counts(db), before);
 });
 
-test('bad INSERT returns exact statement and leaves five tables intact', async () => {
+test('bad INSERT returns exact statement and leaves all tables intact', async () => {
 	setRenameBatchOk(null);
 	const { db, app } = make();
 	const cookie = await rootCookie(app);

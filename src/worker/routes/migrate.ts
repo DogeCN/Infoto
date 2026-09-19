@@ -7,7 +7,7 @@ import { ROOT_ID, resolveUser } from '../identity.ts';
 import { notFoundPage } from '../errors.ts';
 import { CREATE_TABLE_SQL, SCHEMA_SQL } from '../schema-ddl.ts';
 
-export const MIGRATE_TABLES = ['users', 'photos', 'announcements', 'reactions', 'feedback'] as const;
+export const MIGRATE_TABLES = ['users', 'photos', 'announcements', 'reactions', 'votes', 'feedback'] as const;
 
 const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 const CHUNK = 100;
@@ -151,6 +151,8 @@ export function migrateExportHandler(env: AppEnv) {
 		sql += await dumpTable(env.db, 'announcements', ['id', 'title', 'content_md', 'sort', 'updated_at']);
 		sql += '\n';
 		sql += await dumpTable(env.db, 'reactions', ['ann_id', 'user_id', 'emoji']);
+		sql += '\n';
+		sql += await dumpTable(env.db, 'votes', ['ann_id', 'user_id', 'option']);
 		sql += '\n';
 		sql += await dumpTable(env.db, 'feedback', ['id', 'user_id', 'content_md', 'created_at']);
 		const filename = `infoto-export-${Date.now()}.sql`;

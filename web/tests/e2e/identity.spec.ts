@@ -1,8 +1,8 @@
-// Identity & op semantics against the real test deployment (via the Vite
-// dev proxy): 401 → siteKey → identity creation → cookie → op → snapshot.
+// Identity & op semantics against the local Worker (via the Vite dev proxy):
+// 401 → siteKey → identity creation → cookie → op → snapshot.
 import { expect, test } from '@playwright/test';
 
-test.describe('identity & op semantics (test deployment)', () => {
+test.describe('identity & op semantics (local Worker)', () => {
 	test('first entry: 401 turnstile_required → identity created → HttpOnly cookie lands', async ({ page, context }) => {
 		await page.goto('/');
 		// first /sync without a cookie must return 401 turnstile_required + siteKey

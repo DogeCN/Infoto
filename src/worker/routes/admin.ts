@@ -1,5 +1,7 @@
-// /admin — phase-1 skeleton (spec: "管理面板").
-// Non-root (or no identity) gets the custom 404 page.
+// /admin — the management panel entry (spec: "管理面板" / "端点清单").
+// Non-root (or no identity) gets the custom 404 page; root gets the SPA shell
+// (the ASSETS index.html) — the route is a frontend route, the server only
+// enforces the access boundary and serves the shell.
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../env.ts';
@@ -50,6 +52,23 @@ export function adminHandler(env: AppEnv) {
 	return async (c: Context): Promise<Response> => {
 		const user = await resolveUser(env.db, c.req.header('cookie'));
 		if (!user || user.id !== ROOT_ID) return notFoundPage();
+		// Root: hand back the SPA shell so the client-side /admin route mounts.
+		// The ASSETS binding never has a file at /admin, so ask for index.html
+		// explicitly (same-origin rewrite, no redirect — the URL bar stays /admin).
+		if (env.assets) {
+			const shellUrl = new URL('/index.html', new URL(c.req.url).origin);
+			const res = await env.assets(new Request(shellUrl.toString(), c.req.raw));
+			if (res.body) {
+				return new Response(res.body, {
+					status: 200,
+					headers: {
+						'Content-Type': 'text/html; charset=utf-8',
+						'Cache-Control': 'no-store',
+					},
+				});
+			}
+		}
+		// No ASSETS binding (unit tests / bare runtime): fall back to the shell stub.
 		return new Response(PLACEHOLDER, {
 			headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
 		});

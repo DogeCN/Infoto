@@ -30,6 +30,11 @@ export interface PipelineIo {
 	/** Per-page video worker factory (injectable to test onerror paths). */
 	createVideoWorker?: (jobId: string, file: Blob, mime: string, engine: 'video' | 'gif') => WorkerLike;
 	onEvent?: (line: string) => void;
+	/**
+	 * upload op 出口。注入时由同步引擎统一入队（pending 计数与 256 条阈值生效）；
+	 * 未注入（harness / 单测）则回退为直接写 op-log。
+	 */
+	onUploadOp?: (op: Op) => void;
 }
 
 export interface WorkerLike {
@@ -92,6 +97,8 @@ export class UploadPipeline {
 			this.onSwMessage(m);
 		};
 		this.sw.port.start();
+		// pagehide 归还令牌（契约审计条款：与 visibilitychange 分开注册）
+		this.lease.install();
 		// deviceMemory is window-only — report both readings so the SW can size
 		// the global video token pool with the base videoPoolSize() pure function
 		const nav = navigator as Navigator & { deviceMemory?: number };
@@ -149,8 +156,14 @@ export class UploadPipeline {
 			type: meta.type,
 		};
 		const op: Op = buildUploadOp(payload);
-		if (!this.db) this.db = await openOplogDb();
-		await appendOp(this.db, op);
+		if (this.io.onUploadOp) {
+			this.io.onUploadOp(op);
+		} else if (!this.db) {
+			this.db = await openOplogDb();
+			await appendOp(this.db, op);
+		} else {
+			await appendOp(this.db, op);
+		}
 		this.sw?.port.postMessage({ t: 'opWritten', jobId });
 		this.log(`job ${jobId} URL written to op-log, awaiting sync`);
 	}
@@ -201,6 +214,7 @@ export class UploadPipeline {
 				(new Worker(new URL('./video.worker.ts', import.meta.url), { type: 'module' }) as WorkerLike);
 		} catch (e) {
 			this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: `worker_create_failed:${String(e)}` });
+			this.lease?.release();
 			return;
 		}
 		this.videoWorkers.set(jobId, w);
@@ -211,10 +225,12 @@ export class UploadPipeline {
 			} else if (m['t'] === 'videoResult') {
 				// structured-clone forward, no transfer list (Blob is not Transferable)
 				this.sw?.port.postMessage({ t: 'videoResult', jobId, blob: m['blob'], width: m['width'], height: m['height'], hasAudio: m['hasAudio'] });
+				this.lease?.release(); // 完成 → 归还令牌（契约四条释放路径之一）
 				w.terminate();
 				this.videoWorkers.delete(jobId);
 			} else if (m['t'] === 'videoFailed') {
 				this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: m['error'] });
+				this.lease?.release(); // 失败 → 归还令牌
 				w.terminate();
 				this.videoWorkers.delete(jobId);
 			}
@@ -222,6 +238,7 @@ export class UploadPipeline {
 		w.onerror = (e: ErrorEvent) => {
 			// release path: worker onerror (one of the contract's four token audit paths)
 			this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: `worker_error:${e.message}` });
+			this.lease?.release();
 			w.terminate();
 			this.videoWorkers.delete(jobId);
 		};

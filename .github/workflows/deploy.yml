@@ -1,8 +1,9 @@
 name: deploy
 
-# The workflow does NOT build — dist/ is committed to the repo.
-# Pipeline: checkout -> ensure same-name D1 -> patch wrangler.toml
-#        -> apply schema (idempotent) -> wrangler deploy -> inject secrets.
+# The workflow builds the SPA — dist/ is NOT committed (see .gitignore).
+# Pipeline: checkout -> install frontend deps -> build SPA -> ensure same-name
+#        D1 -> patch wrangler.toml -> apply schema (idempotent)
+#        -> wrangler deploy -> inject secrets.
 on:
   push:
     branches: [main]
@@ -47,9 +48,19 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: web/package-lock.json
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
+        working-directory: web
         run: npm ci
+
+      - name: Build SPA (-> dist/)
+        working-directory: web
+        run: |
+          set -e
+          npm run build
+          test -f ../dist/index.html
+          echo "dist/ built: $(find ../dist -type f | wc -l) files"
 
       - name: Install wrangler
         run: npm i -g wrangler

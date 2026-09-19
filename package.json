@@ -5,6 +5,8 @@
   "type": "module",
   "description": "Full-stack shared photo album deployed on Cloudflare Workers",
   "scripts": {
+    "db:local": "wrangler d1 execute infoto-dev --local --file=schema.sql",
+    "dev:worker": "wrangler dev --port 8787",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
     "test:layout": "node --test src/ui/lib/layout.test.ts",
     "test:pipeline": "node --test src/ui/upload/pipeline.test.ts",
@@ -14,7 +16,6 @@
     "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@hono/node-server": "^2.1.1",
     "hono": "^4.13.5"
   },
   "devDependencies": {

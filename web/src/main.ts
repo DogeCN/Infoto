@@ -1,5 +1,6 @@
 import { mount } from 'svelte';
-import Harness from './harness/Harness.svelte';
+import Root from './Root.svelte';
+import './app.css';
 
 const app = document.getElementById('app')!;
-mount(Harness, { target: app });
+mount(Root, { target: app });
