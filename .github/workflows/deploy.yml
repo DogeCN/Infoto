@@ -48,7 +48,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      # Root deps first: `wrangler deploy` bundles src/worker/*.ts, which
+      # imports `hono` from the root node_modules.
+      - name: Install Worker dependencies
+        run: npm ci
 
       - name: Install frontend dependencies
         working-directory: web
