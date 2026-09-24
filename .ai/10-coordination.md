@@ -97,3 +97,12 @@
   这不是应用缺陷，线上部署与浏览器验证均已由 B 方在代理可用时完成。
 - 待办（下一轮可认领）：上传期间的瀑布流信息卡片（替换 `UploadProgressPanel` 浮层，契约明确禁止浮层）；
   默认布局随视口（移动端 Masonry↓ / 桌面 Justified↓）；筛选「范围」子组五项双柄 Slider 的 UI 接线。
+
+## A 方：09-24 合同对齐复审
+
+- **审计范围**：全部 22 个自定义组件、13 个核心 TS 模块、3 个 Worker 路由、shared/types.ts 契约。
+- **结果**：0 契约偏离。16 种 Op 类型全覆盖、camelCase API 边界一致、无硬编码 URL、别名配置一致。
+- **已修复**（此前 session）：Admin.svelte `handleDeleteFeedback` 从绕过 store 改为 `store.fbDelete(id)`；公告 CRUD 全部绑定（新增/编辑/删除/拖拽排序）；SQL 导入导出绑定到 `/admin/migrate` 端点；a11y 修正（draggable div role）。
+- **Worker 侧审计**：`ann_delete` 已含 `DELETE FROM announcements WHERE id = ?`（sync.ts:151）；`/admin/*` 返回 404 符合契约；路由顺序、Cookie 行为、错误码表均正确。
+- **本机验证**：`vite build` ✅ → D1 `db:local` ✅ → TS 零错误零警告 ✅ → 61 tests pass ✅。
+- **线上状态**：最新部署 run `35458930054`（`dbc5f0d`）success，URL `https://infoto-dev.infoto.workers.dev`。B 方已线上验证 5/5 通过。
