@@ -85,3 +85,15 @@
   `GIT_SSL_NO_VERIFY=1 git -c http.sslVerify=false push` 可推；查 GitHub API 需 `curl -k`。
 - 部署后验证清单（契约 happy path）：`/sync` 无 Cookie → 401 + siteKey；带 token → 200 + Set-Cookie；
   upload op → 200；**`/admin` root → SPA shell（本次新增，原先是占位页）**；`/l/:id36` 代理；首页资源加载。
+  清单已由 B 方在线上跑通（见上），A 方复核：run `35458930054`（`dbc5f0d`）conclusion=success，
+  部署 URL `https://infoto-dev.infoto.workers.dev`，Total Upload 94.53 KiB。
+
+## 收尾状态（A 方，09-24 复核）
+
+- 全量校验：根 `npm test` 61 通过；`web` svelte-check 0 错 0 警；`web` vitest 55 通过；`vite build` 成功。
+- 工作区无临时残留（`.tmp-*`、探针脚本、edge 配置均已删）。
+- **本机网络现状**：`github.com` 直连可用（`gh` 正常），但 `*.workers.dev` 直连与经 `127.0.0.1:10808`
+  代理**均不可达**（代理隧道能建但 TLS 后被掐，或节点不含该域）。后续想从本机抽查线上，需先换可用代理节点；
+  这不是应用缺陷，线上部署与浏览器验证均已由 B 方在代理可用时完成。
+- 待办（下一轮可认领）：上传期间的瀑布流信息卡片（替换 `UploadProgressPanel` 浮层，契约明确禁止浮层）；
+  默认布局随视口（移动端 Masonry↓ / 桌面 Justified↓）；筛选「范围」子组五项双柄 Slider 的 UI 接线。
