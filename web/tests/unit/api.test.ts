@@ -44,6 +44,23 @@ describe('syncClient', () => {
 		expect(response.selfId).toBe(3);
 		expect(fetchFn).toHaveBeenCalledTimes(2);
 	});
+
+	it('aborts a silent backend instead of hanging forever', async () => {
+		// 后端挂掉时连接不会被拒绝（dev 代理一直持着 socket）→ 没有超时的话 fetch 永不 settle
+		const fetchFn = vi.fn((_url: string, init?: RequestInit) => {
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener('abort', () => {
+					reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+				});
+			});
+		});
+		await expect(
+			postSync(
+				{ ops: [] },
+				{ fetchFn: fetchFn as unknown as typeof fetch, origin: 'http://x', timeoutMs: 20 },
+			),
+		).rejects.toThrow(/sync_timeout/);
+	});
 });
 
 // ---- uploadClient ---------------------------------------------------------------

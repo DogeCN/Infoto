@@ -6,7 +6,7 @@
   import UploadProgressPanel from "$lib/components/custom/UploadProgressPanel.svelte";
   import SettingsPanel from "$lib/components/custom/SettingsPanel.svelte";
   import AnnouncementSidebar from "$lib/components/custom/AnnouncementSidebar.svelte";
-  import { Toaster } from "svelte-sonner";
+  import { Toaster, toast } from "svelte-sonner";
   import { Settings as SettingsIcon, Megaphone } from "@lucide/svelte";
   import { getEngine } from "./core/sync/engine";
   import { ensureIdentity } from "./core/identity";
@@ -22,6 +22,18 @@
   import type { FilterSettings, LayoutSettings, Settings } from "./settings";
   import { applyFilters, defaultFilterSettings } from "./settings";
 
+  /**
+   * 同步失败可见化：原来只 console.error，用户看到的是"点了没反应"。
+   * 10s 去重 —— 后端躺平时每轮重试都会失败，不去重会把 toast 刷屏。
+   */
+  let lastSyncToastAt = 0;
+  function notifySyncFailure(): void {
+    const now = Date.now();
+    if (now - lastSyncToastAt < 10_000) return;
+    lastSyncToastAt = now;
+    toast.error("同步失败", { description: "操作已排队，稍后自动重试" });
+  }
+
   // store 先建：引擎把 /sync 全量快照直接写进 store（契约：服务端下发为准）
   const store = createAppStore();
   const engine = getEngine({
@@ -30,6 +42,7 @@
       console.error("[sync]", phase, e);
       // Cookie 丢失/过期 → 回到首次入站流程（Turnstile 渲染由 ensureIdentity 承担）
       if (e instanceof TurnstileRequiredError) void bootstrapIdentity();
+      else notifySyncFailure();
     },
   });
   store.bindEngine(engine);
@@ -225,6 +238,9 @@
     }
   }
 
+  // 上一次传入的 filters 引用：layout-only 变更时 settings.filters 是 spread 保留的同一引用，
+  // 不应触发 visiblePhotos 重算 → 瀑布流重排（卡死根源之一）。
+  let _prevFilterRef: import("./settings").FilterSettings | undefined;
   function handleSettingsChange(s: Settings) {
     layout = {
       dir: s.layout.dir,
@@ -232,7 +248,11 @@
       band: s.layout.band,
       gap: s.layout.gap,
     };
-    filters = { ...s.filters, types: new Set(s.filters.types) };
+    // 仅当 filters 对象引用真正变化时才更新（layout-only 变更不触发）
+    if (s.filters !== _prevFilterRef) {
+      _prevFilterRef = s.filters;
+      filters = { ...s.filters, types: new Set(s.filters.types) };
+    }
   }
 
   // 排序 + 筛选 → 最终给瀑布流的照片（筛选逻辑在 settings.ts，纯函数可测）

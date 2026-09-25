@@ -24,6 +24,8 @@ export class TurnstileFailedError extends Error {
 export interface SyncClientIo {
 	fetchFn?: typeof fetch;
 	origin?: string;
+	/** 覆盖单次尝试的超时（测试注入小值）。 */
+	timeoutMs?: number;
 }
 
 export interface SyncCallResult {
@@ -36,12 +38,21 @@ export interface SyncCallResult {
 export const RATE_LIMIT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 
 /**
+ * Hard ceiling on one /sync attempt. A dead backend does not refuse the
+ * connection (the dev proxy just holds the socket open), so a fetch without a
+ * timeout never settles: `engine.syncing` stays true and every write looks
+ * frozen. Same shape as `UPLOAD_TIMEOUT_MS` in the upload client.
+ */
+export const SYNC_TIMEOUT_MS = 15_000;
+
+/**
  * POST {origin}/sync. Contract edges:
  * - request body never carries a uuid field (the server distrusts body identity);
  * - 401 turnstile_required → read body turnstileSiteKey, throw TurnstileRequiredError;
  * - 401 turnstile_failed → throw TurnstileFailedError;
  * - 429 → brief backoff retry (edge rate limit), then surface as any other error;
- * - any other non-ok response → throw Error (with the error field).
+ * - any other non-ok response → throw Error (with the error field);
+ * - attempt exceeding `timeoutMs` → abort + throw Error('sync_timeout').
  */
 export async function postSync(
 	body: SyncRequest,
@@ -49,14 +60,26 @@ export async function postSync(
 ): Promise<SyncCallResult> {
 	const fetchFn = io.fetchFn ?? fetch;
 	const origin = io.origin ?? window.location.origin;
+	const timeoutMs = io.timeoutMs ?? SYNC_TIMEOUT_MS;
 	let res: Response;
 	for (let attempt = 0; ; attempt++) {
-		res = await fetchFn(`${origin}/sync`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body),
-			credentials: 'include',
-		});
+		const ctrl = new AbortController();
+		const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+		try {
+			res = await fetchFn(`${origin}/sync`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+				credentials: 'include',
+				signal: ctrl.signal,
+			});
+		} catch (e) {
+			// 超时与网络故障分开：超时给一个稳定标识，UI 据此提示"后端未响应"
+			if ((e as Error)?.name === 'AbortError') throw new Error('sync_timeout');
+			throw e;
+		} finally {
+			clearTimeout(timer);
+		}
 		if (res.status !== 429 || attempt >= RATE_LIMIT_DELAYS_MS.length) break;
 		await new Promise((r) => setTimeout(r, RATE_LIMIT_DELAYS_MS[attempt]));
 	}

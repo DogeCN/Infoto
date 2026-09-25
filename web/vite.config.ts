@@ -60,6 +60,11 @@ export default defineConfig({
 	build: { outDir: '../dist', emptyOutDir: true },
 	server: {
 		port: 5173,
+		// 临时脚本/输出若落在 web/ 根目录，Vite 一监听到就整页 reload —— 脚本每写一次
+		// 日志就重载一次页面，能把用户标签页刷成"卡死"、把 Worker 一起拖崩。显式忽略。
+		watch: {
+			ignored: ['**/.tmp-*', '**/*.out', '**/.chk*', '**/.shot*', '**/test-results/**'],
+		},
 		proxy: {
 			'/sync': proxy(),
 			'/upload': proxy({ proxyTimeout: 120_000 }),
