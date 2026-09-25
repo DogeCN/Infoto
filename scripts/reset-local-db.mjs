@@ -9,21 +9,25 @@ import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
 const targets = [
-	path.join(root, '.wrangler/state/v3/d1'),
-	path.join(root, '.wrangler/state/v3/cache'),
+  path.join(root, '.wrangler/state/v3/d1'),
+  path.join(root, '.wrangler/state/v3/cache'),
 ];
 
 for (const t of targets) {
-	if (existsSync(t)) {
-		await rm(t, { recursive: true, force: true });
-		console.log('removed', path.relative(root, t));
-	}
+  if (existsSync(t)) {
+    await rm(t, { recursive: true, force: true });
+    console.log('removed', path.relative(root, t));
+  }
 }
 
-const r = spawnSync('npx', ['wrangler', 'd1', 'execute', 'infoto-dev', '--local', '--file=schema.sql'], {
-	cwd: root,
-	stdio: 'inherit',
-	shell: process.platform === 'win32',
-});
+const r = spawnSync(
+  'npx',
+  ['wrangler', 'd1', 'execute', 'infoto-dev', '--local', '--file=schema.sql'],
+  {
+    cwd: root,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  },
+);
 if (r.status !== 0) process.exit(r.status ?? 1);
 console.log('local D1 reset + schema applied');

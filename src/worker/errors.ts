@@ -4,7 +4,7 @@
 // effect is the displaced double-text glitch.
 
 function page(code: number, title: string, message: string): Response {
-	const html = `<!doctype html>
+  const html = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -99,12 +99,13 @@ function page(code: number, title: string, message: string): Response {
 	</div>
 </body>
 </html>`;
-	return new Response(html, {
-		status: code,
-		headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
-	});
+  return new Response(html, {
+    status: code,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
 }
 
 export const notFoundPage = (): Response => page(404, 'Not Found', '页面不存在或已被移除');
 
-export const serverErrorPage = (): Response => page(500, 'Server Error', '服务端开了个小差，稍后再试');
+export const serverErrorPage = (): Response =>
+  page(500, 'Server Error', '服务端开了个小差，稍后再试');
