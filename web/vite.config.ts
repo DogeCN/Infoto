@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
@@ -9,6 +10,24 @@ import tailwindcss from '@tailwindcss/vite';
 // by `wrangler dev` at the repo root (`npm run dev:worker`, port 8787) — no
 // test-site redirect, no local shim runtime. The target is fixed by contract.
 const backend = 'http://localhost:8787';
+
+/**
+ * Turnstile 站点密钥（公开值）。生产由服务端 401 body 下发；dev 下从根目录
+ * `.dev.vars` 读同一份，让首访直接进 Turnstile，省掉一次必然 401 的探测请求。
+ */
+function devTurnstileSiteKey(): string | undefined {
+	const fromEnv = process.env['VITE_TURNSTILE_SITE_KEY'];
+	if (fromEnv) return fromEnv;
+	try {
+		const vars = readFileSync(fileURLToPath(new URL('../.dev.vars', import.meta.url)), 'utf8');
+		const m = /^TURNSTILE_SITE_KEY=(.+)$/m.exec(vars);
+		return m?.[1]?.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+const turnstileSiteKey = devTurnstileSiteKey();
 
 const proxy = (extra: Record<string, unknown> = {}) => ({
 	target: backend,
@@ -28,6 +47,10 @@ const alias = {
 export default defineConfig({
 	plugins: [tailwindcss(), svelte()],
 	resolve: { alias },
+	// 仅在有值时注入：undefined 会破坏 import.meta.env 访问
+	define: turnstileSiteKey
+		? { 'import.meta.env.VITE_TURNSTILE_SITE_KEY': JSON.stringify(turnstileSiteKey) }
+		: {},
 	// Pre-bundle at server start: discovering these deps mid-session (first page
 	// that loads the video worker) re-optimizes deps and full-reloads the page —
 	// fatal for e2e (execution contexts destroyed mid-test).

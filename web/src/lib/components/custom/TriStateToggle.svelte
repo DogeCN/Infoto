@@ -24,7 +24,7 @@
 <button
   type="button"
   class={cn(
-    'inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors',
+    'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-all duration-200 active:scale-95',
     STATE_CLASS[state]
   )}
   title={label}

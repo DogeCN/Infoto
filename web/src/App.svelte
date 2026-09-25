@@ -44,6 +44,80 @@
   let uploadTasks = $state<Map<string, PipelineTaskSnapshot>>(new Map());
   let fileInputEl: HTMLInputElement | undefined = $state(undefined);
 
+  // ---- 上传乐观条目（契约「上传期间的瀑布流呈现」） ------------------------------
+  // 转码完成（进入上传阶段）即以乐观条目插入瀑布流最前；卡片上覆盖"窗帘"遮罩
+  // 随上传进度自下而上拉开；失败变回全遮罩 + 重试图标；/sync 全量下发后按
+  // sha256 移除乐观条目，以服务端状态为准。
+  let nextTempId = -1;
+  const tempIdByJob = new Map<string, number>();
+  const jobByTempId = new Map<number, string>();
+
+  let pendingPhotos = $derived.by(() => {
+    const out: Photo[] = [];
+    for (const t of uploadTasks.values()) {
+      if (!t.meta) continue;
+      if (!["uploading", "done", "failed"].includes(t.phase)) continue;
+      let id = tempIdByJob.get(t.jobId);
+      if (id === undefined) {
+        id = nextTempId--;
+        tempIdByJob.set(t.jobId, id);
+        jobByTempId.set(id, t.jobId);
+      }
+      out.push({
+        id,
+        sha256: t.sha256 ?? "",
+        url: t.url ?? "",
+        uploader: store.selfId,
+        width: t.meta.width,
+        height: t.meta.height,
+        size: t.meta.size,
+        createdAt: Date.now(),
+        type: t.meta.type,
+        likes: [],
+        dislikes: [],
+        reports: [],
+      });
+    }
+    return out;
+  });
+
+  let uploadOverlays = $derived.by(() => {
+    const m = new Map<number, { fraction?: number; failed?: boolean }>();
+    for (const t of uploadTasks.values()) {
+      const id = tempIdByJob.get(t.jobId);
+      if (id === undefined || !t.meta) continue;
+      if (t.phase === "uploading") m.set(id, { fraction: t.fraction ?? 0 });
+      else if (t.phase === "failed") m.set(id, { failed: true });
+      // done → 无遮罩（窗帘已全开，等 /sync 校正）
+    }
+    return m;
+  });
+
+  // /sync 后真实条目到位：按 sha256 摘掉对应乐观条目
+  $effect(() => {
+    const shas = new Set(store.photos.map((p) => p.sha256));
+    let changed = false;
+    for (const t of uploadTasks.values()) {
+      if (t.sha256 && shas.has(t.sha256)) {
+        const id = tempIdByJob.get(t.jobId);
+        if (id !== undefined) {
+          tempIdByJob.delete(t.jobId);
+          jobByTempId.delete(id);
+        }
+        const next = new Map(uploadTasks);
+        next.delete(t.jobId);
+        uploadTasks = next;
+        changed = true;
+      }
+    }
+    void changed;
+  });
+
+  function handleRetryUpload(photo: Photo) {
+    const jobId = jobByTempId.get(photo.id);
+    if (jobId) pipeline.retry(jobId);
+  }
+
   let leftOpen = $state(false);
   let rightOpen = $state(false);
   let multiMode = $state(false);
@@ -54,16 +128,24 @@
     dir: "v",
     strategy: "sequential",
     band: 320,
-    gap: 8,
+    gap: 12,
   });
   // 筛选设置（来自 SettingsPanel，用于过滤瀑布流）
   let filters = $state<FilterSettings>(defaultFilterSettings());
   let filterCount = $state(0);
   let resetToken = $state(0);
 
-  // 排序状态：latest / hottest / random；sortAsc 为「最新↔最旧」「最热↔最冷」的方向
+  // 排序状态：latest / hottest / random；方向按 key 各自记忆——切到别的排序项
+  // 再切回来，方向不丢（最新↔最旧、最热↔最冷 独立保存）
   let sortKey = $state<SortKey>("latest");
-  let sortAsc = $state(false);
+  let latestAsc = $state(false);
+  let hottestAsc = $state(false);
+  let sortAsc = $derived(sortKey === "hottest" ? hottestAsc : latestAsc);
+  let sortDirs = $derived<Partial<Record<SortKey, boolean>>>({
+    latest: latestAsc,
+    hottest: hottestAsc,
+    random: false,
+  });
   let randomOrder = $state<number[]>([]);
 
   function defaultFilters(): FilterSettings {
@@ -108,11 +190,6 @@
   }
   function handleRequestDelete(photo: Photo) {
     store.toggleMark(photo.id, "report");
-  }
-  /** Lightbox「取消标记」：撤销喜欢与不喜欢（两者可同时残留）。 */
-  function handleUnmark(photo: Photo) {
-    store.setMark(photo.id, "like", false);
-    store.setMark(photo.id, "dislike", false);
   }
   function handleDelete(photo: Photo) {
     store.deletePhotos([photo.id]);
@@ -164,13 +241,13 @@
 
     if (sortKey === "latest") {
       list = [...list].sort((a, b) =>
-        sortAsc ? a.createdAt - b.createdAt : b.createdAt - a.createdAt,
+        latestAsc ? a.createdAt - b.createdAt : b.createdAt - a.createdAt,
       );
     } else if (sortKey === "hottest") {
       const heat = (p: (typeof list)[number]) =>
         p.likes.length - p.dislikes.length;
       list = [...list].sort((a, b) =>
-        sortAsc ? heat(a) - heat(b) : heat(b) - heat(a),
+        hottestAsc ? heat(a) - heat(b) : heat(b) - heat(a),
       );
     } else {
       // random：按当前打乱序号重排
@@ -186,14 +263,15 @@
 
   function onSortChange(key: SortKey) {
     if (key === sortKey && key !== "random") {
-      sortAsc = !sortAsc; // 再次单击 → 反向（最新↔最旧 / 最热↔最冷）
+      // 再次单击 → 反向（最新↔最旧 / 最热↔最冷），方向按 key 各自记忆
+      if (key === "hottest") hottestAsc = !hottestAsc;
+      else latestAsc = !latestAsc;
     } else if (key === "random" && key === sortKey) {
       randomOrder = shuffle(store.photos.map((p) => p.id)); // 重新打乱
     } else {
+      // 切换排序项：保留该项上次的方向，不重置
       sortKey = key;
-      sortAsc = false;
-      if (key === "random")
-        randomOrder = shuffle(store.photos.map((p) => p.id));
+      if (key === "random") randomOrder = shuffle(store.photos.map((p) => p.id));
     }
   }
 
@@ -209,7 +287,6 @@
   function handleReshuffle() {
     randomOrder = shuffle(store.photos.map((p) => p.id));
     sortKey = "random";
-    sortAsc = false;
   }
 
   function toggleLeft() {
@@ -235,9 +312,6 @@
       pipeline.addFiles(input.files);
       input.value = "";
     }
-  }
-  function handleRetry(jobId: string) {
-    pipeline.retry(jobId);
   }
   function handleSync() {
     void engine.sync();
@@ -285,7 +359,7 @@
   <div class="flex flex-1 flex-col overflow-hidden">
     <TopBar
       {sortKey}
-      {sortAsc}
+      {sortDirs}
       {onSortChange}
       onSortReshuffle={handleReshuffle}
       onSettingsClick={toggleLeft}
@@ -302,20 +376,19 @@
       multiSelectActive={multiMode}
     />
 
-    <main class="flex-1 overflow-hidden p-4 pt-20 md:p-6 md:pt-20">
+    <main class="flex-1 overflow-hidden">
       {#if visiblePhotos.length === 0}
         <div
-          class="flex flex-col items-center justify-center py-20 text-center"
+          class="flex flex-col items-center justify-center py-24 text-center"
+          style="animation: fadeInUp var(--duration-enter) var(--ease-enter) both"
         >
-          <div
-            class="mb-4 flex size-20 items-center justify-center rounded-full bg-card"
-          >
+          <div class="mb-6">
             <svg
-              class="size-10 text-muted-foreground"
+              class="size-12 text-muted-foreground"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="1.5"
               stroke-linecap="round"
               stroke-linejoin="round"
             >
@@ -324,15 +397,21 @@
               <line x1="12" y1="3" x2="12" y2="15"></line>
             </svg>
           </div>
-          <p class="text-muted-foreground">
+          <p class="text-lg font-medium tracking-[-0.02em] text-foreground/85">
+            {store.photos.length === 0 ? "还没有照片" : "没有符合筛选的照片"}
+          </p>
+          <p class="mt-1.5 text-sm text-muted-foreground">
             {store.photos.length === 0
-              ? "还没有照片，点击右上角上传第一张吧"
-              : "没有符合筛选的照片"}
+              ? "点击右上角上传你的第一张照片"
+              : "试试调整筛选条件"}
           </p>
         </div>
       {:else}
         <WaterfallLayout
           photos={visiblePhotos}
+          pending={pendingPhotos}
+          overlays={uploadOverlays}
+          onRetryUpload={handleRetryUpload}
           selfId={store.selfId}
           dir={layout.dir}
           strategy={layout.strategy}
@@ -344,7 +423,6 @@
           onDislike={handleDislike}
           onRequestDelete={handleRequestDelete}
           onDelete={handleDelete}
-          onUnmark={handleUnmark}
           onDeleteSelected={handleDeleteSelected}
           onDownloadSelected={handleDownloadSelected}
           onUnmarkSelected={handleUnmarkSelected}
@@ -370,9 +448,42 @@
 
   <!-- Upload progress -->
   <div class="fixed bottom-4 right-4 z-30 w-72">
-    <UploadProgressPanel tasks={uploadTasks} onRetry={handleRetry} />
+    <UploadProgressPanel tasks={uploadTasks} />
   </div>
 
-  <!-- Toast notifications -->
-  <Toaster position="bottom-center" richColors closeButton />
+  <!-- Toast 通知：左下角（不压图片主体），配色/圆角/字体全部对齐站点令牌 -->
+  <Toaster
+    position="bottom-left"
+    theme="dark"
+    richColors
+    offset={{ bottom: "1rem", left: "1rem" }}
+    toastOptions={{
+      style: [
+        // 表面与描边走站点令牌，richColors 的四种状态也只染边框与图标色
+        "--normal-bg: var(--color-popover)",
+        "--normal-bg-hover: var(--color-surface-top)",
+        "--normal-border: var(--color-border)",
+        "--normal-border-hover: var(--color-primary)",
+        "--normal-text: var(--color-foreground)",
+        "--success-bg: var(--color-popover)",
+        "--success-border: rgba(16, 185, 129, 0.45)",
+        "--success-text: var(--color-success)",
+        "--info-bg: var(--color-popover)",
+        "--info-border: rgba(34, 211, 238, 0.45)",
+        "--info-text: var(--color-primary)",
+        "--warning-bg: var(--color-popover)",
+        "--warning-border: rgba(245, 158, 11, 0.45)",
+        "--warning-text: var(--color-warning)",
+        "--error-bg: var(--color-popover)",
+        "--error-border: rgba(244, 63, 94, 0.45)",
+        "--error-text: var(--color-destructive)",
+        "--border-radius: 14px",
+        "--width: min(20rem, calc(100vw - 2rem))",
+        "padding: 11px 14px",
+        'font-family: "Inter", "Noto Sans SC", system-ui, -apple-system, sans-serif',
+        "box-shadow: var(--shadow-lg)",
+        "backdrop-filter: blur(12px)",
+      ].join(";"),
+    }}
+  />
 </div>

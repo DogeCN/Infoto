@@ -91,12 +91,19 @@ class AppState {
 		this.submit({ type: ops.markOpType(kind, add), target: photoId });
 	}
 
-	/** 单击切换：已标记则取消，未标记则标记。 */
+	/** 单击切换：已标记则取消，未标记则标记。喜欢/不喜欢互斥——标记其一自动撤销另一个。 */
 	toggleMark(photoId: number, kind: ops.MarkKind): void {
 		const p = this.photos.find((x) => x.id === photoId);
 		if (!p) return;
 		const field = kind === 'like' ? 'likes' : kind === 'dislike' ? 'dislikes' : 'reports';
-		this.setMark(photoId, kind, !p[field].includes(this.selfId));
+		const has = p[field].includes(this.selfId);
+		if (!has && kind !== 'report') {
+			// 互斥：赞/踩只能占一个（v1 语义 myVote ∈ {1,-1,0}）
+			const other = kind === 'like' ? 'dislikes' : 'likes';
+			const otherKind: ops.MarkKind = kind === 'like' ? 'dislike' : 'like';
+			if (p[other].includes(this.selfId)) this.setMark(photoId, otherKind, false);
+		}
+		this.setMark(photoId, kind, !has);
 	}
 
 	setMarkMany(ids: number[], kind: ops.MarkKind, add: boolean): void {

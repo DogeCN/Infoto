@@ -3,3 +3,5 @@ test-results
 playwright-report
 .vite
 *.local
+# Local mock media for dev screenshots (never commit).
+public/mock-img/

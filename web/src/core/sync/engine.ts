@@ -145,20 +145,19 @@ export class SyncEngine {
 		if (!this.db) await this.init();
 		const db = this.db!;
 		const entries = await readOps(db);
-		if (entries.length === 0) {
-			// sync once even with an empty log: refresh the cookie (sliding
-			// expiry) and pull the full snapshot
-			try {
-				const { response } = await (this.io.postSyncFn ?? postSync)({ ops: [] });
-				await this.applySnapshot(db, response);
-			} catch (e) {
-				this.io.onError?.('submit', e);
-			}
-			return;
-		}
+		// Manual sync with an empty log still surfaces as "syncing" (button
+		// spins): it refreshes the cookie (sliding expiry) and pulls the full
+		// snapshot from the server.
 		this.syncing = true;
 		this.emit();
 		try {
+			if (entries.length === 0) {
+				const { response } = await (this.io.postSyncFn ?? postSync)({
+					ops: [],
+				});
+				await this.applySnapshot(db, response);
+				return;
+			}
 			const ops = entries.map((e) => e.op);
 			const { response } = await (this.io.postSyncFn ?? postSync)({ ops });
 			// clear only after success (spec). Ops added during the sync have keys

@@ -40,9 +40,12 @@
     {@const pct = total ? (count / total) * 100 : 0}
     {@const isChosen = chosen === idx}
     {@const isWinner = max > 0 && count === max}
+    <!-- isolate：把内部的 z-10 关在按钮自己的堆叠上下文里。
+         否则 relative + z-index:auto 的按钮不会自建层，里面的 z-10 会逃到
+         外层上下文，越过父级 sticky 的推荐框之类（真出现过穿模）。 -->
     <button
       type="button"
-      class="relative w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-200 {isChosen
+      class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-200 {isChosen
         ? 'border-primary/50 bg-primary/5'
         : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'}"
       onclick={() => handle(idx)}

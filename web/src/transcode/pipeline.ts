@@ -22,6 +22,8 @@ export interface PipelineTaskSnapshot {
 	url?: string;
 	error?: string;
 	meta?: JobMeta;
+	/** Stage-1 artifact hash (drives optimistic-entry cleanup after /sync). */
+	sha256?: string;
 }
 
 export interface PipelineIo {
@@ -116,6 +118,7 @@ export class UploadPipeline {
 				url: m.url,
 				error: m.error,
 				meta: m.meta,
+				sha256: m.sha256,
 			});
 		});
 	}
@@ -134,6 +137,7 @@ export class UploadPipeline {
 				url: m.url,
 				error: m.error,
 				meta: m.meta,
+				sha256: m.sha256,
 			});
 			if (m.phase === 'done' && m.url && m.meta && !alreadyWritten) {
 				void this.writeUploadOp(m.jobId, m.url, m.meta);

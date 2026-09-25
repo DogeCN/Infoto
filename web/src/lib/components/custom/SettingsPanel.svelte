@@ -11,26 +11,31 @@
     ArrowRightToLine,
     ListOrdered,
     AlignHorizontalDistributeCenter,
+    MoveHorizontal,
+    UnfoldHorizontal,
     RotateCcw,
-    ChevronDown,
+    Flame,
+    HardDrive,
   } from "@lucide/svelte";
   import { cn } from "$lib/utils";
   import type { ScrollDir, FillStrategy } from "$base/lib/layout";
+  import type { Component } from "svelte";
   import type { Photo } from "$shared/types";
   import {
     defaultSettings,
     defaultFilterSettings,
+    normalizeSettings,
     countActiveFilters,
     isFilterable,
     metricRange,
     RANGE_KEYS,
-    RANGE_LABELS,
     type RangeKey,
     type Settings,
   } from "../../../settings";
-  import { humanSize } from "$base/lib/format";
+  import { compactSize } from "$base/lib/format";
   import TriStateToggle from "./TriStateToggle.svelte";
   import RangeSlider from "./RangeSlider.svelte";
+  import SingleSlider from "./SingleSlider.svelte";
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
@@ -46,18 +51,7 @@
   function loadSettings(): Settings {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as {
-          filters: { types: number[] } & Omit<Settings["filters"], "types">;
-          layout: Settings["layout"];
-          filtersOpen: boolean;
-          layoutOpen: boolean;
-        };
-        return {
-          ...parsed,
-          filters: { ...parsed.filters, types: new Set(parsed.filters.types) },
-        };
-      }
+      if (raw) return normalizeSettings(JSON.parse(raw));
     } catch {}
     return defaultSettings();
   }
@@ -85,10 +79,22 @@
 
   let activeFilterCount = $derived(countActiveFilters(settings.filters));
 
-  /** 「范围」子组是否完全无可筛项（元数据为空，或五项均 min = max）。 */
+  /** 布局参数的出厂默认值（用于判断「是否非默认」→ 图标/数值高亮）。 */
+  const LAYOUT_DEFAULTS = defaultSettings().layout;
+
+  /** 范围子组是否完全无可筛项（元数据为空，或五项均 min = max）。 */
   let noFilterableRange = $derived(
     photos.length === 0 || RANGE_KEYS.every((k) => !isFilterable(photos, k)),
   );
+
+  /** 范围筛选行的左侧图标（热度/喜欢/不喜欢/请求删除/文件大小）。 */
+  const RANGE_ICONS: Record<RangeKey, Component> = {
+    heat: Flame,
+    likes: ThumbsUp,
+    dislikes: ThumbsDown,
+    reports: Flag,
+    size: HardDrive,
+  };
 
   /** 某项的当前区间：已启用取用户值，否则取完整动态范围。 */
   function rangeValue(key: RangeKey): [number, number] {
@@ -96,7 +102,7 @@
     return settings.filters.ranges[key] ?? full;
   }
 
-  /** 已启用但等于完整范围 → 视为未生效（标签回落 muted、隐藏重置）。 */
+  /** 已启用但等于完整范围 → 视为未生效（图标与数值回落 muted）。 */
   function rangeActive(key: RangeKey): boolean {
     const v = settings.filters.ranges[key];
     if (!v) return false;
@@ -115,12 +121,6 @@
     };
   }
 
-  function resetRange(key: RangeKey) {
-    const next = { ...settings.filters.ranges };
-    delete next[key];
-    settings = { ...settings, filters: { ...settings.filters, ranges: next } };
-  }
-
   // 生效筛选数上报（顶栏设置图标的计数角标）
   $effect(() => {
     onFilterCount?.(activeFilterCount);
@@ -135,8 +135,12 @@
     }
   });
 
-  function resetAll() {
-    settings = defaultSettings();
+  function resetFilters() {
+    settings = { ...settings, filters: defaultFilterSettings() };
+  }
+
+  function resetLayout() {
+    settings = { ...settings, layout: defaultSettings().layout };
   }
 
   function toggleType(t: number) {
@@ -178,60 +182,57 @@
   export function getSettings(): Settings {
     return settings;
   }
+
+  /** 分区标题行：左侧标题、右侧该分区重置按钮。 */
 </script>
 
-<div class="space-y-1">
-  <!-- Filters section -->
-  <details
-    open={settings.filtersOpen}
-    ontoggle={(e) =>
-      (settings = {
-        ...settings,
-        filtersOpen: (e.target as HTMLDetailsElement).open,
-      })}
-  >
-    <summary
-      class="flex cursor-pointer items-center justify-between px-2 py-1.5 text-sm font-medium hover:bg-muted rounded-md transition-colors select-none list-none [&::-webkit-details-marker]:hidden"
-    >
-      <span class="flex items-center gap-2">
-        筛选
-        {#if activeFilterCount > 0}
-          <span
-            class="flex items-center justify-center size-4 rounded-full bg-primary text-[10px] font-bold text-primary-foreground"
-          >
-            {activeFilterCount}
-          </span>
-        {/if}
-      </span>
-      <ChevronDown
-        class="size-4 text-muted-foreground transition-transform details-open:rotate-180"
-      />
-    </summary>
-    <div class="space-y-4 px-1 pt-2 pb-2">
-      <!-- 范围：五项双柄滑块；无照片或全项 min = max 时标题下显示占位文字 -->
-      <div class="space-y-3">
-        <span class="text-xs font-medium text-foreground">范围</span>
+<!-- pb-4：滚动容器不再提供底部 padding（见 OverlaySidebar），底部留白由面板自理 -->
+<div class="space-y-6 pb-4">
+  <!-- Filters section（平铺） -->
+  <section>
+    <div class="flex items-center justify-between px-1">
+      <h3 class="text-sm font-medium">筛选</h3>
+      <button
+        type="button"
+        class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
+        title="重置筛选"
+        onclick={resetFilters}
+      >
+        <RotateCcw class="size-3.5" />
+      </button>
+    </div>
+
+    <div class="mt-4 space-y-5 px-1">
+      <!-- 范围：行式「图标 下限值【双柄滑块】上限值」 -->
+      <div class="space-y-3.5">
         {#if noFilterableRange}
           <p class="text-xs text-muted-foreground">上传照片后可按数值筛选</p>
         {:else}
           {#each RANGE_KEYS as key (key)}
             {@const full = metricRange(photos, key)}
             {@const filterable = isFilterable(photos, key)}
+            {@const Icon = RANGE_ICONS[key]}
+            {@const active = rangeActive(key)}
             {#if full}
-              <div>
-                <span class="mb-1 block text-xs text-muted-foreground"
-                  >{RANGE_LABELS[key]}</span
-                >
-                <RangeSlider
-                  min={full[0]}
-                  max={full[1]}
-                  value={rangeValue(key)}
-                  active={rangeActive(key)}
-                  disabled={!filterable}
-                  format={key === "size" ? humanSize : (v) => String(v)}
-                  onChange={(v) => setRange(key, v)}
-                  onReset={() => resetRange(key)}
+              <div class="flex items-center gap-2">
+                <Icon
+                  class="size-4 shrink-0 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {active
+                    ? 'text-primary'
+                    : 'text-muted-foreground'} {filterable
+                    ? ''
+                    : 'opacity-50'}"
                 />
+                <div class="min-w-0 flex-1">
+                  <RangeSlider
+                    min={full[0]}
+                    max={full[1]}
+                    value={rangeValue(key)}
+                    {active}
+                    disabled={!filterable}
+                    format={key === "size" ? compactSize : (v) => String(v)}
+                    onChange={(v) => setRange(key, v)}
+                  />
+                </div>
               </div>
             {/if}
           {/each}
@@ -271,7 +272,7 @@
         <button
           type="button"
           class={cn(
-            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors",
+            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
             settings.filters.types.has(0)
               ? "bg-primary text-primary-foreground"
               : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
@@ -283,7 +284,7 @@
         <button
           type="button"
           class={cn(
-            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors",
+            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
             settings.filters.types.has(1)
               ? "bg-primary text-primary-foreground"
               : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
@@ -295,7 +296,7 @@
         <button
           type="button"
           class={cn(
-            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors",
+            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
             settings.filters.types.has(2)
               ? "bg-primary text-primary-foreground"
               : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
@@ -306,147 +307,100 @@
         </button>
       </div>
     </div>
-  </details>
+  </section>
 
-  <!-- Layout section -->
-  <details
-    open={settings.layoutOpen}
-    ontoggle={(e) =>
-      (settings = {
-        ...settings,
-        layoutOpen: (e.target as HTMLDetailsElement).open,
-      })}
-  >
-    <summary
-      class="flex cursor-pointer items-center justify-between px-2 py-1.5 text-sm font-medium hover:bg-muted rounded-md transition-colors select-none list-none [&::-webkit-details-marker]:hidden"
-    >
-      布局
-      <ChevronDown
-        class="size-4 text-muted-foreground transition-transform details-open:rotate-180"
-      />
-    </summary>
-    <div class="space-y-4 px-1 pt-2 pb-2">
-      <!-- Scroll direction -->
-      <div class="space-y-1.5">
-        <span class="text-xs text-muted-foreground">滚动方向</span>
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class={cn(
-              "inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors h-9 w-9",
-              settings.layout.dir === "v"
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-            )}
-            onclick={() => setDir("v")}
-            title="纵向"
-          >
-            <ArrowDownToLine class="size-4" />
-          </button>
-          <button
-            type="button"
-            class={cn(
-              "inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors h-9 w-9",
-              settings.layout.dir === "h"
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-            )}
-            onclick={() => setDir("h")}
-            title="横向"
-          >
-            <ArrowRightToLine class="size-4" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Fill strategy -->
-      <div class="space-y-1.5">
-        <span class="text-xs text-muted-foreground">填充策略</span>
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class={cn(
-              "inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors h-9 w-9",
-              settings.layout.strategy === "sequential"
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-            )}
-            onclick={() => setStrategy("sequential")}
-            title="Sequential"
-          >
-            <ListOrdered class="size-4" />
-          </button>
-          <button
-            type="button"
-            class={cn(
-              "inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors h-9 w-9",
-              settings.layout.strategy === "shortest"
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-            )}
-            onclick={() => setStrategy("shortest")}
-            title="Shortest"
-          >
-            <AlignHorizontalDistributeCenter class="size-4" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Band width -->
-      <div class="space-y-1.5">
-        <div class="flex items-center justify-between">
-          <label for="layout-band" class="text-xs text-muted-foreground"
-            >目标带宽</label
-          >
-          <span class="text-xs text-muted-foreground"
-            >{settings.layout.band}px</span
-          >
-        </div>
-        <input
-          id="layout-band"
-          type="range"
-          min="200"
-          max="800"
-          step="10"
-          value={settings.layout.band}
-          oninput={(e) => setBand(Number((e.target as HTMLInputElement).value))}
-          class="w-full h-2 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
-        />
-      </div>
-
-      <!-- Gap -->
-      <div class="space-y-1.5">
-        <div class="flex items-center justify-between">
-          <label for="layout-gap" class="text-xs text-muted-foreground"
-            >间距</label
-          >
-          <span class="text-xs text-muted-foreground"
-            >{settings.layout.gap}px</span
-          >
-        </div>
-        <input
-          id="layout-gap"
-          type="range"
-          min="0"
-          max="32"
-          step="1"
-          value={settings.layout.gap}
-          oninput={(e) => setGap(Number((e.target as HTMLInputElement).value))}
-          class="w-full h-2 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
-        />
-      </div>
+  <!-- Layout section（平铺） -->
+  <section>
+    <div class="flex items-center justify-between px-1">
+      <h3 class="text-sm font-medium">布局</h3>
+      <button
+        type="button"
+        class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
+        title="重置布局"
+        onclick={resetLayout}
+      >
+        <RotateCcw class="size-3.5" />
+      </button>
     </div>
-  </details>
 
-  <!-- Reset -->
-  <div class="px-1 pt-1">
-    <button
-      type="button"
-      class="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium ring-offset-background transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 w-full"
-      onclick={resetAll}
-    >
-      <RotateCcw class="size-4 mr-2" />
-      重置
-    </button>
-  </div>
+    <div class="mt-4 space-y-3.5 px-1">
+      <!-- 滚动方向 + 填充策略：与归属开关同款的图标文字按钮 -->
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          class={cn(
+            "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
+            settings.layout.dir === "v"
+              ? "bg-primary text-primary-foreground"
+              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          )}
+          onclick={() => setDir("v")}
+        >
+          <ArrowDownToLine class="size-3.5" />
+          <span class="truncate">纵向</span>
+        </button>
+        <button
+          type="button"
+          class={cn(
+            "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
+            settings.layout.dir === "h"
+              ? "bg-primary text-primary-foreground"
+              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          )}
+          onclick={() => setDir("h")}
+        >
+          <ArrowRightToLine class="size-3.5" />
+          <span class="truncate">横向</span>
+        </button>
+        <button
+          type="button"
+          class={cn(
+            "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
+            settings.layout.strategy === "sequential"
+              ? "bg-primary text-primary-foreground"
+              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          )}
+          onclick={() => setStrategy("sequential")}
+        >
+          <ListOrdered class="size-3.5" />
+          <span class="truncate">顺序</span>
+        </button>
+        <button
+          type="button"
+          class={cn(
+            "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
+            settings.layout.strategy === "shortest"
+              ? "bg-primary text-primary-foreground"
+              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          )}
+          onclick={() => setStrategy("shortest")}
+        >
+          <AlignHorizontalDistributeCenter class="size-3.5" />
+          <span class="truncate">最短</span>
+        </button>
+      </div>
+
+      <!-- 目标带宽 / 间距：与范围筛选同款的行式滑块（单柄版） -->
+      <SingleSlider
+        min={200}
+        max={800}
+        step={10}
+        value={settings.layout.band}
+        defaultValue={LAYOUT_DEFAULTS.band}
+        icon={UnfoldHorizontal}
+        format={(v) => `${v}px`}
+        onChange={setBand}
+      />
+      <SingleSlider
+        min={0}
+        max={32}
+        step={1}
+        value={settings.layout.gap}
+        defaultValue={LAYOUT_DEFAULTS.gap}
+        icon={MoveHorizontal}
+        format={(v) => `${v}px`}
+        onChange={setGap}
+      />
+    </div>
+  </section>
 </div>

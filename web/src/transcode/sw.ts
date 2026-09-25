@@ -215,7 +215,10 @@ async function runUpload(rec: JobRec): Promise<void> {
 		notify(rec);
 		return;
 	}
-	const r = await postUpload(blob, { origin: self.location.origin });
+	const r = await postUpload(blob, {
+		origin: self.location.origin,
+		onProgress: (fraction) => notify(rec, { fraction }),
+	});
 	if (r.ok) {
 		rec.url = r.url;
 		rec.phase = 'done';
@@ -320,8 +323,9 @@ onconnect = (e: MessageEvent) => {
 		handleMessage(port, m);
 	};
 	port.onmessageerror = () => undefined;
-	// replay all job states to the new connection (refresh recovery)
-	for (const rec of jobs.values()) port.postMessage({ t: 'jobStatus', jobId: rec.jobId, phase: rec.phase, url: rec.url, error: rec.error, meta: rec.meta });
+	// replay all job states to the new connection (refresh recovery);
+	// fileName must ride along or the page falls back to showing the jobId
+	for (const rec of jobs.values()) port.postMessage({ t: 'jobStatus', jobId: rec.jobId, fileName: rec.fileName, phase: rec.phase, url: rec.url, error: rec.error, meta: rec.meta });
 };
 
 function handleMessage(port: MessagePort, m: PageToSwMessage): void {

@@ -43,8 +43,6 @@ export interface LayoutSettings {
 export interface Settings {
 	filters: FilterSettings;
 	layout: LayoutSettings;
-	filtersOpen: boolean;
-	layoutOpen: boolean;
 }
 
 /** 取某照片在某个范围筛选维度上的取值。热度 = 喜欢数 − 不喜欢数。 */
@@ -96,9 +94,62 @@ export function defaultFilterSettings(): FilterSettings {
 export function defaultSettings(): Settings {
 	return {
 		filters: defaultFilterSettings(),
-		layout: { dir: 'v', strategy: 'sequential', band: 320, gap: 8 },
-		filtersOpen: true,
-		layoutOpen: false,
+		layout: { dir: 'v', strategy: 'sequential', band: 260, gap: 12 },
+	};
+}
+
+const TRI_STATES: readonly TriState[] = ['off', 'only', 'exclude'];
+
+/**
+ * 归一化外部传入的设置（localStorage 里的旧版本数据可能缺字段、多字段或类型不符）。
+ * 以默认值为底逐项校验，任何非法项回落默认值——绝不把 undefined 泄漏给下游。
+ */
+export function normalizeSettings(raw: unknown): Settings {
+	const d = defaultSettings();
+	if (!raw || typeof raw !== 'object') return d;
+	const src = raw as Record<string, unknown>;
+
+	const rf = (src['filters'] ?? {}) as Record<string, unknown>;
+	const types = new Set(
+		Array.isArray(rf['types'])
+			? (rf['types'] as unknown[]).filter((t): t is number => typeof t === 'number' && [0, 1, 2].includes(t))
+			: [],
+	);
+	if (types.size === 0) for (const t of d.filters.types) types.add(t);
+
+	const tri = (v: unknown): TriState =>
+		typeof v === 'string' && (TRI_STATES as readonly string[]).includes(v) ? (v as TriState) : 'off';
+
+	const rawRanges = (rf['ranges'] ?? {}) as Record<string, unknown>;
+	const ranges: Partial<Record<RangeKey, RangeValue>> = {};
+	for (const key of RANGE_KEYS) {
+		const v = rawRanges[key];
+		if (!Array.isArray(v) || v.length !== 2) continue;
+		const [a, b] = v as unknown[];
+		if (typeof a !== 'number' || typeof b !== 'number') continue;
+		if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+		ranges[key] = [Math.min(a, b), Math.max(a, b)];
+	}
+
+	const rl = (src['layout'] ?? {}) as Record<string, unknown>;
+	const num = (v: unknown, fallback: number): number =>
+		typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+
+	return {
+		filters: {
+			types,
+			ownedByMe: tri(rf['ownedByMe']),
+			likedByMe: tri(rf['likedByMe']),
+			dislikedByMe: tri(rf['dislikedByMe']),
+			reportedByMe: tri(rf['reportedByMe']),
+			ranges,
+		},
+		layout: {
+			dir: rl['dir'] === 'h' ? 'h' : 'v',
+			strategy: rl['strategy'] === 'shortest' ? 'shortest' : 'sequential',
+			band: num(rl['band'], d.layout.band),
+			gap: num(rl['gap'], d.layout.gap),
+		},
 	};
 }
 

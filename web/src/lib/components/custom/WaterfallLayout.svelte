@@ -13,9 +13,15 @@
   import PhotoCard from "./PhotoCard.svelte";
   import Lightbox from "./Lightbox.svelte";
   import MultiSelectBar from "./MultiSelectBar.svelte";
+  import { scroll } from "../../../state/scroll.svelte";
 
   interface Props {
     photos: Photo[];
+    /** 上传乐观条目（契约：紧随信息卡片、先于其他媒体；不参与排序筛选）。 */
+    pending?: Photo[];
+    /** 乐观条目的窗帘遮罩：fraction（上传中）/ failed（全遮罩 + 重试）。 */
+    overlays?: Map<number, { fraction?: number; failed?: boolean }>;
+    onRetryUpload?: (photo: Photo) => void;
     dir?: ScrollDir;
     strategy?: FillStrategy;
     band?: number;
@@ -29,7 +35,6 @@
     onDislike?: (photo: Photo) => void;
     onRequestDelete?: (photo: Photo) => void;
     /** 撤销已作的喜欢/不喜欢标记。 */
-    onUnmark?: (photo: Photo) => void;
     /** 仅根用户：delete op。 */
     onDelete?: (photo: Photo) => void;
     onDeleteSelected?: (ids: number[]) => void;
@@ -42,6 +47,9 @@
 
   let {
     photos,
+    pending = [],
+    overlays = new Map<number, { fraction?: number; failed?: boolean }>(),
+    onRetryUpload,
     dir = "v",
     strategy = "sequential",
     band = 320,
@@ -53,7 +61,6 @@
     onLike,
     onDislike,
     onRequestDelete,
-    onUnmark,
     onDelete,
     onDeleteSelected,
     onDownloadSelected,
@@ -63,8 +70,13 @@
 
   let containerEl: HTMLDivElement | undefined = $state(undefined);
   let scrollTop = $state(0);
+  let scrollLeftPos = $state(0);
   let viewportH = $state(0);
   let containerW = $state(0);
+  /** 画布内边距：滚动容器全宽（滚动条贴视口右缘），留白由画布 margin 承担。 */
+  let padX = $state(16);
+  /** 顶部留白（容纳悬浮顶栏，内容可滚入顶栏之下形成沉浸）。 */
+  let padTop = $state(80);
 
   // 缩放（契约：桌面 Ctrl+滚轮 / 移动端捏合，50%–200%），作用于目标带宽
   let zoom = $state(1);
@@ -122,6 +134,7 @@
   // Layout state
   let boxes = $state<LayoutBox[]>([]);
   let totalH = $state(0);
+  let totalW = $state(0);
   let order = $state<number[]>([]);
   let layoutReady = $state(false);
   let currentAbort: AbortController | null = null;
@@ -133,16 +146,26 @@
   let marqueeActive = $state(false);
   let marqueeStart = $state({ x: 0, y: 0 });
   let marqueeRect = $state<Rect>({ x: 0, y: 0, w: 0, h: 0 });
+  /** 框选开始时的选中快照：onMove 用「快照 ∪ 命中」重算，避免增量写引发的循环。 */
+  let marqueeBase = new Set<number>();
+  /** 框选矩形是否实际拖动过（用于抑制卡片 click）。 */
+  let marqueeMoved = false;
 
   // Lightbox state
   let lightboxOpen = $state(false);
   let lightboxIndex = $state(0);
 
-  // Layout items derived from photos
+  // 退出多选模式时清空选中（顶栏图标退出时高亮框不残留）
+  $effect(() => {
+    if (!multiMode && selected.size > 0) selected = new Set();
+  });
+
+  // Layout items: 乐观条目排最前，其余按排序筛选结果
+  let allPhotos = $derived([...pending, ...photos]);
   let layoutItems = $derived(
-    photos.map((p) => ({ id: p.id, w: p.width || 1, h: p.height || 1 })),
+    allPhotos.map((p) => ({ id: p.id, w: p.width || 1, h: p.height || 1 })),
   );
-  let photoMap = $derived(new Map(photos.map((p) => [p.id, p])));
+  let photoMap = $derived(new Map(allPhotos.map((p) => [p.id, p])));
 
   // Recompute layout when dependencies change
   $effect(() => {
@@ -163,11 +186,19 @@
     currentAbort?.abort();
     const controller = new AbortController();
     currentAbort = controller;
-    const opts = { dir: d, strategy: s, cross: w, band: b, gap: g };
+    const opts = {
+      dir: d,
+      strategy: s,
+      // 横向模式垂直方向静态留白：顶 padTop（容纳悬浮顶栏）+ 底 padX
+      cross: (d === "v" ? w : viewportH) - (d === "v" ? padX * 2 : padTop + padX),
+      band: b,
+      gap: g,
+    };
     computeLayoutChunked(items, opts, 400, controller.signal).then((result) => {
       if (result && !controller.signal.aborted) {
         boxes = result.boxes;
         totalH = result.totalH;
+        totalW = result.totalW;
         order = orderByMain(result.boxes, d);
         layoutReady = true;
       }
@@ -178,7 +209,7 @@
   let visibleBoxes = $derived.by(() => {
     if (!layoutReady || boxes.length === 0) return [];
     const viewportSize = dir === "v" ? viewportH : containerW;
-    const scrollPos = dir === "v" ? scrollTop : 0;
+    const scrollPos = dir === "v" ? scrollTop : scrollLeftPos;
     const buffer = viewportSize * bufferScreens;
     const maxExtent = band + gap;
     const from = scrollPos - buffer;
@@ -187,24 +218,25 @@
     return indices.map((i) => ({ box: boxes[i], index: i }));
   });
 
-  // Marquee hits in real time
-  let marqueeHitIds = $derived.by((): Set<number> => {
-    if (!marqueeActive || (marqueeRect.w === 0 && marqueeRect.h === 0))
-      return new Set();
-    return new Set(marqueeHits(boxes, marqueeRect));
-  });
+  // Marquee hits: computed inside onMove (marqueeRect is only used for rendering)
 
   function handleScroll(e: Event) {
-    scrollTop = (e.currentTarget as HTMLDivElement).scrollTop;
+    const el = e.currentTarget as HTMLDivElement;
+    scrollTop = el.scrollTop;
+    scrollLeftPos = el.scrollLeft;
+    scroll.y = scrollTop;
+    scroll.x = scrollLeftPos;
   }
 
   function handlePhotoClick(photo: Photo) {
     if (multiMode) {
       toggleSelect(photo.id);
-    } else {
-      lightboxIndex = photos.findIndex((p) => p.id === photo.id);
-      lightboxOpen = true;
+      return;
     }
+    // 上传中的乐观条目不进预览（等 /sync 落定后可见）
+    if (overlays.has(photo.id)) return;
+    lightboxIndex = allPhotos.findIndex((p) => p.id === photo.id);
+    lightboxOpen = true;
   }
 
   function handleLongPress(photo: Photo) {
@@ -228,39 +260,52 @@
   }
 
   function selectAll() {
-    selected = new Set(photos.map((p) => p.id));
+    selected = new Set(allPhotos.map((p) => p.id));
   }
 
   function deselectAll() {
+    // 只清空选中，不退出多选模式（退出由顶栏多选图标承担）
     selected = new Set();
-    if (multiMode) {
-      multiMode = false;
-      onMultiModeChange?.(false);
-    }
   }
 
-  // Marquee: pointerdown on the scroll container
+  // Marquee: pointerdown on the scroll container（卡片上起始同样框选）
   function handleMarqueeDown(e: PointerEvent) {
     if (!multiMode) return;
-    // Only start marquee on the container background, not on cards
-    if ((e.target as HTMLElement).closest('[role="button"]')) return;
 
     const scrollEl = containerEl;
     if (!scrollEl) return;
 
+    // 框选矩形统一用画布坐标（boxes 的坐标系），与视口/容器偏移解耦
+    const rect = scrollEl.getBoundingClientRect();
+    const toCanvas = (cx: number, cy: number) =>
+      dir === "v"
+        ? { x: cx - rect.left - padX, y: cy - rect.top + scrollTop - padTop }
+        : {
+            x: cx - rect.left + scrollLeftPos - padX,
+            y: cy - rect.top - padTop,
+          };
+    const start = toCanvas(e.clientX, e.clientY);
+    marqueeBase = new Set(selected);
+    marqueeMoved = false;
+
     marqueeActive = true;
-    marqueeStart = { x: e.clientX, y: e.clientY + scrollTop };
-    marqueeRect = { x: e.clientX, y: e.clientY + scrollTop, w: 0, h: 0 };
+    marqueeStart = start;
+    marqueeRect = { ...start, w: 0, h: 0 };
 
     const onMove = (ev: PointerEvent) => {
-      const curX = ev.clientX;
-      const curY = ev.clientY + scrollTop;
+      const cur = toCanvas(ev.clientX, ev.clientY);
       marqueeRect = {
-        x: Math.min(marqueeStart.x, curX),
-        y: Math.min(marqueeStart.y, curY),
-        w: Math.abs(curX - marqueeStart.x),
-        h: Math.abs(curY - marqueeStart.y),
+        x: Math.min(start.x, cur.x),
+        y: Math.min(start.y, cur.y),
+        w: Math.abs(cur.x - start.x),
+        h: Math.abs(cur.y - start.y),
       };
+      // 拖动超过阈值视为框选手势：抑制随后合成到卡片上的 click（点选）
+      if (marqueeRect.w > 4 || marqueeRect.h > 4) marqueeMoved = true;
+      // 框选命中实时并入选中集：以快照为底，避免在 effect 中写自身依赖造成循环
+      const next = new Set(marqueeBase);
+      for (const id of marqueeHits(boxes, marqueeRect)) next.add(id);
+      selected = next;
     };
 
     const onUp = () => {
@@ -274,14 +319,14 @@
     window.addEventListener("pointerup", onUp);
   }
 
-  // Apply marquee hits to selection while dragging
-  $effect(() => {
-    if (marqueeActive && marqueeHitIds.size > 0) {
-      const next = new Set(selected);
-      for (const id of marqueeHitIds) next.add(id);
-      selected = next;
+  /** 框选手势刚结束时抑制卡片 click（capture 阶段截停，避免误点选）。 */
+  function suppressCardClick(e: MouseEvent) {
+    if (marqueeMoved) {
+      e.stopPropagation();
+      e.preventDefault();
+      marqueeMoved = false;
     }
-  });
+  }
 
   // Ctrl+A
   $effect(() => {
@@ -305,12 +350,16 @@
       for (const entry of entries) {
         containerW = entry.contentRect.width;
         viewportH = entry.contentRect.height;
+        padX = containerW >= 768 ? 16 : 12;
+        padTop = containerW >= 768 ? 80 : 64;
       }
     });
     ro.observe(containerEl);
     const rect = containerEl.getBoundingClientRect();
     containerW = rect.width;
     viewportH = rect.height;
+    padX = containerW >= 768 ? 16 : 12;
+    padTop = containerW >= 768 ? 80 : 64;
     return () => ro.disconnect();
   });
 </script>
@@ -321,6 +370,8 @@
     bind:this={containerEl}
     class="relative h-full w-full overflow-auto touch-none"
     onscroll={handleScroll}
+    onclickcapture={suppressCardClick}
+    ondragstart={(e) => e.preventDefault()}
     onpointerdown={(e) => {
       handleMarqueeDown(e);
       onPinchDown(e);
@@ -333,9 +384,13 @@
   >
     <div
       class="relative"
-      style="width: {dir === 'h' ? `${totalH}px` : '100%'}; height: {dir === 'v'
+      style="margin: {dir === 'h'
+        ? `${padTop}px ${padX}px 0 ${padX}px`
+        : `${padTop}px ${padX}px 0`}; width: {dir === 'h'
+        ? `${totalW}px`
+        : `calc(100% - ${padX * 2}px)`}; height: {dir === 'v'
         ? `${totalH}px`
-        : '100%'}"
+        : `calc(100% - ${padTop + padX}px)`}"
     >
       {#each visibleBoxes as { box, index } (box.id)}
         {@const photo = photoMap.get(box.id)}
@@ -343,8 +398,12 @@
           <PhotoCard
             {photo}
             {selfId}
+            x={box.x}
+            y={box.y}
             width={box.w}
             height={box.h}
+            overlay={overlays.get(photo.id)}
+            onRetryUpload={() => onRetryUpload?.(photo)}
             selected={selected.has(photo.id)}
             {multiMode}
             onClick={() => handlePhotoClick(photo)}
@@ -362,14 +421,17 @@
   {#if marqueeActive && (marqueeRect.w > 2 || marqueeRect.h > 2)}
     <div
       class="pointer-events-none absolute z-30 border-2 border-primary/60 bg-primary/10"
-      style="left: {marqueeRect.x}px; top: {marqueeRect.y -
-        scrollTop}px; width: {marqueeRect.w}px; height: {marqueeRect.h}px"
+      style="left: {dir === 'v'
+        ? marqueeRect.x + padX
+        : marqueeRect.x - scrollLeftPos + padX}px; top: {dir === 'v'
+        ? marqueeRect.y - scrollTop + padTop
+        : marqueeRect.y + padTop}px; width: {marqueeRect.w}px; height: {marqueeRect.h}px"
     ></div>
   {/if}
 
   <MultiSelectBar
     {selected}
-    {photos}
+    photos={allPhotos}
     {selfId}
     visible={multiMode}
     onSelectAll={selectAll}
@@ -399,6 +461,5 @@
   {onDislike}
   {onRequestDelete}
   {onDelete}
-  {onUnmark}
   {onDownload}
 />

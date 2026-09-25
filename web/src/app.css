@@ -2,28 +2,40 @@
 @plugin "@tailwindcss/typography";
 
 @theme {
+  /* 中性近黑压眼，回退 v1 蓝黑阶梯：更亮更透气，降低迁移割裂感 */
   --color-background: #0a0e1a;
   --color-foreground: #e2e8f0;
   --color-muted-foreground: #7b85a0;
-  --color-card: #131822;
-  --color-popover: #1a212e;
-  --color-surface-top: #242d47;
-  --color-muted: #1a212e;
+  --color-card: #0f1524;
+  --color-popover: #151c2e;
+  --color-surface-top: #1a2238;
+  --color-muted: #151c2e;
   --color-primary: #22d3ee;
-  --color-primary-foreground: #0a0e1a;
+  --color-primary-foreground: #042f2e;
   --color-ring: #22d3ee;
   --color-border: #1e2640;
   --color-input: #1e2640;
-  --color-secondary: #1a212e;
+  --color-secondary: #151c2e;
   --color-secondary-foreground: #e2e8f0;
   --color-destructive: #f43f5e;
   --color-success: #10b981;
   --color-warning: #f59e0b;
-  --radius: 10px;
+  --radius: 12px;
+
+  /* 动效令牌（Rayburst 风格：非对称时序 + 弹簧弹层） */
+  --ease-enter: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-enter: 280ms;
+  --duration-exit: 160ms;
+  --duration-spring: 420ms;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.6);
 }
 
 @layer base {
-
   html,
   body {
     height: 100%;
@@ -34,7 +46,7 @@
   body {
     background: var(--color-background);
     color: var(--color-foreground);
-    font-family: "Space Grotesk", "Inter", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+    font-family: "Inter", "Noto Sans SC", system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     -webkit-user-select: none;
     user-select: none;
@@ -68,17 +80,17 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #2a3342;
+    background: #2a2a33;
     border-radius: 999px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #3a465a;
+    background: #3a3a46;
   }
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: #2a3342 transparent;
+    scrollbar-color: #2a2a33 transparent;
   }
 
   ::selection {
@@ -98,9 +110,14 @@
 }
 
 .skeleton {
-  background: linear-gradient(90deg, var(--color-card) 0%, var(--color-surface-top) 50%, var(--color-card) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--color-card) 0%,
+    var(--color-surface-top) 40%,
+    var(--color-card) 80%
+  );
   background-size: 800px 100%;
-  animation: shimmer 1.5s infinite linear;
+  animation: shimmer 1.8s infinite ease-in-out;
   border-radius: var(--radius);
 }
 
@@ -116,11 +133,24 @@
   }
 }
 
-/* 尊重 prefers-reduced-motion：投票填充条等装饰性过渡降级为瞬时 */
-@media (prefers-reduced-motion: reduce) {
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
 
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 尊重 prefers-reduced-motion：装饰性过渡与动画降级为瞬时 */
+@media (prefers-reduced-motion: reduce) {
   .vote-fill,
-  .vote-meta {
+  .vote-meta,
+  .skeleton {
     transition: none !important;
+    animation: none !important;
   }
 }

@@ -94,16 +94,16 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if open}
-  <!-- 遮罩自顶栏下沿开始：顶栏保持可见可点（图标高亮态可见，再次点击即关闭） -->
+  <!-- 遮罩全屏覆盖（含顶栏）：侧栏打开时整体压暗，层级高于顶栏、低于侧栏本体 -->
   <div
-    class="fixed inset-x-0 bottom-0 top-14 z-[45] bg-black/50 backdrop-blur-sm md:top-16"
+    class="fixed inset-0 z-[47] bg-black/50 backdrop-blur-sm"
     role="presentation"
     onclick={close}
   ></div>
 {/if}
 
 <aside
-  class="fixed top-0 z-50 flex h-full w-full flex-col border-border bg-card transition-transform duration-300 ease-in-out md:w-[var(--sidebar-w)]"
+  class="fixed top-0 z-50 flex h-full w-full flex-col border-border bg-card shadow-2xl shadow-black/40 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] md:w-[var(--sidebar-w)]"
   class:left-0={side === "left"}
   class:right-0={side === "right"}
   class:translate-x-0={open}
@@ -123,15 +123,15 @@
     onkeydown={onResizeKey}
   ></button>
 
-  <div class="flex items-center justify-between border-b border-border p-4">
-    <div class="flex items-center gap-2">
+  <div class="flex items-center justify-between border-b border-border px-5 py-4">
+    <div class="flex items-center gap-2.5">
       {#if icon}
         {@render icon()}
       {/if}
-      <h2 class="text-lg font-semibold">{title}</h2>
+      <h2 class="text-lg font-semibold tracking-tight">{title}</h2>
     </div>
     <button
-      class="flex items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+      class="flex items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-all duration-200 hover:bg-background hover:text-foreground hover:scale-105 active:scale-95"
       onclick={close}
       title="关闭"
     >
@@ -140,9 +140,12 @@
   </div>
 
   <!-- 内容区独立滚动；min-h-0 让子内容的 h-full / sticky 底栏有确定高度。
+       刻意不加底部 padding：滚动容器的 padding-bottom 会让 sticky 底栏
+       停在它上方 16px，那一条缝里滚动内容会露出来（"下面没盖住"的成因）。
+       底部留白改由各面板自己承担（SettingsPanel / 公告侧栏的 sticky 底栏）。
        dragging 时禁用选中，避免拖动中选中文本 -->
   <div
-    class="min-h-0 flex-1 overflow-y-auto p-4"
+    class="min-h-0 flex-1 overflow-y-auto px-4 pt-4"
     style="user-select: {dragging ? 'none' : 'auto'}"
   >
     {#if children}
