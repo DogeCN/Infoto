@@ -26,7 +26,9 @@ export default defineConfig({
 			// authenticated POSTs, so a URL probe would read its 404 as "not ready".
 			port: 8787,
 			reuseExistingServer: true,
-			timeout: 60_000,
+			// Wrangler startup can stall on telemetry/update probes under
+			// restricted local-network setups; give it room before failing.
+			timeout: 180_000,
 		},
 		{
 			command: 'npm run dev',

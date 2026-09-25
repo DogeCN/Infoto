@@ -11,6 +11,7 @@ import {
 	metricOf,
 	metricRange,
 } from '../../src/settings';
+import { normalizeRangeValue, mapRangeValue } from '../../src/lib/components/custom/rangeScale';
 
 const photo = (over: Partial<Photo> & { id: number }): Photo => ({
 	sha256: `h${over.id}`,
@@ -255,5 +256,22 @@ describe('ops: feedback', () => {
 		list = ops.applyFbCreate(list, -1, 0, 'hi', 5);
 		expect(list).toEqual([{ id: -1, userId: 0, contentMd: 'hi', createdAt: 5 }]);
 		expect(ops.applyFbDelete(list, -1)).toEqual([]);
+	});
+});
+
+describe('slider scale mapping', () => {
+	it('linear maps endpoints and reverses with rounding', () => {
+		expect(normalizeRangeValue(0, 0, 100, 'linear')).toBe(0);
+		expect(normalizeRangeValue(100, 0, 100, 'linear')).toBe(1);
+		expect(mapRangeValue(0.255, 0, 100, 'linear')).toBe(26);
+	});
+
+	it('log map keeps the low end usable across orders of magnitude', () => {
+		expect(normalizeRangeValue(0, 0, 10_000_000, 'logarithmic')).toBe(0);
+		expect(normalizeRangeValue(10_000_000, 0, 10_000_000, 'logarithmic')).toBe(1);
+		// 1 KB resolves to a meaningful fraction instead of near-zero.
+		expect(normalizeRangeValue(1024, 0, 10_000_000, 'logarithmic')).toBeGreaterThan(0.3);
+		expect(mapRangeValue(0, 0, 10_000_000, 'logarithmic')).toBe(0);
+		expect(mapRangeValue(1, 0, 10_000_000, 'logarithmic')).toBe(10_000_000);
 	});
 });

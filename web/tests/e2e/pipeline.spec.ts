@@ -5,19 +5,10 @@
 // top-bar upload button.
 import { expect, test, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
-
-/**
- * Fresh visitor → verification gate (always-pass locally) → snapshot. See
- * identity.spec.ts for the timing notes on the gate's fade-out.
- */
-async function passGate(page: Page) {
-	await page.goto('/');
-	await expect(page.locator('[data-verify]')).toBeVisible({ timeout: 15_000 });
-	await expect(page.locator('[data-verify]')).toBeHidden({ timeout: 30_000 });
-}
+import { passGate } from './helpers';
 
 /** Top-bar upload button (opens the file chooser). */
-const uploadButton = (page: Page) => page.locator('header button[title="上传"]');
+const uploadButton = (page: Page) => page.locator('header button:has(svg.lucide-upload)');
 
 /** Transcode-panel row for a given file name (visible while the job is active). */
 const taskRow = (page: Page, name: string) => page.getByText(name, { exact: true });
@@ -91,7 +82,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 		// the sha dedupe cache lives in IndexedDB and is refreshed by the engine's
 		// sync path — hit the real top-bar sync button (a bare fetch would not
 		// refresh it), so the second pick can hit the duplicate branch
-		await page.locator('header button[title="同步"]').click();
+		await page.locator('header button:has(svg.lucide-refresh-cw)').click();
 		await page.waitForResponse((r) => r.url().includes('/sync') && r.request().method() === 'POST' && r.ok(), { timeout: 30_000 });
 
 		// same file again → sha256 hit → duplicate (stage 2 skipped entirely).
@@ -111,7 +102,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 		await uploadButton(page).click();
 		await chooser2;
 		await dupLog;
-		await page.locator('header button[title="同步"]').click();
+		await page.locator('header button:has(svg.lucide-refresh-cw)').click();
 		await expect
 			.poll(count, { timeout: 30_000 })
 			.toBe(before); // no new photo was created
@@ -133,7 +124,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 		await expect(row).toBeVisible({ timeout: 60_000 });
 		await expect(async () => {
 			const rowGone = (await row.count()) === 0;
-			const retryShown = (await page.getByTitle('重试上传').count()) > 0;
+			const retryShown = (await page.locator('button:has(svg.lucide-rotate-ccw)').count()) > 0;
 			expect(rowGone || retryShown).toBe(true);
 		}).toPass({ timeout: 120_000 });
 	});
@@ -161,7 +152,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 		);
 		await uploadButton(page).click();
 		await chooser;
-		await expect(page.getByTitle('重试上传').first()).toBeVisible({ timeout: 120_000 });
+		await expect(page.locator('button:has(svg.lucide-rotate-ccw)').first()).toBeVisible({ timeout: 120_000 });
 		await expect(page.getByText('上传失败')).toBeVisible();
 	});
 

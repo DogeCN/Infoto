@@ -7,7 +7,6 @@
   "scripts": {
     "db:local": "wrangler d1 execute infoto-dev --local --file=schema.sql",
     "db:reset": "node scripts/reset-local-db.mjs",
-    "seed:local": "node scripts/seed-local.mjs",
     "dev:worker": "wrangler dev --port 8787",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
     "test:layout": "node --test src/ui/lib/layout.test.ts",
@@ -15,8 +14,7 @@
     "test:media": "node --test src/ui/lib/media.test.ts",
     "test:worker": "node --test src/worker/schema-alignment.test.ts src/worker/routes/sync.test.ts src/worker/routes/migrate.test.ts",
     "test": "node --test src/ui/lib/layout.test.ts src/ui/upload/pipeline.test.ts src/ui/lib/media.test.ts src/worker/schema-alignment.test.ts src/worker/routes/sync.test.ts src/worker/routes/migrate.test.ts",
-    "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json",
-    "seed:ann": "node scripts/seed-announcements.mjs"
+    "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "hono": "^4.13.5"

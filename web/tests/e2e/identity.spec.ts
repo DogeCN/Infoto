@@ -1,23 +1,8 @@
 // Identity & op semantics against the local Worker (via the Vite dev proxy):
 // 401 → siteKey → verification gate in the waterfall empty state → identity
 // creation → HttpOnly cookie → op → snapshot.
-import { expect, test, type Page } from '@playwright/test';
-
-/**
- * Walk a fresh visitor through the verification gate. The local Worker runs
- * Cloudflare's always-pass test secret, so the widget solves itself — the test
- * drives the real first-entry UI: the gate renders inside the main area (the
- * waterfall is empty for a new visitor), then fades out once the snapshot lands.
- *
- * The gate stays in the DOM (opacity-0) through its fade-out, so `toBeVisible`
- * holds into the "done" state; only after the widget is disposed does the node
- * unmount and `toBeHidden` flip.
- */
-async function passGate(page: Page) {
-	await page.goto('/');
-	await expect(page.locator('[data-verify]')).toBeVisible({ timeout: 15_000 });
-	await expect(page.locator('[data-verify]')).toBeHidden({ timeout: 30_000 });
-}
+import { expect, test } from '@playwright/test';
+import { expectGate, passGate, prepareGate } from './helpers';
 
 test.describe('identity & op semantics (local Worker)', () => {
 	test('first entry: 401 turnstile_required → gate in the empty waterfall → identity created → HttpOnly cookie lands', async ({
@@ -33,14 +18,15 @@ test.describe('identity & op semantics (local Worker)', () => {
 		expect(body.error).toBe('turnstile_required');
 		expect(body.turnstileSiteKey).toBeTruthy();
 
+		await prepareGate(page);
 		await page.goto('/');
 		// the gate renders inside the main area (the bare Turnstile widget, no
 		// extra copy) — the app shell (top bar) stays visible instead of being
-		// covered by a full-screen overlay
-		await expect(page.locator('[data-verify]')).toBeVisible({ timeout: 15_000 });
+		// covered by a full-screen overlay. prepareGate delays the first /sync,
+		// stretching the gate's brief mount window so expectGate can observe it.
+		await expectGate(page);
 		await expect(page.locator('header')).toBeVisible();
-
-		await passGate(page);
+		await expect(page.locator('[data-verify]')).toBeHidden({ timeout: 30_000 });
 
 		// cookie landed and HttpOnly
 		const cookies = await context.cookies();
