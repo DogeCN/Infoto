@@ -2,7 +2,7 @@
 @plugin "@tailwindcss/typography";
 
 @theme {
-  /* 中性近黑压眼，回退 v1 蓝黑阶梯：更亮更透气，降低迁移割裂感 */
+  /* The v1 blue-black ladder: brighter and airier than the neutral near-black, easing the migration. */
   --color-background: #0a0e1a;
   --color-foreground: #e2e8f0;
   --color-muted-foreground: #7b85a0;
@@ -22,7 +22,7 @@
   --color-warning: #f59e0b;
   --radius: 12px;
 
-  /* 动效令牌（Rayburst 风格：非对称时序 + 弹簧弹层） */
+  /* Motion tokens (Rayburst style: asymmetric timing + spring popovers). */
   --ease-enter: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -145,11 +145,28 @@
   }
 }
 
-/* 尊重 prefers-reduced-motion：装饰性过渡与动画降级为瞬时 */
+/* Rejected type-toggle feedback: a short horizontal shake. */
+@keyframes shakeX {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+
+/* Respect prefers-reduced-motion: decorative transitions and animations collapse to instant. */
 @media (prefers-reduced-motion: reduce) {
   .vote-fill,
   .vote-meta,
-  .skeleton {
+  .skeleton,
+  /* Inline animations (shakeX rejection feedback, fadeInUp empty state). */
+  [style*="shakeX"],
+  [style*="fadeInUp"] {
     transition: none !important;
     animation: none !important;
   }

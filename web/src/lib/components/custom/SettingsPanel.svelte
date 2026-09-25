@@ -14,13 +14,14 @@
     MoveHorizontal,
     UnfoldHorizontal,
     RotateCcw,
+    X,
     Flame,
     HardDrive,
   } from "@lucide/svelte";
   import { cn } from "$lib/utils";
   import type { ScrollDir, FillStrategy } from "$base/lib/layout";
   import type { Component } from "svelte";
-  import type { Photo } from "$shared/types";
+  import type { MediaType, Photo } from "$shared/types";
   import {
     defaultSettings,
     defaultFilterSettings,
@@ -36,13 +37,14 @@
   import TriStateToggle from "./TriStateToggle.svelte";
   import RangeSlider from "./RangeSlider.svelte";
   import SingleSlider from "./SingleSlider.svelte";
+  import Tooltip from "./Tooltip.svelte";
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
-    /** 用于计算各范围筛选的动态可调范围。 */
+    /** Source photos for computing dynamic ranges. */
     photos?: Photo[];
     onFilterCount?: (count: number) => void;
-    /** 递增即触发一次「重置全部筛选」，供顶栏角标调用。 */
+    /** Increment to trigger "reset all filters" (top-bar badge). */
     resetToken?: number;
   }
 
@@ -72,8 +74,9 @@
   }: Props = $props();
   let settings = $state<Settings>(loadSettings());
 
-  // localStorage 写入防抖：拖滑块时 60fps 同步写入会阻塞主线程（卡死根源之三）。
-  // 立即回调父组件（布局/筛选即时生效），localStorage 延迟 200ms 合并写入。
+  // Debounced localStorage writes: syncing at 60fps while dragging blocks the
+  // main thread. Call the parent immediately (instant layout / filters) and
+  // coalesce localStorage writes with a 200ms delay.
   let _saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     onSettingsChange?.(settings);
@@ -92,15 +95,16 @@
 
   let activeFilterCount = $derived(countActiveFilters(settings.filters));
 
-  /** 布局参数的出厂默认值（用于判断「是否非默认」→ 图标/数值高亮）。 */
+  /** Factory defaults for layout (drives non-default highlighting). */
   const LAYOUT_DEFAULTS = defaultSettings().layout;
 
-  /** 范围子组是否完全无可筛项（元数据为空，或五项均 min = max）。 */
+  /** Whether the range section has no filterable items (no metadata or every
+   *  range is min = max). */
   let noFilterableRange = $derived(
     photos.length === 0 || RANGE_KEYS.every((k) => !isFilterable(photos, k)),
   );
 
-  /** 范围筛选行的左侧图标（热度/喜欢/不喜欢/请求删除/文件大小）。 */
+  /** Leading icons for the range rows. */
   const RANGE_ICONS: Record<RangeKey, Component> = {
     heat: Flame,
     likes: ThumbsUp,
@@ -109,13 +113,14 @@
     size: HardDrive,
   };
 
-  /** 某项的当前区间：已启用取用户值，否则取完整动态范围。 */
+  /** Current range for a key: the user value, otherwise the full dynamic
+   *  range. */
   function rangeValue(key: RangeKey): [number, number] {
     const full = metricRange(photos, key) ?? [0, 0];
     return settings.filters.ranges[key] ?? full;
   }
 
-  /** 已启用但等于完整范围 → 视为未生效（图标与数值回落 muted）。 */
+  /** Whether a stored range differs from the full range (active highlight). */
   function rangeActive(key: RangeKey): boolean {
     const v = settings.filters.ranges[key];
     if (!v) return false;
@@ -134,12 +139,19 @@
     };
   }
 
-  // 生效筛选数上报（顶栏设置图标的计数角标）
+  /** Clear one range back to the full dynamic range. */
+  function clearRange(key: RangeKey) {
+    const ranges = { ...settings.filters.ranges };
+    delete ranges[key];
+    settings = { ...settings, filters: { ...settings.filters, ranges } };
+  }
+
+  // Report the active filter count (settings-icon badge).
   $effect(() => {
     onFilterCount?.(activeFilterCount);
   });
 
-  // 顶栏角标点击 → 重置全部筛选
+  // Top-bar badge click: reset all filters.
   let lastReset = $state(0);
   $effect(() => {
     if (resetToken !== lastReset) {
@@ -156,10 +168,29 @@
     settings = { ...settings, layout: defaultSettings().layout };
   }
 
-  function toggleType(t: number) {
+  let shakingType = $state<MediaType | null>(null);
+  const TYPE_LABELS: Record<number, string> = {
+    0: "图片",
+    1: "动图",
+    2: "视频",
+  };
+
+  /** Type button hint; the sole remaining type explains it cannot be removed. */
+  function typeTip(t: MediaType): string {
+    return settings.filters.types.size === 1 && settings.filters.types.has(t)
+      ? "至少保留一个类型"
+      : TYPE_LABELS[t]!;
+  }
+
+  function toggleType(t: MediaType) {
     const next = new Set(settings.filters.types);
     if (next.has(t)) {
-      if (next.size > 1) next.delete(t);
+      if (next.size === 1) {
+        // The last type stays: shake the button and flash the destructive color.
+        shakingType = t;
+        return;
+      }
+      next.delete(t);
     } else {
       next.add(t);
     }
@@ -196,27 +227,28 @@
     return settings;
   }
 
-  /** 分区标题行：左侧标题、右侧该分区重置按钮。 */
+  /** Section title row with the per-section reset control. */
 </script>
 
-<!-- pb-4：滚动容器不再提供底部 padding（见 OverlaySidebar），底部留白由面板自理 -->
+<!-- pb-4: the scroll container has no bottom padding (see OverlaySidebar) -->
 <div class="space-y-6 pb-4">
-  <!-- Filters section（平铺） -->
+  <!-- Filters section -->
   <section>
     <div class="flex items-center justify-between px-1">
       <h3 class="text-sm font-medium">筛选</h3>
-      <button
-        type="button"
-        class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
-        title="重置筛选"
-        onclick={resetFilters}
-      >
-        <RotateCcw class="size-3.5" />
-      </button>
+      <Tooltip text="重置筛选" side="bottom">
+        <button
+          type="button"
+          class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
+          onclick={resetFilters}
+        >
+          <RotateCcw class="size-3.5" />
+        </button>
+      </Tooltip>
     </div>
 
     <div class="mt-4 space-y-5 px-1">
-      <!-- 范围：行式「图标 下限值【双柄滑块】上限值」 -->
+      <!-- Ranges: rows of icon + dual-thumb slider -->
       <div class="space-y-3.5">
         {#if noFilterableRange}
           <p class="text-xs text-muted-foreground">上传照片后可按数值筛选</p>
@@ -238,19 +270,32 @@
                     min={full[0]}
                     max={full[1]}
                     value={rangeValue(key)}
+                    scale={key === "size" ? "log" : "linear"}
                     {active}
                     disabled={!filterable}
                     format={key === "size" ? compactSize : (v) => String(v)}
                     onChange={(v) => setRange(key, v)}
                   />
                 </div>
+                {#if active}
+                  <Tooltip text="重置此项" side="bottom">
+                    <button
+                      type="button"
+                      class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      onclick={() => clearRange(key)}
+                      aria-label="重置此项"
+                    >
+                      <X class="size-3.5" />
+                    </button>
+                  </Tooltip>
+                {/if}
               </div>
             {/if}
           {/each}
         {/if}
       </div>
 
-      <!-- 归属：四枚三态开关 -->
+      <!-- Ownership: four tri-state toggles -->
       <div class="grid grid-cols-2 gap-2">
         <TriStateToggle
           label="我上传的"
@@ -278,64 +323,83 @@
         />
       </div>
 
-      <!-- 类型：三枚开关，至少保留一个 -->
+      <!-- Types: three toggles, at least one remains -->
       <div class="flex items-center gap-1">
-        <button
-          type="button"
-          class={cn(
-            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
-            settings.filters.types.has(0)
-              ? "bg-primary text-primary-foreground"
-              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-          )}
-          onclick={() => toggleType(0)}
-        >
-          <Image class="size-4" />
-        </button>
-        <button
-          type="button"
-          class={cn(
-            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
-            settings.filters.types.has(1)
-              ? "bg-primary text-primary-foreground"
-              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-          )}
-          onclick={() => toggleType(1)}
-        >
-          <ImagePlay class="size-4" />
-        </button>
-        <button
-          type="button"
-          class={cn(
-            "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
-            settings.filters.types.has(2)
-              ? "bg-primary text-primary-foreground"
-              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-          )}
-          onclick={() => toggleType(2)}
-        >
-          <Video class="size-4" />
-        </button>
+        <Tooltip text={typeTip(0)} side="bottom">
+          <button
+            type="button"
+            class={cn(
+              "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
+              shakingType === 0
+                ? "bg-destructive text-white"
+                : settings.filters.types.has(0)
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+            )}
+            style={shakingType === 0 ? "animation: shakeX 200ms both" : ""}
+            onanimationend={() => shakingType === 0 && (shakingType = null)}
+            onclick={() => toggleType(0)}
+          >
+            <Image class="size-4" />
+          </button>
+        </Tooltip>
+        <Tooltip text={typeTip(1)} side="bottom">
+          <button
+            type="button"
+            class={cn(
+              "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
+              shakingType === 1
+                ? "bg-destructive text-white"
+                : settings.filters.types.has(1)
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+            )}
+            style={shakingType === 1 ? "animation: shakeX 200ms both" : ""}
+            onanimationend={() => shakingType === 1 && (shakingType = null)}
+            onclick={() => toggleType(1)}
+          >
+            <ImagePlay class="size-4" />
+          </button>
+        </Tooltip>
+        <Tooltip text={typeTip(2)} side="bottom">
+          <button
+            type="button"
+            class={cn(
+              "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]",
+              shakingType === 2
+                ? "bg-destructive text-white"
+                : settings.filters.types.has(2)
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+            )}
+            style={shakingType === 2 ? "animation: shakeX 200ms both" : ""}
+            onanimationend={() => shakingType === 2 && (shakingType = null)}
+            onclick={() => toggleType(2)}
+          >
+            <Video class="size-4" />
+          </button>
+        </Tooltip>
       </div>
     </div>
   </section>
 
-  <!-- Layout section（平铺） -->
+  <!-- Layout section -->
   <section>
     <div class="flex items-center justify-between px-1">
       <h3 class="text-sm font-medium">布局</h3>
-      <button
-        type="button"
-        class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
-        title="重置布局"
-        onclick={resetLayout}
-      >
-        <RotateCcw class="size-3.5" />
-      </button>
+      <Tooltip text="重置布局" side="bottom">
+        <button
+          type="button"
+          class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
+          onclick={resetLayout}
+        >
+          <RotateCcw class="size-3.5" />
+        </button>
+      </Tooltip>
     </div>
 
     <div class="mt-4 space-y-3.5 px-1">
-      <!-- 滚动方向 + 填充策略：与归属开关同款的图标文字按钮 -->
+      <!-- Scroll direction and fill strategy: icon buttons -->
       <div class="grid grid-cols-2 gap-2">
         <button
           type="button"
@@ -391,7 +455,7 @@
         </button>
       </div>
 
-      <!-- 目标带宽 / 间距：与范围筛选同款的行式滑块（单柄版） -->
+      <!-- Band and gap: single-thumb sliders -->
       <SingleSlider
         min={200}
         max={800}

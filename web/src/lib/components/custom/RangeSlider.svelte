@@ -1,31 +1,38 @@
 <script lang="ts">
-  // 归一化双柄范围滑块（spec: "自定义组件清单 RangeSlider" / "筛选板块 范围"）。
+  // Normalized dual-thumb range slider. Internal tLo/tHi are high-precision
+  // floats in [0,1], decoupled from the business range (heat -1..1, bytes
+  // 0..tens of millions). A log scale keeps byte-size dragging usable across
+  // orders of magnitude.
   //
-  // 架构：内部状态 tLo/tHi 是 [0,1] 的高精度浮点，指针移动只改归一化位置，
-  // 与业务值域（-1~1 的热度，或 0~数千万的字节数）完全解耦——任意值域下
-  // 拖动都同样平滑，不经过整数业务值的台阶。
-  //
-  // 三条约束：
-  // 1. 只在「映射值」变化时对外说话：业务值 = round(min + t·span)。亚单位的
-  //    归一化抖动既不触发 onChange（筛选/瀑布流不会在一次拖动里重排上百次），
-  //    气泡也只在某柄的映射值真正变化（或键盘聚焦）时浮现，平时整行无气泡。
-  // 2. 两柄不重叠 + 最小间距：归一化域的 gap 取「视觉不重叠
-  //    （(柄径+呼吸间距)/行程像素宽）」与「业务上至少相差 1（1/span）」的
-  //    较大者；钳制只作用于归一化位置，不反推业务值。
-  // 3. 拖动路径零 transition（填充条/柄），否则快速拖动视觉跟不上。
+  // Rules:
+  // 1. Emit only when a mapped value changes (round, or exp/round for log),
+  //    so one drag never triggers hundreds of upstream recomputes. Bubbles
+  //    appear only while dragging / hovering / focus is on a thumb.
+  // 2. Thumbs keep a minimum visual gap; business values are post-adjusted
+  //    to differ by at least one.
+  // 3. Zero transition on the drag path (fill and thumbs).
   import { onMount } from "svelte";
   import { cubicOut } from "svelte/easing";
   import { fly } from "svelte/transition";
   import { cn } from "$lib/utils";
+  import {
+    normalizeRangeValue,
+    mapRangeValue,
+    type RangeScale,
+  } from "./rangeScale";
+
+  type SliderScale = "linear" | "log";
 
   interface Props {
     min: number;
     max: number;
     value: [number, number];
-    /** 处于完整区间（未生效）时视觉回落 muted（此处无常驻数值，仅作语义预留）。 */
+    /** Log scale is used for byte sizes (linear is the default). */
+    scale?: SliderScale;
+    /** Reserved: muted look when the value equals the full range. */
     active?: boolean;
     disabled?: boolean;
-    /** 值 → 显示文本（如字节数转人类可读）。 */
+    /** Value -> display text (e.g. bytes to human-readable). */
     format?: (v: number) => string;
     onChange?: (v: [number, number]) => void;
   }
@@ -34,53 +41,61 @@
     min,
     max,
     value,
+    scale = "linear",
     active = false,
     disabled = false,
     format = (v) => String(v),
     onChange,
   }: Props = $props();
 
-  /** 柄直径（px），与模板里的 size-[18px] 一致；行程换算与几何定位都用它。 */
+  /** Thumb diameter (px), matching size-[18px] in the template. */
   const THUMB = 18;
-  /** 两柄相触后再留的视觉呼吸间距（px）。 */
+  /** Visual breathing gap when the two thumb edges touch (px). */
   const BREATHE = 4;
-  /** Caret half-extent (8px square rotated 45° → 5.7px circumradius); the tip
-   *  never sits closer than this to either bubble corner. */
+  /** Caret half-extent (8px square rotated 45° -> 5.7px circumradius); the
+   *  tip never sits closer than this to either bubble corner. */
   const TIP_PAD = 6;
 
   type Which = "lo" | "hi";
 
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
   let span = $derived(Math.max(1, max - min));
-  /** 归一化 → 业务值。 */
-  const mapValue = (t: number): number => Math.round(min + t * span);
 
-  // ---- 归一化内部状态（拖动期间的唯一高精度真值） ----------------------------
-  // 初始位置刻意只从 props 捕获一次，后续由下面的受控同步 $effect 维护。
+  /** Business value -> normalized position under the active scale. */
+  let scaleMode = $derived<RangeScale>(scale === "log" ? "logarithmic" : "linear");
+
+  const tFromValue = (v: number): number => normalizeRangeValue(v, min, max, scaleMode);
+  /** Normalized position -> business value under the active scale. */
+  const mapValue = (t: number): number => mapRangeValue(t, min, max, scaleMode);
+
+  // ---- normalized internal state (high-precision truth while dragging) ------
+  // Captured from props once; the controlled-sync effect below maintains it.
   // svelte-ignore state_referenced_locally
-  let tLo = $state(clamp01((value[0] - min) / span));
+  let tLo = $state(tFromValue(value[0]));
   // svelte-ignore state_referenced_locally
-  let tHi = $state(clamp01((value[1] - min) / span));
+  let tHi = $state(tFromValue(value[1]));
   let loVal = $derived(mapValue(tLo));
   let hiVal = $derived(mapValue(tHi));
 
-  // 外部受控值回流：只在内部映射值与 props 不一致时同步（拖动期间 props 是
-  // 自己刚 emit 的同值，不会回弹；重置筛选/外部改值则正确吸附到新位置）。
+  // External controlled values flow back only when the mapped values differ
+  // from props (during a drag props are the values just emitted; resets and
+  // outside changes snap correctly).
   $effect(() => {
     void value;
     void min;
     void max;
-    const s = Math.max(1, max - min);
-    if (mapValue(tLo) !== value[0]) tLo = clamp01((value[0] - min) / s);
-    if (mapValue(tHi) !== value[1]) tHi = clamp01((value[1] - min) / s);
+    void scale;
+    if (mapValue(tLo) !== value[0]) tLo = tFromValue(value[0]);
+    if (mapValue(tHi) !== value[1]) tHi = tFromValue(value[1]);
   });
 
-  // ---- 几何测量：ResizeObserver 维护轨道宽；按下时再缓存一份 rect -----------
+  // ---- geometry: ResizeObserver maintains the track width ---------------
   let trackEl = $state<HTMLDivElement | undefined>(undefined);
   let trackWidth = $state(0);
   const usablePx = $derived(Math.max(1, trackWidth - THUMB));
-  /** 归一化域最小间距：视觉不重叠与业务差 1 取大。 */
-  const minGap = $derived(Math.max((THUMB + BREATHE) / usablePx, 1 / span));
+  /** Minimum normalized gap for visual non-overlap; the business ≥1 rule is
+   *  enforced by the post-adjustment in applyT. */
+  const minGap = $derived((THUMB + BREATHE) / usablePx);
 
   onMount(() => {
     if (!trackEl) return;
@@ -93,11 +108,9 @@
     return () => ro.disconnect();
   });
 
-  /**
-   * 拇指中心在轨道上的实际位置。原生行程是 [THUMB/2, 100% - THUMB/2]
-   * （usable = width - THUMB），与按下换算是同一公式；填充条两端也用它，
-   * 三者严格同轴。
-   */
+  /** Thumb centre position. The native travel range is [THUMB/2, 100% -
+   *  THUMB/2] (usable = width - THUMB), the same formula for press mapping
+   *  and the fill endpoints, so all three stay coaxial. */
   function thumbCenter(t: number): string {
     const pct = t * 100;
     return `calc(${THUMB / 2}px + ${pct}% - ${t * THUMB}px)`;
@@ -115,13 +128,16 @@
     const center = THUMB / 2 + t * Math.max(0, w - THUMB);
     if (!w || !bw) return { left: center - bw / 2, tip: bw / 2 };
     const left = Math.min(Math.max(center - bw / 2, 0), Math.max(0, w - bw));
-    const tip = Math.min(Math.max(center - left, TIP_PAD), Math.max(TIP_PAD, bw - TIP_PAD));
+    const tip = Math.min(
+      Math.max(center - left, TIP_PAD),
+      Math.max(TIP_PAD, bw - TIP_PAD),
+    );
     return { left, tip };
   }
 
-  // ---- 指针交互（轨道 + 两柄统一处理，rect 在按下时缓存） --------------------
+  // ---- pointer interaction (track and thumbs; rect cached on press) --------
   let drag = $state<Which | null>(null);
-  /** 悬停在哪一柄上（气泡在悬停/按下/拖动/键盘聚焦任一状态下都显示）。 */
+  /** Thumb currently hovered (bubbles show on hover / press / drag / focus). */
   let hover = $state<Which | null>(null);
   /** Rendered bubble widths (text length varies with the value). */
   let bwLo = $state(0);
@@ -134,13 +150,15 @@
     return clamp01((clientX - dragRect.left - THUMB / 2) / usable);
   }
 
-  /** 钳制到 [0,1] 与最小间距后写入归一化位置；映射值真的变了才 emit。 */
+  /** Clamp to [0,1] with the minimum gap, then emit only on a real value
+   *  change. */
   function applyT(which: Which, t: number): void {
     const next = clamp01(t);
     if (which === "lo") tLo = Math.min(next, tHi - minGap);
     else tHi = Math.max(next, tLo + minGap);
 
-    // 四舍五入极端边界的兜底：保证业务值至少相差 1（调整的那柄让位）。
+    // Boundary fallback: business values must differ by at least one, and the
+    // adjusted thumb gives way.
     let lo = mapValue(tLo);
     let hi = mapValue(tHi);
     if (lo >= hi) {
@@ -150,7 +168,8 @@
     lo = Math.min(Math.round(max), Math.max(Math.round(min), lo));
     hi = Math.min(Math.round(max), Math.max(Math.round(min), hi));
 
-    // 只在映射值真的变化时 emit：亚单位抖动不触发上层重算（瀑布流重排是卡顿根源）
+    // Emit only on a real mapped value change: sub-unit jitter never triggers
+    // an upstream recompute (waterfall reflows are the freeze source).
     if (lo !== value[0] || hi !== value[1]) onChange?.([lo, hi]);
   }
 
@@ -165,10 +184,10 @@
 
     let which: Which;
     if (hit?.dataset.thumb === "lo" || hit?.dataset.thumb === "hi") {
-      // 按在柄上：不跳变，等 move 再走
+      // Pressing a thumb: no jump, movement drives it.
       which = hit.dataset.thumb as Which;
     } else {
-      // 点在轨道：选最近柄并立即吸附到点击点
+      // Pressing the track: pick the nearer thumb and snap to the press point.
       const t = tFromClientX(e.clientX);
       which = t - tLo <= tHi - t ? "lo" : "hi";
       applyT(which, t);
@@ -188,11 +207,13 @@
     dragRect = null;
   }
 
-  // ---- 键盘（柄是 role=slider 的自定义元素） --------------------------------
+  // ---- keyboard (thumbs are custom role=slider elements) --------------------
   let focus = $state<Which | null>(null);
   function onKeydown(e: KeyboardEvent, which: Which): void {
     if (disabled) return;
-    const unit = 1 / span;
+    const curV = which === "lo" ? loVal : hiVal;
+    // One business-unit step at the current position under the active scale.
+    const unit = Math.abs(tFromValue(curV + 1) - tFromValue(curV));
     let target: number | null = null;
     const cur = which === "lo" ? tLo : tHi;
     switch (e.key) {
@@ -222,10 +243,9 @@
     applyT(which, target);
   }
 
-  /**
-   * 柄：18px 主色圆点 + 3px 背景色描边（在卡片上呈"打孔"感，设计稿原样）。
-   * 不给阴影；悬停放大 1.1、拖动放大 1.22 且拖动期间关掉 transition（跟手优先）。
-   */
+  /** Thumb: 18px primary dot with a 3px background border ("punched into
+   *  the card", per the design spec). No shadow; hover scales 1.1, drag 1.22
+   *  with transitions off while dragging. */
   const thumbCls = cn(
     "absolute top-1/2 size-[18px] -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full outline-none",
     "border-[3px] border-background bg-primary",
@@ -239,8 +259,8 @@
     "absolute top-full size-2 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-surface-top";
 </script>
 
-<!-- 静止时整行只有轨道（h-8 命中区）；气泡在拖动/键盘聚焦期间浮在轨道上方，
-     不占布局、不推挤相邻行。 -->
+<!-- At rest only the track is visible (h-8 hit area); bubbles float above
+     the track during drag / focus without affecting layout. -->
 <div class={cn("relative h-8 select-none", disabled && "opacity-50")}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -255,7 +275,9 @@
     onpointercancel={endDrag}
   >
     <!-- 底轨 -->
-    <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-border"></div>
+    <div
+      class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-border"
+    ></div>
     <!-- 两柄之间的高亮填充（端点用拇指中心坐标，与柄严格同轴） -->
     <div
       class="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-primary"
@@ -310,12 +332,14 @@
       aria-disabled={disabled}
       class={cn(
         thumbCls,
-        drag === "lo" ? "z-20 scale-[1.22] transition-none" : "z-10 hover:scale-110",
+        drag === "lo"
+          ? "z-20 scale-[1.22] transition-none"
+          : "z-10 hover:scale-110",
       )}
       style="left: {thumbCenter(tLo)}"
       onkeydown={(e) => onKeydown(e, "lo")}
       onpointerenter={() => (hover = "lo")}
-      onpointerleave={() => (hover === "lo" && (hover = null))}
+      onpointerleave={() => hover === "lo" && (hover = null)}
       onfocus={() => (focus = "lo")}
       onblur={() => (focus = null)}
     ></div>
@@ -332,12 +356,14 @@
       aria-disabled={disabled}
       class={cn(
         thumbCls,
-        drag === "hi" ? "z-20 scale-[1.22] transition-none" : "z-10 hover:scale-110",
+        drag === "hi"
+          ? "z-20 scale-[1.22] transition-none"
+          : "z-10 hover:scale-110",
       )}
       style="left: {thumbCenter(tHi)}"
       onkeydown={(e) => onKeydown(e, "hi")}
       onpointerenter={() => (hover = "hi")}
-      onpointerleave={() => (hover === "hi" && (hover = null))}
+      onpointerleave={() => hover === "hi" && (hover = null)}
       onfocus={() => (focus = "hi")}
       onblur={() => (focus = null)}
     ></div>

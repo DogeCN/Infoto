@@ -1,20 +1,24 @@
 <script lang="ts">
-  // 公告 Markdown 渲染内核（spec: "公告侧边栏" / "自定义组件清单 MarkdownView"）。
-  // markdown-it 渲染 HTML + DOMPurify 消毒；:::vote 行由外层解析成 VoteBlock。
+  // Markdown rendering core. markdown-it produces HTML, DOMPurify sanitizes it;
+  // :::vote lines are parsed by the host into a VoteBlock. Images are off by
+  // default (the public sidebar must not render arbitrary external image hosts,
+  // which would enable tracking pixels); trusted contexts — the editor preview
+  // and the root-only feedback detail — opt in via allowImages.
   import { onDestroy } from 'svelte';
   import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
 
-  const md = new MarkdownIt({
-    html: false,
-    linkify: true,
-    breaks: true,
-  }).disable(['image']);
+  // Two independent renderers: the default one blocks images (public sidebar
+  // must not render arbitrary external image hosts); the trusted one allows them.
+  const mdSafe = new MarkdownIt({ html: false, linkify: true, breaks: true }).disable(['image']);
+  const mdFull = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
-  let { content, class: className = '' }: { content: string; class?: string } = $props();
+  let { content, class: className = '', allowImages = false }: { content: string; class?: string; allowImages?: boolean } = $props();
+
+  const renderer = $derived(allowImages ? mdFull : mdSafe);
 
   let el: HTMLDivElement | undefined = $state(undefined);
-  let html = $derived(DOMPurify.sanitize(md.render(content)));
+  let html = $derived(DOMPurify.sanitize(renderer.render(content)));
 
   function apply() {
     if (el) el.innerHTML = html;

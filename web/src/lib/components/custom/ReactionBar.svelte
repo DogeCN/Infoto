@@ -1,11 +1,12 @@
 <script lang="ts">
-  // 公告表情反应条（spec: "自定义组件清单" / "公告侧边栏"）——GitHub 风格计数按钮组
-  // + 添加反应按钮。无任何回应时仅显示「添加反应」。
-  import { SmilePlus } from '@lucide/svelte';
-  import { cn } from '$lib/utils';
-  import { reactionCounts } from '../../../core/reactions';
-  import type { Announcement } from '$shared/types';
-  import ReactionPicker from './ReactionPicker.svelte';
+  // GitHub-style reaction count buttons plus an add-reaction button. With no
+  // reactions, only the add button shows.
+  import { SmilePlus } from "@lucide/svelte";
+  import { cn } from "$lib/utils";
+  import { reactionCounts } from "../../../core/reactions";
+  import type { Announcement } from "$shared/types";
+  import ReactionPicker from "./ReactionPicker.svelte";
+  import Tooltip from "./Tooltip.svelte";
 
   interface Props {
     announcement: Announcement;
@@ -19,7 +20,7 @@
   let pickerOpen = $state(false);
 
   function toggle(emoji: string, selfReacted: boolean) {
-    // 已回应 → 再点取消（payload emoji 为空即清除）
+    // A second click clears the reaction (empty emoji payload).
     onReact?.(selfReacted ? null : emoji);
     pickerOpen = false;
   }
@@ -30,10 +31,10 @@
     <button
       type="button"
       class={cn(
-        'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
+        "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors",
         selfReacted
-          ? 'border-primary text-primary'
-          : 'border-border text-muted-foreground hover:bg-muted'
+          ? "border-primary text-primary"
+          : "border-border text-muted-foreground hover:bg-muted",
       )}
       onclick={() => toggle(emoji, selfReacted)}
     >
@@ -42,14 +43,15 @@
     </button>
   {/each}
 
-  <button
-    type="button"
-    class="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-    title="添加反应"
-    onclick={() => (pickerOpen = !pickerOpen)}
-  >
-    <SmilePlus class="size-4" />
-  </button>
+  <Tooltip text="添加反应">
+    <button
+      type="button"
+      class="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      onclick={() => (pickerOpen = !pickerOpen)}
+    >
+      <SmilePlus class="size-4" />
+    </button>
+  </Tooltip>
 
   {#if pickerOpen}
     <div class="absolute bottom-9 left-0 z-50">

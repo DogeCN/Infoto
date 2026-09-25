@@ -1,15 +1,22 @@
 <script lang="ts">
-  // 顶栏（spec: "主页面"）。左：排序胶囊、设置图标（带筛选计数角标）、同步图标
-  // （带未同步计数角标、同步时旋转）；右：公告、多选、上传。
-  // 固定全宽 + 毛玻璃，不用 sticky（iOS Safari 与 backdrop-filter 有已知 bug）。
-  import { Settings, Megaphone, CheckSquare, UploadCloud } from "@lucide/svelte";
+  // Fixed full-width top bar. Left: sort pills, settings icon (with active
+  // filter count), sync icon (with pending count, spins while syncing);
+  // right: announcements, multi-select, upload.
+  // Uses position fixed, not sticky (known iOS Safari + backdrop-filter bug).
+  import {
+    Settings,
+    Megaphone,
+    CheckSquare,
+    UploadCloud,
+  } from "@lucide/svelte";
   import SortTabs, { type SortKey } from "./SortTabs.svelte";
   import SyncButton from "./SyncButton.svelte";
+  import Tooltip from "./Tooltip.svelte";
   import { scroll } from "../../../state/scroll.svelte";
 
   interface Props {
     sortKey?: SortKey;
-    /** 最新↔最旧、最热↔最冷 的次级方向，按排序项各自记忆。 */
+    /** Per-key remembered directions (latest oldest↔newest, hottest cold↔hot). */
     sortDirs?: Partial<Record<SortKey, boolean>>;
     onSortChange?: (key: SortKey) => void;
     onSortReshuffle?: () => void;
@@ -46,8 +53,8 @@
     multiSelectActive = false,
   }: Props = $props();
 
-  // 沉浸顶栏：主轴在起点时透明无边框（纵向看 scrollTop、横向看 scrollLeft），
-  // 滚动后浮现毛玻璃
+  // Immersive bar: transparent and borderless at the scroll origin; the
+  // blurred surface fades in once the content moves.
   let scrolled = $derived(scroll.y > 8 || scroll.x > 8);
 </script>
 
@@ -57,7 +64,7 @@
     : 'border-b border-transparent bg-transparent'}"
 >
   <div class="flex items-center gap-1">
-    <!-- 排序胶囊：三项并列分段选择器 -->
+    <!-- Sort pills: segmented three-way selector -->
     <SortTabs
       {sortKey}
       dirs={sortDirs}
@@ -65,64 +72,74 @@
       onReshuffle={onSortReshuffle}
     />
 
-    <!-- 设置（有生效筛选时显示计数角标） -->
+    <!-- Settings: badge shows the number of active filters -->
     <div class="relative">
-      <button
-        type="button"
-        class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
-        class:text-primary={settingsActive}
-        onclick={onSettingsClick}
-        title="设置"
-      >
-        <Settings class="size-5" />
-      </button>
-      {#if filterCount > 0}
+      <Tooltip text="设置">
         <button
           type="button"
-          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
-          title="重置筛选"
-          onclick={(e) => {
-            e.stopPropagation();
-            onFilterBadgeClick?.();
-          }}
+          aria-label="设置"
+          class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+          class:text-primary={settingsActive}
+          onclick={onSettingsClick}
         >
-          {filterCount > 99 ? "99+" : filterCount}
+          <Settings class="size-5" />
         </button>
+      </Tooltip>
+      {#if filterCount > 0}
+        <Tooltip text="重置筛选">
+          <button
+            type="button"
+            aria-label="重置筛选（{filterCount} 项生效）"
+            class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
+            onclick={(e) => {
+              e.stopPropagation();
+              onFilterBadgeClick?.();
+            }}
+          >
+            {filterCount > 99 ? "99+" : filterCount}
+          </button>
+        </Tooltip>
       {/if}
     </div>
 
-    <!-- 同步 -->
+    <!-- Sync -->
     <SyncButton {pendingCount} {isSyncing} onSync={onSyncClick} />
   </div>
 
   <div class="flex items-center gap-1">
-    <button
-      type="button"
-      class="relative flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
-      class:text-primary={announcementActive}
-      onclick={onAnnouncementClick}
-      title="公告"
-    >
-      <Megaphone class="size-5" />
-    </button>
+    <Tooltip text="公告">
+      <button
+        type="button"
+        aria-label="公告"
+        class="relative flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+        class:text-primary={announcementActive}
+        onclick={onAnnouncementClick}
+      >
+        <Megaphone class="size-5" />
+      </button>
+    </Tooltip>
 
-    <button
-      type="button"
-      class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
-      class:text-primary={multiSelectActive}
-      onclick={onMultiSelectClick}
-      title="多选"
-    >
-      <CheckSquare class="size-5" />
-    </button>
+    <Tooltip text="多选">
+      <button
+        type="button"
+        aria-label="多选"
+        class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+        class:text-primary={multiSelectActive}
+        onclick={onMultiSelectClick}
+      >
+        <CheckSquare class="size-5" />
+      </button>
+    </Tooltip>
 
-    <button
-      type="button"
-      class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-primary"
-      onclick={onUploadClick}
-      title="上传"
-    >
-      <UploadCloud class="size-5" />
-    </button>
+    <Tooltip text="上传">
+      <button
+        type="button"
+        aria-label="上传"
+        class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-primary"
+        onclick={onUploadClick}
+      >
+        <UploadCloud class="size-5" />
+      </button>
+    </Tooltip>
   </div>
 </header>

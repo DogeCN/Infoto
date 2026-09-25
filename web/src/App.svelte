@@ -6,9 +6,10 @@
   import UploadProgressPanel from "$lib/components/custom/UploadProgressPanel.svelte";
   import SettingsPanel from "$lib/components/custom/SettingsPanel.svelte";
   import AnnouncementSidebar from "$lib/components/custom/AnnouncementSidebar.svelte";
+  import EmptyState from "$lib/components/custom/EmptyState.svelte";
   import { tick } from "svelte";
   import { Toaster, toast } from "svelte-sonner";
-  import { Settings as SettingsIcon, Megaphone } from "@lucide/svelte";
+  import { Settings as SettingsIcon, Megaphone, SearchX } from "@lucide/svelte";
   import { getEngine } from "./core/sync/engine";
   import {
     ensureIdentity,
@@ -461,35 +462,14 @@
         </div>
       {/if}
 
-      {#if visiblePhotos.length === 0}
-        <div
-          class="flex flex-col items-center justify-center py-24 text-center"
-          style="animation: fadeInUp var(--duration-enter) var(--ease-enter) both"
-        >
-          <div class="mb-6">
-            <svg
-              class="size-12 text-muted-foreground"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="17 8 12 3 7 8"></polyline>
-              <line x1="12" y1="3" x2="12" y2="15"></line>
-            </svg>
-          </div>
-          <p class="text-lg font-medium tracking-[-0.02em] text-foreground/85">
-            {store.photos.length === 0 ? "还没有照片" : "没有符合筛选的照片"}
-          </p>
-          <p class="mt-1.5 text-sm text-muted-foreground">
-            {store.photos.length === 0
-              ? "点击右上角上传你的第一张照片"
-              : "试试调整筛选条件"}
-          </p>
-        </div>
+      {#if visiblePhotos.length === 0 && pendingPhotos.length === 0}
+        <EmptyState
+          text={store.photos.length === 0 ? "还没有照片" : "没有符合筛选的照片"}
+          hint={store.photos.length === 0
+            ? "点右上角上传第一张"
+            : "试试调整筛选条件"}
+          icon={store.photos.length === 0 ? undefined : SearchX}
+        />
       {:else}
         <WaterfallLayout
           photos={visiblePhotos}
