@@ -197,7 +197,7 @@ async function afterStage1(rec: JobRec): Promise<void> {
 	if (shouldDedupeArtifact(rec.purpose)) {
 		if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
 		if (db && rec.sha256) {
-			const hit = await lookupSha(db, rec.sha256).catch(() => undefined);
+			const hit = await lookupSha(db, 'album', rec.sha256).catch(() => undefined);
 			if (hit) {
 				rec.phase = 'duplicate';
 				notify(rec);

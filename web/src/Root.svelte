@@ -2,7 +2,6 @@
   import App from './App.svelte';
   import Admin from './routes/admin/Admin.svelte';
   import ErrorPage from '$lib/components/custom/ErrorPage.svelte';
-  import { isAdminRoute } from './routing';
 
   let route = $state(window.location.pathname);
 
@@ -16,7 +15,7 @@
   });
 </script>
 
-{#if isAdminRoute(route)}
+{#if route.startsWith('/admin')}
   <Admin />
 {:else if route === '/' || route === ''}
   <App />

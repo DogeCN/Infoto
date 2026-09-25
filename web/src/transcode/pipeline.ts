@@ -7,7 +7,7 @@
 import { buildUploadOp, routeByMime } from '$base/upload/pipeline';
 import { openOplogDb, appendOp } from '../core/oplog/store';
 import { LeaseClient } from './lease';
-import { isSwToPage, type JobMeta, type SwToPageMessage } from './shared/protocol';
+import { isSwToPage, type JobMeta, type JobPurpose, type SwToPageMessage } from './shared/protocol';
 import { pipelineResultAction, shouldWriteAlbumUploadOp } from './uploadPurpose';
 import type { Op, UploadPayload } from '$shared/types';
 // ?sharedworker puts the SW through Vite's bundler (a bare new URL('./sw.ts',
@@ -18,6 +18,7 @@ import SharedWorkerCtor from './sw?sharedworker';
 export interface PipelineTaskSnapshot {
 	jobId: string;
 	fileName: string;
+	purpose: JobPurpose;
 	phase: string;
 	fraction?: number;
 	url?: string;
@@ -37,7 +38,7 @@ export interface PipelineIo {
 	 * Album upload op exit. The sync engine queues it when provided; otherwise
 	 * the pipeline writes directly to the op-log for harnesses and unit tests.
 	 */
-	onUploadOp?: (op: Op) => void;
+	onUploadOp?: (op: Op) => void | Promise<void>;
 }
 
 export interface WorkerLike {
@@ -64,6 +65,7 @@ export class UploadPipeline {
 		string,
 		{ resolve: (url: string) => void; reject: (error: Error) => void }
 	>();
+	private readonly pendingAlbumOps = new Set<string>();
 
 	constructor(io: PipelineIo = {}) {
 		this.io = io;
@@ -71,13 +73,17 @@ export class UploadPipeline {
 
 	onTask(l: (t: PipelineTaskSnapshot) => void): () => void {
 		this.listeners.add(l);
-		for (const s of this.snapshots.values()) l(s);
+		for (const s of this.snapshots.values()) {
+			if (s.purpose === 'album') l(s);
+		}
 		return () => this.listeners.delete(l);
 	}
 
 	private emit(t: PipelineTaskSnapshot): void {
 		this.snapshots.set(t.jobId, t);
-		for (const l of this.listeners) l(t);
+		if (t.purpose === 'album') {
+			for (const l of this.listeners) l(t);
+		}
 	}
 
 	private log(line: string): void {
@@ -118,6 +124,7 @@ export class UploadPipeline {
 			this.emit({
 				jobId: m.jobId,
 				fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
+				purpose: m.purpose,
 				phase: m.phase,
 				fraction: m.fraction,
 				url: m.url,
@@ -142,11 +149,12 @@ export class UploadPipeline {
 		}
 		if (m.purpose === 'editor') return;
 		// Capture before emit stores the URL in the snapshot.
-		const alreadyWritten = !!this.snapshots.get(m.jobId)?.url;
+		const alreadyWritten = !!this.pendingAlbumOps.has(m.jobId);
 		if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
 		this.emit({
 			jobId: m.jobId,
 			fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
+			purpose: m.purpose,
 			phase: m.phase,
 			fraction: m.fraction,
 			url: m.url,
@@ -155,7 +163,21 @@ export class UploadPipeline {
 			sha256: m.sha256,
 		});
 		if (shouldWriteAlbumUploadOp(m.purpose, m.phase, m.url, m.meta, alreadyWritten)) {
-			void this.writeUploadOp(m.jobId, m.url!, m.meta!);
+			this.pendingAlbumOps.add(m.jobId);
+			void this.writeUploadOp(m.jobId, m.url!, m.meta!).catch((error) => {
+				this.pendingAlbumOps.delete(m.jobId);
+				this.emit({
+					jobId: m.jobId,
+					fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
+					purpose: m.purpose,
+					phase: 'failed',
+					error: error instanceof Error ? error.message : 'oplog_write_failed',
+					meta: m.meta,
+					sha256: m.sha256,
+				});
+			}).finally(() => {
+				this.pendingAlbumOps.delete(m.jobId);
+			});
 		} else if (m.phase === 'failed') {
 			this.log(`job ${m.jobId} failed: ${m.error ?? 'unknown'} (artifact kept in OPFS, manual retry available)`);
 		} else if (m.phase === 'duplicate') {
@@ -175,7 +197,7 @@ export class UploadPipeline {
 		};
 		const op: Op = buildUploadOp(payload);
 		if (this.io.onUploadOp) {
-			this.io.onUploadOp(op);
+			await this.io.onUploadOp(op);
 		} else if (!this.db) {
 			this.db = await openOplogDb();
 			await appendOp(this.db, op);
@@ -224,7 +246,7 @@ export class UploadPipeline {
 				continue;
 			}
 			const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-			this.emit({ jobId, fileName: file.name, phase: 'queued' });
+			this.emit({ jobId, fileName: file.name, purpose: 'album', phase: 'queued' });
 			this.sw!.port.postMessage({ t: 'addJob', jobId, purpose: 'album', fileName: file.name, mime: file.type, file });
 		}
 	}

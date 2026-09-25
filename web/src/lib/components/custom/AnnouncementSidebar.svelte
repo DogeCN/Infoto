@@ -1,18 +1,10 @@
 <script lang="ts">
-  // Announcement sidebar. Everything is collapsed by default and the title row
-  // toggles expansion; the collapse animates grid-template-rows 0fr <-> 1fr
-  // while content stays mounted (markdown, votes and reactions keep state).
-  // The feedback composer sticks to the bottom and sends fb_create ops.
   import type { Announcement } from "$shared/types";
-  import { ChevronDown, ChevronsUpDown, Eye, Megaphone, Pencil } from "@lucide/svelte";
+  import { ChevronDown, ChevronsUpDown, Eye, Pencil } from "@lucide/svelte";
   import { parseVote } from "../../../core/vote";
-  import { reactionCounts } from "../../../core/reactions";
   import MarkdownView from "./MarkdownView.svelte";
   import VoteBlock from "./VoteBlock.svelte";
   import ReactionBar from "./ReactionBar.svelte";
-  import EmptyState from "./EmptyState.svelte";
-  import Tooltip from "./Tooltip.svelte";
-  import { formatAbsoluteTime, formatRelativeTime } from "$lib/time";
 
   interface Props {
     announcements: Announcement[];
@@ -32,9 +24,9 @@
 
   let feedbackText = $state("");
   let previewMode = $state(false);
-  // Textarea height (the top-right handle drag adjusts it: drag up to grow).
+  // 输入框高度（右上角手柄拖拽调整：向上拖增高）
   let taH = $state(190);
-  /** The set of expanded announcement ids (empty by default = all collapsed, so long announcements never fill the screen at once). */
+  /** 已展开的公告 id（默认空 = 全部收起，避免一屏全被长公告占满）。 */
   let expandedIds = $state<Set<number>>(new Set());
 
   function toggle(id: number) {
@@ -42,11 +34,6 @@
     if (next.has(id)) next.delete(id);
     else next.add(id);
     expandedIds = next;
-  }
-
-  /** Read-only reaction tallies (emoji + count) for the collapsed meta row. */
-  function reactionTally(ann: Announcement): { emoji: string; count: number }[] {
-    return reactionCounts(ann, selfId).filter((r) => r.count > 0);
   }
 
   function startResize(e: PointerEvent) {
@@ -77,10 +64,10 @@
 </script>
 
 <div class="flex min-h-full flex-col gap-4">
-  <!-- Announcement list: a flat column with always-visible content (no collapse); scrolling is owned by the OverlaySidebar body. -->
+  <!-- 公告列表：全部平铺，内容常显（无展开收起）；滚动由 OverlaySidebar 内容区承担 -->
   <div class="flex-1 space-y-4">
     {#if announcements.length === 0}
-      <EmptyState icon={Megaphone} text="暂无公告" />
+      <p class="py-8 text-center text-sm text-muted-foreground">暂无公告</p>
     {/if}
 
     {#each announcements as ann (ann.id)}
@@ -88,7 +75,7 @@
       {@const expanded = expandedIds.has(ann.id)}
 
       <div class="overflow-hidden rounded-xl border border-border bg-card">
-        <!-- The title row is the toggle: the whole row is clickable; the right arrow shows the expand state. -->
+        <!-- 标题行即开关：整行可点，右侧箭头指示展开态 -->
         <h3 class="m-0">
           <button
             type="button"
@@ -107,27 +94,8 @@
           </button>
         </h3>
 
-        <!-- Meta row: relative update time (hover for absolute), an optimistic
-             "syncing" badge while the temp id is unconfirmed by /sync, and a
-             read-only reaction tally shown only when collapsed (the expanded
-             area carries the interactive ReactionBar). -->
-        <div class="flex flex-wrap items-center gap-2 px-4 text-xs text-muted-foreground/70">
-          <Tooltip text={formatAbsoluteTime(ann.updatedAt)}>
-            <span>{formatRelativeTime(ann.updatedAt)}</span>
-          </Tooltip>
-          {#if ann.id < 0}
-            <span class="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">同步中</span>
-          {/if}
-          {#if !expanded}
-            {#each reactionTally(ann) as { emoji, count } (emoji)}
-              <span class="inline-flex items-center gap-0.5 tabular-nums">{emoji} {count}</span>
-            {/each}
-          {/if}
-        </div>
-
-        <!-- Collapse/expand: a grid-template-rows 0fr↔1fr animation with content kept
-             mounted (MarkdownView is not re-created, so vote and reaction state survive);
-             min-h-0 lets 0fr collapse fully. -->
+        <!-- 收起/展开：grid-template-rows 0fr↔1fr 动画，内容保持挂载
+             （MarkdownView 不重挂、投票与反应状态不丢）；min-h-0 是 0fr 能压扁的前提 -->
         <div
           class="grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
           style="grid-template-rows: {expanded ? '1fr' : '0fr'}"
@@ -147,7 +115,7 @@
                 />
               {/if}
 
-              <!-- Reaction bar -->
+              <!-- 表情反应条 -->
               <ReactionBar
                 announcement={ann}
                 {selfId}
@@ -160,11 +128,11 @@
     {/each}
   </div>
 
-  <!-- Feedback input: pinned to the sidebar bottom, floating above the list while it scrolls.
-       Same card background as the sidebar so it never looks like a brighter "overflow" band.
-       z-20: inner z-indexed layers (vote bar, etc.) may appear inside cards, so sticky must sit above them. -->
+  <!-- 反馈输入区：贴侧边栏底部，公告滚动时悬浮于内容之上。
+       背景与侧栏同色（card），避免比内容区亮出一圈形似"溢出"的观感。
+       z-20：卡片内部可能出现带 z-index 的内层（投票条等），sticky 必须稳压它们 -->
   <div class="sticky bottom-0 z-20 mt-auto bg-card pb-4 pt-4">
-    <!-- The wrapper owns the radius/border/clip: the textarea background always stays inside the radius. -->
+    <!-- wrapper 负责圆角/边框/裁剪：textarea 的背景永远关在圆角内 -->
     <div class="relative overflow-hidden rounded-xl border border-input bg-muted transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] focus-within:border-primary/50">
       {#if previewMode}
         <div class="min-h-[7.5rem] px-4 py-3" style="height: {taH}px">
@@ -186,30 +154,28 @@
         ></textarea>
       {/if}
 
-      <!-- Top-right resize handle: drag up to grow, down to collapse. -->
-      <Tooltip text="拖动调整高度">
-        <div
-          role="presentation"
-          class="absolute right-1 top-1 flex h-5 w-5 cursor-ns-resize items-center justify-center text-muted-foreground/50 transition-colors hover:text-muted-foreground"
-          onpointerdown={startResize}
-        >
-          <ChevronsUpDown class="size-3.5" />
-        </div>
-      </Tooltip>
+      <!-- 最右上角拖高把手：向上拖增高、向下拖收起 -->
+      <div
+        role="presentation"
+        class="absolute right-1 top-1 flex h-5 w-5 cursor-ns-resize items-center justify-center text-muted-foreground/50 transition-colors hover:text-muted-foreground"
+        title="拖动调整高度"
+        onpointerdown={startResize}
+      >
+        <ChevronsUpDown class="size-3.5" />
+      </div>
 
-      <Tooltip text={previewMode ? "编辑" : "预览"}>
-        <button
-          type="button"
-          class="absolute right-8 top-2 inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-background hover:text-foreground"
-          onclick={() => (previewMode = !previewMode)}
-        >
+      <button
+        type="button"
+        class="absolute right-8 top-2 inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-background hover:text-foreground"
+        title={previewMode ? "编辑" : "预览"}
+        onclick={() => (previewMode = !previewMode)}
+      >
         {#if previewMode}
           <Pencil class="size-4" />
         {:else}
           <Eye class="size-4" />
         {/if}
       </button>
-      </Tooltip>
 
       {#if feedbackText.trim()}
         <button

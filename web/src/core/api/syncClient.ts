@@ -26,6 +26,12 @@ export interface SyncClientIo {
 	origin?: string;
 	/** 覆盖单次尝试的超时（测试注入小值）。 */
 	timeoutMs?: number;
+	/**
+	 * keepalive:页面隐藏/关闭时普通 fetch 会被浏览器取消，keepalive 请求
+	 * 可以带着 body 活过卸载。浏览器对 keepalive body 有 64KB 硬上限 ——
+	 * 由调用方确认整包放得下，放不下就别开（开了一样会被拒）。
+	 */
+	keepalive?: boolean;
 }
 
 export interface SyncCallResult {
@@ -48,6 +54,8 @@ export const SYNC_TIMEOUT_MS = 15_000;
 /**
  * POST {origin}/sync. Contract edges:
  * - request body never carries a uuid field (the server distrusts body identity);
+ * - `keepalive` passes straight through to fetch (engine sets it only when the
+ *   document is hidden and the whole body fits the browser's keepalive cap);
  * - 401 turnstile_required → read body turnstileSiteKey, throw TurnstileRequiredError;
  * - 401 turnstile_failed → throw TurnstileFailedError;
  * - 429 → brief backoff retry (edge rate limit), then surface as any other error;
@@ -72,6 +80,7 @@ export async function postSync(
 				body: JSON.stringify(body),
 				credentials: 'include',
 				signal: ctrl.signal,
+				keepalive: io.keepalive,
 			});
 		} catch (e) {
 			// 超时与网络故障分开：超时给一个稳定标识，UI 据此提示"后端未响应"

@@ -22,7 +22,6 @@
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
       "$shared/*": ["../src/shared/*"],
       "$base/*": ["../src/ui/*"],

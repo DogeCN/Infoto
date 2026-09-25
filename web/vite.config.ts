@@ -69,7 +69,13 @@ export default defineConfig({
 			'/sync': proxy(),
 			'/upload': proxy({ proxyTimeout: 120_000 }),
 			'/l': proxy({ cookieDomainRewrite: false }),
-			'/admin': proxy(),
+			// 只代理 admin 下的真实接口。/admin 页面本身是前端路由：若整路径
+			// 代理给 Worker，它会返回构建产物 dist/index.html（引用带哈希的
+			// /assets/index-*.js/css），而这些文件在 dev server 上不存在，
+			// Vite 回退返回 index.html(text/html) → 浏览器按 MIME 拦截 → /admin
+			// 白屏。dev 下由 Vite 的 SPA 回退吐出 dev shell（/src/main.ts），
+			// 根用户边界由 /sync 下发的 selfId === 0 在前端兜底（同 e2e 约定）。
+			'/admin/migrate': proxy(),
 		},
 	},
 	test: {

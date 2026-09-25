@@ -3,11 +3,11 @@
 // The pagehide handler is registered separately from visibilitychange→hidden
 // (the contract's token-audit clause applies here too).
 
-import type { Op, SyncResponse } from '$shared/types';
+import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import { postSync } from '../api/syncClient';
 import { remapOpTarget } from '../ops';
 import { rebuildCache } from '../oplog/cache';
-import { OPLOG_SYNC_THRESHOLD, appendOp, clearOps, countOps, openOplogDb, readOps } from '../oplog/store';
+import { OPLOG_SYNC_THRESHOLD, appendOp, countOps, openOplogDb, readOps } from '../oplog/store';
 
 /** Browser hard limit for a keepalive request body. */
 export const KEEPALIVE_BODY_LIMIT = 65_536;
@@ -78,6 +78,7 @@ export class SyncEngine {
 	private attempt = 0;
 	private opVersion = 0;
 	private activeSync: Promise<SyncAttemptResult> | null = null;
+	private inFlightKeys = new Set<IDBValidKey>();
 	private criticalFlush:
 		| { throughVersion: number; promise: Promise<SyncAttemptResult> }
 		| null = null;
@@ -123,33 +124,67 @@ export class SyncEngine {
 		return `${window.location.origin}/sync`;
 	}
 
-	/** Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule. */
+	/**
+	 * Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule.
+	 *
+	 * Ops already carried by an in-flight request are skipped: without a client
+	 * op id the server cannot tell a replay from a new op, so a second copy
+	 * would be applied twice. The skipped ops stay in the op-log — if the
+	 * active request is cancelled by the unload they go out in the next session
+	 * (losing a beat beats duplicating it). `runSync` applies the mirror filter.
+	 */
 	private flushOnPagehide(): void {
 		if (!this.db || this.pending === 0) return;
 		const db = this.db;
 		const fetchFn = this.io.fetchFn ?? fetch;
-		void readOps(db).then((entries) => {
-			if (entries.length === 0) return;
-			const fit = keepalivePrefix(entries.map((e) => e.op));
-			if (!fit) {
-				console.warn('[infoto] first op exceeds the 64KB keepalive budget; kept for the next sync');
-				return;
-			}
-			// Clear only the sent prefix; the remaining ops stay queued.
-			const keys = entries.slice(0, fit.ops.length).map((e) => e.key);
-			// Keepalive outcomes are uncertain, so failures retain every sent op.
-			void fetchFn(this.pagehideUrl(), {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: fit.body,
-				credentials: 'include',
-				keepalive: true,
+		void readOps(db)
+			.then((entries) => {
+				const available = entries.filter((entry) => !this.inFlightKeys.has(entry.key));
+				if (available.length === 0) return;
+				const fit = keepalivePrefix(available.map((entry) => entry.op));
+				if (!fit) {
+					console.warn('[infoto] first op exceeds the keepalive budget; kept for the next sync');
+					return;
+				}
+				const keys = available.slice(0, fit.ops.length).map((entry) => entry.key);
+				for (const key of keys) this.inFlightKeys.add(key);
+				let request: Promise<Response>;
+				try {
+					request = fetchFn(this.pagehideUrl(), {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: fit.body,
+						credentials: 'include',
+						keepalive: true,
+					});
+				} catch (error) {
+					// A synchronous throw never reaches the chain below, so the keys
+					// would otherwise stay marked and every later flush would skip them.
+					for (const key of keys) this.inFlightKeys.delete(key);
+					this.reportPagehideError(error);
+					return;
+				}
+				void request
+					.then((response) => {
+						// Non-ok and a failed clear both leave the op queued, so the
+						// next session resends it — never swallow that reason.
+						if (response.ok) return clearKeys(db, keys);
+						this.reportPagehideError(new Error(`pagehide flush rejected: HTTP ${response.status}`));
+					})
+					.catch((error: unknown) => this.reportPagehideError(error))
+					.finally(() => {
+						for (const key of keys) this.inFlightKeys.delete(key);
+					});
 			})
-				.then((r) => {
-					if (r.ok) return clearAfter(db, keys);
-				})
-				.catch(() => undefined);
-		});
+			.catch((error: unknown) => this.reportPagehideError(error));
+	}
+
+	private reportPagehideError(error: unknown): void {
+		try {
+			this.io.onError?.('pagehide', error);
+		} catch {
+			// Error reporting must not change flush semantics.
+		}
 	}
 
 	private async applySnapshot(
@@ -168,14 +203,19 @@ export class SyncEngine {
 		if (!this.db) this.db = await openOplogDb();
 		const db = this.db;
 		const entries = await readOps(db);
-		const maxVersion = entries.length > 0 ? this.opVersion : 0;
+		// Mirror of the pagehide filter: one op belongs to exactly one request at
+		// a time — the server has no client op id to deduplicate a replay on.
+		const available = entries.filter((entry) => !this.inFlightKeys.has(entry.key));
+		const maxVersion = available.length > 0 ? this.opVersion : 0;
+		for (const entry of available) this.inFlightKeys.add(entry.key);
 		this.syncing = true;
 		this.emit();
 		try {
-			const { response } = await (this.io.postSyncFn ?? postSync)({
-				ops: entries.map((entry) => entry.op),
+			const request: SyncRequest = { ops: available.map((entry) => entry.op) };
+			const { response } = await (this.io.postSyncFn ?? postSync)(request, {
+				keepalive: this.keepaliveEligible(request.ops),
 			});
-			await clearAfter(db, entries.map((entry) => entry.key));
+			await clearKeys(db, available.map((entry) => entry.key));
 			this.pending = await countOps(db);
 			await this.applySnapshot(db, response, { attempt });
 			return { ok: true, confirmedThroughVersion: maxVersion };
@@ -187,9 +227,21 @@ export class SyncEngine {
 			}
 			return { ok: false, error, confirmedThroughVersion: 0 };
 		} finally {
+			for (const entry of available) this.inFlightKeys.delete(entry.key);
 			this.syncing = false;
 			this.emit();
 		}
+	}
+
+	/**
+	 * A request started on a hidden document dies with the page unless it is
+	 * keepalive, so the last edit before closing the tab can leave — but only
+	 * when the whole batch fits the browser's keepalive body cap.
+	 */
+	private keepaliveEligible(ops: Op[]): boolean {
+		if (typeof document === 'undefined' || document.visibilityState === 'visible') return false;
+		const fit = keepalivePrefix(ops);
+		return fit !== null && fit.ops.length === ops.length;
 	}
 
 	private beginSync(): Promise<SyncAttemptResult> {
@@ -287,15 +339,14 @@ async function remapQueuedTargets(
 	});
 }
 
-async function clearAfter(db: IDBDatabase, keys: IDBValidKey[]): Promise<void> {
+async function clearKeys(db: IDBDatabase, keys: IDBValidKey[]): Promise<void> {
 	if (keys.length === 0) return;
-	const max = keys.reduce<number>((m, k) => Math.max(m, typeof k === 'number' ? k : 0), 0);
-	if (max <= 0) return clearOps(db);
 	await new Promise<void>((resolve, reject) => {
 		const tx = db.transaction('oplog', 'readwrite');
-		tx.objectStore('oplog').delete(IDBKeyRange.upperBound(max, false));
+		const store = tx.objectStore('oplog');
+		for (const key of keys) store.delete(key);
 		tx.oncomplete = () => resolve();
-		tx.onerror = () => reject(tx.error ?? new Error('oplog clearAfter failed'));
+		tx.onerror = () => reject(tx.error ?? new Error('oplog clearKeys failed'));
 	});
 }
 
