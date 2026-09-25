@@ -55,13 +55,12 @@ cd web && npm run ts-check && npm test && npm run build
 4. **范围筛选无逐项重置**：只能把柄拖回端点；只有子组级 `RotateCcw`（恢复整组默认）。
 5. **空态插图**：纯文字，没有插图（渐变白名单里的「空态插图」目前无处使用）。
 6. **错误页字体**：`ErrorPage.svelte` 仍写 `Space Grotesk`，而该字体已不在 `index.html` 加载（会静默回退）。删掉这个 `font-family`，或补回字体。
-7. **失败状态表达**：`/sync` 失败是去重 toast + 顶栏未同步计数，没有专门的「离线/排队中」态。
 
 # 三、清理
 
 - `custom/App.svelte`（72 行）——零引用，可删。
 - `custom/MarkdownEditor.svelte`（141 行）——零引用，是待接线件（见一表 #1），**保留**。
-- `/harness` 路由（`src/harness/Harness.svelte`）——开发验证面板，仅 `/harness` 或 `/?e2e` 可达，懒加载不进产品 chunk。**保留**。
+
 
 ---
 
@@ -107,4 +106,8 @@ cd web && npm run ts-check && npm test && npm run build
 31. 排序胶囊：方向**按项独立记忆**，切走再切回不丢；**未激活项也要显示自己记忆的方向**（否则切出瞬间回落默认文案）。
 32. Toast 在**左下角**、`theme="dark"`、配色走 `toastOptions.style` 内联（能压过 sonner 的两级属性选择器；`theme` 默认是 `light`，常暗站点不改会弹白卡）。
 33. **前端不得据 Cookie 判断是否已认证**（HttpOnly 读不到）——永远先探测 `/sync`。Turnstile widget 必须先 `turnstile.remove(id)` 再摘容器，token 回来后延时约 800ms 销毁。
-34. 上传管线：**SharedWorker 是硬前提，不做降级**；视频并发池**硬顶 2**，持令牌方每 5s 心跳、超 15s 强制回收（`pagehide` 不可靠，只靠租约兜底）；**转码失败不降级主线程**（会阻塞整页）。转码进度是右下角浮层，上传阶段走瀑布流内乐观条目 + 卡片"窗帘"遮罩。
+34. **入站验证渲染在瀑布流空态里**（`App.svelte` 的 verify 层），不做全屏叠加层——顶栏/侧栏保持可见，
+   且直接表达"通过验证才能看"。widget 销毁前不得摘 DOM（先隐藏，`TURNSTILE_DISPOSE_DELAY_MS` 后
+   dispose 再卸载节点；token 刚回来时 iframe 收尾握手未完，立即摘会留下悬空 widget）。
+35. 上传管线：**SharedWorker 是硬前提，不做降级**；视频并发池**硬顶 2**，持令牌方每 5s 心跳、超 15s 强制回收（`pagehide` 不可靠，只靠租约兜底）；**转码失败不降级主线程**（会阻塞整页）。转码进度是右下角浮层，上传阶段走瀑布流内乐观条目 + 卡片"窗帘"遮罩；
+  **转码失败（读不到宽高 meta）也必须以占位卡片呈现重试入口，不得静默消失**。

@@ -6,10 +6,16 @@
   import UploadProgressPanel from "$lib/components/custom/UploadProgressPanel.svelte";
   import SettingsPanel from "$lib/components/custom/SettingsPanel.svelte";
   import AnnouncementSidebar from "$lib/components/custom/AnnouncementSidebar.svelte";
+  import { tick } from "svelte";
   import { Toaster, toast } from "svelte-sonner";
   import { Settings as SettingsIcon, Megaphone } from "@lucide/svelte";
   import { getEngine } from "./core/sync/engine";
-  import { ensureIdentity } from "./core/identity";
+  import {
+    ensureIdentity,
+    renderTurnstile,
+    disposeTurnstile,
+    TURNSTILE_DISPOSE_DELAY_MS,
+  } from "./core/identity";
   import { postSync, TurnstileRequiredError } from "./core/api/syncClient";
   import { createAppStore } from "./state/appStore.svelte";
   import { downloadOne, downloadZip } from "./core/download";
@@ -68,24 +74,22 @@
   let pendingPhotos = $derived.by(() => {
     const out: Photo[] = [];
     for (const t of uploadTasks.values()) {
-      if (!t.meta) continue;
       if (!["uploading", "done", "failed"].includes(t.phase)) continue;
-      let id = tempIdByJob.get(t.jobId);
-      if (id === undefined) {
-        id = nextTempId--;
-        tempIdByJob.set(t.jobId, id);
-        jobByTempId.set(id, t.jobId);
-      }
+      // tempId 在 onTask 回调里统一分配，这里必已存在
+      const id = tempIdByJob.get(t.jobId)!;
+      // 转码失败的任务没有 meta（读不到宽高）：给占位比例让失败可见 ——
+      // 契约要求"失败标记该文件 + 卡片提供手动重试按钮"，不能静默消失
+      const meta = t.meta ?? { width: 800, height: 600, size: 0, type: 0 as const };
       out.push({
         id,
         sha256: t.sha256 ?? "",
         url: t.url ?? "",
         uploader: store.selfId,
-        width: t.meta.width,
-        height: t.meta.height,
-        size: t.meta.size,
+        width: meta.width,
+        height: meta.height,
+        size: meta.size,
         createdAt: Date.now(),
-        type: t.meta.type,
+        type: meta.type,
         likes: [],
         dislikes: [],
         reports: [],
@@ -98,9 +102,13 @@
     const m = new Map<number, { fraction?: number; failed?: boolean }>();
     for (const t of uploadTasks.values()) {
       const id = tempIdByJob.get(t.jobId);
-      if (id === undefined || !t.meta) continue;
-      if (t.phase === "uploading") m.set(id, { fraction: t.fraction ?? 0 });
-      else if (t.phase === "failed") m.set(id, { failed: true });
+      if (id === undefined) continue;
+      if (t.phase === "uploading") {
+        if (t.meta) m.set(id, { fraction: t.fraction ?? 0 });
+      } else if (t.phase === "failed") {
+        // 转码失败（无 meta）同样要挂失败遮罩 —— 重试入口不能依赖转码成功
+        m.set(id, { failed: true });
+      }
       // done → 无遮罩（窗帘已全开，等 /sync 校正）
     }
     return m;
@@ -166,13 +174,47 @@
   }
 
   let bootstrapping = false;
+
+  /**
+   * 入站验证态。新用户（无 Cookie）在服务端 401 后进 loading：验证码渲染在瀑布流
+   * 区域中央 —— 那里本来就是空的，还直接表达"通过验证才能看"，不必再单开一层
+   * 盖住整个应用（那样顶栏、侧栏、骨架都被挡住，看着像首屏卡住）。
+   *
+   * 不做额外的失败 UI：widget 失败后留在原地 —— Turnstile 交互式 widget 失败时
+   * 自带可点击的重试，timeout 后默认还会自动重试，用户也可以直接刷新。
+   *
+   * done = token 已拿到，验证层淡出但节点先留着：Turnstile iframe 的收尾握手还没
+   * 发完，dispose 之前摘 DOM 会留下悬空 widget（控制台刷 "Cannot find Widget"）。
+   */
+  type VerifyState = "idle" | "loading" | "done";
+  let verifyState = $state<VerifyState>("idle");
+  let turnstileEl = $state<HTMLDivElement | undefined>(undefined);
+
   /** 首次入站（无 Cookie）：Turnstile → 带 token 的 /sync → 建身份 + 全量下发。 */
   async function bootstrapIdentity() {
     if (bootstrapping) return;
     bootstrapping = true;
     try {
-      const { response } = await ensureIdentity([], { postSyncFn: postSync });
+      const { response, firstEntry } = await ensureIdentity([], {
+        postSyncFn: postSync,
+        requestToken: async (siteKey) => {
+          verifyState = "loading";
+          await tick(); // 等验证态的挂载点渲染出来，再往里渲染 widget
+          const el = turnstileEl;
+          if (!el) throw new Error("turnstile container missing");
+          const token = await renderTurnstile(siteKey, el);
+          // 仅成功路径安排销毁；失败路径让 widget 留在原地自愈或等用户刷新
+          setTimeout(() => {
+            void disposeTurnstile().finally(() => {
+              if (verifyState === "done") verifyState = "idle";
+            });
+          }, TURNSTILE_DISPOSE_DELAY_MS);
+          return token;
+        },
+      });
       store.applySync(response);
+      // 内容就位之后再收起验证层，避免中间闪一帧"还没有照片"的空态
+      if (firstEntry && verifyState === "loading") verifyState = "done";
     } catch (e) {
       console.error("[identity] bootstrap failed", e);
     } finally {
@@ -190,6 +232,13 @@
     })();
     pipeline.start();
     pipeline.onTask((t) => {
+      // 乐观条目的 tempId 统一在这里分配：pendingPhotos 与 uploadOverlays 两个
+      // derived 都读它，事件回调先于任何 derived 求值，顺序无关
+      if (["uploading", "done", "failed"].includes(t.phase) && !tempIdByJob.has(t.jobId)) {
+        const id = nextTempId--;
+        tempIdByJob.set(t.jobId, id);
+        jobByTempId.set(id, t.jobId);
+      }
       uploadTasks = new Map(uploadTasks.set(t.jobId, t));
     });
   });
@@ -396,7 +445,22 @@
       multiSelectActive={multiMode}
     />
 
-    <main class="flex-1 overflow-hidden">
+    <main class="relative flex-1 overflow-hidden">
+      <!-- 入站验证：新用户的瀑布流本来就是空的，验证码就居中放在这个位置。
+           淡出后才卸载节点（widget 必须先销毁），期间下方内容已经可以被看到。 -->
+      {#if verifyState !== "idle"}
+        <div
+          data-verify
+          class="absolute inset-0 z-10 grid place-items-center bg-background transition-opacity duration-300 ease-[var(--ease-exit)] {verifyState ===
+          'done'
+            ? 'pointer-events-none opacity-0'
+            : 'opacity-100'}"
+        >
+          <!-- Turnstile 挂载点：固定最小高度，widget 加载完不跳动 -->
+          <div bind:this={turnstileEl} class="min-h-[65px]"></div>
+        </div>
+      {/if}
+
       {#if visiblePhotos.length === 0}
         <div
           class="flex flex-col items-center justify-center py-24 text-center"

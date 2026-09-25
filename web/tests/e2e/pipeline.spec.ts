@@ -1,16 +1,29 @@
 // Transcode + upload pipeline against the local Worker (via the Vite dev
-// proxy) — the contract's highest-risk area. Covers image/gif/video transcode
-// + upload, the 100MB pre-check, the manual retry handle, cross-tab progress,
-// lease revocation, pagehide.
-import { expect, test } from '@playwright/test';
+// proxy) — the highest-risk area. Covers image/gif transcode + upload, the
+// 100MB pre-check, the manual retry handle, cross-tab progress, pagehide.
+// Drives the real app UI: the verification gate (always-pass locally) and the
+// top-bar upload button.
+import { expect, test, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 
-/** Harness task row element. */
-const taskRow = (page: import('@playwright/test').Page, name: string) =>
-	page.locator('div', { hasText: name }).filter({ hasText: /done|failed|duplicate|uploading|transcoding|queued|hashing|lease-wait/ }).first();
+/**
+ * Fresh visitor → verification gate (always-pass locally) → snapshot. See
+ * identity.spec.ts for the timing notes on the gate's fade-out.
+ */
+async function passGate(page: Page) {
+	await page.goto('/');
+	await expect(page.locator('[data-verify]')).toBeVisible({ timeout: 15_000 });
+	await expect(page.locator('[data-verify]')).toBeHidden({ timeout: 30_000 });
+}
+
+/** Top-bar upload button (opens the file chooser). */
+const uploadButton = (page: Page) => page.locator('header button[title="上传"]');
+
+/** Transcode-panel row for a given file name (visible while the job is active). */
+const taskRow = (page: Page, name: string) => page.getByText(name, { exact: true });
 
 /** Draw an image in the browser and return it base64 (Node side converts to a Buffer for setFiles). */
-async function makeImage(page: import('@playwright/test').Page, opts: { w: number; h: number; type: 'image/jpeg' | 'image/png'; name: string }) {
+async function makeImage(page: Page, opts: { w: number; h: number; type: 'image/jpeg' | 'image/png'; name: string }) {
 	const base64 = await page.evaluate(async ({ w, h, type }) => {
 		const c = document.createElement('canvas');
 		c.width = w;
@@ -61,60 +74,72 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 		expect(probe.vp9 || probe.vp8).toBe(true);
 	});
 
-	test('image E2E: JPEG → WebP → OPFS → /upload proxy → URL written to op-log → duplicate upload skips', async ({ page }) => {
-		await page.goto('/?e2e=1');
-		await page.getByRole('button', { name: /identity/ }).click();
-		await expect(page.getByText(/selfId=\d+/)).toBeVisible({ timeout: 20_000 });
+	test('image E2E: JPEG → WebP → OPFS → /upload proxy → URL written to op-log → duplicate upload skips', async ({ page, context }) => {
+		await passGate(page);
 
 		const file = await makeImage(page, { w: 320, h: 200, type: 'image/jpeg', name: 'e2e.jpg' });
 
+		// The SharedWorker issues /upload, which page.on('request') cannot observe —
+		// the panel row leaving (task finished) is the end-to-end completion signal,
+		// covering stage 2 (upload + op-log).
 		const chooser = page.waitForEvent('filechooser', { timeout: 5_000 }).then((fc) => fc.setFiles(file));
-		await page.getByRole('button', { name: /pick files/ }).click();
+		await uploadButton(page).click();
 		await chooser;
+		await expect(taskRow(page, 'e2e.jpg')).toBeVisible({ timeout: 60_000 });
+		await expect(taskRow(page, 'e2e.jpg')).toBeHidden({ timeout: 120_000 });
 
-		// assertions scope to the task row ("e2e.jpg — <phase>"): bare /done/ would
-		// also match the harness log line "identity flow done". The SharedWorker
-		// issues /upload, which page.on('request') does not observe — the
-		// uploading→done phase transitions are the network-level evidence.
-		await expect(page.getByText(/e2e\.jpg — (transcoding|uploading)/).first()).toBeVisible({ timeout: 60_000 });
-		await expect(page.getByText(/e2e\.jpg — done/).first()).toBeVisible({ timeout: 90_000 });
-		await expect(page.getByText(/written to op-log/).first()).toBeVisible({ timeout: 15_000 });
+		// the sha dedupe cache lives in IndexedDB and is refreshed by the engine's
+		// sync path — hit the real top-bar sync button (a bare fetch would not
+		// refresh it), so the second pick can hit the duplicate branch
+		await page.locator('header button[title="同步"]').click();
+		await page.waitForResponse((r) => r.url().includes('/sync') && r.request().method() === 'POST' && r.ok(), { timeout: 30_000 });
 
-		// the sha dedupe cache is rebuilt from the server snapshot — sync first so
-		// the second pick can hit the duplicate branch
-		await page.getByRole('button', { name: /manual sync/ }).click();
-		await expect(page.getByText(/\/sync ok: selfId=\d+/)).toBeVisible({ timeout: 30_000 });
-
-		// same file again → sha256 hit → duplicate (stage 2 skipped)
+		// same file again → sha256 hit → duplicate (stage 2 skipped entirely).
+		// The duplicate row is removed within a frame (the snapshot effect strips
+		// sha-matched tasks), so assert on the pipeline log line + the server
+		// snapshot instead of the DOM.
+		const count = async () => {
+			const r = await context.request.post('/sync', { data: { ops: [] } });
+			return ((await r.json()) as { photos: unknown[] }).photos.length;
+		};
+		const before = await count();
+		const dupLog = page.waitForEvent('console', {
+			predicate: (m) => m.text().includes('duplicate: sha256 cache hit'),
+			timeout: 90_000,
+		});
 		const chooser2 = page.waitForEvent('filechooser', { timeout: 5_000 }).then((fc) => fc.setFiles(file));
-		await page.getByRole('button', { name: /pick files/ }).click();
+		await uploadButton(page).click();
 		await chooser2;
-		await expect(page.getByText(/e2e\.jpg — duplicate/).first()).toBeVisible({ timeout: 90_000 });
+		await dupLog;
+		await page.locator('header button[title="同步"]').click();
+		await expect
+			.poll(count, { timeout: 30_000 })
+			.toBe(before); // no new photo was created
 	});
 
 	test('gif E2E: frame-by-frame transcode → type=1', async ({ page }) => {
 		page.on('pageerror', (e) => console.log('[pageerror]', String(e)));
-		page.on('console', (m) => {
-			if (m.type() === 'error' || m.type() === 'warning') console.log('[console]', m.type(), m.text());
-		});
-		await page.goto('/?e2e=1');
-		await page.getByRole('button', { name: /identity/ }).click();
-		await expect(page.getByText(/selfId=\d+/)).toBeVisible({ timeout: 20_000 });
+		await passGate(page);
 		// minimal valid GIF (1×1, single frame)
 		const gifBytes = Uint8Array.from(atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'), (c) => c.charCodeAt(0));
 		const chooser = page.waitForEvent('filechooser').then((fc) =>
 			fc.setFiles({ name: 'e2e.gif', mimeType: 'image/gif', buffer: Buffer.from(gifBytes) }),
 		);
-		await page.getByRole('button', { name: /pick files/ }).click();
+		await uploadButton(page).click();
 		await chooser;
-		// a 1×1 GIF either fails (e.g. a decode error surfaces as failed) or
-		// completes; assert the task reaches a terminal state and never hangs
-		// (row-scoped — bare /done|failed/ also matches harness log lines)
-		await expect(page.getByText(/e2e\.gif — (done|failed)/).first()).toBeVisible({ timeout: 60_000 });
+		// a 1×1 GIF either fails (decode error → retry card) or completes (panel row
+		// leaves); assert a terminal state is reached and never hangs
+		const row = taskRow(page, 'e2e.gif');
+		await expect(row).toBeVisible({ timeout: 60_000 });
+		await expect(async () => {
+			const rowGone = (await row.count()) === 0;
+			const retryShown = (await page.getByTitle('重试上传').count()) > 0;
+			expect(rowGone || retryShown).toBe(true);
+		}).toPass({ timeout: 120_000 });
 	});
 
 	test('100MB pre-check: fails immediately, no retry, artifact stays in OPFS', async ({ page }) => {
-		await page.goto('/?e2e=1');
+		await page.goto('/');
 		// exercise the pipeline's pure function directly (base pipeline module
 		// served from the repo src/ tree through the $base alias target)
 		const pipelineFs = fileURLToPath(new URL('../../../src/ui/upload/pipeline.ts', import.meta.url)).replace(/\\/g, '/');
@@ -127,43 +152,46 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 	});
 
 	test('retry handle: failed tasks expose a retry button', async ({ page }) => {
-		await page.goto('/?e2e=1');
-		// take /upload offline: intercept with 500 — one failed attempt, then the
-		// job is marked failed (contract: no auto-retry, manual retry only)
-		await page.route('**/upload', (r) => r.fulfill({ status: 500, body: JSON.stringify({ error: 'image_host_unreachable' }) }));
-		const file = await makeImage(page, { w: 60, h: 40, type: 'image/png', name: 'retry.png' });
-		const chooser = page.waitForEvent('filechooser').then((fc) => fc.setFiles(file));
-		await page.getByRole('button', { name: /pick files/ }).click();
+		await passGate(page);
+		// A 0-byte PNG cannot decode, so stage 1 fails (no network interception —
+		// the SharedWorker issues /upload and page.route cannot see those requests).
+		// The failed job surfaces as a waterfall card with a retry handle.
+		const chooser = page.waitForEvent('filechooser').then((fc) =>
+			fc.setFiles({ name: 'retry.png', mimeType: 'image/png', buffer: Buffer.alloc(0) }),
+		);
+		await uploadButton(page).click();
 		await chooser;
-		await expect(page.getByText(/retry\.png — failed/).first()).toBeVisible({ timeout: 90_000 });
-		await expect(page.getByRole('button', { name: 'retry' }).first()).toBeVisible();
+		await expect(page.getByTitle('重试上传').first()).toBeVisible({ timeout: 120_000 });
+		await expect(page.getByText('上传失败')).toBeVisible();
 	});
 
-	test('cross-tab: page A uploads, page B sees progress (BroadcastChannel)', async ({ context }) => {
+	test('cross-tab: page A uploads, page B sees it (SharedWorker + BroadcastChannel + sync)', async ({ context }) => {
 		const a = await context.newPage();
 		const b = await context.newPage();
-		await a.goto('/?e2e=1');
-		await a.getByRole('button', { name: /identity/ }).click();
-		await expect(a.getByText(/selfId=\d+/)).toBeVisible({ timeout: 30_000 });
-		// stagger B's load so the BroadcastChannel/SharedWorker wiring is exercised
-		await b.goto('/?e2e=1');
+		await passGate(a);
+		// B shares the context cookie jar, so it skips the gate entirely
+		await b.goto('/');
+		const imgsBefore = await b.locator('main img').count();
 
 		const file = await makeImage(a, { w: 100, h: 70, type: 'image/jpeg', name: 'bc.jpg' });
 		const chooser = a.waitForEvent('filechooser').then((fc) => fc.setFiles(file));
-		await a.getByRole('button', { name: /pick files/ }).click();
+		await uploadButton(a).click();
 		await chooser;
-		// page B should see the same-named job in any known phase via BroadcastChannel / SW
-		await expect(b.getByText('bc.jpg').first()).toBeVisible({ timeout: 30_000 });
+		// B sees A's job either live (panel row via BroadcastChannel / SW replay)
+		// or as a landed photo in its own waterfall once the op syncs
+		await expect(async () => {
+			const rowShown = (await taskRow(b, 'bc.jpg').count()) > 0;
+			const imgGrew = (await b.locator('main img').count()) > imgsBefore;
+			expect(rowShown || imgGrew).toBe(true);
+		}).toPass({ timeout: 30_000 });
 	});
 
 	test('lease revocation: page A closes mid-flight → revoked within 15s → page B re-enqueues', async ({ context }) => {
-		test.skip(true, 'scenario 10 needs a real video file and lease timing; manual walkthrough batch');
+		test.skip(true, 'needs a real video file and lease timing; manual walkthrough batch');
 	});
 
 	test('pagehide submit: op leaves before unload', async ({ page }) => {
-		await page.goto('/?e2e=1');
-		await page.getByRole('button', { name: /identity/ }).click();
-		await expect(page.getByText(/selfId=\d+/)).toBeVisible({ timeout: 20_000 });
+		await passGate(page);
 		let syncSeen = false;
 		page.on('request', (r) => {
 			if (r.url().includes('/sync') && r.method() === 'POST') syncSeen = true;

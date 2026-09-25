@@ -13,8 +13,11 @@ const DEV_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefin
 export interface TurnstileFlowDeps {
 	/** Injected for unit tests and E2E. */
 	postSyncFn?: typeof postSync;
-	/** Token getter; injectable to skip the real widget (E2E / test key). */
-	getTokenFn?: (siteKey: string, container: HTMLElement) => Promise<string>;
+	/**
+	 * 取 token 的完整策略。缺省自建全屏遮挡层（无 UI 上下文时用：单测、脚本调用）。
+	 * 产品 UI 注入自己的实现，把验证码放进页面已有的空态里。
+	 */
+	requestToken?: (siteKey: string) => Promise<string>;
 }
 
 interface TurnstileRenderOptions {
@@ -75,6 +78,13 @@ export async function disposeTurnstile(): Promise<void> {
 const TURNSTILE_TIMEOUT_MS = 15_000;
 
 /**
+ * widget 销毁前的等待窗口。token 刚回来时 Turnstile iframe 的收尾握手还没发完，
+ * 立刻 remove 会让它的 postMessage 打到已拆除的窗口上（控制台报 target origin
+ * 不匹配），DOM 节点也必须在 dispose 之后才能摘。
+ */
+export const TURNSTILE_DISPOSE_DELAY_MS = 800;
+
+/**
  * Render Turnstile explicitly and wait for the token.
  * widget 挂住（iframe 加载不下来/被拦）时按超时 reject，让调用方走降级路径。
  */
@@ -106,6 +116,32 @@ export async function renderTurnstile(
 	});
 }
 
+/**
+ * 缺省取 token 策略：自建全屏遮挡层。只在没有 UI 上下文时使用（单测、脚本调用）。
+ * 产品界面（`App.svelte`）注入自己的实现，把验证码放进瀑布流的空态位置 —— 那里本来
+ * 就是空的，还省掉一层盖住整个应用的遮罩。
+ */
+async function overlayRequestToken(siteKey: string): Promise<string> {
+	const container = document.createElement('div');
+	container.id = 'infoto-turnstile';
+	container.style.position = 'fixed';
+	container.style.inset = '0';
+	container.style.display = 'grid';
+	container.style.placeItems = 'center';
+	container.style.zIndex = '9999';
+	container.style.background = '#0a0e1a';
+	document.body.appendChild(container);
+	try {
+		return await renderTurnstile(siteKey, container);
+	} finally {
+		// 遮挡层立刻隐藏（不让用户看到多余的黑屏），widget 稍后再销毁并摘除节点
+		container.style.display = 'none';
+		setTimeout(() => {
+			void disposeTurnstile().finally(() => container.remove());
+		}, TURNSTILE_DISPOSE_DELAY_MS);
+	}
+}
+
 export interface IdentityBootstrapResult {
 	response: SyncResponse;
 	/** true = this was a first entry (identity created with a Turnstile token). */
@@ -117,13 +153,16 @@ export interface IdentityBootstrapResult {
  * With a valid cookie (no 401) the full snapshot returns directly and
  * Turnstile never shows up.
  *
- * 首访服务端 401 turnstile_required 时才渲染 Turnstile。
+ * 首访服务端 401 turnstile_required 时才取 token。
  *
  * 注意：身份 cookie（uuid）是 HttpOnly，前端读不到 document.cookie —— 任何
  * 「本地判断有没有身份、没有就直接进 Turnstile」的优化都是错的：老用户每次刷新
  * 都会被迫再验一次验证码。是否已认证只能由服务端回答，所以永远先探测 /sync。
  */
-export async function ensureIdentity(ops: Op[] = [], deps: TurnstileFlowDeps = {}): Promise<IdentityBootstrapResult> {
+export async function ensureIdentity(
+	ops: Op[] = [],
+	deps: TurnstileFlowDeps = {},
+): Promise<IdentityBootstrapResult> {
 	const sync = deps.postSyncFn ?? postSync;
 	let serverSiteKey: string | null = null;
 	try {
@@ -133,33 +172,11 @@ export async function ensureIdentity(ops: Op[] = [], deps: TurnstileFlowDeps = {
 		if (!(e instanceof TurnstileRequiredError)) throw e;
 		serverSiteKey = e.turnstileSiteKey;
 	}
-	{
-		const siteKey = serverSiteKey ?? DEV_SITE_KEY ?? null;
-		if (!siteKey) throw new Error('turnstile_required but no site key');
-		const container = document.createElement('div');
-		container.id = 'infoto-turnstile';
-		container.style.position = 'fixed';
-		container.style.inset = '0';
-		container.style.display = 'grid';
-		container.style.placeItems = 'center';
-		container.style.zIndex = '9999';
-		container.style.background = '#0a0e1a';
-		document.body.appendChild(container);
-		try {
-			const getToken = deps.getTokenFn ?? renderTurnstile;
-			const token = await getToken(siteKey, container);
-			// the token rides exactly one first /sync
-			const { response } = await sync({ turnstileToken: token, ops });
-			return { response, firstEntry: true };
-		} finally {
-			// 遮挡层立刻隐藏（不让用户看到多余的黑屏），widget 稍后再销毁：
-			// token 刚回来时 Turnstile iframe 的收尾握手还没发完，立刻 remove 会让
-			// 它的 postMessage 打到已拆除的窗口上（控制台报 target origin 不匹配）。
-			// 延时窗口内若再次渲染，renderTurnstile 会先 dispose 上一次，不会漏。
-			container.style.display = 'none';
-			setTimeout(() => {
-				void disposeTurnstile().finally(() => container.remove());
-			}, 800);
-		}
-	}
+	const siteKey = serverSiteKey ?? DEV_SITE_KEY ?? null;
+	if (!siteKey) throw new Error('turnstile_required but no site key');
+	const requestToken = deps.requestToken ?? overlayRequestToken;
+	const token = await requestToken(siteKey);
+	// the token rides exactly one first /sync
+	const { response } = await sync({ turnstileToken: token, ops });
+	return { response, firstEntry: true };
 }

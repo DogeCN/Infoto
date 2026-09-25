@@ -12,6 +12,8 @@ export default defineConfig({
 	use: {
 		baseURL: 'http://localhost:5173',
 		browserName: 'chromium',
+		// 本机未下载 Playwright 的 chromium 构建，直接用系统 Edge
+		channel: 'msedge',
 		viewport: { width: 1280, height: 800 },
 	},
 	webServer: [
