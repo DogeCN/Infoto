@@ -1,14 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 test('admin announcement dialog validates, transforms, and previews safely', async ({ page }) => {
-  const home = await page.request.get('/');
-  await page.route('**/admin', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'text/html',
-      body: await home.body(),
-    });
-  });
+  // /admin is the static SPA shell; seed the cached selfId so the page mounts
+  // as root on first frame (fresh browser would redirect to '/').
+  await page.addInitScript(() => localStorage.setItem('infoto-self-id', '0'));
   await page.route('**/sync', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
@@ -42,7 +37,9 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
   await dialog.getByRole('button', { name: '粗体' }).click();
   await expect(editor).toHaveValue('**hello**');
 
-  await editor.fill(':::vote 选项甲 | 选项乙\n正文\n![安全图片](https://example.com/image.png)\n![危险图片](javascript:alert(1))\n[危险链接](javascript:alert(1))');
+  await editor.fill(
+    ':::vote 选项甲 | 选项乙\n正文\n![安全图片](https://example.com/image.png)\n![危险图片](javascript:alert(1))\n[危险链接](javascript:alert(1))',
+  );
   const preview = dialog.getByLabel('实时预览');
   await expect(preview.getByRole('button', { name: /选项甲/ })).toBeVisible();
   await expect(preview).not.toContainText(':::vote');

@@ -1,11 +1,17 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import type { SyncCallResult, SyncClientIo } from '../../src/core/api/syncClient';
 import { clearOps, openOplogDb, readOps } from '../../src/core/oplog/store';
-import { SyncEngine } from '../../src/core/sync/engine';
+import type { EngineIo } from '../../src/core/sync/engine';
+import { KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/sync/engine';
 
-const op = (target: number): Op => ({ type: 'ann_update', target, payload: { title: 't', contentMd: 'c' } });
+const op = (target: number): Op => ({
+  type: 'ann_update',
+  target,
+  payload: { title: 't', contentMd: 'c' },
+});
 
 const snapshot = (announcements: SyncResponse['announcements'] = []): SyncResponse => ({
   ok: true,
@@ -28,22 +34,49 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+type FetchMock = Mock<(...args: Parameters<typeof fetch>) => Promise<Response>>;
+type PostSyncMock = Mock<(body: SyncRequest, io?: SyncClientIo) => Promise<SyncCallResult>>;
+type ErrorSink = Mock<(phase: 'submit' | 'pagehide', error: unknown) => void>;
+type ArrangeCtx = { db: IDBDatabase; fetchFn: FetchMock };
+
+/** Every onError call the engine made, normalised for a single toEqual. */
+const reports = (sink: ErrorSink): Array<{ phase: string; message: string }> =>
+  sink.mock.calls.map(([phase, error]) => ({ phase, message: (error as Error).message }));
+
+class ListenerHub {
+  private readonly listeners = new Map<string, Array<() => void>>();
+  addEventListener(type: string, listener: () => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+  dispatch(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener();
+  }
+}
+
+class StubWindow extends ListenerHub {
+  readonly location = { origin: 'http://localhost' };
+}
+
+class StubDocument extends ListenerHub {
+  visibilityState: DocumentVisibilityState = 'visible';
+}
+
+let db: IDBDatabase;
+
+beforeEach(async () => {
+  db = await openOplogDb();
+  await clearOps(db);
+});
+
+afterEach(() => {
+  try {
+    db.close();
+  } catch {
+    // a test may have closed the connection itself
+  }
+});
+
 describe('SyncEngine awaitable sync', () => {
-  let db: IDBDatabase;
-
-  beforeEach(async () => {
-    db = await openOplogDb();
-    await clearOps(db);
-  });
-
-  afterEach(() => {
-    try {
-      db.close();
-    } catch {
-      return;
-    }
-  });
-
   it('coalesces callers and flushes an op appended during an in-flight request', async () => {
     const first = deferred<SyncCallResult>();
     const second = deferred<SyncCallResult>();
@@ -63,28 +96,42 @@ describe('SyncEngine awaitable sync', () => {
     const version = await engine.addOp(op(-1));
     const firstFlush = engine.flushThrough(version);
     const secondFlush = engine.flushThrough(version);
-    first.resolve(result(snapshot([{
-      id: 9,
-      title: 'new',
-      contentMd: 'body',
-      sort: 0,
-      updatedAt: 1_000,
-      reactions: [],
-      votes: [],
-    }])));
+    first.resolve(
+      result(
+        snapshot([
+          {
+            id: 9,
+            title: 'new',
+            contentMd: 'body',
+            sort: 0,
+            updatedAt: 1_000,
+            reactions: [],
+            votes: [],
+          },
+        ]),
+      ),
+    );
     await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(2));
 
     expect(requests[0]!.ops).toHaveLength(1);
-    expect(requests[1]!.ops).toEqual([{ type: 'ann_update', target: -1, payload: { title: 't', contentMd: 'c' } }]);
-    second.resolve(result(snapshot([{
-      id: 9,
-      title: 't',
-      contentMd: 'c',
-      sort: 0,
-      updatedAt: 1_000,
-      reactions: [],
-      votes: [],
-    }])));
+    expect(requests[1]!.ops).toEqual([
+      { type: 'ann_update', target: -1, payload: { title: 't', contentMd: 'c' } },
+    ]);
+    second.resolve(
+      result(
+        snapshot([
+          {
+            id: 9,
+            title: 't',
+            contentMd: 'c',
+            sort: 0,
+            updatedAt: 1_000,
+            reactions: [],
+            votes: [],
+          },
+        ]),
+      ),
+    );
 
     await expect(active).resolves.toMatchObject({ ok: true });
     await expect(firstFlush).resolves.toMatchObject({ ok: true });
@@ -104,22 +151,30 @@ describe('SyncEngine awaitable sync', () => {
       onSyncResponse: () => new Map([[-1, 9]]),
     });
     await engine.addOp({ type: 'ann_create', payload: { title: 'new', contentMd: 'body' } });
-    const active = engine.sync();
+    engine.sync();
     await vi.waitFor(() => expect(requests).toHaveLength(1));
     const version = await engine.addOp(op(-1));
     const flushed = engine.flushThrough(version);
-    first.resolve(result(snapshot([{
-      id: 9,
-      title: 'new',
-      contentMd: 'body',
-      sort: 0,
-      updatedAt: 1_000,
-      reactions: [],
-      votes: [],
-    }])));
+    first.resolve(
+      result(
+        snapshot([
+          {
+            id: 9,
+            title: 'new',
+            contentMd: 'body',
+            sort: 0,
+            updatedAt: 1_000,
+            reactions: [],
+            votes: [],
+          },
+        ]),
+      ),
+    );
     await vi.waitFor(() => expect(requests).toHaveLength(2));
 
-    expect(requests[1]!.ops).toEqual([{ type: 'ann_update', target: 9, payload: { title: 't', contentMd: 'c' } }]);
+    expect(requests[1]!.ops).toEqual([
+      { type: 'ann_update', target: 9, payload: { title: 't', contentMd: 'c' } },
+    ]);
     second.resolve(result(snapshot()));
     await expect(flushed).resolves.toMatchObject({ ok: true });
   });
@@ -137,79 +192,157 @@ describe('SyncEngine awaitable sync', () => {
       { type: 'ann_reorder', payload: [2, 1] },
     ]);
   });
+
+  it('reports confirmation only through the ops the request actually carried', async () => {
+    const engine = new SyncEngine({
+      db,
+      postSyncFn: vi.fn().mockResolvedValue(result(snapshot())),
+    });
+    const first = await engine.addOp(op(-1));
+    const second = await engine.addOp(op(-2));
+    expect(second).toBeGreaterThan(first);
+
+    // confirmedThroughVersion is the last sent op's log key — not an in-memory
+    // counter, which would also claim ops excluded from this request (the
+    // in-flight pagehide prefix, or ops appended by another tab sharing the oplog).
+    await expect(engine.sync()).resolves.toEqual({
+      ok: true,
+      confirmedThroughVersion: second,
+    });
+  });
 });
 
-type PagehideInternals = { flushOnPagehide(): void };
-
-/** The pagehide dump is private; tests reach it through the class contract. */
-const triggerPagehide = (engine: SyncEngine): void =>
-  (engine as unknown as PagehideInternals).flushOnPagehide();
-
-/** Let IndexedDB transactions and the promise chains on top of them settle. */
-const settle = (ms = 10): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 describe('SyncEngine in-flight dedup and pagehide flush', () => {
-  let db: IDBDatabase;
+  let sink: ErrorSink;
+  let fetchFn: FetchMock;
+  let postSyncFn: PostSyncMock;
+  /** Every op the default postSync accepted — the runSync-side dedup recorder. */
+  let submitted: Op[];
+  let windowStub: StubWindow;
+  let documentStub: StubDocument;
 
-  beforeEach(async () => {
-    db = await openOplogDb();
-    await clearOps(db);
-    vi.stubGlobal('window', { location: { origin: 'http://localhost' } });
+  beforeEach(() => {
+    submitted = [];
+    sink = vi.fn<(phase: 'submit' | 'pagehide', error: unknown) => void>();
+    fetchFn = vi
+      .fn<(...args: Parameters<typeof fetch>) => Promise<Response>>()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    postSyncFn = vi.fn((body: SyncRequest) => {
+      submitted.push(...body.ops);
+      return Promise.resolve(result(snapshot()));
+    });
+    windowStub = new StubWindow();
+    documentStub = new StubDocument();
+    vi.stubGlobal('window', windowStub);
+    vi.stubGlobal('document', documentStub);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    try {
-      db.close();
-    } catch {
-      // the test may have closed the connection itself
+  });
+
+  const engine = (io: EngineIo = {}): SyncEngine =>
+    new SyncEngine({ db, fetchFn, postSyncFn, onError: sink, ...io });
+
+  const installed = new WeakSet<SyncEngine>();
+  /** Fire pagehide through `install()` — never reach into private methods. */
+  const firePagehide = (e: SyncEngine): void => {
+    if (!installed.has(e)) {
+      e.install(windowStub as unknown as Window);
+      installed.add(e);
     }
+    windowStub.dispatch('pagehide');
+  };
+
+  /**
+   * Await an oplog read issued *after* a dispatch. IndexedDB runs same-store
+   * transactions in creation order, so by the time this resolves the pagehide
+   * dump has finished its send/skip decision — deterministic, no fixed sleeps.
+   */
+  const pagehideReadDone = async (): Promise<void> => {
+    await readOps(db);
+  };
+
+  const dumpAndReports = async (
+    e: SyncEngine,
+  ): Promise<Array<{ phase: string; message: string }>> => {
+    firePagehide(e);
+    await vi.waitFor(() => expect(sink).toHaveBeenCalled());
+    return reports(sink);
+  };
+
+  it('install() wires pagehide and a hidden-document visibilitychange', async () => {
+    const e = engine();
+    e.install(windowStub as unknown as Window);
+    await e.addOp(op(-1));
+
+    windowStub.dispatch('pagehide');
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+    expect(fetchFn.mock.calls[0]![1]).toMatchObject({ keepalive: true });
+
+    documentStub.visibilityState = 'hidden';
+    documentStub.dispatch('visibilitychange');
+    await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(1));
+    expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: true });
   });
 
   it('does not resubmit ops a pagehide keepalive already carries', async () => {
     const keepalive = deferred<Response>();
-    const fetchFn = vi.fn((..._args: Parameters<typeof fetch>): Promise<Response> => keepalive.promise);
-    const postSyncFn = vi.fn(
-      (_body: SyncRequest, _io?: SyncClientIo): Promise<SyncCallResult> => Promise.resolve(result(snapshot())),
-    );
-    const engine = new SyncEngine({ db, fetchFn, postSyncFn });
-    await engine.addOp({ type: 'ann_create', payload: { title: 'new', contentMd: 'body' } });
-    await engine.addOp(op(-1));
+    fetchFn.mockImplementation(() => keepalive.promise);
+    const e = engine();
+    await e.addOp({ type: 'ann_create', payload: { title: 'new', contentMd: 'body' } });
+    await e.addOp(op(-1));
 
-    triggerPagehide(engine);
+    firePagehide(e);
     await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    expect(fetchFn.mock.calls[0]![1]).toMatchObject({ keepalive: true });
-    const body = fetchFn.mock.calls[0]![1]?.body as string;
-    expect((JSON.parse(body) as SyncRequest).ops).toHaveLength(2);
+    const carried = (JSON.parse(fetchFn.mock.calls[0]![1]?.body as string) as SyncRequest).ops;
+    expect(carried).toHaveLength(2);
 
-    await expect(engine.sync()).resolves.toMatchObject({ ok: true });
-    expect(postSyncFn).toHaveBeenCalledTimes(1);
-    expect(postSyncFn.mock.calls[0]![0].ops).toEqual([]); // both keys are in flight
-    expect(await readOps(db)).toHaveLength(2); // the keepalive has not settled yet
+    await expect(e.sync()).resolves.toMatchObject({ ok: true });
+    const carriedJson = new Set(carried.map((o) => JSON.stringify(o)));
+    expect(submitted.filter((o) => carriedJson.has(JSON.stringify(o)))).toEqual([]);
+    expect(await readOps(db)).toHaveLength(2); // still queued: the keepalive has not settled
 
     keepalive.resolve(new Response(null, { status: 200 }));
     await vi.waitFor(async () => {
       expect(await readOps(db)).toHaveLength(0);
     });
-    expect(postSyncFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears only the ops the keepalive sent when one lands mid-flight', async () => {
+    const keepalive = deferred<Response>();
+    fetchFn.mockImplementation(() => keepalive.promise);
+    const e = engine();
+    await e.addOp(op(-1));
+
+    firePagehide(e);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+    const queued: Op = { type: 'ann_reorder', payload: [2, 1] };
+    await e.addOp(queued);
+
+    keepalive.resolve(new Response(null, { status: 200 }));
+    await vi.waitFor(async () => {
+      expect(await readOps(db)).toHaveLength(1);
+    });
+    expect((await readOps(db)).map((entry) => entry.op)).toEqual([queued]);
   });
 
   it('drops an op owned by an active sync from the pagehide dump', async () => {
     const syncCall = deferred<SyncCallResult>();
-    const postSyncFn = vi.fn(
-      (_body: SyncRequest, _io?: SyncClientIo): Promise<SyncCallResult> => syncCall.promise,
-    );
-    const fetchFn = vi.fn((..._args: Parameters<typeof fetch>): Promise<Response> =>
-      Promise.resolve(new Response(null, { status: 200 })),
-    );
-    const engine = new SyncEngine({ db, fetchFn, postSyncFn });
-    await engine.addOp(op(-1));
+    const e = engine({
+      postSyncFn: (body) => {
+        submitted.push(...body.ops);
+        return syncCall.promise;
+      },
+    });
+    const only = op(-1);
+    await e.addOp(only);
 
-    const attempt = engine.sync();
-    await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(1));
+    const attempt = e.sync();
+    await vi.waitFor(() => expect(submitted).toEqual([only]));
 
-    triggerPagehide(engine);
-    await settle();
+    firePagehide(e);
+    await pagehideReadDone();
     expect(fetchFn).not.toHaveBeenCalled();
 
     syncCall.resolve(result(snapshot()));
@@ -217,109 +350,128 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     expect(await readOps(db)).toHaveLength(0);
   });
 
-  it('releases its keys when the keepalive fetch throws synchronously', async () => {
-    const onError = vi.fn((_phase: 'submit' | 'pagehide', _error: unknown): void => {});
-    const fetchFn = vi.fn((..._args: Parameters<typeof fetch>): Promise<Response> => {
-      throw new Error('fetch exploded');
+  it('does not double-send when pagehide fires twice during a keepalive', async () => {
+    const keepalive = deferred<Response>();
+    fetchFn.mockImplementation(() => keepalive.promise);
+    const e = engine();
+    await e.addOp(op(-1));
+
+    firePagehide(e);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+
+    firePagehide(e);
+    await pagehideReadDone();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    keepalive.resolve(new Response(null, { status: 200 }));
+    await vi.waitFor(async () => {
+      expect(await readOps(db)).toHaveLength(0);
     });
-    const engine = new SyncEngine({ db, fetchFn, onError });
-    await engine.addOp(op(-1));
 
-    triggerPagehide(engine);
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-    expect(onError.mock.calls[0]![0]).toBe('pagehide');
-    expect((onError.mock.calls[0]![1] as Error).message).toBe('fetch exploded');
-    expect(await readOps(db)).toHaveLength(1);
-
-    // Without the release every later flush would skip the key forever.
-    triggerPagehide(engine);
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
+    firePagehide(e); // nothing queued anymore
+    await pagehideReadDone();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it('reports a rejected keepalive and keeps the op for the next flush', async () => {
-    const onError = vi.fn((_phase: 'submit' | 'pagehide', _error: unknown): void => {});
-    const fetchFn = vi.fn((..._args: Parameters<typeof fetch>): Promise<Response> =>
-      Promise.reject(new Error('offline')),
-    );
-    const engine = new SyncEngine({ db, fetchFn, onError });
-    await engine.addOp(op(-1));
+  const fetchFailures: Array<{
+    name: string;
+    arrange: (ctx: ArrangeCtx) => void;
+    expected: { phase: string; message: unknown };
+  }> = [
+    {
+      name: 'a synchronously throwing fetch',
+      arrange: ({ fetchFn: f }) =>
+        f.mockImplementation(() => {
+          throw new Error('fetch exploded');
+        }),
+      expected: { phase: 'pagehide', message: 'fetch exploded' },
+    },
+    {
+      name: 'a rejected keepalive request',
+      arrange: ({ fetchFn: f }) => f.mockImplementation(() => Promise.reject(new Error('offline'))),
+      expected: { phase: 'pagehide', message: 'offline' },
+    },
+    {
+      name: 'a non-ok response',
+      arrange: ({ fetchFn: f }) =>
+        f.mockImplementation(() => Promise.resolve(new Response('nope', { status: 500 }))),
+      expected: { phase: 'pagehide', message: 'pagehide flush rejected: HTTP 500' },
+    },
+  ];
 
-    triggerPagehide(engine);
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-    expect(onError.mock.calls[0]![0]).toBe('pagehide');
-    expect((onError.mock.calls[0]![1] as Error).message).toBe('offline');
-    expect(await readOps(db)).toHaveLength(1);
+  it.each(fetchFailures)(
+    'reports $name, keeps the op, and lets the next dump retry',
+    async ({ arrange, expected }) => {
+      const e = engine();
+      await e.addOp(op(-1));
+      arrange({ db, fetchFn });
 
-    triggerPagehide(engine);
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
-  });
+      expect(await dumpAndReports(e)).toEqual([expected]);
+      expect((await readOps(db)).map((entry) => entry.op)).toEqual([op(-1)]);
 
-  it('reports a non-ok keepalive response instead of dropping it', async () => {
-    const onError = vi.fn((_phase: 'submit' | 'pagehide', _error: unknown): void => {});
-    const fetchFn = vi.fn((..._args: Parameters<typeof fetch>): Promise<Response> =>
-      Promise.resolve(new Response('nope', { status: 500 })),
-    );
-    const engine = new SyncEngine({ db, fetchFn, onError });
-    await engine.addOp(op(-1));
+      firePagehide(e);
+      await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
+    },
+  );
 
-    triggerPagehide(engine);
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-    expect(onError.mock.calls[0]![0]).toBe('pagehide');
-    expect((onError.mock.calls[0]![1] as Error).message).toContain('500');
-    expect(await readOps(db)).toHaveLength(1);
-  });
+  const oplogFailures: Array<{
+    name: string;
+    arrange: (ctx: ArrangeCtx) => void;
+    expected: { phase: string; message: unknown };
+  }> = [
+    {
+      name: 'a failed oplog read',
+      arrange: ({ db: d }) => {
+        d.close();
+      },
+      expected: { phase: 'pagehide', message: expect.any(String) },
+    },
+    {
+      name: 'a failed oplog clear',
+      arrange: ({ db: d, fetchFn: f }) => {
+        f.mockImplementation(() => {
+          d.close(); // 200 comes back, but the connection the clear needs is gone
+          return Promise.resolve(new Response(null, { status: 200 }));
+        });
+      },
+      expected: { phase: 'pagehide', message: expect.any(String) },
+    },
+  ];
 
-  it('reports an oplog clear failure after an accepted keepalive', async () => {
-    const onError = vi.fn((_phase: 'submit' | 'pagehide', _error: unknown): void => {});
-    const fetchFn = vi.fn((..._args: Parameters<typeof fetch>): Promise<Response> => {
-      db.close(); // 200 comes back, but the connection the clear needs is gone
-      return Promise.resolve(new Response(null, { status: 200 }));
-    });
-    const engine = new SyncEngine({ db, fetchFn, onError });
-    await engine.addOp(op(-1));
+  it.each(oplogFailures)(
+    'reports $name instead of swallowing it',
+    async ({ arrange, expected }) => {
+      const e = engine();
+      await e.addOp(op(-1));
+      arrange({ db, fetchFn });
 
-    triggerPagehide(engine);
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-    expect(onError.mock.calls[0]![0]).toBe('pagehide');
-  });
+      expect(await dumpAndReports(e)).toEqual([expected]);
+    },
+  );
 
-  it('reports an oplog read failure during the dump', async () => {
-    const onError = vi.fn((_phase: 'submit' | 'pagehide', _error: unknown): void => {});
-    const fetchFn = vi.fn((..._args: Parameters<typeof fetch>): Promise<Response> =>
-      Promise.resolve(new Response(null, { status: 200 })),
-    );
-    const engine = new SyncEngine({ db, fetchFn, onError });
-    await engine.addOp(op(-1));
-    db.close(); // the guard passes (pending > 0) but the read cannot start
+  it('passes keepalive only for a sync started on a hidden document', async () => {
+    const e = engine();
+    await e.addOp(op(-1));
 
-    triggerPagehide(engine);
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-    expect(onError.mock.calls[0]![0]).toBe('pagehide');
-    expect(fetchFn).not.toHaveBeenCalled();
-  });
-
-  it('makes a sync started on a hidden document keepalive so it survives the unload', async () => {
-    vi.stubGlobal('document', { visibilityState: 'hidden' });
-    const postSyncFn = vi.fn(
-      (_body: SyncRequest, _io?: SyncClientIo): Promise<SyncCallResult> => Promise.resolve(result(snapshot())),
-    );
-    const engine = new SyncEngine({ db, postSyncFn });
-    await engine.addOp(op(-1));
-
-    await engine.sync();
-    expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: true });
-    expect(await readOps(db)).toHaveLength(0);
-  });
-
-  it('keeps a sync started on a visible document on a plain request', async () => {
-    vi.stubGlobal('document', { visibilityState: 'visible' });
-    const postSyncFn = vi.fn(
-      (_body: SyncRequest, _io?: SyncClientIo): Promise<SyncCallResult> => Promise.resolve(result(snapshot())),
-    );
-    const engine = new SyncEngine({ db, postSyncFn });
-    await engine.addOp(op(-1));
-
-    await engine.sync();
+    await e.sync();
     expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: false });
+
+    documentStub.visibilityState = 'hidden';
+    await e.addOp(op(-2));
+    await e.sync();
+    expect(postSyncFn.mock.calls[1]![1]).toEqual({ keepalive: true });
+  });
+
+  it('falls back to a plain request when a hidden batch busts the keepalive cap', async () => {
+    documentStub.visibilityState = 'hidden';
+    const e = engine();
+    await e.addOp({
+      type: 'ann_create',
+      payload: { title: 'big', contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT) },
+    });
+
+    await e.sync();
+    expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: false });
+    expect(await readOps(db)).toHaveLength(0);
   });
 });

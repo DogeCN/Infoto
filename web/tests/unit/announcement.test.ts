@@ -57,12 +57,7 @@ describe('announcement pending reconciliation', () => {
 
   it('remaps a confirmed temporary create through the existing mapping', () => {
     const pending = markAnnouncementPending([], [-1], 1);
-    const result = reconcileAnnouncementPending(
-      pending,
-      new Set([7]),
-      new Map([[-1, 7]]),
-      2,
-    );
+    const result = reconcileAnnouncementPending(pending, new Set([7]), new Map([[-1, 7]]), 2);
 
     expect([...result.confirmedIds]).toEqual([7]);
     expect(result.pendingIds.size).toBe(0);
@@ -73,11 +68,7 @@ describe('announcement pending reconciliation', () => {
 describe('announcement reorder rollback', () => {
   it('restores the previous order without discarding current card data', () => {
     const original = [announcement(1, 0), announcement(2, 1), announcement(3, 2)];
-    const reordered = [
-      { ...original[2]!, title: 'updated' },
-      original[0]!,
-      original[1]!,
-    ];
+    const reordered = [{ ...original[2]!, title: 'updated' }, original[0]!, original[1]!];
     const rolledBack = rollbackAnnouncementOrder(reordered, [1, 2, 3]);
 
     expect(rolledBack.map((item) => item.id)).toEqual([1, 2, 3]);

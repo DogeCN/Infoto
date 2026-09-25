@@ -6,7 +6,7 @@ import {
   parseVotePreview,
   prefixSelectedLines,
   wrapSelection,
-} from '../../src/lib/components/custom/markdownTransforms';
+} from '../../src/lib/components/markdownTransforms';
 
 describe('markdown toolbar transforms', () => {
   it('wraps the selected text and restores the selection', () => {

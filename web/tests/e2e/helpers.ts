@@ -38,9 +38,15 @@ export async function prepareGate(page: Page): Promise<void> {
 
 export async function expectGate(page: Page): Promise<void> {
   await expect
-    .poll(() => page.evaluate(() => window.__infotoVerifySeen || Boolean(document.querySelector('[data-verify]'))), {
-      timeout: 15_000,
-    })
+    .poll(
+      () =>
+        page.evaluate(
+          () => window.__infotoVerifySeen || Boolean(document.querySelector('[data-verify]')),
+        ),
+      {
+        timeout: 15_000,
+      },
+    )
     .toBe(true);
 }
 
