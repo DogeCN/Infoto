@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Announcement, Feedback, Photo } from '$shared/types';
 import * as ops from '../../src/core/ops';
-import { parseVote } from '../../src/core/vote';
+import { splitVote } from '../../src/core/vote';
 import { reactionCounts } from '../../src/core/reactions';
 import {
   applyFilters,
@@ -110,53 +110,42 @@ describe('ops: announcements', () => {
   });
 });
 
-describe('ops: temp id resolution', () => {
-  it('maps pending temp ids to newly appeared real ids in creation order', () => {
-    const server = [ann({ id: 5 }), ann({ id: 6 })];
-    const { mapping, unresolved } = ops.resolveTempIds([-1, -2], new Set<number>(), server);
-    expect(mapping.get(-1)).toBe(5);
-    expect(mapping.get(-2)).toBe(6);
-    expect(unresolved).toEqual([]);
-  });
-
-  it('keeps temp ids that the server has not returned yet', () => {
-    const server = [ann({ id: 5 })];
-    const { mapping, unresolved } = ops.resolveTempIds([-1, -2], new Set<number>(), server);
-    expect(mapping.get(-1)).toBe(5);
-    expect(unresolved).toEqual([-2]);
-  });
-
-  it('ignores ids already known from a previous snapshot', () => {
-    const server = [ann({ id: 5 }), ann({ id: 6 })];
-    const { mapping } = ops.resolveTempIds([-1], new Set([5]), server);
-    expect(mapping.get(-1)).toBe(6);
-  });
-
+describe('ops: temp id remap', () => {
   it('remapOpTarget rewrites only negative targets that are mapped', () => {
     const mapping = new Map([[-1, 9]]);
-    expect(ops.remapOpTarget({ type: 'ann_delete', target: -1 }, mapping).target).toBe(9);
-    expect(ops.remapOpTarget({ type: 'ann_delete', target: -2 }, mapping).target).toBe(-2);
+    expect(ops.remapOpTarget({ type: 'fb_delete', target: -1 }, mapping).target).toBe(9);
+    expect(ops.remapOpTarget({ type: 'fb_delete', target: -2 }, mapping).target).toBe(-2);
     expect(ops.remapOpTarget({ type: 'like', target: 3 }, mapping).target).toBe(3);
   });
 });
 
 describe('vote parsing', () => {
-  it('takes the first :::vote line and strips it from the body', () => {
-    const r = parseVote('说明\n:::vote 满意 | 一般 | 不满意\n尾部');
+  it('splits around the first :::vote line', () => {
+    const r = splitVote('说明\n:::vote 满意 | 一般 | 不满意\n尾部');
     expect(r.options).toEqual(['满意', '一般', '不满意']);
-    expect(r.body).toBe('说明\n尾部');
+    expect(r.before).toBe('说明');
+    expect(r.after).toBe('尾部');
   });
 
-  it('returns no options when absent (body unchanged)', () => {
-    const r = parseVote('纯文本');
-    expect(r.options).toEqual([]);
-    expect(r.body).toBe('纯文本');
-  });
-
-  it('ignores a second :::vote line', () => {
-    const r = parseVote(':::vote A | B\n:::vote C | D');
+  it('keeps a leading vote with an empty before part', () => {
+    const r = splitVote(':::vote A | B\n说明');
     expect(r.options).toEqual(['A', 'B']);
-    expect(r.body).toBe(':::vote C | D');
+    expect(r.before).toBe('');
+    expect(r.after).toBe('说明');
+  });
+
+  it('returns no options when absent (body stays in before)', () => {
+    const r = splitVote('纯文本');
+    expect(r.options).toEqual([]);
+    expect(r.before).toBe('纯文本');
+    expect(r.after).toBe('');
+  });
+
+  it('ignores a second :::vote line (it stays in after)', () => {
+    const r = splitVote(':::vote A | B\n:::vote C | D');
+    expect(r.options).toEqual(['A', 'B']);
+    expect(r.before).toBe('');
+    expect(r.after).toBe(':::vote C | D');
   });
 });
 

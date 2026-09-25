@@ -10,34 +10,35 @@
 
   interface Props {
     announcements: Announcement[];
-    pendingIds: ReadonlySet<number>;
+    /** Per-row write state: 'saving' while in flight, 'error' when it failed. */
+    saveState: Record<number, 'saving' | 'error'>;
     timeReference: number;
     onEdit: (announcement: Announcement) => void;
     onDelete: (id: number) => void;
-    onReorder: (ids: number[]) => Promise<{ ok: boolean }>;
-    onInvalidReorder: () => void;
+    onReorder: (ids: number[]) => void;
   }
 
-  let {
-    announcements,
-    pendingIds,
-    timeReference,
-    onEdit,
-    onDelete,
-    onReorder,
-    onInvalidReorder,
-  }: Props = $props();
+  let { announcements, saveState, timeReference, onEdit, onDelete, onReorder }: Props = $props();
 
   let dragId = $state<number | null>(null);
   let draft = $state<ops.AnnouncementReorderDraft | null>(null);
+  // Candidate drag id recorded on pointerdown before the threshold, so a plain click never drags.
+  let pressId: number | null = null;
+  let pressX = 0;
+  let pressY = 0;
   let pointerX = 0;
   let pointerY = 0;
   let grabOffsetX = 0;
   let grabOffsetY = 0;
+  // Natural position of the dragged card (viewport coords); remeasured only on press, reorder or scroll.
+  let baseLeft = 0;
+  let baseTop = 0;
   let draggedElement: HTMLElement | null = null;
   let flipToken = 0;
   const cardElements = new Map<number, HTMLElement>();
   const animations = new Map<number, Animation>();
+
+  const DRAG_THRESHOLD = 4;
 
   const visibleAnnouncements = $derived.by(() =>
     draft ? ops.applyAnnReorder(announcements, draft.orderedIds) : announcements,
@@ -65,7 +66,10 @@
   async function flipDisplaced(first: Map<number, DOMRect>): Promise<void> {
     const token = ++flipToken;
     await tick();
-    if (token !== flipToken || reducedMotion()) return;
+    if (token !== flipToken) return;
+    // The dragged card moved in the document: rebase it first, then FLIP the others.
+    rebaseDraggedCard();
+    if (reducedMotion()) return;
     for (const [id, element] of cardElements) {
       if (id === dragId) continue;
       const previous = first.get(id);
@@ -86,38 +90,72 @@
   function followPointer(x: number, y: number): void {
     const element = draggedElement;
     if (!element || dragId === null) return;
+    element.style.transform = `translate3d(${x - grabOffsetX - baseLeft}px, ${y - grabOffsetY - baseTop}px, 0)`;
+  }
+
+  /** Remeasure the dragged card's natural position (clear transform briefly, same frame, no flicker) and stick it back to the pointer. */
+  function rebaseDraggedCard(): void {
+    const element = draggedElement;
+    if (!element || dragId === null) return;
     element.style.transform = 'none';
-    const base = element.getBoundingClientRect();
-    element.style.transform = `translate3d(${x - grabOffsetX - base.left}px, ${y - grabOffsetY - base.top}px, 0)`;
+    const rect = element.getBoundingClientRect();
+    baseLeft = rect.left;
+    baseTop = rect.top;
+    followPointer(pointerX, pointerY);
+  }
+
+  /**
+   * Slot (0…n in the final order) where the pointer should insert. Hit-tests with
+   * offsetTop/offsetHeight — immune to FLIP transforms — and only swaps after the
+   * pointer crosses the target card's midpoint, the hysteresis that kills jitter.
+   */
+  function reorderTarget(docY: number): number | null {
+    if (!draft) return null;
+    const order = draft.orderedIds;
+    for (let index = 0; index < order.length; index += 1) {
+      const id = order[index];
+      if (id === dragId) continue;
+      const element = cardElements.get(id);
+      if (!element) continue;
+      let top = 0;
+      let node: HTMLElement | null = element;
+      while (node) {
+        top += node.offsetTop;
+        node = node.offsetParent as HTMLElement | null;
+      }
+      const height = element.offsetHeight;
+      if (docY < top || docY >= top + height) continue;
+      return docY < top + height / 2 ? index : index + 1;
+    }
+    return null;
   }
 
   function onPointerMove(event: PointerEvent): void {
-    if (dragId === null) return;
-    event.preventDefault();
+    if (pressId === null) return;
     pointerX = event.clientX;
     pointerY = event.clientY;
+    if (dragId === null) {
+      if (Math.hypot(pointerX - pressX, pointerY - pressY) < DRAG_THRESHOLD) return;
+      activateDrag();
+    } else {
+      event.preventDefault();
+    }
     followPointer(pointerX, pointerY);
-    const target = document
-      .elementFromPoint(pointerX, pointerY)
-      ?.closest<HTMLElement>('[data-announcement-id]');
-    if (!target || target.id === 'dragged-announcement') return;
-    const targetId = Number(target.dataset.announcementId);
-    if (!Number.isInteger(targetId) || targetId === dragId || !draft) return;
-    const next = ops.moveAnnouncementReorder(draft, targetId);
+    const slot = reorderTarget(pointerY + window.scrollY);
+    if (slot === null || !draft) return;
+    const next = ops.moveAnnouncementReorderToIndex(draft, slot);
     if (next === draft) return;
     const first = captureRects();
     draft = next;
-    void flipDisplaced(first).then(() => followPointer(pointerX, pointerY));
+    void flipDisplaced(first);
   }
 
-  function onPointerDown(event: PointerEvent, id: number): void {
-    if (event.button !== 0 || dragId !== null) return;
+  function activateDrag(): void {
+    const id = pressId;
+    const element = id === null ? undefined : cardElements.get(id);
+    if (id === null || !element) return;
     for (const animation of animations.values()) animation.cancel();
     animations.clear();
-    const element = cardElements.get(id);
-    if (!element) return;
-    event.preventDefault();
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     const rect = element.getBoundingClientRect();
     dragId = id;
     draggedElement = element;
@@ -125,20 +163,39 @@
       announcements.map((announcement) => announcement.id),
       id,
     );
+    grabOffsetX = pointerX - rect.left;
+    grabOffsetY = pointerY - rect.top;
+    baseLeft = rect.left;
+    baseTop = rect.top;
+  }
+
+  function onPointerDown(event: PointerEvent, id: number): void {
+    if (event.button !== 0 || dragId !== null || pressId !== null) return;
+    // Interactions on the edit/delete buttons never start a drag
+    if ((event.target as HTMLElement).closest('button')) return;
+    event.preventDefault();
+    pressId = id;
+    pressX = event.clientX;
+    pressY = event.clientY;
     pointerX = event.clientX;
     pointerY = event.clientY;
-    grabOffsetX = event.clientX - rect.left;
-    grabOffsetY = event.clientY - rect.top;
-    followPointer(pointerX, pointerY);
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     window.addEventListener('pointermove', onPointerMove, { passive: false });
     window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
   }
 
   function removePointerListeners(): void {
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerCancel);
+    window.removeEventListener('scroll', onScroll, { capture: true });
+  }
+
+  function onScroll(): void {
+    // Scrolling shifts layout relative to the viewport: rebase the dragged card so it follows the pointer
+    if (dragId !== null) rebaseDraggedCard();
   }
 
   function settleDraggedCard(): void {
@@ -158,65 +215,63 @@
   }
 
   async function commitDraft(activeDraft: ops.AnnouncementReorderDraft): Promise<void> {
-    const { draft: finalized, op } = ops.finalizeAnnouncementReorder(activeDraft);
+    const { draft: finalized, orderedIds } = ops.finalizeAnnouncementReorder(activeDraft);
     draft = finalized;
-    if (!op || !Array.isArray(op.payload)) {
+    if (!orderedIds) {
       draft = null;
       return;
     }
-    const ids = [...op.payload] as number[];
-    if (ids.some((id) => id < 0)) {
-      onInvalidReorder();
-      await tick();
-      draft = null;
-      return;
-    }
-    void onReorder(ids).finally(async () => {
-      await tick();
-      draft = null;
-    });
+    // Reorder is never blocked: a row created moments ago still carries a temp
+    // id, and the store flushes the order once the real id arrives.
+    onReorder([...orderedIds]);
+    await tick();
+    draft = null;
   }
 
   function onPointerUp(event: PointerEvent): void {
-    if (dragId === null) return;
+    if (pressId === null) return;
     event.preventDefault();
     removePointerListeners();
+    if (dragId === null) {
+      // Never crossed the threshold: treat as a plain click and do nothing
+      pressId = null;
+      return;
+    }
     const activeDraft = draft;
+    pressId = null;
     dragId = null;
     settleDraggedCard();
+    draggedElement = null;
     if (activeDraft) void commitDraft(activeDraft);
   }
 
+  /** Keyboard reorder: move `id` one slot up/down and commit like a pointer drop. */
+  async function nudge(id: number, delta: -1 | 1): Promise<void> {
+    if (dragId !== null || pressId !== null) return;
+    const ids = announcements.map((announcement) => announcement.id);
+    const from = ids.indexOf(id);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= ids.length) return;
+    let next = ops.beginAnnouncementReorder(ids, id);
+    next = ops.moveAnnouncementReorderToIndex(next, delta > 0 ? to + 1 : to);
+    await commitDraft(next);
+  }
+
   function onPointerCancel(event: PointerEvent): void {
-    if (dragId === null) return;
+    if (pressId === null) return;
     event.preventDefault();
     removePointerListeners();
+    if (dragId === null) {
+      pressId = null;
+      return;
+    }
     const first = captureRects();
+    pressId = null;
     dragId = null;
     draft = null;
     draggedElement?.style.setProperty('transform', '');
     draggedElement = null;
     void tick().then(() => flipDisplaced(first));
-  }
-
-  async function nudge(id: number, offset: number): Promise<void> {
-    const ids = announcements.map((announcement) => announcement.id);
-    const from = ids.indexOf(id);
-    const targetId = ids[from + offset];
-    if (from < 0 || targetId === undefined) return;
-    let next = ops.beginAnnouncementReorder(ids, id);
-    next = ops.moveAnnouncementReorder(next, targetId);
-    const { op } = ops.finalizeAnnouncementReorder(next);
-    if (!op || !Array.isArray(op.payload)) return;
-    const orderedIds = [...op.payload] as number[];
-    if (orderedIds.some((orderedId) => orderedId < 0)) {
-      onInvalidReorder();
-      return;
-    }
-    draft = next;
-    void onReorder(orderedIds);
-    await tick();
-    draft = null;
   }
 </script>
 
@@ -230,57 +285,39 @@
       <div
         use:card={announcement.id}
         data-announcement-id={announcement.id}
-        id={dragId === announcement.id ? 'dragged-announcement' : undefined}
         role="listitem"
-        class="rounded-xl border border-border bg-card p-4 {dragId === announcement.id
+        class="touch-none cursor-grab select-none rounded-xl border border-border bg-card p-4 active:cursor-grabbing {dragId ===
+        announcement.id
           ? 'pointer-events-none relative z-10 opacity-50'
           : ''}"
+        onpointerdown={(event) => onPointerDown(event, announcement.id)}
       >
         <div class="flex items-start justify-between gap-3">
-          <div class="flex min-w-0 flex-1 items-start gap-2">
-            <button
-              type="button"
-              aria-label="拖动排序：{announcement.title}"
-              class="mt-0.5 shrink-0 cursor-grab touch-none rounded-sm p-0.5 text-muted-foreground/50 hover:text-muted-foreground active:cursor-grabbing"
-              onpointerdown={(event) => onPointerDown(event, announcement.id)}
-              onkeydown={(event) => {
-                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-                event.preventDefault();
-                void nudge(announcement.id, event.key === 'ArrowUp' ? -1 : 1);
-              }}
-            >
-              <GripVertical class="size-4" />
-            </button>
-            <div class="min-w-0 flex-1">
-              <h3 class="text-sm font-medium">{announcement.title}</h3>
-              <p class="mt-2 line-clamp-2 text-xs text-muted-foreground">
-                {announcement.contentMd}
-              </p>
-              <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground/70">
-                <span>排序: {announcement.sort}</span>
-                <span>·</span>
-                <Tooltip text={absoluteTime} side="top">
-                  <span class="rounded-sm">
-                    {formatRelativeTime(announcement.updatedAt, timeReference)}
-                  </span>
-                </Tooltip>
-                {#if pendingIds.has(announcement.id)}
-                  <span
-                    class="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary"
-                  >
-                    同步中
-                  </span>
-                {/if}
-                {#each counts as count (count.emoji)}
-                  <span class="rounded-full border border-border px-2 py-0.5">
-                    {count.emoji}
-                    {count.count}
-                  </span>
-                {/each}
-              </div>
-            </div>
+          <div class="min-w-0 flex-1">
+            <h3 class="text-sm font-medium">{announcement.title}</h3>
+            <p class="mt-2 line-clamp-2 text-xs text-muted-foreground">
+              {announcement.contentMd}
+            </p>
           </div>
           <div class="flex shrink-0 gap-1">
+            <Tooltip text="拖动排序（上下方向键）">
+              <button
+                type="button"
+                class="inline-flex cursor-grab items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground active:cursor-grabbing"
+                aria-label="拖动排序"
+                onkeydown={(event) => {
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    void nudge(announcement.id, -1);
+                  } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    void nudge(announcement.id, 1);
+                  }
+                }}
+              >
+                <GripVertical class="size-4" />
+              </button>
+            </Tooltip>
             <Tooltip text="编辑">
               <button
                 type="button"
@@ -302,6 +339,34 @@
               </button>
             </Tooltip>
           </div>
+        </div>
+        <div class="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground/70">
+          <div class="flex flex-wrap items-center gap-2">
+            {#if saveState[announcement.id] === 'saving'}
+              <span
+                class="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary"
+              >
+                保存中
+              </span>
+            {:else if saveState[announcement.id] === 'error'}
+              <span
+                class="rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-destructive"
+              >
+                保存失败
+              </span>
+            {/if}
+            {#each counts as count (count.emoji)}
+              <span class="rounded-full border border-border px-2 py-0.5">
+                {count.emoji}
+                {count.count}
+              </span>
+            {/each}
+          </div>
+          <Tooltip text={absoluteTime} side="top">
+            <span class="shrink-0 rounded-sm">
+              {formatRelativeTime(announcement.updatedAt, timeReference)}
+            </span>
+          </Tooltip>
         </div>
       </div>
     {/each}

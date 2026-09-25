@@ -1,8 +1,6 @@
-// Op-log write path and optimistic local application. Every write enters the
-// op log, syncs, and is corrected by the next full server snapshot.
-//
-// Pure reducers live here so they are unit-testable without a browser; the store
-// (`state/appStore.svelte.ts`) binds them to reactive state and the engine.
+// Op-log write path and optimistic local application: every write enters the op log,
+// syncs, and is corrected by the next full server snapshot. Pure reducers live here so
+// they are unit-testable without a browser; the store binds them to reactive state and the engine.
 
 import type { Announcement, Feedback, Op, Photo } from '$shared/types';
 
@@ -147,35 +145,35 @@ export function beginAnnouncementReorder(ids: number[], dragId: number): Announc
   return { sourceIds: [...ids], orderedIds: [...ids], dragId, finalized: false };
 }
 
-export function moveAnnouncementReorder(
+/** Move the dragged id so it lands at insertion slot `slot` (0…n, positions in final order). */
+export function moveAnnouncementReorderToIndex(
   draft: AnnouncementReorderDraft,
-  targetId: number,
+  slot: number,
 ): AnnouncementReorderDraft {
-  if (draft.finalized || draft.dragId === null || draft.dragId === targetId) return draft;
+  if (draft.finalized || draft.dragId === null) return draft;
   const from = draft.orderedIds.indexOf(draft.dragId);
-  const to = draft.orderedIds.indexOf(targetId);
-  if (from < 0 || to < 0) return draft;
+  if (from < 0) return draft;
+  const clamped = Math.max(0, Math.min(slot, draft.orderedIds.length));
+  // already there (or would land right back where it was)
+  if (clamped === from || clamped === from + 1) return draft;
   const orderedIds = [...draft.orderedIds];
   const [id] = orderedIds.splice(from, 1);
   if (id === undefined) return draft;
-  orderedIds.splice(to, 0, id);
-  if (orderedIds.every((id, index) => id === draft.orderedIds[index])) return draft;
+  orderedIds.splice(clamped > from ? clamped - 1 : clamped, 0, id);
   return { ...draft, orderedIds };
 }
 
 export function finalizeAnnouncementReorder(draft: AnnouncementReorderDraft): {
   draft: AnnouncementReorderDraft;
-  op: Op | null;
+  /** New order when it actually changed, else null (nothing to send). */
+  orderedIds: number[] | null;
 } {
-  if (draft.finalized) return { draft, op: null };
+  if (draft.finalized) return { draft, orderedIds: null };
   const finalized = { ...draft, dragId: null, finalized: true };
   if (draft.orderedIds.every((id, index) => id === draft.sourceIds[index])) {
-    return { draft: finalized, op: null };
+    return { draft: finalized, orderedIds: null };
   }
-  return {
-    draft: finalized,
-    op: { type: 'ann_reorder', payload: [...draft.orderedIds] },
-  };
+  return { draft: finalized, orderedIds: [...draft.orderedIds] };
 }
 
 export function cancelAnnouncementReorder(
@@ -189,80 +187,6 @@ export function rollbackAnnouncementOrder(
   previousIds: number[],
 ): Announcement[] {
   return applyAnnReorder(anns, previousIds);
-}
-
-export interface PendingAnnouncementMutation {
-  ids: number[];
-  queuedAtAttempt: number;
-  reorder?: boolean;
-}
-
-export interface PendingAnnouncementReconciliation {
-  mutations: PendingAnnouncementMutation[];
-  pendingIds: Set<number>;
-  confirmedIds: Set<number>;
-}
-
-export function markAnnouncementPending(
-  mutations: PendingAnnouncementMutation[],
-  ids: number[],
-  attempt: number,
-  reorder = false,
-): PendingAnnouncementMutation[] {
-  return [...mutations, { ids: [...ids], queuedAtAttempt: attempt, reorder }];
-}
-
-export function reconcileAnnouncementPending(
-  mutations: PendingAnnouncementMutation[],
-  serverIds: ReadonlySet<number>,
-  mapping: ReadonlyMap<number, number>,
-  snapshotAttempt: number,
-): PendingAnnouncementReconciliation {
-  const pendingIds = new Set<number>();
-  const confirmedIds = new Set<number>();
-  const remaining: PendingAnnouncementMutation[] = [];
-  for (const mutation of mutations) {
-    const unresolved: number[] = [];
-    for (const originalId of mutation.ids) {
-      const id = mapping.get(originalId) ?? originalId;
-      if (mutation.queuedAtAttempt < snapshotAttempt && serverIds.has(id)) {
-        confirmedIds.add(id);
-      } else {
-        unresolved.push(id);
-      }
-    }
-    if (unresolved.length > 0) {
-      remaining.push({ ...mutation, ids: [...new Set(unresolved)] });
-      for (const id of unresolved) pendingIds.add(id);
-    }
-  }
-  return { mutations: remaining, pendingIds, confirmedIds };
-}
-
-/**
- * Map optimistic temp ids to the real ids the server assigned.
- *
- * Temp ids are negative and descending (-1, -2, …); the server allocates
- * increasing real ids, so newly-appeared announcements sorted ascending
- * correspond to pending temp ids in creation order.
- */
-export function resolveTempIds(
-  pendingTempIds: number[],
-  knownRealIds: Set<number>,
-  serverAnns: Announcement[],
-): { mapping: Map<number, number>; unresolved: number[] } {
-  const fresh = serverAnns
-    .filter((a) => !knownRealIds.has(a.id) && a.id > 0)
-    .map((a) => a.id)
-    .sort((x, y) => x - y);
-  const mapping = new Map<number, number>();
-  const unresolved: number[] = [];
-  pendingTempIds.forEach((tempId, i) => {
-    const real = fresh[i];
-    if (real === undefined) unresolved.push(tempId);
-    else mapping.set(tempId, real);
-  });
-  return { mapping, unresolved };
 }
 
 /** Rewrite op targets that referenced optimistic temp ids. */

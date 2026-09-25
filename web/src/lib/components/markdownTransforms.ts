@@ -1,5 +1,3 @@
-import { parseVote, type ParsedVote } from '../../core/vote';
-
 export interface TextSelection {
   start: number;
   end: number;
@@ -104,11 +102,4 @@ export function mapOffsetThroughEdit(offset: number, before: string, after: stri
     return Math.max(0, Math.min(after.length, offset + after.length - before.length));
   }
   return prefix;
-}
-
-export function parseVotePreview(content: string): ParsedVote {
-  if (!/^(?:[ \t]*\r?\n)*[ \t]*:::vote(?:\s|$)/.test(content)) {
-    return { options: [], body: content };
-  }
-  return parseVote(content);
 }

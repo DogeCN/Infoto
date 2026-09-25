@@ -9,7 +9,3 @@ export function filterFeedback(feedback: readonly Feedback[], query: string): Fe
     ),
   );
 }
-
-export function toggleFeedback(currentId: number | null, id: number): number | null {
-  return currentId === id ? null : id;
-}

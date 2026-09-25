@@ -17,11 +17,12 @@
   import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';
   import VoteBlock from './VoteBlock.svelte';
+  import UploadProgressPanel, { type PanelTask } from './UploadProgressPanel.svelte';
+  import { splitVote } from '../../core/vote';
   import {
     insertImageAt,
     insertMarkdownBlock,
     mapOffsetThroughEdit,
-    parseVotePreview,
     prefixSelectedLines,
     wrapSelection,
     type TextSelection,
@@ -34,14 +35,46 @@
     /** Pick and upload an image; returns the hosted URL (via /upload proxy). */
     onPickImage?: () => Promise<string | null>;
     onChange?: (v: string) => void;
+    /** File name shown on the in-flight upload card (defaults to "image"). */
+    uploadName?: string;
+    /** Live pipeline snapshot (queue/transcode/hash/upload) of that upload. */
+    uploadTask?: PanelTask | null;
   }
 
-  let { value = $bindable(''), placeholder = '', onPickImage, onChange }: Props = $props();
+  let {
+    value = $bindable(''),
+    placeholder = '',
+    onPickImage,
+    onChange,
+    uploadName = '',
+    uploadTask = null,
+  }: Props = $props();
 
   let textareaEl: HTMLTextAreaElement | undefined = $state(undefined);
   let imageUploading = $state(false);
   let imageError = $state('');
   let pendingImageCaret: number | null = null;
+
+  /**
+   * Row shown by UploadProgressPanel (kind='upload'). Prefers the real pipeline
+   * snapshot so the shared transcode → hash → upload stages are visible; the
+   * synthetic row only covers the window before the first snapshot arrives.
+   */
+  let uploadTasks = $derived.by(() => {
+    const m = new Map<string, PanelTask>();
+    const live = uploadTask;
+    if (imageUploading && live && live.phase !== 'done' && live.phase !== 'failed') {
+      m.set(live.jobId, live);
+    } else if (imageUploading) {
+      m.set('editor-image', {
+        jobId: 'editor-image',
+        fileName: uploadName || '图片',
+        phase: 'queued',
+        fraction: null,
+      });
+    }
+    return m;
+  });
 
   function selection(): TextSelection {
     return {
@@ -94,7 +127,8 @@
       }
     } catch (error) {
       console.error('[editor] image upload failed', error);
-      imageError = '图片上传失败，请重试';
+      // The pipeline already translates engine error codes into localized copy.
+      imageError = error instanceof Error && error.message ? error.message : '图片上传失败，请重试';
     } finally {
       imageUploading = false;
       pendingImageCaret = null;
@@ -118,14 +152,12 @@
     { icon: Vote, title: '投票', run: () => insertBlock(':::vote 选项A | 选项B') },
   ];
 
-  let previewVote = $derived(parseVotePreview(value));
+  let previewVote = $derived(splitVote(value));
 </script>
 
 <div class="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
-  <div class="flex min-h-0 min-w-0 flex-col gap-2">
-    <div
-      class="flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-card/60 p-0.5"
-    >
+  <div class="flex min-h-0 min-w-0 flex-col gap-3">
+    <div class="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/60 p-1">
       {#each TOOLS as tool (tool.title)}
         <Tooltip text={imageUploading && tool.image ? '上传中' : tool.title} side="bottom">
           <button
@@ -152,15 +184,13 @@
         'ring-offset-background placeholder:text-muted-foreground',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
       )}></textarea>
-    {#if imageUploading || imageError}
-      <p
-        class="text-xs"
-        class:text-destructive={imageError}
-        class:text-muted-foreground={!imageError}
-        aria-live="polite"
-      >
-        {imageError || '图片上传中…'}
-      </p>
+    {#if imageUploading}
+      <!-- Same floating spot as the home transcode progress card (fixed bottom-right); bottom-16 clears the editor's bottom cancel/save bar -->
+      <div class="fixed right-4 bottom-16 z-40 w-72">
+        <UploadProgressPanel tasks={uploadTasks} kind="upload" />
+      </div>
+    {:else if imageError}
+      <p class="text-xs text-destructive" aria-live="polite">{imageError}</p>
     {/if}
   </div>
 
@@ -169,14 +199,17 @@
     aria-label="实时预览"
   >
     {#if value.trim()}
-      {#if previewVote.body.trim()}
-        <MarkdownView content={previewVote.body} allowImages class="text-muted-foreground" />
-      {/if}
-      {#if previewVote.options.length >= 2}
-        <div class="mt-4">
+      <div class="flex flex-col gap-4">
+        {#if previewVote.before.trim()}
+          <MarkdownView content={previewVote.before} allowImages class="text-muted-foreground" />
+        {/if}
+        {#if previewVote.options.length >= 2}
           <VoteBlock options={previewVote.options} votes={[]} selfId={-1} />
-        </div>
-      {/if}
+        {/if}
+        {#if previewVote.after.trim()}
+          <MarkdownView content={previewVote.after} allowImages class="text-muted-foreground" />
+        {/if}
+      </div>
     {:else}
       <p class="text-sm text-muted-foreground">预览</p>
     {/if}

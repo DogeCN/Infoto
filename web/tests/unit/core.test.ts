@@ -83,7 +83,7 @@ describe('id36', () => {
   });
 });
 
-// ---- keepalive 64KB prefix rule (contract "/sync 协议 · 同步触发点") ------------
+// ---- keepalive 64KB prefix rule (contract "/sync protocol · sync trigger points") ------------
 
 const like = (i: number): Op => ({ type: 'like', target: i, payload: null });
 const bytes = (s: string) => new TextEncoder().encode(s).length;
@@ -123,9 +123,9 @@ describe('keepalivePrefix', () => {
 
   it('prefix keeps at least 1 op; a lone oversize op returns null', () => {
     const giant: Op = {
-      type: 'ann_create',
+      type: 'fb_create',
       target: null,
-      payload: { title: 't', contentMd: 'x'.repeat(70_000) },
+      payload: { contentMd: 'x'.repeat(70_000) },
     };
     expect(keepalivePrefix([giant])).toBeNull();
     // …but the same giant behind a small op never blocks the prefix

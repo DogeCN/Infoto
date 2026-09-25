@@ -8,9 +8,9 @@ import type { EngineIo } from '../../src/core/sync/engine';
 import { KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/sync/engine';
 
 const op = (target: number): Op => ({
-  type: 'ann_update',
+  type: 'react',
   target,
-  payload: { title: 't', contentMd: 'c' },
+  payload: { emoji: '👍' },
 });
 
 const snapshot = (announcements: SyncResponse['announcements'] = []): SyncResponse => ({
@@ -86,7 +86,7 @@ describe('SyncEngine awaitable sync', () => {
       return requests.length === 1 ? first.promise : second.promise;
     });
     const engine = new SyncEngine({ db, postSyncFn });
-    await engine.addOp({ type: 'ann_create', payload: { title: 'new', contentMd: 'body' } });
+    await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body' } });
 
     const active = engine.sync();
     const coalesced = engine.sync();
@@ -114,9 +114,7 @@ describe('SyncEngine awaitable sync', () => {
     await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(2));
 
     expect(requests[0]!.ops).toHaveLength(1);
-    expect(requests[1]!.ops).toEqual([
-      { type: 'ann_update', target: -1, payload: { title: 't', contentMd: 'c' } },
-    ]);
+    expect(requests[1]!.ops).toEqual([{ type: 'react', target: -1, payload: { emoji: '👍' } }]);
     second.resolve(
       result(
         snapshot([
@@ -150,7 +148,7 @@ describe('SyncEngine awaitable sync', () => {
       },
       onSyncResponse: () => new Map([[-1, 9]]),
     });
-    await engine.addOp({ type: 'ann_create', payload: { title: 'new', contentMd: 'body' } });
+    await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body' } });
     engine.sync();
     await vi.waitFor(() => expect(requests).toHaveLength(1));
     const version = await engine.addOp(op(-1));
@@ -172,9 +170,7 @@ describe('SyncEngine awaitable sync', () => {
     );
     await vi.waitFor(() => expect(requests).toHaveLength(2));
 
-    expect(requests[1]!.ops).toEqual([
-      { type: 'ann_update', target: 9, payload: { title: 't', contentMd: 'c' } },
-    ]);
+    expect(requests[1]!.ops).toEqual([{ type: 'react', target: 9, payload: { emoji: '👍' } }]);
     second.resolve(result(snapshot()));
     await expect(flushed).resolves.toMatchObject({ ok: true });
   });
@@ -184,13 +180,11 @@ describe('SyncEngine awaitable sync', () => {
       db,
       postSyncFn: vi.fn().mockRejectedValue(new Error('offline')),
     });
-    await engine.addOp({ type: 'ann_reorder', payload: [2, 1] });
+    await engine.addOp({ type: 'like', target: 2 });
     const flushed = await engine.flushThrough(1);
 
     expect(flushed.ok).toBe(false);
-    expect((await readOps(db)).map((entry) => entry.op)).toEqual([
-      { type: 'ann_reorder', payload: [2, 1] },
-    ]);
+    expect((await readOps(db)).map((entry) => entry.op)).toEqual([{ type: 'like', target: 2 }]);
   });
 
   it('reports confirmation only through the ops the request actually carried', async () => {
@@ -290,7 +284,7 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     const keepalive = deferred<Response>();
     fetchFn.mockImplementation(() => keepalive.promise);
     const e = engine();
-    await e.addOp({ type: 'ann_create', payload: { title: 'new', contentMd: 'body' } });
+    await e.addOp({ type: 'fb_create', payload: { contentMd: 'body' } });
     await e.addOp(op(-1));
 
     firePagehide(e);
@@ -317,7 +311,7 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
 
     firePagehide(e);
     await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    const queued: Op = { type: 'ann_reorder', payload: [2, 1] };
+    const queued: Op = { type: 'like', target: 2 };
     await e.addOp(queued);
 
     keepalive.resolve(new Response(null, { status: 200 }));
@@ -466,8 +460,8 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     documentStub.visibilityState = 'hidden';
     const e = engine();
     await e.addOp({
-      type: 'ann_create',
-      payload: { title: 'big', contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT) },
+      type: 'fb_create',
+      payload: { contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT) },
     });
 
     await e.sync();

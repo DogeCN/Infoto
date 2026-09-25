@@ -1,33 +1,54 @@
 <script lang="ts">
-  // 转码进度面板：只负责阶段一（排队/转码/哈希）与哈希去重。
-  // 上传阶段不在面板呈现——转码完成的条目以乐观条目插入瀑布流，
-  // 由卡片上的"窗帘"遮罩表达上传进度（契约「上传期间的瀑布流呈现」）。
-  // 重复（sha256 命中）也算完成项。
-  import type { PipelineTaskSnapshot } from '../../transcode/pipeline';
-  import { Clapperboard, Check, LoaderCircle } from '@lucide/svelte';
+  // Progress panel: one visual, two task kinds. kind='transcode' (default): the home waterfall
+  // view of the image-host pipeline, hiding uploading/done/failed rows — the waterfall card
+  // curtain carries that progress (contract). kind='upload': editor image upload on the same SharedWorker pipeline (queue → transcode → hash → upload), showing every stage since the editor has no card curtain.
+  import { Clapperboard, ImageUp, Check, LoaderCircle } from '@lucide/svelte';
 
-  interface Props {
-    tasks: Map<string, PipelineTaskSnapshot>;
+  /** Structured task shape shared by pipeline snapshots and synthetic editor tasks. */
+  export interface PanelTask {
+    jobId: string;
+    fileName: string;
+    phase: string;
+    fraction?: number | null;
   }
 
-  let { tasks }: Props = $props();
+  interface Props {
+    tasks: Map<string, PanelTask>;
+    /** 'transcode' (default, image-host progress) or 'upload' (editor image upload). */
+    kind?: 'transcode' | 'upload';
+  }
 
-  /** 转码相关阶段：面板的展示范围（uploading/done/failed 交给瀑布流卡片）。 */
-  const STAGES = new Set(['queued', 'lease-wait', 'transcoding', 'hashing', 'duplicate']);
-  let taskList = $derived(Array.from(tasks.values()).filter((t) => STAGES.has(t.phase)));
+  let { tasks, kind = 'transcode' }: Props = $props();
+
+  const TRANSCODE_STAGES = new Set(['queued', 'lease-wait', 'transcoding', 'hashing', 'duplicate']);
+  // Editor uploads show the whole leg, transcode included.
+  const UPLOAD_STAGES = new Set([
+    'queued',
+    'lease-wait',
+    'transcoding',
+    'hashing',
+    'uploading',
+    'duplicate',
+  ]);
+  let stages = $derived(kind === 'upload' ? UPLOAD_STAGES : TRANSCODE_STAGES);
+  let taskList = $derived(Array.from(tasks.values()).filter((t) => stages.has(t.phase)));
 
   let completedCount = $derived(taskList.filter((t) => t.phase === 'duplicate').length);
 
-  /** 阶段中文名（进度未知时的兜底文案）。 */
+  /** Stage label used when no progress fraction is available. */
   function phaseLabel(phase: string): string {
     switch (phase) {
       case 'queued':
       case 'lease-wait':
         return '排队中';
+      case 'transcoding':
+        return '转码中';
       case 'hashing':
         return '校验中';
+      case 'uploading':
+        return '上传中';
       default:
-        return '转码中';
+        return kind === 'upload' ? '上传中' : '转码中';
     }
   }
 </script>
@@ -38,12 +59,19 @@
   >
     <div class="mb-2.5 flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <Clapperboard class="size-4 text-muted-foreground" />
-        <span class="text-sm font-medium">转码进度</span>
+        {#if kind === 'upload'}
+          <ImageUp class="size-4 text-muted-foreground" />
+          <span class="text-sm font-medium">上传进度</span>
+        {:else}
+          <Clapperboard class="size-4 text-muted-foreground" />
+          <span class="text-sm font-medium">转码进度</span>
+        {/if}
       </div>
-      <span class="text-xs tabular-nums text-muted-foreground">
-        {completedCount}/{taskList.length}
-      </span>
+      {#if kind === 'transcode'}
+        <span class="text-xs tabular-nums text-muted-foreground">
+          {completedCount}/{taskList.length}
+        </span>
+      {/if}
     </div>
 
     <div class="space-y-1">

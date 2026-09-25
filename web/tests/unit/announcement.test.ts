@@ -3,9 +3,7 @@ import type { Announcement } from '$shared/types';
 import {
   beginAnnouncementReorder,
   finalizeAnnouncementReorder,
-  markAnnouncementPending,
-  moveAnnouncementReorder,
-  reconcileAnnouncementPending,
+  moveAnnouncementReorderToIndex,
   rollbackAnnouncementOrder,
 } from '../../src/core/ops';
 
@@ -20,48 +18,19 @@ const announcement = (id: number, sort: number, title = `ann-${id}`): Announceme
 });
 
 describe('announcement reorder draft', () => {
-  it('moves locally and emits one full-ID op at finalization', () => {
+  it('moves locally and reports one full-ID order at finalization', () => {
     let draft = beginAnnouncementReorder([1, 2, 3], 1);
-    draft = moveAnnouncementReorder(draft, 3);
+    draft = moveAnnouncementReorderToIndex(draft, 3);
     const first = finalizeAnnouncementReorder(draft);
     const second = finalizeAnnouncementReorder(first.draft);
 
-    expect(first.op).toEqual({ type: 'ann_reorder', payload: [2, 3, 1] });
-    expect(second.op).toBeNull();
+    expect(first.orderedIds).toEqual([2, 3, 1]);
+    expect(second.orderedIds).toBeNull();
   });
 
-  it('does not emit when the draft did not move', () => {
+  it('does not report an order when the draft did not move', () => {
     const draft = beginAnnouncementReorder([1, 2], 1);
-    expect(finalizeAnnouncementReorder(draft).op).toBeNull();
-  });
-});
-
-describe('announcement pending reconciliation', () => {
-  it('confirms only IDs present in the next snapshot', () => {
-    const pending = markAnnouncementPending([], [5, 6], 1, true);
-    const result = reconcileAnnouncementPending(pending, new Set([5]), new Map(), 2);
-
-    expect([...result.confirmedIds]).toEqual([5]);
-    expect([...result.pendingIds]).toEqual([6]);
-    expect(result.mutations).toEqual([{ ids: [6], queuedAtAttempt: 1, reorder: true }]);
-  });
-
-  it('retains mutations queued during the in-flight snapshot attempt', () => {
-    const pending = markAnnouncementPending([], [5], 3);
-    const result = reconcileAnnouncementPending(pending, new Set([5]), new Map(), 3);
-
-    expect(result.confirmedIds.size).toBe(0);
-    expect([...result.pendingIds]).toEqual([5]);
-    expect(result.mutations).toHaveLength(1);
-  });
-
-  it('remaps a confirmed temporary create through the existing mapping', () => {
-    const pending = markAnnouncementPending([], [-1], 1);
-    const result = reconcileAnnouncementPending(pending, new Set([7]), new Map([[-1, 7]]), 2);
-
-    expect([...result.confirmedIds]).toEqual([7]);
-    expect(result.pendingIds.size).toBe(0);
-    expect(result.mutations).toEqual([]);
+    expect(finalizeAnnouncementReorder(draft).orderedIds).toBeNull();
   });
 });
 

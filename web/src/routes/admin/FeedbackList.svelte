@@ -5,7 +5,7 @@
   import MarkdownView from '$lib/components/MarkdownView.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';
   import { formatAbsoluteTime } from '$lib/time';
-  import { filterFeedback, toggleFeedback } from './feedbackView';
+  import { filterFeedback } from './feedbackView';
 
   interface Props {
     feedback: Feedback[];
@@ -14,12 +14,7 @@
 
   let { feedback, onDelete }: Props = $props();
   let query = $state('');
-  let expandedId = $state<number | null>(null);
   let visibleFeedback = $derived(filterFeedback(feedback, query));
-
-  function toggle(id: number): void {
-    expandedId = toggleFeedback(expandedId, id);
-  }
 </script>
 
 <div class="space-y-4">
@@ -32,9 +27,9 @@
     <input
       bind:value={query}
       type="search"
-      placeholder="按内容、反馈 ID 或用户 ID 过滤"
+      placeholder="搜索"
       aria-label="搜索建议"
-      class="h-9 w-full max-w-xs rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      class="ml-auto h-9 w-full max-w-xs rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     />
   </div>
 
@@ -43,28 +38,14 @@
   {:else}
     <div class="space-y-3" role="list" aria-label="建议列表">
       {#each visibleFeedback as feedbackItem (feedbackItem.id)}
-        {@const expanded = expandedId === feedbackItem.id}
-        <article
-          class="rounded-xl border bg-card p-4 {expanded ? 'border-primary/50' : 'border-border'}"
-          role="listitem"
-        >
-          <div class="flex items-start gap-3">
-            <button
-              type="button"
-              class="min-w-0 flex-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-expanded={expanded}
-              aria-controls="feedback-content-{feedbackItem.id}"
-              aria-label={expanded ? '收起建议' : '展开建议'}
-              onclick={() => toggle(feedbackItem.id)}
-            >
-              {#if expanded}
-                <span class="text-sm font-medium">建议内容</span>
-              {:else}
-                <span class="line-clamp-2 block whitespace-pre-wrap text-sm text-foreground">
-                  {feedbackItem.contentMd}
-                </span>
-              {/if}
-            </button>
+        <article class="rounded-xl border border-border bg-card p-4" role="listitem">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-baseline gap-1 text-sm">
+              <span class="text-muted-foreground">ID</span>
+              <span class="font-semibold tabular-nums text-foreground">
+                {feedbackItem.userId}
+              </span>
+            </div>
             <Tooltip text="删除">
               <button
                 type="button"
@@ -77,28 +58,15 @@
             </Tooltip>
           </div>
 
-          {#if expanded}
-            <div id="feedback-content-{feedbackItem.id}" class="mt-4 border-t border-border pt-4">
-              <MarkdownView
-                content={feedbackItem.contentMd}
-                class="[&_img]:max-w-full [&_img]:rounded-lg"
-              />
-              <dl class="mt-4 grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
-                <div class="flex gap-1">
-                  <dt>反馈 ID</dt>
-                  <dd class="tabular-nums text-foreground">{feedbackItem.id}</dd>
-                </div>
-                <div class="flex gap-1">
-                  <dt>用户 ID</dt>
-                  <dd class="tabular-nums text-foreground">{feedbackItem.userId}</dd>
-                </div>
-                <div class="flex gap-1">
-                  <dt>时间</dt>
-                  <dd>{formatAbsoluteTime(feedbackItem.createdAt)}</dd>
-                </div>
-              </dl>
-            </div>
-          {/if}
+          <div class="mt-2">
+            <MarkdownView content={feedbackItem.contentMd} />
+          </div>
+
+          <div class="mt-3 flex justify-end">
+            <time class="text-xs text-muted-foreground">
+              {formatAbsoluteTime(feedbackItem.createdAt)}
+            </time>
+          </div>
         </article>
       {/each}
     </div>

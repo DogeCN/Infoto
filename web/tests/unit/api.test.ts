@@ -61,7 +61,7 @@ describe('syncClient', () => {
   });
 
   it('aborts a silent backend instead of hanging forever', async () => {
-    // 后端挂掉时连接不会被拒绝（dev 代理一直持着 socket）→ 没有超时的话 fetch 永不 settle
+    // A dead backend never rejects the connection (the dev proxy holds the socket open) → without a timeout, fetch never settles
     const fetchFn = vi.fn((_url: string, init?: RequestInit) => {
       return new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
@@ -114,7 +114,7 @@ describe('uploadClient', () => {
   });
 });
 
-// ---- LeaseClient 生命周期（契约四条自查的可测版本） ----------------------------------
+// ---- LeaseClient lifecycle (testable version of the contract's four-point self-check) ---------
 
 describe('LeaseClient lifecycle', () => {
   const granted = (leaseId = 'l1'): SwToPageMessage => ({
@@ -139,7 +139,7 @@ describe('LeaseClient lifecycle', () => {
     client.handleMessage(granted());
     vi.advanceTimersByTime(12_000);
     const beats = posted.filter((m) => (m as { t: string }).t === 'leaseHeartbeat');
-    expect(beats.length).toBeGreaterThanOrEqual(2); // 5s 周期
+    expect(beats.length).toBeGreaterThanOrEqual(2); // 5s period
     client.release();
     expect(posted.some((m) => (m as { t: string }).t === 'leaseRelease')).toBe(true);
     const beatsAfter = posted.filter((m) => (m as { t: string }).t === 'leaseHeartbeat').length;

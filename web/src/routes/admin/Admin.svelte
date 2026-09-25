@@ -9,15 +9,27 @@
   import { getEngine } from '../../core/sync/engine';
   import { createAppStore } from '../../state/appStore.svelte';
   import { UploadPipeline } from '../../transcode/pipeline';
+  import type { PanelTask } from '$lib/components/UploadProgressPanel.svelte';
   import AdminMigrateMenu from './AdminMigrateMenu.svelte';
   import AnnouncementEditorDialog from './AnnouncementEditorDialog.svelte';
   import AnnouncementList from './AnnouncementList.svelte';
   import FeedbackList from './FeedbackList.svelte';
 
   const store = createAppStore();
+  // Sync-failure toast dedupe: the failure stays until the next success, so a burst of toasts is pointless.
+  let syncErrorToastAt = 0;
   const engine = getEngine({
     onSyncResponse: (response, context) => store.applySync(response, context),
-    onError: (phase, error) => console.error('[sync]', phase, error),
+    onError: (phase, error) => {
+      console.error('[sync]', phase, error);
+      const now = Date.now();
+      if (now - syncErrorToastAt > 10_000) {
+        syncErrorToastAt = now;
+        toast.error('同步失败', {
+          description: '改动已排队，稍后自动重试；也可点击同步按钮手动重试',
+        });
+      }
+    },
   });
   store.bindEngine(engine);
   const pipeline = new UploadPipeline({
@@ -28,6 +40,9 @@
   let initialized = $state(false);
   let editorOpen = $state(false);
   let editingAnnouncement = $state<Announcement | null>(null);
+  // Editor image uploads share the SharedWorker pipeline with the waterfall
+  // (transcode → hash → upload); this row carries their live stage.
+  let editorUploadTask = $state<PanelTask | null>(null);
 
   $effect(() => {
     if (initialized) return;
@@ -37,10 +52,24 @@
     engine.install();
   });
 
+  $effect(() =>
+    pipeline.onEditorTask((task) => {
+      const terminal = task.phase === 'done' || task.phase === 'failed';
+      editorUploadTask = terminal
+        ? null
+        : {
+            jobId: task.jobId,
+            fileName: task.fileName,
+            phase: task.phase,
+            fraction: task.fraction ?? null,
+          };
+    }),
+  );
+
   const isRoot = $derived(store.selfId === 0);
 
-  // 身份未知（无 selfId 缓存且 /sync 未返回）：回主页让 Turnstile 建号，
-  // 不在 /admin 等待也不显示 loading。replace 掉历史记录，后退不回到 /admin。
+  // Identity unknown (no cached selfId, /sync not back yet): return home so Turnstile can create
+  // one — don't wait on /admin or show loading. replace() the history entry so Back skips /admin.
   $effect(() => {
     if (store.selfId === -1) location.replace('/');
   });
@@ -50,7 +79,7 @@
     editorOpen = true;
   }
 
-  /** 「新增公告」按钮 = 编辑器开关：开着（新建态）再点关闭；编辑态点它切到新建。 */
+  /** "New announcement" doubles as the editor toggle: while open in create mode it closes; in edit mode it switches to create. */
   function toggleCreateAnnouncement() {
     if (editorOpen && editingAnnouncement === null) {
       closeAnnouncementEditor();
@@ -78,18 +107,10 @@
     closeAnnouncementEditor();
   }
 
-  async function handleAnnouncementReorder(ids: number[]) {
-    const result = await store.annReorder(ids);
-    if (!result.ok && result.reason === 'temporary-id') {
-      toast.error('暂不能排序', { description: '请等待新建公告同步完成' });
-    } else if (!result.ok) {
-      toast.error('排序同步失败', { description: '已恢复原顺序，操作已排队' });
-    }
-    return result;
-  }
-
-  function handleInvalidReorder(): void {
-    toast.error('暂不能排序', { description: '请等待新建公告同步完成' });
+  // Reorder is never blocked by a pending create: the store keeps the new order
+  // locally and flushes it as soon as a fresh announcement's real id arrives.
+  function handleAnnouncementReorder(ids: number[]): void {
+    store.annReorder(ids);
   }
 
   async function handleImported(): Promise<{ ok: boolean; message: string }> {
@@ -110,7 +131,7 @@
       class="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/80 px-3 backdrop-blur-xl backdrop-saturate-150 md:h-16 md:px-6"
     >
       <div class="flex items-center gap-2">
-        <!-- 分段选择器：复用通用 SegmentedControl（滑动 pill 动画与主页 SortTabs 完全一致） -->
+        <!-- Segmented control: reuses the shared SegmentedControl (sliding-pill animation matches the home SortTabs exactly) -->
         <SegmentedControl
           items={[
             { value: 'announcements', label: '公告', icon: Megaphone },
@@ -128,7 +149,7 @@
       </div>
 
       <div class="flex items-center gap-1">
-        <!-- 编辑器开关（与主页顶栏侧栏按钮同一套高亮语言）：开启时图标转主色 -->
+        <!-- Editor toggle (same highlight convention as the home top bar sidebar button): icon turns primary while open -->
         <button
           type="button"
           class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
@@ -143,16 +164,15 @@
       </div>
     </header>
 
-    <main class="mx-auto max-w-4xl px-4 pb-6 pt-20 md:px-6 md:pt-24">
+    <main class="w-full px-4 pb-6 pt-20 md:px-8 md:pt-24">
       {#if activeTab === 'announcements'}
         <AnnouncementList
           announcements={store.announcements}
-          pendingIds={store.pendingAnnouncementIds}
+          saveState={store.annSave}
           timeReference={store.lastSync?.serverTime ?? Date.now()}
           onEdit={openEditAnnouncement}
           onDelete={(id) => store.annDelete(id)}
           onReorder={handleAnnouncementReorder}
-          onInvalidReorder={handleInvalidReorder}
         />
       {:else}
         <FeedbackList feedback={store.feedback} onDelete={(id) => store.fbDelete(id)} />
@@ -165,13 +185,14 @@
         onPickImage={(file) => pipeline.uploadEditorImage(file)}
         onSave={saveAnnouncement}
         onCancel={closeAnnouncementEditor}
+        uploadTask={editorUploadTask}
       />
     {/if}
 
     <Toaster position="bottom-left" theme="dark" richColors {toastOptions} />
   </div>
 {:else if store.selfId >= 1}
-  <!-- 已知非 root（缓存或 /sync 确认）：与旧的服务端 404 页等价 -->
+  <!-- Known non-root (confirmed by cache or /sync): equivalent to the old server-rendered 404 page -->
   <ErrorPage code={404} />
 {/if}
-<!-- selfId === -1：重定向已触发，本帧不渲染 -->
+<!-- selfId === -1: redirect already triggered; render nothing this frame -->

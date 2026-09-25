@@ -1,30 +1,39 @@
-// `:::vote` parsing — a pure, DOM-free helper (spec: "Markdown 编辑器" /
-// "数据模型"). Only the first `:::vote` block is used: the data model keeps a
+// `:::vote` parsing — a pure, DOM-free helper (spec: markdown editor / data
+// model). Only the first `:::vote` block is used: the data model keeps a
 // single per-user vote per announcement, so an announcement has at most one vote.
 
-export interface ParsedVote {
-  /** Vote option labels, 0-based order. Empty when the body has no `:::vote`. */
+/** Positional variant: keeps the text before / after the `:::vote` line so
+ *  renderers can place the VoteBlock exactly where it was authored. */
+export interface SplitVote {
   options: string[];
-  /** contentMd with the `:::vote` line stripped, for safe display. */
-  body: string;
+  /** Markdown before the `:::vote` line (joined original lines). */
+  before: string;
+  /** Markdown after the `:::vote` line. Later `:::vote` lines stay here as plain text. */
+  after: string;
 }
 
-export function parseVote(contentMd: string): ParsedVote {
+function extractVoteLine(contentMd: string): { options: string[]; index: number } {
   const lines = contentMd.split(/\r?\n/);
-  const options: string[] = [];
-  const body: string[] = [];
-  let used = false;
-  for (const line of lines) {
-    const m = line.trim().match(/^:::vote\s*(.*)$/);
-    if (m && !used) {
-      used = true;
-      for (const part of m[1].split('|')) {
-        const s = part.trim();
-        if (s) options.push(s);
-      }
-      continue;
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].trim().match(/^:::vote\s*(.*)$/);
+    if (!m) continue;
+    const options: string[] = [];
+    for (const part of m[1].split('|')) {
+      const s = part.trim();
+      if (s) options.push(s);
     }
-    body.push(line);
+    return { options, index: i };
   }
-  return { options, body: body.join('\n') };
+  return { options: [], index: -1 };
+}
+
+export function splitVote(contentMd: string): SplitVote {
+  const { options, index } = extractVoteLine(contentMd);
+  if (index < 0) return { options: [], before: contentMd, after: '' };
+  const lines = contentMd.split(/\r?\n/);
+  return {
+    options,
+    before: lines.slice(0, index).join('\n'),
+    after: lines.slice(index + 1).join('\n'),
+  };
 }

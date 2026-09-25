@@ -3,7 +3,6 @@ import {
   insertImageAt,
   insertMarkdownBlock,
   mapOffsetThroughEdit,
-  parseVotePreview,
   prefixSelectedLines,
   wrapSelection,
 } from '../../src/lib/components/markdownTransforms';
@@ -45,21 +44,5 @@ describe('markdown toolbar transforms', () => {
     expect(mapOffsetThroughEdit(4, 'abcd', 'abXcd')).toBe(5);
     expect(mapOffsetThroughEdit(8, 'abcdefgh', 'abXefgh')).toBe(7);
     expect(mapOffsetThroughEdit(2, 'abcd', 'aXbcd')).toBe(3);
-  });
-});
-
-describe('editor vote preview', () => {
-  it('parses a leading vote with existing announcement semantics', () => {
-    expect(parseVotePreview(':::vote A | B\n说明')).toEqual({
-      options: ['A', 'B'],
-      body: '说明',
-    });
-  });
-
-  it('leaves a non-leading vote as Markdown text', () => {
-    expect(parseVotePreview('说明\n:::vote A | B')).toEqual({
-      options: [],
-      body: '说明\n:::vote A | B',
-    });
   });
 });

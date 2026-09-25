@@ -1,10 +1,8 @@
-// Two-stage orchestration (page side): pick files → addJob → SharedWorker
-// schedules (image transcode on the SW thread, video delegated back to this
-// page's DedicatedWorker via token lease) → dedupe → upload → write op-log.
-// Progress is broadcast via BroadcastChannel; job state is re-sent by the SW
-// on reconnect (refresh never loses tasks).
+// Two-stage orchestration (page side): pick files → addJob → SharedWorker schedules (image transcode on the SW thread, video delegated back to this page's
+// DedicatedWorker via token lease) → dedupe → upload → write op-log. Progress is broadcast via BroadcastChannel, and the SW re-sends job state on reconnect,
+// so a refresh never loses tasks.
 
-import { buildUploadOp, routeByMime } from '$base/upload/pipeline';
+import { buildUploadOp, routeByMime, translateTaskError } from '$base/upload/pipeline';
 import { openOplogDb, appendOp } from '../core/oplog/store';
 import { LeaseClient } from './lease';
 import { isSwToPage, type JobMeta, type JobPurpose, type SwToPageMessage } from './shared/protocol';
@@ -62,6 +60,11 @@ export class UploadPipeline {
   private bc: BroadcastChannel | null = null;
   private videoWorkers = new Map<string, WorkerLike>();
   private listeners = new Set<(t: PipelineTaskSnapshot) => void>();
+  private editorListeners = new Set<(t: PipelineTaskSnapshot) => void>();
+  /** Latest non-terminal editor snapshot (editor uploads keep only one in flight, so no map is needed). */
+  private editorSnapshot: PipelineTaskSnapshot | null = null;
+  /** Last non-terminal phase per editor job — decides upload-leg vs transcode-leg errors. */
+  private readonly editorPhase = new Map<string, string>();
   private snapshots = new Map<string, PipelineTaskSnapshot>();
   private io: PipelineIo;
   private db: IDBDatabase | null = null;
@@ -84,6 +87,18 @@ export class UploadPipeline {
     return () => this.listeners.delete(l);
   }
 
+  /**
+   * Editor-image progress (purpose='editor'). Editor jobs run through the very same SharedWorker
+   * pipeline as album uploads (transcode → hash → upload); only the result stays private to the
+   * owning page, so progress is delivered here instead of to the album listener.
+   */
+  onEditorTask(l: (t: PipelineTaskSnapshot) => void): () => void {
+    this.editorListeners.add(l);
+    const live = this.editorSnapshot;
+    if (live) l(live);
+    return () => this.editorListeners.delete(l);
+  }
+
   private emit(t: PipelineTaskSnapshot): void {
     this.snapshots.set(t.jobId, t);
     if (t.purpose === 'album') {
@@ -91,8 +106,22 @@ export class UploadPipeline {
     }
   }
 
+  /** Terminal states are forwarded too — subscribers clear their row on them. */
+  private emitEditor(t: PipelineTaskSnapshot): void {
+    const terminal = t.phase === 'done' || t.phase === 'failed';
+    this.editorSnapshot = terminal ? null : t;
+    if (terminal) this.editorPhase.delete(t.jobId);
+    else this.editorPhase.set(t.jobId, t.phase);
+    for (const l of this.editorListeners) l(t);
+  }
+
   private log(line: string): void {
     this.io.onEvent?.(line);
+  }
+
+  /** Minimal snapshot for terminal editor states (clears the progress row). */
+  private editorSnapshotOr(jobId: string): PipelineTaskSnapshot {
+    return this.editorSnapshot ?? { jobId, fileName: '', purpose: 'editor', phase: 'done' };
   }
 
   /** Connect SharedWorker + BroadcastChannel, register triggers. */
@@ -152,11 +181,41 @@ export class UploadPipeline {
       if (!waiter) return;
       this.editorWaiters.delete(m.jobId);
       this.sw?.port.postMessage({ t: 'editorResultAck', jobId: m.jobId });
+      // Read the leg before emitEditor clears it: a failure after 'uploading'
+      // is an upload error, not a transcode one.
+      const uploadLeg = this.editorPhase.get(m.jobId) === 'uploading';
+      // Terminal editor states are private to the owner page (never broadcast),
+      // so clear the progress row here.
+      this.emitEditor({ ...this.editorSnapshotOr(m.jobId), phase: m.phase });
       if (action === 'resolve' && m.url) waiter.resolve(m.url);
-      else waiter.reject(new Error(m.error ?? 'editor_upload_failed'));
+      else
+        waiter.reject(
+          new Error(
+            translateTaskError(m.error, {
+              oversize: m.error === 'oversize',
+              sha256: uploadLeg ? (m.sha256 ?? '-') : undefined,
+            }),
+          ),
+        );
       return;
     }
-    if (m.purpose === 'editor') return;
+    if (m.purpose === 'editor') {
+      // Progress is broadcast to every port; only the page that enqueued the
+      // job (it holds the waiter) owns the row.
+      if (!this.editorWaiters.has(m.jobId)) return;
+      // Same pipeline as album uploads — surface transcode/hash/upload progress.
+      this.emitEditor({
+        jobId: m.jobId,
+        fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
+        purpose: 'editor',
+        phase: m.phase,
+        fraction: m.fraction,
+        url: m.url,
+        meta: m.meta,
+        sha256: m.sha256,
+      });
+      return;
+    }
     // Capture before emit stores the URL in the snapshot.
     const alreadyWritten = !!this.pendingAlbumOps.has(m.jobId);
     if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
@@ -228,6 +287,8 @@ export class UploadPipeline {
         return;
       }
       const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      // Show the row immediately: the SW's own 'queued' echo is one hop away.
+      this.emitEditor({ jobId, fileName: file.name, purpose: 'editor', phase: 'queued' });
       try {
         if (!this.sw) this.start();
         this.editorWaiters.set(jobId, { resolve, reject });
@@ -241,6 +302,7 @@ export class UploadPipeline {
         });
       } catch (error) {
         this.editorWaiters.delete(jobId);
+        this.emitEditor({ jobId, fileName: file.name, purpose: 'editor', phase: 'failed' });
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
@@ -288,10 +350,9 @@ export class UploadPipeline {
   }
 
   /**
-   * After leaseGranted, create/reuse this page's top-level DedicatedWorker.
-   * Worker creation failure or onerror → mark failed and return the token;
-   * never fall back to the main thread (the contract forbids main-thread
-   * video encoding).
+   * After leaseGranted, create/reuse this page's top-level DedicatedWorker. Worker creation
+   * failure or onerror → mark failed and return the token; never fall back to the main thread
+   * (the contract forbids main-thread video encoding).
    */
   private startVideoWorker(jobId: string, file: Blob, mime: string, engine: 'video' | 'gif'): void {
     let w: WorkerLike;

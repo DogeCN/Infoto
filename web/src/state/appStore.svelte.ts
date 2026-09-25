@@ -1,28 +1,26 @@
-// Svelte 5 runes store: binds the Svelte-free core (engine / oplog / ops) to
-// reactive state. Every write goes op-log → /sync: mutate
-// local state optimistically, append the op, let the engine submit.
-//
-// API surface used by call sites:
-//   createAppStore()            — App.svelte (engine bound later via bindEngine)
-//   createAppStore(engine)      — Admin.svelte
-//   store.bindEngine(engine)    — subscribe engine state (syncing / pending)
-//   store.applySync(response)   — server snapshot is authoritative; remap temp ids
-//   store.removePhotos(ids)     — optimistic local removal (root delete)
+// Svelte 5 runes store: binds the Svelte-free core (engine / oplog / ops) to reactive
+// state. Every write goes op-log → /sync: mutate local state optimistically, append the
+// op, let the engine submit. Call sites: createAppStore([engine]), bindEngine, applySync, removePhotos.
 
 import type { Announcement, Feedback, Op, Photo, SyncResponse } from '$shared/types';
 import type { EngineState, SyncEngine, SyncSnapshotContext } from '../core/sync/engine';
 import type { PipelineTaskSnapshot } from '../transcode/pipeline';
 import * as ops from '../core/ops';
+import {
+  createAnnouncement,
+  deleteAnnouncement,
+  reorderAnnouncements,
+  updateAnnouncement,
+} from '../core/api/announcements';
 
 /** Allocate descending temporary IDs for optimistic announcements and feedback. */
 let nextTempId = -1;
 const takeTempId = (): number => nextTempId--;
 
 /**
- * selfId 由 /sync 下发且与 uuid 的映射永久稳定（建号后不变），缓存到
- * localStorage 让 /admin 等页面首帧就知道身份，不等首次 /sync。服务端
- * 每次 /sync 响应都会覆盖此值 —— 缓存错了会被自动纠正。id 本身是公开的
- * （见 identity.ts），无敏感信息。
+ * selfId arrives on every /sync and its uuid mapping is permanent, so it is cached in
+ * localStorage for a first-frame identity on /admin; every /sync response overwrites it,
+ * so a stale cache self-corrects. The id is public (see identity.ts), never a secret.
  */
 const SELF_ID_KEY = 'infoto-self-id';
 
@@ -40,9 +38,6 @@ function readCachedSelfId(): number {
   return -1;
 }
 
-export type AnnouncementReorderResult =
-  { ok: true } | { ok: false; reason: 'temporary-id' | 'enqueue-failed' | 'sync-failed' };
-
 class AppState {
   engineState = $state<EngineState>({ syncing: false, pending: 0 });
   lastSync = $state<SyncResponse | null>(null);
@@ -53,12 +48,14 @@ class AppState {
   photos = $state<Photo[]>([]);
   announcements = $state<Announcement[]>([]);
   feedback = $state<Feedback[]>([]);
-  pendingAnnouncementIds = $state<Set<number>>(new Set());
+  /** Per-announcement save state: 'saving' in flight, 'error' when it failed. */
+  annSave = $state<Record<number, 'saving' | 'error'>>({});
+  /** True while a reorder write is in flight. */
+  annReordering = $state(false);
 
-  private pendingAnnTempIds: number[] = [];
   private pendingFbTempIds: number[] = [];
-  private pendingAnnouncementMutations: ops.PendingAnnouncementMutation[] = [];
-  private knownAnnIds = new Set<number>();
+  private tempIdMap = new Map<number, number>();
+  private pendingReorder: { ids: number[]; previousIds: number[] } | null = null;
   private engine: SyncEngine | null = null;
 
   /** Bind engine state; repeated calls with the same engine are ignored. */
@@ -74,20 +71,8 @@ class AppState {
     return this.engine?.addOp(op) ?? Promise.resolve(null);
   }
 
-  private trackAnnouncement(ids: number[], reorder = false): void {
-    this.pendingAnnouncementMutations = ops.markAnnouncementPending(
-      this.pendingAnnouncementMutations,
-      ids,
-      this.engine?.currentSyncAttempt ?? 0,
-      reorder,
-    );
-    this.pendingAnnouncementIds = new Set(
-      this.pendingAnnouncementMutations.flatMap((mutation) => mutation.ids),
-    );
-  }
-
-  /** Apply one authoritative full snapshot and return its temp-ID mapping. */
-  applySync(r: SyncResponse, context?: SyncSnapshotContext): Map<number, number> {
+  /** Apply one authoritative full snapshot. */
+  applySync(r: SyncResponse, _context?: SyncSnapshotContext): Map<number, number> {
     this.selfId = r.selfId;
     try {
       localStorage.setItem(SELF_ID_KEY, String(r.selfId));
@@ -96,47 +81,20 @@ class AppState {
     }
     this.photos = r.photos;
 
-    const { mapping, unresolved } = ops.resolveTempIds(
-      this.pendingAnnTempIds,
-      this.knownAnnIds,
-      r.announcements,
+    // Announcements are authoritative from the snapshot; optimistic rows that
+    // are still saving (temp id) or failed are kept so an unsaved edit is
+    // never silently dropped.
+    const unconfirmed = this.announcements.filter(
+      (announcement) => announcement.id < 0 || this.annSave[announcement.id] === 'error',
     );
-    const snapshotAttempt = context?.attempt ?? (this.engine?.currentSyncAttempt ?? 0) + 1;
-    const serverIds = new Set(r.announcements.map((announcement) => announcement.id));
-    const pending = ops.reconcileAnnouncementPending(
-      this.pendingAnnouncementMutations,
-      serverIds,
-      mapping,
-      snapshotAttempt,
-    );
-    const protectedIds = new Set(pending.mutations.flatMap((mutation) => mutation.ids));
-    if (protectedIds.size > 0) {
-      let next = [...r.announcements];
-      for (const local of this.announcements) {
-        const localId = mapping.get(local.id) ?? local.id;
-        if (!protectedIds.has(localId)) continue;
-        const index = next.findIndex((announcement) => announcement.id === localId);
-        if (index >= 0) next[index] = { ...local, id: localId };
-        else next.push({ ...local, id: localId });
-      }
-      if (pending.mutations.some((mutation) => mutation.reorder)) {
-        const localOrder = this.announcements.map(
-          (announcement) => mapping.get(announcement.id) ?? announcement.id,
-        );
-        next = ops.applyAnnReorder(next, localOrder);
-      }
-      this.announcements = next;
-    } else {
-      this.announcements = r.announcements;
-    }
-    this.pendingAnnouncementMutations = pending.mutations;
-    this.pendingAnnouncementIds = pending.pendingIds;
-    this.pendingAnnTempIds = unresolved;
-    this.knownAnnIds = new Set(serverIds);
+    this.announcements = [...r.announcements, ...unconfirmed];
+
     this.feedback = r.selfId === 0 ? r.feedback : [];
     this.pendingFbTempIds = [];
     this.lastSync = r;
-    return mapping;
+    // Announcement writes go through the admin API, so no queued op references
+    // an announcement temp id any more — nothing to remap.
+    return new Map<number, number>();
   }
 
   // Photos
@@ -182,7 +140,11 @@ class AppState {
 
   // Announcements
 
-  annCreate(title: string, contentMd: string): number {
+  // Announcements are written through the root-only admin API, not /sync ops. Each write
+  // resolves immediately (create returns the real id), so there is no wait window: the local
+  // row is optimistic, the server row replaces it, and a failure marks only that one row.
+
+  annCreate(title: string, contentMd: string): void {
     const tempId = takeTempId();
     this.announcements = ops.applyAnnCreate(
       this.announcements,
@@ -191,53 +153,84 @@ class AppState {
       contentMd,
       Date.now(),
     );
-    this.pendingAnnTempIds.push(tempId);
-    this.trackAnnouncement([tempId]);
-    void this.submit({ type: 'ann_create', payload: { title, contentMd } });
-    return tempId;
+    this.annSave[tempId] = 'saving';
+    void (async () => {
+      try {
+        const created = await createAnnouncement(title, contentMd);
+        this.tempIdMap.set(tempId, created.id);
+        this.announcements = this.announcements.map((a) => (a.id === tempId ? created : a));
+        delete this.annSave[tempId];
+        this.flushPendingReorder();
+      } catch (error) {
+        console.error('[ann] create failed', error);
+        this.annSave[tempId] = 'error';
+      }
+    })();
   }
 
   annUpdate(id: number, title: string, contentMd: string): void {
     this.announcements = ops.applyAnnUpdate(this.announcements, id, title, contentMd, Date.now());
-    this.trackAnnouncement([id]);
-    void this.submit({ type: 'ann_update', target: id, payload: { title, contentMd } });
+    this.annSave[id] = 'saving';
+    void (async () => {
+      try {
+        await updateAnnouncement(id, title, contentMd);
+        delete this.annSave[id];
+      } catch (error) {
+        console.error('[ann] update failed', error);
+        this.annSave[id] = 'error';
+      }
+    })();
   }
 
   annDelete(id: number): void {
+    const previous = this.announcements;
     this.announcements = ops.applyAnnDelete(this.announcements, id);
-    void this.submit({ type: 'ann_delete', target: id });
+    void (async () => {
+      try {
+        await deleteAnnouncement(id);
+      } catch (error) {
+        console.error('[ann] delete failed', error);
+        this.announcements = previous;
+      }
+    })();
   }
 
-  async annReorder(orderedIds: number[]): Promise<AnnouncementReorderResult> {
-    if (orderedIds.some((id) => id < 0)) return { ok: false, reason: 'temporary-id' };
-    if (!this.engine) return { ok: false, reason: 'enqueue-failed' };
+  annReorder(orderedIds: number[]): void {
     const previousIds = this.announcements.map((announcement) => announcement.id);
     this.announcements = ops.applyAnnReorder(this.announcements, orderedIds);
-    this.trackAnnouncement(orderedIds, true);
-    let version: number;
+    const resolved = this.resolveIds(orderedIds);
+    if (resolved.every((id) => id > 0)) {
+      void this.submitReorder(resolved, previousIds);
+      return;
+    }
+    // A just-created row still carries a temp id: keep the new order locally —
+    // no "can't reorder yet" deadlock — and flush when the real id arrives.
+    this.pendingReorder = { ids: orderedIds, previousIds };
+  }
+
+  private resolveIds(ids: number[]): number[] {
+    return ids.map((id) => this.tempIdMap.get(id) ?? id);
+  }
+
+  private flushPendingReorder(): void {
+    const pending = this.pendingReorder;
+    if (!pending) return;
+    const resolved = this.resolveIds(pending.ids);
+    if (!resolved.every((id) => id > 0)) return;
+    this.pendingReorder = null;
+    void this.submitReorder(resolved, pending.previousIds);
+  }
+
+  private async submitReorder(ids: number[], previousIds: number[]): Promise<void> {
+    this.annReordering = true;
     try {
-      const queuedVersion = await this.submit({ type: 'ann_reorder', payload: orderedIds });
-      if (queuedVersion === null) throw new Error('sync engine unavailable');
-      version = queuedVersion;
-    } catch {
+      await reorderAnnouncements(ids);
+    } catch (error) {
+      console.error('[ann] reorder failed', error);
       this.announcements = ops.rollbackAnnouncementOrder(this.announcements, previousIds);
-      const failedIndex = this.pendingAnnouncementMutations.findLastIndex(
-        (mutation) => mutation.reorder && mutation.ids.join(',') === orderedIds.join(','),
-      );
-      this.pendingAnnouncementMutations = this.pendingAnnouncementMutations.filter(
-        (_, index) => index !== failedIndex,
-      );
-      this.pendingAnnouncementIds = new Set(
-        this.pendingAnnouncementMutations.flatMap((mutation) => mutation.ids),
-      );
-      return { ok: false, reason: 'enqueue-failed' };
+    } finally {
+      this.annReordering = false;
     }
-    const result = await this.engine.flushThrough(version);
-    if (!result.ok) {
-      this.announcements = ops.rollbackAnnouncementOrder(this.announcements, previousIds);
-      return { ok: false, reason: 'sync-failed' };
-    }
-    return { ok: true };
   }
 
   react(annId: number, emoji: string | null): void {
@@ -268,11 +261,7 @@ class AppState {
   resetAfterImport(): void {
     this.announcements = [];
     this.feedback = [];
-    this.pendingAnnouncementIds = new Set();
-    this.pendingAnnouncementMutations = [];
-    this.pendingAnnTempIds = [];
     this.pendingFbTempIds = [];
-    this.knownAnnIds = new Set();
   }
 }
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Announcement } from '$shared/types';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
-  import { parseVote } from '../../core/vote';
+  import { splitVote } from '../../core/vote';
   import MarkdownView from './MarkdownView.svelte';
   import VoteBlock from './VoteBlock.svelte';
   import ReactionBar from './ReactionBar.svelte';
@@ -18,9 +18,9 @@
 
   let feedbackText = $state('');
   let previewMode = $state(false);
-  // 输入框高度（右上角手柄拖拽调整：向上拖增高）
+  // Textarea height (drag the top-right handle upward to enlarge)
   let taH = $state(190);
-  /** 已展开的公告 id（默认空 = 全部收起，避免一屏全被长公告占满）。 */
+  /** Ids of expanded announcements (empty = all collapsed, so long posts cannot fill the screen). */
   let expandedIds = $state<Set<number>>(new Set());
 
   function toggle(id: number) {
@@ -58,18 +58,18 @@
 </script>
 
 <div class="flex min-h-full flex-col gap-4">
-  <!-- 公告列表：全部平铺，内容常显（无展开收起）；滚动由 OverlaySidebar 内容区承担 -->
+  <!-- Announcement list: all items laid out flat; scrolling is handled by the OverlaySidebar content area -->
   <div class="flex-1 space-y-4">
     {#if announcements.length === 0}
       <p class="py-8 text-center text-sm text-muted-foreground">暂无公告</p>
     {/if}
 
     {#each announcements as ann (ann.id)}
-      {@const vote = parseVote(ann.contentMd)}
+      {@const vote = splitVote(ann.contentMd)}
       {@const expanded = expandedIds.has(ann.id)}
 
       <div class="overflow-hidden rounded-xl border border-border bg-card">
-        <!-- 标题行即开关：整行可点，右侧箭头指示展开态 -->
+        <!-- The title row is the toggle: the whole row is clickable, the chevron on the right indicates the expanded state -->
         <h3 class="m-0">
           <button
             type="button"
@@ -86,16 +86,16 @@
           </button>
         </h3>
 
-        <!-- 收起/展开：grid-template-rows 0fr↔1fr 动画，内容保持挂载
-             （MarkdownView 不重挂、投票与反应状态不丢）；min-h-0 是 0fr 能压扁的前提 -->
+        <!-- Collapse/expand: grid-template-rows 0fr↔1fr animation keeps the content mounted
+             (MarkdownView does not remount, vote and reaction state survive); min-h-0 lets 0fr squash -->
         <div
           class="grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
           style="grid-template-rows: {expanded ? '1fr' : '0fr'}"
         >
           <div class="min-h-0 overflow-hidden">
             <div class="space-y-3 px-4 pb-4 pt-0.5">
-              {#if vote.body.trim()}
-                <MarkdownView content={vote.body} class="text-muted-foreground" />
+              {#if vote.before.trim()}
+                <MarkdownView content={vote.before} allowImages class="text-muted-foreground" />
               {/if}
 
               {#if vote.options.length >= 2}
@@ -107,7 +107,11 @@
                 />
               {/if}
 
-              <!-- 表情反应条 -->
+              {#if vote.after.trim()}
+                <MarkdownView content={vote.after} allowImages class="text-muted-foreground" />
+              {/if}
+
+              <!-- Emoji reaction bar -->
               <ReactionBar
                 announcement={ann}
                 {selfId}
@@ -120,11 +124,11 @@
     {/each}
   </div>
 
-  <!-- 反馈输入区：贴侧边栏底部，公告滚动时悬浮于内容之上。
-       背景与侧栏同色（card），避免比内容区亮出一圈形似"溢出"的观感。
-       z-20：卡片内部可能出现带 z-index 的内层（投票条等），sticky 必须稳压它们 -->
+  <!-- Feedback input: pinned to the bottom of the sidebar, floating above the content as announcements scroll.
+       Its background matches the sidebar (card) so it never glows brighter than the content like an "overflow".
+       z-20: the card can hold z-indexed inner layers (vote bar etc.) that this sticky element must stay above -->
   <div class="sticky bottom-0 z-20 mt-auto bg-card pb-4 pt-4">
-    <!-- wrapper 负责圆角/边框/裁剪：textarea 的背景永远关在圆角内 -->
+    <!-- The wrapper owns radius/border/clipping: the textarea background always stays inside the rounded corners -->
     <div
       class="relative overflow-hidden rounded-xl border border-input bg-muted transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] focus-within:border-primary/50"
     >
@@ -145,7 +149,7 @@
         ></textarea>
       {/if}
 
-      <!-- 最右上角拖高把手：向上拖增高、向下拖收起 -->
+      <!-- Resize handle at the top right: drag up to grow, down to shrink -->
       <div
         role="presentation"
         class="absolute right-1 top-1 flex h-5 w-5 cursor-ns-resize items-center justify-center text-muted-foreground/50 transition-colors hover:text-muted-foreground"

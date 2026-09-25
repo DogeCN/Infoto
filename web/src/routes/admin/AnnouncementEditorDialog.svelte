@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
+  import type { PanelTask } from '$lib/components/UploadProgressPanel.svelte';
 
   interface Props {
     announcement: {
@@ -12,9 +13,11 @@
     onPickImage: (file: File) => Promise<string>;
     onSave: (title: string, contentMd: string) => void;
     onCancel: () => void;
+    /** Live upload-pipeline row (queue/transcode/hash/upload) to show in the editor. */
+    uploadTask?: PanelTask | null;
   }
 
-  let { announcement, onPickImage, onSave, onCancel }: Props = $props();
+  let { announcement, onPickImage, onSave, onCancel, uploadTask = null }: Props = $props();
   let title = $state('');
   let contentMd = $state('');
   let titleInput: HTMLInputElement | undefined = $state(undefined);
@@ -23,6 +26,7 @@
   let wasOpen = false;
   let session = 0;
   let uploadBusy = $state(false);
+  let uploadName = $state('');
   const canSave = $derived(title.trim().length > 0 && contentMd.trim().length > 0 && !uploadBusy);
 
   // Mount-once semantics: Admin.svelte renders this only inside
@@ -61,6 +65,7 @@
     const file = input.files?.[0] ?? null;
     input.value = '';
     if (!file) return null;
+    uploadName = file.name;
     uploadBusy = true;
     try {
       return await onPickImage(file);
@@ -69,6 +74,7 @@
       throw error;
     } finally {
       uploadBusy = false;
+      uploadName = '';
     }
   }
 
@@ -88,8 +94,9 @@
 
 <input bind:this={imageInput} type="file" accept="image/*" class="hidden" />
 
-<!-- 不做全屏 Dialog（会盖住管理页顶栏）：改为固定面板，从顶栏下缘填满到页底，
-     开关与高亮由 Admin.svelte 的「新增公告」按钮承担。 -->
+<!-- Not a full-screen Dialog (it would cover the admin page top bar): a fixed panel instead,
+     filling from under the top bar down to the page bottom; the Admin.svelte "New announcement"
+     button owns the toggle and the highlight. -->
 <div
   role="dialog"
   aria-modal="true"
@@ -114,7 +121,12 @@
           />
         </div>
         <div class="min-h-0 flex-1">
-          <MarkdownEditor bind:value={contentMd} onPickImage={pickImage} />
+          <MarkdownEditor
+            bind:value={contentMd}
+            onPickImage={pickImage}
+            {uploadName}
+            {uploadTask}
+          />
         </div>
       </div>
     </div>

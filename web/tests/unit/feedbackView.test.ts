@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Feedback } from '$shared/types';
-import { filterFeedback, toggleFeedback } from '../../src/routes/admin/feedbackView';
+import { filterFeedback } from '../../src/routes/admin/feedbackView';
 
 const feedback: Feedback[] = [
   { id: 10, userId: 2, contentMd: 'Improve **search**', createdAt: 1 },
@@ -9,15 +9,6 @@ const feedback: Feedback[] = [
 ];
 
 describe('admin feedback view', () => {
-  it('keeps only one feedback card expanded and toggles the current card closed', () => {
-    let expanded = toggleFeedback(null, 10);
-    expect(expanded).toBe(10);
-    expanded = toggleFeedback(expanded, 11);
-    expect(expanded).toBe(11);
-    expanded = toggleFeedback(expanded, 11);
-    expect(expanded).toBeNull();
-  });
-
   it('searches content, user IDs, and feedback IDs case-insensitively', () => {
     expect(filterFeedback(feedback, '  SEARCH ').map((item) => item.id)).toEqual([10]);
     expect(filterFeedback(feedback, '20').map((item) => item.id)).toEqual([11]);
