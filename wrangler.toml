@@ -10,7 +10,9 @@ compatibility_date = "2026-08-01"
 directory = "dist"
 binding = "ASSETS"
 # Deep links / refresh of SPA routes fall back to the app shell. API routes
-# (/sync, /upload, /l/*, /admin*) are matched by the Worker before assets.
+# (/sync, /upload, /l/*, /admin/migrate) are matched by the Worker before assets;
+# the /admin page itself is the SPA shell — the root-user boundary is judged
+# in the frontend (see app.ts).
 not_found_handling = "single-page-application"
 
 [[d1_databases]]

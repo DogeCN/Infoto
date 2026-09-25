@@ -4,25 +4,48 @@
   "private": true,
   "type": "module",
   "description": "Full-stack shared photo album deployed on Cloudflare Workers",
+  "workspaces": [
+    "web"
+  ],
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm run db:local && npm run dev:worker\" \"npm run dev -w infoto-web\"",
+    "dev:worker": "node --use-system-ca node_modules/wrangler/bin/wrangler.js dev --port 8787",
+    "build": "npm run build -w infoto-web",
     "db:local": "wrangler d1 execute infoto-dev --local --file=schema.sql",
     "db:reset": "node scripts/reset-local-db.mjs",
-    "dev:worker": "wrangler dev --port 8787",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
-    "test:layout": "node --test src/ui/lib/layout.test.ts",
-    "test:pipeline": "node --test src/ui/upload/pipeline.test.ts",
-    "test:media": "node --test src/ui/lib/media.test.ts",
-    "test:worker": "node --test src/worker/schema-alignment.test.ts src/worker/routes/sync.test.ts src/worker/routes/migrate.test.ts",
-    "test": "node --test src/ui/lib/layout.test.ts src/ui/upload/pipeline.test.ts src/ui/lib/media.test.ts src/worker/schema-alignment.test.ts src/worker/routes/sync.test.ts src/worker/routes/migrate.test.ts",
-    "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json"
+    "test": "vitest run && npm test -w infoto-web",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "format": "prettier --write .",
+    "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json && npm run ts-check -w infoto-web"
   },
   "dependencies": {
     "hono": "^4.13.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260829.1",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^26.4.0",
+    "concurrently": "^10.0.5",
+    "eslint": "^10.11.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.23.0",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.9",
+    "prettier-plugin-svelte": "^4.1.1",
     "typescript": "^5.9.2",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^2.1.9",
     "wrangler": "^4.127.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "esbuild@0.21.5": true,
+    "esbuild@0.25.12": true,
+    "workerd@1.20260828.1": true
   }
 }

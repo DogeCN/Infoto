@@ -1,0 +1,35 @@
+name: ci
+
+# Quality gate: lint (ESLint + Prettier) -> type check -> unit tests.
+# E2E (Playwright) intentionally stays out of CI — it needs a browser
+# channel + a running local stack; see README "红线".
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies (npm workspaces — single lockfile)
+        run: npm ci
+
+      - name: Lint (ESLint + Prettier check)
+        run: npm run lint
+
+      - name: Type check (tsc × 3 + svelte-check --fail-on-warnings)
+        run: npm run ts-check
+
+      - name: Unit tests (root vitest + web vitest)
+        run: npm test

@@ -1,0 +1,12 @@
+dist/
+node_modules/
+.wrangler/
+.workbuddy/
+.trae/
+test-results/
+web/test-results/
+web/playwright-report/
+web/public/
+package-lock.json
+# generated from schema.sql (npm run gen-schema)
+src/worker/schema-ddl.ts

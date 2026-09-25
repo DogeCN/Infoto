@@ -1,4 +1,4 @@
 export default {
-	compilerOptions: {},
-	vitePlugin: {},
+  compilerOptions: {},
+  vitePlugin: {},
 };
