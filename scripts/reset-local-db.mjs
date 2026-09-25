@@ -1,6 +1,6 @@
-// 清空本地 D1（wrangler dev 的本地 sqlite state）并重建 schema。
-// 用法：node scripts/reset-local-db.mjs
-// 只动 .wrangler/state/v3/d1 —— 线上 D1 不受影响。
+// Wipes local D1 (wrangler dev's local sqlite state) and rebuilds the schema.
+// Usage: node scripts/reset-local-db.mjs
+// Only touches .wrangler/state/v3/d1 and cache — the hosted D1 is unaffected.
 
 import { rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
