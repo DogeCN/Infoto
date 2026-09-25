@@ -1,15 +1,16 @@
-// 设置面板与主页面共享的类型与筛选逻辑（spec: "设置侧边栏"）。纯模块，无副作用。
+// Shared settings and filter logic for the panel and main page.
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
-import type { Photo } from '$shared/types';
+import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
-/** 归属筛选的三态：未启用 / 仅含 / 仅不含。 */
+/** Ownership filter states: off, include-only, or exclude-only. */
 export type TriState = 'off' | 'only' | 'exclude';
 
-/** 五个数值范围筛选的键（spec: "范围"）。 */
+/** Keys for the five numeric range filters. */
 export type RangeKey = 'heat' | 'likes' | 'dislikes' | 'reports' | 'size';
 
 export const RANGE_KEYS: readonly RangeKey[] = ['heat', 'likes', 'dislikes', 'reports', 'size'];
+const MEDIA_TYPES = [MEDIA_TYPE.IMAGE, MEDIA_TYPE.ANIMATED, MEDIA_TYPE.VIDEO] as const;
 
 export const RANGE_LABELS: Record<RangeKey, string> = {
 	heat: '热度',
@@ -19,17 +20,17 @@ export const RANGE_LABELS: Record<RangeKey, string> = {
 	size: '文件大小',
 };
 
-/** 每个范围筛选的当前区间；null 表示未启用（等价于完整动态范围）。 */
+/** The current interval for one range filter; absent means the full range. */
 export type RangeValue = [number, number];
 
 export interface FilterSettings {
-	/** 选中可见的媒体类型（type=0/1/2），至少保留一个。 */
-	types: Set<number>;
+	/** Selected media types; at least one remains selected. */
+	types: Set<MediaType>;
 	ownedByMe: TriState;
 	likedByMe: TriState;
 	dislikedByMe: TriState;
 	reportedByMe: TriState;
-	/** 数值范围筛选（双柄）；键缺失 = 未启用。 */
+	/** Stored range intervals; a missing key means the full range. */
 	ranges: Partial<Record<RangeKey, RangeValue>>;
 }
 
@@ -45,7 +46,7 @@ export interface Settings {
 	layout: LayoutSettings;
 }
 
-/** 取某照片在某个范围筛选维度上的取值。热度 = 喜欢数 − 不喜欢数。 */
+/** Return a photo's value for one range dimension. */
 export function metricOf(photo: Photo, key: RangeKey): number {
 	switch (key) {
 		case 'heat':
@@ -61,7 +62,7 @@ export function metricOf(photo: Photo, key: RangeKey): number {
 	}
 }
 
-/** 某维度的动态可调范围 [min, max]；无照片时返回 null。 */
+/** Return a dimension's dynamic [min, max] range, or null without photos. */
 export function metricRange(photos: Photo[], key: RangeKey): RangeValue | null {
 	if (photos.length === 0) return null;
 	let min = Infinity;
@@ -74,7 +75,7 @@ export function metricRange(photos: Photo[], key: RangeKey): RangeValue | null {
 	return [min, max];
 }
 
-/** 维度是否可筛（有照片且 min ≠ max）——不可筛项渲染为禁用态。 */
+/** A dimension is filterable when it has photos and min differs from max. */
 export function isFilterable(photos: Photo[], key: RangeKey): boolean {
 	const r = metricRange(photos, key);
 	return r !== null && r[0] !== r[1];
@@ -82,7 +83,7 @@ export function isFilterable(photos: Photo[], key: RangeKey): boolean {
 
 export function defaultFilterSettings(): FilterSettings {
 	return {
-		types: new Set([0, 1, 2]),
+		types: new Set(MEDIA_TYPES),
 		ownedByMe: 'off',
 		likedByMe: 'off',
 		dislikedByMe: 'off',
@@ -101,8 +102,8 @@ export function defaultSettings(): Settings {
 const TRI_STATES: readonly TriState[] = ['off', 'only', 'exclude'];
 
 /**
- * 归一化外部传入的设置（localStorage 里的旧版本数据可能缺字段、多字段或类型不符）。
- * 以默认值为底逐项校验，任何非法项回落默认值——绝不把 undefined 泄漏给下游。
+ * Normalize persisted settings one field at a time and fall back to defaults
+ * for invalid values.
  */
 export function normalizeSettings(raw: unknown): Settings {
 	const d = defaultSettings();
@@ -110,9 +111,11 @@ export function normalizeSettings(raw: unknown): Settings {
 	const src = raw as Record<string, unknown>;
 
 	const rf = (src['filters'] ?? {}) as Record<string, unknown>;
-	const types = new Set(
+	const types = new Set<MediaType>(
 		Array.isArray(rf['types'])
-			? (rf['types'] as unknown[]).filter((t): t is number => typeof t === 'number' && [0, 1, 2].includes(t))
+			? (rf['types'] as unknown[]).filter(
+					(t): t is MediaType => typeof t === 'number' && MEDIA_TYPES.includes(t as MediaType),
+				)
 			: [],
 	);
 	if (types.size === 0) for (const t of d.filters.types) types.add(t);
@@ -153,10 +156,7 @@ export function normalizeSettings(raw: unknown): Settings {
 	};
 }
 
-/**
- * 应用全部筛选（AND 关系，spec: "筛选板块"）。
- * 范围筛选用动态范围判定：未启用的维度不参与过滤。
- */
+/** Apply all filters with AND semantics; absent ranges do not filter. */
 export function applyFilters(photos: Photo[], f: FilterSettings, selfId: number): Photo[] {
 	return photos.filter((p) => {
 		if (!f.types.has(p.type)) return false;
@@ -179,7 +179,7 @@ export function applyFilters(photos: Photo[], f: FilterSettings, selfId: number)
 	});
 }
 
-/** 生效筛选条数（顶栏角标计数）。 */
+/** Count active filters for the top-bar badge. */
 export function countActiveFilters(f: FilterSettings): number {
 	let c = 0;
 	if (f.types.size < 3) c++;

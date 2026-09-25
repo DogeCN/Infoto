@@ -1,5 +1,5 @@
-// Op-log write path + optimistic local application (spec: "设计理念" — all writes
-// go through op-log → /sync; "管理面板" — local applies immediately, then syncs).
+// Op-log write path and optimistic local application. Every write enters the
+// op log, syncs, and is corrected by the next full server snapshot.
 //
 // Pure reducers live here so they are unit-testable without a browser; the store
 // (`state/appStore.svelte.ts`) binds them to reactive state and the engine.
@@ -107,6 +107,104 @@ export function applyAnnReorder(anns: Announcement[], orderedIds: number[]): Ann
     return ordered.map((a, i) => ({ ...a, sort: i }));
 }
 
+export interface AnnouncementReorderDraft {
+    sourceIds: number[];
+    orderedIds: number[];
+    dragId: number | null;
+    finalized: boolean;
+}
+
+export function beginAnnouncementReorder(ids: number[], dragId: number): AnnouncementReorderDraft {
+    return { sourceIds: [...ids], orderedIds: [...ids], dragId, finalized: false };
+}
+
+export function moveAnnouncementReorder(
+    draft: AnnouncementReorderDraft,
+    targetId: number,
+): AnnouncementReorderDraft {
+    if (draft.finalized || draft.dragId === null || draft.dragId === targetId) return draft;
+    const from = draft.orderedIds.indexOf(draft.dragId);
+    const to = draft.orderedIds.indexOf(targetId);
+    if (from < 0 || to < 0) return draft;
+    const orderedIds = [...draft.orderedIds];
+    const [id] = orderedIds.splice(from, 1);
+    if (id === undefined) return draft;
+    orderedIds.splice(to, 0, id);
+    if (orderedIds.every((id, index) => id === draft.orderedIds[index])) return draft;
+    return { ...draft, orderedIds };
+}
+
+export function finalizeAnnouncementReorder(draft: AnnouncementReorderDraft): {
+    draft: AnnouncementReorderDraft;
+    op: Op | null;
+} {
+    if (draft.finalized) return { draft, op: null };
+    const finalized = { ...draft, dragId: null, finalized: true };
+    if (draft.orderedIds.every((id, index) => id === draft.sourceIds[index])) {
+        return { draft: finalized, op: null };
+    }
+    return {
+        draft: finalized,
+        op: { type: 'ann_reorder', payload: [...draft.orderedIds] },
+    };
+}
+
+export function cancelAnnouncementReorder(draft: AnnouncementReorderDraft): AnnouncementReorderDraft {
+    return { ...draft, dragId: null, finalized: true };
+}
+
+export function rollbackAnnouncementOrder(anns: Announcement[], previousIds: number[]): Announcement[] {
+    return applyAnnReorder(anns, previousIds);
+}
+
+export interface PendingAnnouncementMutation {
+    ids: number[];
+    queuedAtAttempt: number;
+    reorder?: boolean;
+}
+
+export interface PendingAnnouncementReconciliation {
+    mutations: PendingAnnouncementMutation[];
+    pendingIds: Set<number>;
+    confirmedIds: Set<number>;
+}
+
+export function markAnnouncementPending(
+    mutations: PendingAnnouncementMutation[],
+    ids: number[],
+    attempt: number,
+    reorder = false,
+): PendingAnnouncementMutation[] {
+    return [...mutations, { ids: [...ids], queuedAtAttempt: attempt, reorder }];
+}
+
+export function reconcileAnnouncementPending(
+    mutations: PendingAnnouncementMutation[],
+    serverIds: ReadonlySet<number>,
+    mapping: ReadonlyMap<number, number>,
+    snapshotAttempt: number,
+): PendingAnnouncementReconciliation {
+    const pendingIds = new Set<number>();
+    const confirmedIds = new Set<number>();
+    const remaining: PendingAnnouncementMutation[] = [];
+    for (const mutation of mutations) {
+        const unresolved: number[] = [];
+        for (const originalId of mutation.ids) {
+            const id = mapping.get(originalId) ?? originalId;
+            if (mutation.queuedAtAttempt < snapshotAttempt && serverIds.has(id)) {
+                confirmedIds.add(id);
+            } else {
+                unresolved.push(id);
+            }
+        }
+        if (unresolved.length > 0) {
+            remaining.push({ ...mutation, ids: [...new Set(unresolved)] });
+            for (const id of unresolved) pendingIds.add(id);
+        }
+    }
+    return { mutations: remaining, pendingIds, confirmedIds };
+}
+
 /**
  * Map optimistic temp ids to the real ids the server assigned.
  *
@@ -134,7 +232,7 @@ export function resolveTempIds(
 }
 
 /** Rewrite op targets that referenced optimistic temp ids. */
-export function remapOpTarget(op: Op, mapping: Map<number, number>): Op {
+export function remapOpTarget(op: Op, mapping: ReadonlyMap<number, number>): Op {
     if (op.target == null || op.target >= 0) return op;
     const real = mapping.get(op.target);
     return real === undefined ? op : { ...op, target: real };

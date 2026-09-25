@@ -8,6 +8,7 @@ import { buildUploadOp, routeByMime } from '$base/upload/pipeline';
 import { openOplogDb, appendOp } from '../core/oplog/store';
 import { LeaseClient } from './lease';
 import { isSwToPage, type JobMeta, type SwToPageMessage } from './shared/protocol';
+import { pipelineResultAction, shouldWriteAlbumUploadOp } from './uploadPurpose';
 import type { Op, UploadPayload } from '$shared/types';
 // ?sharedworker puts the SW through Vite's bundler (a bare new URL('./sw.ts',
 // import.meta.url) is copied verbatim as an untranspiled .ts asset — broken
@@ -33,8 +34,8 @@ export interface PipelineIo {
 	createVideoWorker?: (jobId: string, file: Blob, mime: string, engine: 'video' | 'gif') => WorkerLike;
 	onEvent?: (line: string) => void;
 	/**
-	 * upload op 出口。注入时由同步引擎统一入队（pending 计数与 256 条阈值生效）；
-	 * 未注入（harness / 单测）则回退为直接写 op-log。
+	 * Album upload op exit. The sync engine queues it when provided; otherwise
+	 * the pipeline writes directly to the op-log for harnesses and unit tests.
 	 */
 	onUploadOp?: (op: Op) => void;
 }
@@ -59,6 +60,10 @@ export class UploadPipeline {
 	private io: PipelineIo;
 	private db: IDBDatabase | null = null;
 	private readonly shaByJob = new Map<string, string>();
+	private readonly editorWaiters = new Map<
+		string,
+		{ resolve: (url: string) => void; reject: (error: Error) => void }
+	>();
 
 	constructor(io: PipelineIo = {}) {
 		this.io = io;
@@ -99,7 +104,7 @@ export class UploadPipeline {
 			this.onSwMessage(m);
 		};
 		this.sw.port.start();
-		// pagehide 归还令牌（契约审计条款：与 visibilitychange 分开注册）
+		// Return video tokens on pagehide independently of visibilitychange.
 		this.lease.install();
 		// deviceMemory is window-only — report both readings so the SW can size
 		// the global video token pool with the base videoPoolSize() pure function
@@ -109,7 +114,7 @@ export class UploadPipeline {
 		this.bc = 'BroadcastChannel' in window ? new BroadcastChannel(CH) : null;
 		this.bc?.addEventListener('message', (e: MessageEvent) => {
 			const m = e.data;
-			if (!isSwToPage(m) || m.t !== 'jobStatus') return;
+			if (!isSwToPage(m) || m.t !== 'jobStatus' || m.purpose !== 'album') return;
 			this.emit({
 				jobId: m.jobId,
 				fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
@@ -124,28 +129,37 @@ export class UploadPipeline {
 	}
 
 	private onSwMessage(m: SwToPageMessage): void {
-		if (m.t === 'jobStatus') {
-			// capture before emit() — emit stores m.url in the snapshot, which would
-			// make the "not yet written" guard below always false
-			const alreadyWritten = !!this.snapshots.get(m.jobId)?.url;
-			if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
-			this.emit({
-				jobId: m.jobId,
-				fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
-				phase: m.phase,
-				fraction: m.fraction,
-				url: m.url,
-				error: m.error,
-				meta: m.meta,
-				sha256: m.sha256,
-			});
-			if (m.phase === 'done' && m.url && m.meta && !alreadyWritten) {
-				void this.writeUploadOp(m.jobId, m.url, m.meta);
-			} else if (m.phase === 'failed') {
-				this.log(`job ${m.jobId} failed: ${m.error ?? 'unknown'} (artifact kept in OPFS, manual retry available)`);
-			} else if (m.phase === 'duplicate') {
-				this.log(`job ${m.jobId} duplicate: sha256 cache hit, upload skipped`);
-			}
+		if (m.t !== 'jobStatus') return;
+		const action = pipelineResultAction(m, this.editorWaiters.has(m.jobId));
+		if (action === 'resolve' || action === 'reject') {
+			const waiter = this.editorWaiters.get(m.jobId);
+			if (!waiter) return;
+			this.editorWaiters.delete(m.jobId);
+			this.sw?.port.postMessage({ t: 'editorResultAck', jobId: m.jobId });
+			if (action === 'resolve' && m.url) waiter.resolve(m.url);
+			else waiter.reject(new Error(m.error ?? 'editor_upload_failed'));
+			return;
+		}
+		if (m.purpose === 'editor') return;
+		// Capture before emit stores the URL in the snapshot.
+		const alreadyWritten = !!this.snapshots.get(m.jobId)?.url;
+		if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
+		this.emit({
+			jobId: m.jobId,
+			fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
+			phase: m.phase,
+			fraction: m.fraction,
+			url: m.url,
+			error: m.error,
+			meta: m.meta,
+			sha256: m.sha256,
+		});
+		if (shouldWriteAlbumUploadOp(m.purpose, m.phase, m.url, m.meta, alreadyWritten)) {
+			void this.writeUploadOp(m.jobId, m.url!, m.meta!);
+		} else if (m.phase === 'failed') {
+			this.log(`job ${m.jobId} failed: ${m.error ?? 'unknown'} (artifact kept in OPFS, manual retry available)`);
+		} else if (m.phase === 'duplicate') {
+			this.log(`job ${m.jobId} duplicate: sha256 cache hit, upload skipped`);
 		}
 	}
 
@@ -172,6 +186,31 @@ export class UploadPipeline {
 		this.log(`job ${jobId} URL written to op-log, awaiting sync`);
 	}
 
+	uploadEditorImage(file: File): Promise<string> {
+		return new Promise((resolve, reject) => {
+			if (!file.type.startsWith('image/')) {
+				reject(new Error('editor_upload_requires_image'));
+				return;
+			}
+			const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+			try {
+				if (!this.sw) this.start();
+				this.editorWaiters.set(jobId, { resolve, reject });
+				this.sw!.port.postMessage({
+					t: 'addJob',
+					jobId,
+					purpose: 'editor',
+					fileName: file.name,
+					mime: file.type,
+					file,
+				});
+			} catch (error) {
+				this.editorWaiters.delete(jobId);
+				reject(error instanceof Error ? error : new Error(String(error)));
+			}
+		});
+	}
+
 	/**
 	 * Entry: picked files (the accept list is `image/*,video/*` — exactly
 	 * routeByMime's coverage surface, per the contract audit clause).
@@ -186,7 +225,7 @@ export class UploadPipeline {
 			}
 			const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 			this.emit({ jobId, fileName: file.name, phase: 'queued' });
-			this.sw!.port.postMessage({ t: 'addJob', jobId, fileName: file.name, mime: file.type, file });
+			this.sw!.port.postMessage({ t: 'addJob', jobId, purpose: 'album', fileName: file.name, mime: file.type, file });
 		}
 	}
 
@@ -229,12 +268,12 @@ export class UploadPipeline {
 			} else if (m['t'] === 'videoResult') {
 				// structured-clone forward, no transfer list (Blob is not Transferable)
 				this.sw?.port.postMessage({ t: 'videoResult', jobId, blob: m['blob'], width: m['width'], height: m['height'], hasAudio: m['hasAudio'] });
-				this.lease?.release(); // 完成 → 归还令牌（契约四条释放路径之一）
+				this.lease?.release(); // Completion returns the concurrency token.
 				w.terminate();
 				this.videoWorkers.delete(jobId);
 			} else if (m['t'] === 'videoFailed') {
 				this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: m['error'] });
-				this.lease?.release(); // 失败 → 归还令牌
+				this.lease?.release(); // Failure also returns the concurrency token.
 				w.terminate();
 				this.videoWorkers.delete(jobId);
 			}

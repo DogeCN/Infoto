@@ -5,10 +5,11 @@
 
 import type { Op, SyncResponse } from '$shared/types';
 import { postSync } from '../api/syncClient';
+import { remapOpTarget } from '../ops';
 import { rebuildCache } from '../oplog/cache';
 import { OPLOG_SYNC_THRESHOLD, appendOp, clearOps, countOps, openOplogDb, readOps } from '../oplog/store';
 
-/** Browser hard limit for a keepalive request body (spec: "/sync 协议"). */
+/** Browser hard limit for a keepalive request body. */
 export const KEEPALIVE_BODY_LIMIT = 65_536;
 
 /**
@@ -43,9 +44,20 @@ export interface EngineIo {
 	fetchFn?: typeof fetch;
 	postSyncFn?: typeof postSync;
 	/** Response sink (store write). */
-	onSyncResponse?: (r: SyncResponse) => void;
+	onSyncResponse?: (
+		r: SyncResponse,
+		context: SyncSnapshotContext,
+	) => Map<number, number> | void;
 	onError?: (phase: 'submit' | 'pagehide', e: unknown) => void;
 }
+
+export interface SyncSnapshotContext {
+	attempt: number;
+}
+
+export type SyncAttemptResult =
+	| { ok: true; confirmedThroughVersion: number }
+	| { ok: false; error: unknown; confirmedThroughVersion: number };
 
 export interface EngineState {
 	/** true = a sync is in flight (ops keep accumulating; operations are never blocked). */
@@ -63,10 +75,17 @@ export class SyncEngine {
 	private listeners = new Set<(s: EngineState) => void>();
 	private syncing = false;
 	private pending = 0;
+	private attempt = 0;
+	private opVersion = 0;
+	private activeSync: Promise<SyncAttemptResult> | null = null;
+	private criticalFlush:
+		| { throughVersion: number; promise: Promise<SyncAttemptResult> }
+		| null = null;
 	readonly state: EngineState = { syncing: false, pending: 0 };
 
 	constructor(io: EngineIo = {}) {
 		this.io = io;
+		this.db = io.db ?? null;
 	}
 
 	private emit(): void {
@@ -80,26 +99,31 @@ export class SyncEngine {
 		return () => this.listeners.delete(l);
 	}
 
+	get currentSyncAttempt(): number {
+		return this.attempt;
+	}
+
 	async init(): Promise<void> {
 		if (!this.db) this.db = await openOplogDb();
 		this.pending = await countOps(this.db);
 		this.emit();
-		// trigger one sync when the site opens
 		void this.sync();
 	}
 
-	async addOp(op: Op): Promise<void> {
+	async addOp(op: Op): Promise<number> {
 		if (!this.db) this.db = await openOplogDb();
 		this.pending = await appendOp(this.db, op);
+		const version = ++this.opVersion;
 		this.emit();
 		if (this.pending >= OPLOG_SYNC_THRESHOLD) void this.sync();
+		return version;
 	}
 
 	private pagehideUrl(): string {
 		return `${window.location.origin}/sync`;
 	}
 
-	/** pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule (spec). */
+	/** Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule. */
 	private flushOnPagehide(): void {
 		if (!this.db || this.pending === 0) return;
 		const db = this.db;
@@ -108,17 +132,12 @@ export class SyncEngine {
 			if (entries.length === 0) return;
 			const fit = keepalivePrefix(entries.map((e) => e.op));
 			if (!fit) {
-				// a single op alone exceeds 64KB (only a giant ann_create body can
-				// do this) — abandon this flush; the op stays queued, not lost
 				console.warn('[infoto] first op exceeds the 64KB keepalive budget; kept for the next sync');
 				return;
 			}
-			// only the ops actually sent may be removed after an ok response;
-			// the rest wait for the next sync (all ops are idempotent, the
-			// server applies them in order — a partial commit is safe)
+			// Clear only the sent prefix; the remaining ops stay queued.
 			const keys = entries.slice(0, fit.ops.length).map((e) => e.key);
-			// keepalive results are unknowable; on failure ops stay in the log
-			// and are resent on the next sync
+			// Keepalive outcomes are uncertain, so failures retain every sent op.
 			void fetchFn(this.pagehideUrl(), {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -133,53 +152,110 @@ export class SyncEngine {
 		});
 	}
 
-	/** Deliver a snapshot to the sink and refresh the local sha dedupe cache. */
-	private async applySnapshot(db: IDBDatabase, response: SyncResponse): Promise<void> {
-		this.io.onSyncResponse?.(response);
-		await rebuildCache(db, response.photos).catch(() => undefined);
+	private async applySnapshot(
+		db: IDBDatabase,
+		response: SyncResponse,
+		context: SyncSnapshotContext,
+	): Promise<void> {
+		const mapping = this.io.onSyncResponse?.(response, context);
+		if (mapping && mapping.size > 0) await remapQueuedTargets(db, mapping);
+		await rebuildCache(db, response.photos).catch((error) => {
+			console.warn('[sync] SHA cache rebuild failed', error);
+		});
 	}
 
-	/** Manual / threshold / site-open triggered sync. */
-	async sync(): Promise<void> {
-		if (this.syncing) return; // ops accumulate during sync; operations never block
-		if (!this.db) await this.init();
-		const db = this.db!;
+	private async runSync(attempt: number): Promise<SyncAttemptResult> {
+		if (!this.db) this.db = await openOplogDb();
+		const db = this.db;
 		const entries = await readOps(db);
-		// Manual sync with an empty log still surfaces as "syncing" (button
-		// spins): it refreshes the cookie (sliding expiry) and pulls the full
-		// snapshot from the server.
+		const maxVersion = entries.length > 0 ? this.opVersion : 0;
 		this.syncing = true;
 		this.emit();
 		try {
-			if (entries.length === 0) {
-				const { response } = await (this.io.postSyncFn ?? postSync)({
-					ops: [],
-				});
-				await this.applySnapshot(db, response);
-				return;
-			}
-			const ops = entries.map((e) => e.op);
-			const { response } = await (this.io.postSyncFn ?? postSync)({ ops });
-			// clear only after success (spec). Ops added during the sync have keys
-			// greater than this snapshot's max key — the cleanup range is capped
-			// at the snapshot so no op is lost.
-			await clearAfter(db, entries.map((e) => e.key));
+			const { response } = await (this.io.postSyncFn ?? postSync)({
+				ops: entries.map((entry) => entry.op),
+			});
+			await clearAfter(db, entries.map((entry) => entry.key));
 			this.pending = await countOps(db);
-			await this.applySnapshot(db, response);
-		} catch (e) {
-			this.io.onError?.('submit', e);
+			await this.applySnapshot(db, response, { attempt });
+			return { ok: true, confirmedThroughVersion: maxVersion };
+		} catch (error) {
+			try {
+				this.io.onError?.('submit', error);
+			} catch {
+				// Error reporting must not change sync completion semantics.
+			}
+			return { ok: false, error, confirmedThroughVersion: 0 };
 		} finally {
 			this.syncing = false;
 			this.emit();
 		}
 	}
 
-	/**
-	 * Register all triggers (spec "同步触发点" / "主动降级"): pagehide carries the
-	 * keepalive last-resort dump and is registered separately; a hidden page has
-	 * not unloaded yet and can await, so visibilitychange→hidden runs a normal
-	 * awaited /sync instead. Never merge the two handlers.
-	 */
+	private beginSync(): Promise<SyncAttemptResult> {
+		const promise = this.runSync(++this.attempt);
+		this.activeSync = promise;
+		const clear = () => {
+			if (this.activeSync === promise) this.activeSync = null;
+		};
+		void promise.then(clear, clear);
+		return promise;
+	}
+
+	/** Awaitable manual, threshold, and site-open sync with request coalescing. */
+	sync(): Promise<SyncAttemptResult> {
+		return this.activeSync ?? this.beginSync();
+	}
+
+	/** Wait for an active attempt, then flush the requested op version if needed. */
+	flushThrough(version: number): Promise<SyncAttemptResult> {
+		if (this.criticalFlush) {
+			this.criticalFlush.throughVersion = Math.max(this.criticalFlush.throughVersion, version);
+			const pending = this.criticalFlush;
+			return pending.promise.then((result) => {
+				if (result.confirmedThroughVersion >= version) {
+					return { ok: true, confirmedThroughVersion: result.confirmedThroughVersion };
+				}
+				return result;
+			});
+		}
+
+		const record: NonNullable<SyncEngine['criticalFlush']> = {
+			throughVersion: version,
+			promise: Promise.resolve({ ok: false, error: new Error('uninitialized'), confirmedThroughVersion: 0 }),
+		};
+		const first = this.activeSync;
+		record.promise = (first ? first.then((result) => result) : this.beginSync()).then(async (prior) => {
+			if (prior.ok && prior.confirmedThroughVersion >= record.throughVersion) return prior;
+			const next = await this.beginSync();
+			if (next.ok) {
+				return {
+					ok: true,
+					confirmedThroughVersion: Math.max(
+						prior.confirmedThroughVersion,
+						next.confirmedThroughVersion,
+					),
+				};
+			}
+			return {
+				ok: false,
+				error: next.error,
+				confirmedThroughVersion: prior.confirmedThroughVersion,
+			};
+		});
+		this.criticalFlush = record;
+		void record.promise.then(() => {
+			if (this.criticalFlush === record) this.criticalFlush = null;
+		});
+		return record.promise.then((result) => {
+			if (result.confirmedThroughVersion >= version) {
+				return { ok: true, confirmedThroughVersion: result.confirmedThroughVersion };
+			}
+			return result;
+		});
+	}
+
+	/** Register all triggers; keep pagehide and hidden-document sync separate. */
 	install(windowObj: Window = window): void {
 		windowObj.addEventListener('pagehide', () => {
 			this.flushOnPagehide();
@@ -190,7 +266,29 @@ export class SyncEngine {
 	}
 }
 
+async function remapQueuedTargets(
+	db: IDBDatabase,
+	mapping: ReadonlyMap<number, number>,
+): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const tx = db.transaction('oplog', 'readwrite');
+		const req = tx.objectStore('oplog').openCursor();
+		req.onsuccess = () => {
+			const cursor = req.result;
+			if (!cursor) return;
+			const op = cursor.value as Op;
+			const remapped = remapOpTarget(op, mapping);
+			if (remapped !== op) cursor.update(remapped);
+			cursor.continue();
+		};
+		req.onerror = () => reject(req.error ?? new Error('oplog remap failed'));
+		tx.oncomplete = () => resolve();
+		tx.onerror = () => reject(tx.error ?? new Error('oplog remap failed'));
+	});
+}
+
 async function clearAfter(db: IDBDatabase, keys: IDBValidKey[]): Promise<void> {
+	if (keys.length === 0) return;
 	const max = keys.reduce<number>((m, k) => Math.max(m, typeof k === 'number' ? k : 0), 0);
 	if (max <= 0) return clearOps(db);
 	await new Promise<void>((resolve, reject) => {

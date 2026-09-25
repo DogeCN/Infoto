@@ -12,11 +12,14 @@ import { lookupSha } from '../core/oplog/cache';
 import { openOplogDb } from '../core/oplog/store';
 import { readArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
+import { shouldDedupeArtifact } from './uploadPurpose';
 import {
 	LEASE_TIMEOUT_MS,
 	isPageToSw,
 	type JobMeta,
 	type JobPhase,
+	type JobPurpose,
+	type JobStatusMessage,
 	type PageToSwMessage,
 	type SwToPageMessage,
 } from './shared/protocol';
@@ -35,6 +38,7 @@ function broadcast(m: SwToPageMessage): void {
 
 interface JobRec {
 	jobId: string;
+	purpose: JobPurpose;
 	fileName: string;
 	mime: string;
 	file: Blob;
@@ -48,6 +52,7 @@ interface JobRec {
 	error?: string;
 	/** The upload op has been written to the op-log by some page. */
 	opWritten: boolean;
+	editorResultAcked: boolean;
 	/** Cancellation flag for image jobs. */
 	cancelled: boolean;
 	/** Token lease info (video/gif). */
@@ -71,7 +76,7 @@ interface Lease {
 const leases = new Map<string, Lease>();
 
 /**
- * Global video concurrency (1–2, contract "架构"). Computed from the SW's own
+ * Global video concurrency (1–2, contract architecture). Computed from the SW's own
  * navigator at startup; refined by each page's poolHint (deviceMemory is
  * window-only). Pages on one machine report identical readings, so a
  * last-write-wins update is exact in practice.
@@ -82,10 +87,11 @@ function uid(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
-function notify(rec: JobRec, extra: Partial<Extract<SwToPageMessage, { t: 'jobStatus' }>> = {}): void {
-	broadcast({
+function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
+	const message: JobStatusMessage = {
 		t: 'jobStatus',
 		jobId: rec.jobId,
+		purpose: rec.purpose,
 		fileName: rec.fileName,
 		phase: rec.phase,
 		url: rec.url,
@@ -93,7 +99,12 @@ function notify(rec: JobRec, extra: Partial<Extract<SwToPageMessage, { t: 'jobSt
 		meta: rec.meta,
 		sha256: rec.sha256,
 		...extra,
-	});
+	};
+	if (rec.purpose === 'editor' && (rec.phase === 'done' || rec.phase === 'failed')) {
+		if (!rec.editorResultAcked) ownerPort(rec)?.postMessage(message);
+		return;
+	}
+	broadcast(message);
 }
 
 // ---- scheduling ----------------------------------------------------------------
@@ -182,14 +193,16 @@ async function runImageJob(rec: JobRec): Promise<void> {
 // ---- stage 1 done: dedupe → stage 2 ------------------------------------------------
 
 async function afterStage1(rec: JobRec): Promise<void> {
-	// sha256 dedupe: a cache hit skips stage 2 and notifies "duplicate" (spec)
-	if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
-	if (db && rec.sha256) {
-		const hit = await lookupSha(db, rec.sha256).catch(() => undefined);
-		if (hit) {
-			rec.phase = 'duplicate';
-			notify(rec);
-			return;
+	// Existing photo hashes do not provide editor image URLs.
+	if (shouldDedupeArtifact(rec.purpose)) {
+		if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
+		if (db && rec.sha256) {
+			const hit = await lookupSha(db, rec.sha256).catch(() => undefined);
+			if (hit) {
+				rec.phase = 'duplicate';
+				notify(rec);
+				return;
+			}
 		}
 	}
 	rec.phase = 'uploading';
@@ -269,6 +282,7 @@ function onRetry(jobId: string): void {
 	rec.error = undefined;
 	rec.url = undefined;
 	rec.opWritten = false;
+	rec.editorResultAcked = false;
 	rec.cancelled = false;
 	if (rec.artifact && rec.sha256) {
 		// artifact already on disk: go straight to dedupe/upload
@@ -323,9 +337,22 @@ onconnect = (e: MessageEvent) => {
 		handleMessage(port, m);
 	};
 	port.onmessageerror = () => undefined;
-	// replay all job states to the new connection (refresh recovery);
-	// fileName must ride along or the page falls back to showing the jobId
-	for (const rec of jobs.values()) port.postMessage({ t: 'jobStatus', jobId: rec.jobId, fileName: rec.fileName, phase: rec.phase, url: rec.url, error: rec.error, meta: rec.meta });
+	// Album jobs replay for refresh recovery. Editor results stay with the
+	// original owner and never cross a page-reload boundary.
+	for (const rec of jobs.values()) {
+		if (rec.purpose === 'editor') continue;
+		port.postMessage({
+			t: 'jobStatus',
+			jobId: rec.jobId,
+			purpose: rec.purpose,
+			fileName: rec.fileName,
+			phase: rec.phase,
+			url: rec.url,
+			error: rec.error,
+			meta: rec.meta,
+			sha256: rec.sha256,
+		});
+	}
 };
 
 function handleMessage(port: MessagePort, m: PageToSwMessage): void {
@@ -333,17 +360,26 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
 		case 'addJob': {
 			const route = routeByMime(m.mime);
 			if (!route) {
-				broadcast({ t: 'jobStatus', jobId: m.jobId, phase: 'failed', error: 'unknown_mime' });
+				port.postMessage({
+					t: 'jobStatus',
+					jobId: m.jobId,
+					purpose: m.purpose,
+					fileName: m.fileName,
+					phase: 'failed',
+					error: 'unknown_mime',
+				});
 				return;
 			}
 			const rec: JobRec = {
 				jobId: m.jobId,
+				purpose: m.purpose,
 				fileName: m.fileName,
 				mime: m.mime,
 				file: m.file,
 				engine: route.engine,
 				phase: route.engine === 'image' ? 'queued' : 'lease-wait',
 				opWritten: false,
+				editorResultAcked: false,
 				cancelled: false,
 			};
 			jobs.set(m.jobId, rec);
@@ -410,6 +446,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
 		case 'opWritten': {
 			const rec = jobs.get(m.jobId);
 			if (rec) rec.opWritten = true;
+			return;
+		}
+		case 'editorResultAck': {
+			const rec = jobs.get(m.jobId);
+			if (rec?.purpose === 'editor') rec.editorResultAcked = true;
 			return;
 		}
 		case 'poolHint': {

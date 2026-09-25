@@ -8,6 +8,8 @@ import type { MediaType } from '$shared/types';
 
 // ---- job state machine --------------------------------------------------------
 
+export type JobPurpose = 'album' | 'editor';
+
 export type JobPhase =
 	| 'queued'
 	| 'lease-wait' // video/gif: waiting for a concurrency token
@@ -32,6 +34,7 @@ export interface AddJobRequest {
 	t: 'addJob';
 	/** Job id, unique within the page. */
 	jobId: string;
+	purpose: JobPurpose;
 	fileName: string;
 	mime: string;
 	/** Structured-clone by reference; never in a transfer list. */
@@ -91,6 +94,11 @@ export interface OpWrittenRequest {
 	jobId: string;
 }
 
+export interface EditorResultAckRequest {
+	t: 'editorResultAck';
+	jobId: string;
+}
+
 /**
  * Video token pool hint: the page reports its navigator readings on connect
  * (deviceMemory is window-only — the SW cannot see it). The SW computes the
@@ -112,6 +120,7 @@ export type PageToSwMessage =
 	| VideoResultRequest
 	| VideoFailedRequest
 	| OpWrittenRequest
+	| EditorResultAckRequest
 	| PoolHintRequest;
 
 // ---- response / progress / lease: SharedWorker → page --------------------------
@@ -119,6 +128,7 @@ export type PageToSwMessage =
 export interface JobStatusMessage {
 	t: 'jobStatus';
 	jobId: string;
+	purpose: JobPurpose;
 	/** Source file name — lets pages that didn't enqueue the job (cross-tab) label it. */
 	fileName?: string;
 	phase: JobPhase;
@@ -159,7 +169,7 @@ export interface JobRemovedMessage {
 
 export type SwToPageMessage = JobStatusMessage | LeaseGrantedMessage | LeaseRevokedMessage | JobRemovedMessage;
 
-// ---- constants (spec "令牌租约") -------------------------------------------------
+// ---- constants ---------------------------------------------------------------
 
 /** Heartbeat interval. */
 export const LEASE_HEARTBEAT_MS = 5_000;
@@ -178,6 +188,7 @@ const PAGE_TYPES = new Set([
 	'videoResult',
 	'videoFailed',
 	'opWritten',
+	'editorResultAck',
 	'poolHint',
 ]);
 const SW_TYPES = new Set(['jobStatus', 'leaseGranted', 'leaseRevoked', 'jobRemoved']);
