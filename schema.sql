@@ -1,4 +1,4 @@
--- Infoto data model (see .ai/00-contracts.md "数据模型")
+-- Infoto data model.
 -- users.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT): first insert gets id 0.
 -- IF NOT EXISTS keeps re-application idempotent for the deploy workflow.
 CREATE TABLE IF NOT EXISTS users (
