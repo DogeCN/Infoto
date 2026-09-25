@@ -72,9 +72,22 @@
   }: Props = $props();
   let settings = $state<Settings>(loadSettings());
 
+  // localStorage 写入防抖：拖滑块时 60fps 同步写入会阻塞主线程（卡死根源之三）。
+  // 立即回调父组件（布局/筛选即时生效），localStorage 延迟 200ms 合并写入。
+  let _saveTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
-    saveSettings(settings);
     onSettingsChange?.(settings);
+    if (_saveTimer !== undefined) clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(() => {
+      _saveTimer = undefined;
+      saveSettings(settings);
+    }, 200);
+    return () => {
+      if (_saveTimer !== undefined) {
+        clearTimeout(_saveTimer);
+        saveSettings(settings);
+      }
+    };
   });
 
   let activeFilterCount = $derived(countActiveFilters(settings.filters));
@@ -218,9 +231,7 @@
                 <Icon
                   class="size-4 shrink-0 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {active
                     ? 'text-primary'
-                    : 'text-muted-foreground'} {filterable
-                    ? ''
-                    : 'opacity-50'}"
+                    : 'text-muted-foreground'} {filterable ? '' : 'opacity-50'}"
                 />
                 <div class="min-w-0 flex-1">
                   <RangeSlider

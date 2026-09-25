@@ -138,6 +138,7 @@
   let order = $state<number[]>([]);
   let layoutReady = $state(false);
   let currentAbort: AbortController | null = null;
+  let layoutTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Selection state
   let selected = $state<Set<number>>(new Set());
@@ -167,7 +168,10 @@
   );
   let photoMap = $derived(new Map(allPhotos.map((p) => [p.id, p])));
 
-  // Recompute layout when dependencies change
+  // Recompute layout when dependencies change — debounce so rapid resize / slider
+  // drag collapses into one computation per 16 ms frame instead of abort-restart
+  // per event (卡死根源之二).  State writes deferred to a rAF so the sort
+  // (orderByMain) and DOM batch happen in a separate frame from the generator.
   $effect(() => {
     const items = layoutItems;
     const w = containerW;
@@ -183,26 +187,43 @@
       layoutReady = false;
       return;
     }
+    // Cancel previous debounce timer
+    if (layoutTimer !== undefined) clearTimeout(layoutTimer);
+    // Abort previous computation
     currentAbort?.abort();
-    const controller = new AbortController();
-    currentAbort = controller;
-    const opts = {
-      dir: d,
-      strategy: s,
-      // 横向模式垂直方向静态留白：顶 padTop（容纳悬浮顶栏）+ 底 padX
-      cross: (d === "v" ? w : viewportH) - (d === "v" ? padX * 2 : padTop + padX),
-      band: b,
-      gap: g,
-    };
-    computeLayoutChunked(items, opts, 400, controller.signal).then((result) => {
-      if (result && !controller.signal.aborted) {
-        boxes = result.boxes;
-        totalH = result.totalH;
-        totalW = result.totalW;
-        order = orderByMain(result.boxes, d);
-        layoutReady = true;
+    layoutTimer = setTimeout(() => {
+      layoutTimer = undefined;
+      const controller = new AbortController();
+      currentAbort = controller;
+      const opts = {
+        dir: d,
+        strategy: s,
+        // 横向模式垂直方向静态留白：顶 padTop（容纳悬浮顶栏）+ 底 padX
+        cross: (d === "v" ? w : viewportH) - (d === "v" ? padX * 2 : padTop + padX),
+        band: b,
+        gap: g,
+      };
+      computeLayoutChunked(items, opts, 400, controller.signal).then((result) => {
+        if (result && !controller.signal.aborted) {
+          const sorted = orderByMain(result.boxes, d);
+          requestAnimationFrame(() => {
+            if (!controller.signal.aborted) {
+              boxes = result.boxes;
+              totalH = result.totalH;
+              totalW = result.totalW;
+              order = sorted;
+              layoutReady = true;
+            }
+          });
+        }
+      });
+    }, 16);
+    return () => {
+      if (layoutTimer !== undefined) {
+        clearTimeout(layoutTimer);
+        layoutTimer = undefined;
       }
-    });
+    };
   });
 
   // Virtual window
