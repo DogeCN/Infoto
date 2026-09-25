@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { Feedback } from '$shared/types';
   import { MessageSquare, Trash2 } from '@lucide/svelte';
-  import EmptyState from '$lib/components/custom/EmptyState.svelte';
-  import MarkdownView from '$lib/components/custom/MarkdownView.svelte';
-  import Tooltip from '$lib/components/custom/Tooltip.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import MarkdownView from '$lib/components/MarkdownView.svelte';
+  import Tooltip from '$lib/components/Tooltip.svelte';
   import { formatAbsoluteTime } from '$lib/time';
   import { filterFeedback, toggleFeedback } from './feedbackView';
 
@@ -24,7 +24,9 @@
 
 <div class="space-y-4">
   <div class="flex flex-wrap items-center gap-3">
-    <span class="inline-flex items-center rounded-full border border-transparent bg-secondary px-4 py-1 text-base font-semibold text-secondary-foreground">
+    <span
+      class="inline-flex items-center rounded-full border border-transparent bg-secondary px-4 py-1 text-base font-semibold text-secondary-foreground"
+    >
       共 {feedback.length} 条
     </span>
     <input

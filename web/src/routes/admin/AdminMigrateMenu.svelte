@@ -1,9 +1,9 @@
 <script lang="ts">
   import { Download, Upload } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
-  import Popover from '$lib/components/custom/Popover.svelte';
-  import Progress from '$lib/components/custom/Progress.svelte';
-  import Tooltip from '$lib/components/custom/Tooltip.svelte';
+  import Popover from '$lib/components/Popover.svelte';
+  import Progress from '$lib/components/Progress.svelte';
+  import Tooltip from '$lib/components/Tooltip.svelte';
   import { migrateSql } from '../../core/api/migrateClient';
 
   interface Props {
@@ -73,7 +73,11 @@
       const response = await fetch('/admin/migrate', { credentials: 'include' });
       if (!response.ok) {
         const detail = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim();
-        throw new Error(detail ? `服务器返回 HTTP ${response.status}：${detail.slice(0, 180)}` : `服务器返回 HTTP ${response.status}`);
+        throw new Error(
+          detail
+            ? `服务器返回 HTTP ${response.status}：${detail.slice(0, 180)}`
+            : `服务器返回 HTTP ${response.status}`,
+        );
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -145,7 +149,10 @@
           <Progress value={progress} label="SQL 导入进度" />
         </div>
       {:else if message}
-        <p class="break-words text-xs {status === 'error' ? 'text-destructive' : 'text-success'}" aria-live="polite">
+        <p
+          class="break-words text-xs {status === 'error' ? 'text-destructive' : 'text-success'}"
+          aria-live="polite"
+        >
           {message}
         </p>
       {/if}

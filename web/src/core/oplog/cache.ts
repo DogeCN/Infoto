@@ -2,7 +2,6 @@
 
 import type { Photo } from '$shared/types';
 
-const DB_NAME = 'infoto';
 const CACHE_STORE = 'metaCache';
 
 export interface ShaEntry {
@@ -25,7 +24,11 @@ function withDb<T>(db: IDBDatabase, fn: (store: IDBObjectStore) => IDBRequest<T>
   });
 }
 
-export function lookupSha(db: IDBDatabase, purpose: ShaEntry['purpose'], sha256: string): Promise<ShaEntry | undefined> {
+export function lookupSha(
+  db: IDBDatabase,
+  purpose: ShaEntry['purpose'],
+  sha256: string,
+): Promise<ShaEntry | undefined> {
   return withDb(db, (store) => store.get(key(purpose, sha256)) as IDBRequest<ShaEntry | undefined>);
 }
 
@@ -45,7 +48,12 @@ export async function rebuildCache(db: IDBDatabase, photos: Photo[]): Promise<vo
       }
       store.clear();
       for (const photo of photos) {
-        const entry: ShaEntry = { sha256: photo.sha256, purpose: 'album', photoId: photo.id, url: photo.url };
+        const entry: ShaEntry = {
+          sha256: photo.sha256,
+          purpose: 'album',
+          photoId: photo.id,
+          url: photo.url,
+        };
         store.put(entry, key('album', photo.sha256));
       }
       for (const entry of editorEntries) store.put(entry, key('editor', entry.sha256));
@@ -56,9 +64,19 @@ export async function rebuildCache(db: IDBDatabase, photos: Photo[]): Promise<vo
   });
 }
 
-export function putSha(db: IDBDatabase, purpose: ShaEntry['purpose'], sha256: string, photoId: number | null, url?: string): Promise<void> {
+export function putSha(
+  db: IDBDatabase,
+  purpose: ShaEntry['purpose'],
+  sha256: string,
+  photoId: number | null,
+  url?: string,
+): Promise<void> {
   return withDb(
     db,
-    (store) => store.put({ sha256, purpose, photoId, ...(url ? { url } : {}) }, key(purpose, sha256)) as IDBRequest<IDBValidKey>,
+    (store) =>
+      store.put(
+        { sha256, purpose, photoId, ...(url ? { url } : {}) },
+        key(purpose, sha256),
+      ) as IDBRequest<IDBValidKey>,
   ).then(() => undefined);
 }

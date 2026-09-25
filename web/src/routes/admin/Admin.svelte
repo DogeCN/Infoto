@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { Megaphone, MessageSquare, Plus, RefreshCw } from '@lucide/svelte';
+  import { Megaphone, MessageSquare, Plus } from '@lucide/svelte';
   import type { Announcement } from '$shared/types';
   import { Toaster, toast } from 'svelte-sonner';
-  import ErrorPage from '$lib/components/custom/ErrorPage.svelte';
-  import Tooltip from '$lib/components/custom/Tooltip.svelte';
+  import ErrorPage from '$lib/components/ErrorPage.svelte';
+  import SegmentedControl from '$lib/components/SegmentedControl.svelte';
+  import SyncButton from '$lib/components/SyncButton.svelte';
   import { toastOptions } from '$lib/toastOptions';
   import { getEngine } from '../../core/sync/engine';
   import { createAppStore } from '../../state/appStore.svelte';
@@ -38,9 +39,24 @@
 
   const isRoot = $derived(store.selfId === 0);
 
+  // 身份未知（无 selfId 缓存且 /sync 未返回）：回主页让 Turnstile 建号，
+  // 不在 /admin 等待也不显示 loading。replace 掉历史记录，后退不回到 /admin。
+  $effect(() => {
+    if (store.selfId === -1) location.replace('/');
+  });
+
   function openCreateAnnouncement() {
     editingAnnouncement = null;
     editorOpen = true;
+  }
+
+  /** 「新增公告」按钮 = 编辑器开关：开着（新建态）再点关闭；编辑态点它切到新建。 */
+  function toggleCreateAnnouncement() {
+    if (editorOpen && editingAnnouncement === null) {
+      closeAnnouncementEditor();
+      return;
+    }
+    openCreateAnnouncement();
   }
 
   function openEditAnnouncement(announcement: Announcement) {
@@ -90,51 +106,39 @@
 
 {#if isRoot}
   <div class="min-h-screen bg-background">
-    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/80 px-3 backdrop-blur-xl backdrop-saturate-150 md:h-16 md:px-6">
+    <header
+      class="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/80 px-3 backdrop-blur-xl backdrop-saturate-150 md:h-16 md:px-6"
+    >
       <div class="flex items-center gap-2">
-        <div class="flex items-center rounded-lg bg-secondary p-0.5">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors {activeTab === 'announcements'
-              ? 'bg-background text-foreground'
-              : 'text-muted-foreground hover:text-foreground'}"
-            onclick={() => (activeTab = 'announcements')}
-          >
-            <Megaphone class="size-4" />
-            公告
-          </button>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors {activeTab === 'feedback'
-              ? 'bg-background text-foreground'
-              : 'text-muted-foreground hover:text-foreground'}"
-            onclick={() => (activeTab = 'feedback')}
-          >
-            <MessageSquare class="size-4" />
-            建议
-          </button>
-        </div>
-        <button
-          type="button"
-          class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-          aria-label="同步"
-          onclick={() => engine.sync()}
-        >
-          <RefreshCw class="size-5 {store.engineState.syncing ? 'animate-spin' : ''}" />
-        </button>
+        <!-- 分段选择器：复用通用 SegmentedControl（滑动 pill 动画与主页 SortTabs 完全一致） -->
+        <SegmentedControl
+          items={[
+            { value: 'announcements', label: '公告', icon: Megaphone },
+            { value: 'feedback', label: '建议', icon: MessageSquare },
+          ]}
+          value={activeTab}
+          ariaLabel="管理页分区"
+          onChange={(v) => (activeTab = v)}
+        />
+        <SyncButton
+          pendingCount={store.engineState.pending}
+          isSyncing={store.engineState.syncing}
+          onSync={() => engine.sync()}
+        />
       </div>
 
       <div class="flex items-center gap-1">
-        <Tooltip text="新增公告">
-          <button
-            type="button"
-            class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-            aria-label="新增公告"
-            onclick={openCreateAnnouncement}
-          >
-            <Plus class="size-5" />
-          </button>
-        </Tooltip>
+        <!-- 编辑器开关（与主页顶栏侧栏按钮同一套高亮语言）：开启时图标转主色 -->
+        <button
+          type="button"
+          class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+          class:text-primary={editorOpen && editingAnnouncement === null}
+          aria-label="新增公告"
+          aria-pressed={editorOpen && editingAnnouncement === null}
+          onclick={toggleCreateAnnouncement}
+        >
+          <Plus class="size-5" />
+        </button>
         <AdminMigrateMenu onImported={handleImported} />
       </div>
     </header>
@@ -166,6 +170,8 @@
 
     <Toaster position="bottom-left" theme="dark" richColors {toastOptions} />
   </div>
-{:else}
+{:else if store.selfId >= 1}
+  <!-- 已知非 root（缓存或 /sync 确认）：与旧的服务端 404 页等价 -->
   <ErrorPage code={404} />
 {/if}
+<!-- selfId === -1：重定向已触发，本帧不渲染 -->

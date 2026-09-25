@@ -1,3 +1,3 @@
 export function isAdminRoute(pathname: string): boolean {
-  return pathname === "/admin";
+  return pathname === '/admin';
 }

@@ -7,10 +7,10 @@ import type { Announcement } from '$shared/types';
 export const EMOJI_SET = ['👍', '👎', '❤️', '😂', '😮', '😢', '🔥', '🤔'] as const;
 
 export interface ReactionCount {
-	emoji: string;
-	count: number;
-	/** 当前用户是否已用该表情回应。 */
-	selfReacted: boolean;
+  emoji: string;
+  count: number;
+  /** 当前用户是否已用该表情回应。 */
+  selfReacted: boolean;
 }
 
 /**
@@ -18,12 +18,12 @@ export interface ReactionCount {
  * 同一用户对同一公告只保留一条回应（服务端保证），此处按出现计数。
  */
 export function reactionCounts(ann: Announcement, selfId: number): ReactionCount[] {
-	const map = new Map<string, { count: number; selfReacted: boolean }>();
-	for (const r of ann.reactions) {
-		const entry = map.get(r.emoji) ?? { count: 0, selfReacted: false };
-		entry.count++;
-		if (r.userId === selfId) entry.selfReacted = true;
-		map.set(r.emoji, entry);
-	}
-	return EMOJI_SET.filter((e) => map.has(e)).map((emoji) => ({ emoji, ...map.get(emoji)! }));
+  const map = new Map<string, { count: number; selfReacted: boolean }>();
+  for (const r of ann.reactions) {
+    const entry = map.get(r.emoji) ?? { count: 0, selfReacted: false };
+    entry.count++;
+    if (r.userId === selfId) entry.selfReacted = true;
+    map.set(r.emoji, entry);
+  }
+  return EMOJI_SET.filter((e) => map.has(e)).map((emoji) => ({ emoji, ...map.get(emoji)! }));
 }

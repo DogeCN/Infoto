@@ -1,11 +1,6 @@
 export const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 
-export type MigrateImportFailureKind =
-  | 'validation'
-  | 'network'
-  | 'http'
-  | 'server'
-  | 'malformed';
+export type MigrateImportFailureKind = 'validation' | 'network' | 'http' | 'server' | 'malformed';
 
 export interface MigrateImportResponse {
   ok?: boolean;
@@ -73,11 +68,8 @@ export async function migrateSql(
       settled = true;
       resolve(result);
     };
-    const fail = (
-      kind: MigrateImportFailureKind,
-      message: string,
-      status?: number,
-    ) => finish({ ok: false, kind, message, ...(status === undefined ? {} : { status }) });
+    const fail = (kind: MigrateImportFailureKind, message: string, status?: number) =>
+      finish({ ok: false, kind, message, ...(status === undefined ? {} : { status }) });
     let lastProgress: number | undefined;
     const reportProgress = (fraction: number) => {
       if (lastProgress === fraction) return;
@@ -141,7 +133,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isServerFailure(value: unknown): boolean {
-  return isRecord(value) && (value.ok === false || typeof value.error === 'string' || typeof value.detail === 'string');
+  return (
+    isRecord(value) &&
+    (value.ok === false || typeof value.error === 'string' || typeof value.detail === 'string')
+  );
 }
 
 function formatServerMessage(value: unknown): string {
@@ -151,5 +146,7 @@ function formatServerMessage(value: unknown): string {
     .map((detail) => detail.replace(/\s+/g, ' ').trim())
     .filter(Boolean)
     .slice(0, 3);
-  return details.length > 0 ? `导入失败：${details.join(' · ').slice(0, 240)}` : '导入失败：服务器未返回错误详情';
+  return details.length > 0
+    ? `导入失败：${details.join(' · ').slice(0, 240)}`
+    : '导入失败：服务器未返回错误详情';
 }

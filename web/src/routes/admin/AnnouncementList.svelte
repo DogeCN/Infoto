@@ -2,8 +2,8 @@
   import { tick } from 'svelte';
   import type { Announcement } from '$shared/types';
   import { GripVertical, Megaphone, Pencil, Trash2 } from '@lucide/svelte';
-  import EmptyState from '$lib/components/custom/EmptyState.svelte';
-  import Tooltip from '$lib/components/custom/Tooltip.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import Tooltip from '$lib/components/Tooltip.svelte';
   import { formatAbsoluteTime, formatRelativeTime } from '$lib/time';
   import * as ops from '../../core/ops';
   import { reactionCounts } from '../../core/reactions';
@@ -76,10 +76,7 @@
       animations.get(id)?.cancel();
       if (dx === 0 && dy === 0) continue;
       const animation = element.animate(
-        [
-          { transform: `translate3d(${dx}px, ${dy}px, 0)` },
-          { transform: 'translate3d(0, 0, 0)' },
-        ],
+        [{ transform: `translate3d(${dx}px, ${dy}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }],
         { duration: 180, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
       );
       animations.set(id, animation);
@@ -124,7 +121,10 @@
     const rect = element.getBoundingClientRect();
     dragId = id;
     draggedElement = element;
-    draft = ops.beginAnnouncementReorder(announcements.map((announcement) => announcement.id), id);
+    draft = ops.beginAnnouncementReorder(
+      announcements.map((announcement) => announcement.id),
+      id,
+    );
     pointerX = event.clientX;
     pointerY = event.clientY;
     grabOffsetX = event.clientX - rect.left;
@@ -265,13 +265,16 @@
                   </span>
                 </Tooltip>
                 {#if pendingIds.has(announcement.id)}
-                  <span class="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary">
+                  <span
+                    class="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary"
+                  >
                     同步中
                   </span>
                 {/if}
                 {#each counts as count (count.emoji)}
                   <span class="rounded-full border border-border px-2 py-0.5">
-                    {count.emoji} {count.count}
+                    {count.emoji}
+                    {count.count}
                   </span>
                 {/each}
               </div>
