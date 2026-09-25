@@ -1,7 +1,6 @@
-// Custom error pages (spec: "错误页") — dark background #0a0e1a,
-// large cyan #22d3ee status code with glitch (red/cyan double-layer offset),
-// NO glow / shadow / drop-shadow — per the "发光纪律" the only allowed
-// effect is the displaced double-text glitch.
+// Custom error pages (spec: "error pages") — dark background #0a0e1a with a large cyan
+// #22d3ee status code in glitch style (red/cyan double-layer offset). Per the "no-glow
+// discipline" the only allowed effect is the displaced double-text glitch.
 
 function page(code: number, title: string, message: string): Response {
   const html = `<!doctype html>

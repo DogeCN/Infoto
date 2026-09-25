@@ -1,4 +1,4 @@
-// Identity & Cookie (spec: "身份与 Cookie").
+// Identity & Cookie (spec: "Identity & Cookie").
 // Cookie carries the uuid only; numeric short ids are public, uuids never are.
 // ID=0 (the very first visitor) is the root user with all admin powers.
 

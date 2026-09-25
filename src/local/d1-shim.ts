@@ -1,10 +1,6 @@
-// Local D1 simulation backed by node:sqlite (DatabaseSync).
-// Same Db interface as D1; sync calls wrapped in async, batch() is a real
-// BEGIN/COMMIT transaction with full rollback on any failure.
-//
-// Loaded via createRequire: vite's SSR pipeline strips the `node:` prefix and
-// then fails to resolve `sqlite` (not in module.builtinModules), so a static
-// `import 'node:sqlite'` breaks under vitest.
+// Local D1 simulation backed by node:sqlite (DatabaseSync); same Db interface as D1.
+// batch() is a real BEGIN/COMMIT transaction with full rollback on any failure.
+// Loaded via createRequire: vite's SSR strips `node:`, so static import breaks under vitest.
 
 import { createRequire } from 'node:module';
 import type { Db, DbPrepared, DbRunResult } from '../worker/db.ts';

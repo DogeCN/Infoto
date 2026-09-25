@@ -52,7 +52,7 @@ export interface Announcement {
   id: number;
   title: string;
   contentMd: string;
-  /** Display order; normalized to 0…n-1 by ann_reorder. */
+  /** Display order; normalized to 0…n-1 by the admin reorder API. */
   sort: number;
   /** Millisecond epoch. */
   updatedAt: number;
@@ -78,11 +78,6 @@ export type OpType =
   | 'report'
   | 'unreport'
   | 'delete' // root only
-  // announcement area (root only)
-  | 'ann_create'
-  | 'ann_update'
-  | 'ann_delete'
-  | 'ann_reorder'
   // vote area (everyone, targets an announcement)
   | 'vote'
   // feedback area
@@ -102,12 +97,6 @@ export interface UploadPayload {
   type: MediaType;
 }
 
-/** Payload for `ann_create` / `ann_update`. */
-export interface AnnouncementPayload {
-  title: string;
-  contentMd: string;
-}
-
 /** Payload for `fb_create`. */
 export interface FeedbackPayload {
   contentMd: string;
@@ -124,18 +113,12 @@ export interface VotePayload {
 }
 
 export type OpPayload =
-  | UploadPayload
-  | AnnouncementPayload
-  | FeedbackPayload
-  | ReactPayload
-  | VotePayload
-  | number[] // ann_reorder: full ordered id sequence
-  | Record<string, unknown>;
+  UploadPayload | FeedbackPayload | ReactPayload | VotePayload | Record<string, unknown>;
 
 /** One op-log entry, applied by /sync strictly in array order. */
 export interface Op {
   type: OpType;
-  /** Photo / announcement / feedback id the op applies to (null for `upload` / `ann_create` / `fb_create`). */
+  /** Photo / feedback id the op applies to (null for `upload` / `fb_create`). */
   target?: number | null;
   payload?: OpPayload | null;
 }

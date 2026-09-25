@@ -8,6 +8,7 @@ import { syncHandler } from './routes/sync.ts';
 import { uploadHandler } from './routes/upload.ts';
 import { mediaHandler } from './routes/media.ts';
 import { migrateExportHandler, migrateImportHandler } from './routes/migrate.ts';
+import { announcementsApp } from './routes/announcements.ts';
 
 export function createApp(env: AppEnv): Hono {
   const app = new Hono();
@@ -17,10 +18,10 @@ export function createApp(env: AppEnv): Hono {
   app.get('/l/:id36', mediaHandler(env));
   app.get('/admin/migrate', migrateExportHandler(env));
   app.post('/admin/migrate', migrateImportHandler(env));
-  // /admin (management page) is NOT a Worker route: it falls through to the
-  // ASSETS SPA fallback (wrangler not_found_handling) and serves index.html.
-  // The root-user boundary is frontend-only (cached selfId + /sync); every
-  // privileged op stays server-gated (/sync root snapshot, /admin/migrate).
+  app.route('/admin/announcements', announcementsApp(env));
+  // /admin (management page) is NOT a Worker route: it falls through to the ASSETS SPA
+  // fallback (wrangler not_found_handling) and serves index.html. Root-user boundary is
+  // frontend-only; every privileged op stays server-gated (/sync root, /admin/migrate).
   app.all('/admin/*', () => notFoundPage());
   app.get('*', async (c) => {
     if (env.assets) {

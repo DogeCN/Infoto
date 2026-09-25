@@ -1,4 +1,4 @@
-// POST /sync — the single write entry point (spec: "/sync 协议").
+// POST /sync — the single write entry point (spec: "/sync protocol").
 // Applies every op in array order, then returns the full state snapshot.
 // Non-root admin ops are silently dropped; malformed ops never break the batch.
 
@@ -126,56 +126,6 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
       case 'delete': {
         if (!isRoot || op.target == null) return;
         await db.prepare('DELETE FROM photos WHERE id = ?').bind(op.target).run();
-        return;
-      }
-      case 'ann_create': {
-        if (!isRoot) return;
-        const p = rec(op.payload);
-        const title = str(p.title);
-        const contentMd = str(p.contentMd);
-        if (!title || !contentMd) return;
-        const sort = await db
-          .prepare('SELECT COALESCE(MAX(sort) + 1, 0) AS s FROM announcements')
-          .first<number>('s');
-        await db
-          .prepare(
-            'INSERT INTO announcements (title, content_md, sort, updated_at) VALUES (?, ?, ?, ?)',
-          )
-          .bind(title, contentMd, typeof sort === 'number' ? sort : 0, serverTime)
-          .run();
-        return;
-      }
-      case 'ann_update': {
-        if (!isRoot || op.target == null) return;
-        const p = rec(op.payload);
-        const title = str(p.title);
-        const contentMd = str(p.contentMd);
-        if (!title || !contentMd) return;
-        await db
-          .prepare(
-            'UPDATE announcements SET title = ?, content_md = ?, updated_at = ? WHERE id = ?',
-          )
-          .bind(title, contentMd, serverTime, op.target)
-          .run();
-        return;
-      }
-      case 'ann_delete': {
-        if (!isRoot || op.target == null) return;
-        await db.prepare('DELETE FROM announcements WHERE id = ?').bind(op.target).run();
-        await db.prepare('DELETE FROM reactions WHERE ann_id = ?').bind(op.target).run();
-        await db.prepare('DELETE FROM votes WHERE ann_id = ?').bind(op.target).run();
-        return;
-      }
-      case 'ann_reorder': {
-        if (!isRoot) return;
-        const raw = Array.isArray(op.payload) ? op.payload : [];
-        // Type-first cleaning: numeric strings like "3" are NOT numbers here — strip them.
-        const ids = raw.filter((x): x is number => typeof x === 'number' && Number.isFinite(x));
-        await db.batch(
-          ids.map((id, i) =>
-            db.prepare('UPDATE announcements SET sort = ? WHERE id = ?').bind(i, id),
-          ),
-        );
         return;
       }
       case 'fb_create': {
@@ -328,7 +278,7 @@ export function syncHandler(env: AppEnv) {
     let user = await resolveUser(env.db, c.req.header('cookie'));
     if (!user) {
       // first entry: tokenless /sync only hands out the site key; the token
-      // rides exactly one follow-up /sync (spec "身份与 Cookie")
+      // rides exactly one follow-up /sync (spec "Identity & Cookie")
       const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
       if (!token) {
         return c.json(

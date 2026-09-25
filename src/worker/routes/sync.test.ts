@@ -191,7 +191,7 @@ test('unupload is discarded; like from same batch still applies', async () => {
   assert.deepEqual(json.photos[0]!.likes, [0]);
 });
 
-test('non-root delete/ann_create silent; like in same batch works; feedback hidden', async () => {
+test('non-root announcement create → 403; like in same batch works; feedback hidden', async () => {
   const { app } = makeApp();
   const rootCookie = cookieFrom(await syncNew(app));
   await sync(
@@ -209,12 +209,19 @@ test('non-root delete/ann_create silent; like in same batch works; feedback hidd
   const guest = await syncNew(app);
   assert.equal(((await guest.json()) as SyncResponse).selfId, 1);
   const guestCookie = cookieFrom(guest);
+  // the announcement write API is root-only; a guest is rejected, not silently
+  // queued (ann_create is no longer an /sync op)
+  const forbidden = await app.request('http://localhost/admin/announcements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: guestCookie },
+    body: JSON.stringify({ title: 't', contentMd: 'c' }),
+  });
+  assert.equal(forbidden.status, 403);
   const res = await sync(
     app,
     {
       ops: [
         { type: 'delete', target: 1 },
-        { type: 'ann_create', payload: { title: 't', contentMd: 'c' } },
         { type: 'like', target: 1 },
         { type: 'fb_create', payload: { contentMd: 'hello' } },
       ],
@@ -233,75 +240,79 @@ test('non-root delete/ann_create silent; like in same batch works; feedback hidd
   assert.equal(asRoot.feedback[0]!.contentMd, 'hello');
 });
 
-test('announcements embed reactions; missing update silent; delete cascades; reorder strips NaN', async () => {
+test('announcements via admin API: create embeds reactions; update missing → 404; reorder; delete cascades', async () => {
   const { app } = makeApp();
   const cookie = cookieFrom(await syncNew(app));
-  await sync(
-    app,
-    {
-      ops: [
-        { type: 'ann_create', payload: { title: 'a', contentMd: '1' } },
-        { type: 'ann_create', payload: { title: 'b', contentMd: '2' } },
-        { type: 'react', target: 1, payload: { emoji: '👍' } },
-      ],
-    },
-    cookie,
-  );
-  const mid = (await (
-    await sync(
-      app,
-      { ops: [{ type: 'ann_update', target: 999, payload: { title: 'x', contentMd: 'y' } }] },
-      cookie,
-    )
-  ).json()) as SyncResponse;
+
+  // create through the dedicated admin API (ann_create is no longer an /sync op)
+  const createdA = await app.request('http://localhost/admin/announcements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ title: 'a', contentMd: '1' }),
+  });
+  assert.equal(createdA.status, 200);
+  const a = (await createdA.json()) as { ok: true; announcement: { id: number } };
+  assert.equal(a.announcement.id, 1);
+  await app.request('http://localhost/admin/announcements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ title: 'b', contentMd: '2' }),
+  });
+
+  // react still rides /sync; reaction embeds into the announcement snapshot
+  await sync(app, { ops: [{ type: 'react', target: 1, payload: { emoji: '👍' } }] }, cookie);
+  const mid = (await (await sync(app, { ops: [] }, cookie)).json()) as SyncResponse;
   assert.equal(mid.announcements.length, 2);
   assert.deepEqual(mid.announcements[0]!.reactions, [{ userId: 0, emoji: '👍' }]);
   assert.equal(mid.announcements[0]!.contentMd, '1');
   assert.equal(mid.announcements[0]!.title, 'a');
 
-  const afterDel = (await (
-    await sync(app, { ops: [{ type: 'ann_delete', target: 1 }] }, cookie)
-  ).json()) as SyncResponse;
-  assert.equal(afterDel.announcements.length, 1);
-  assert.deepEqual(afterDel.announcements[0]!.reactions, []);
+  // update a nonexistent id is a 404 (was: silent no-op op)
+  const missing = await app.request('http://localhost/admin/announcements/999', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ title: 'x', contentMd: 'y' }),
+  });
+  assert.equal(missing.status, 404);
 
-  await sync(
-    app,
-    { ops: [{ type: 'ann_create', payload: { title: 'c', contentMd: '3' } }] },
-    cookie,
-  );
-  const reordered = (await (
-    await sync(
-      app,
-      {
-        ops: [
-          {
-            type: 'ann_reorder',
-            payload: ['3', 3, null, { x: 1 }, 'not-a-number', 2] as unknown as number[],
-          },
-        ],
-      },
-      cookie,
-    )
-  ).json()) as SyncResponse;
+  // reorder strips non-positive/non-number ids, applying sort by index
+  const reorder = await app.request('http://localhost/admin/announcements/reorder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ ids: [2, 'x', null, 1] }),
+  });
+  assert.equal(reorder.status, 200);
+  const reordered = (await (await sync(app, { ops: [] }, cookie)).json()) as SyncResponse;
   assert.deepEqual(
-    reordered.announcements.map((a) => a.id),
-    [3, 2],
+    reordered.announcements.map((ann) => ann.id),
+    [2, 1],
   );
   assert.deepEqual(
-    reordered.announcements.map((a) => a.sort),
+    reordered.announcements.map((ann) => ann.sort),
     [0, 1],
   );
+
+  // delete cascades reactions + votes
+  const del = await app.request('http://localhost/admin/announcements/1', {
+    method: 'DELETE',
+    headers: { Cookie: cookie },
+  });
+  assert.equal(del.status, 200);
+  const afterDel = (await (await sync(app, { ops: [] }, cookie)).json()) as SyncResponse;
+  assert.equal(afterDel.announcements.length, 1);
+  assert.deepEqual(afterDel.announcements[0]!.reactions, []);
 });
 
 test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete cascades', async () => {
   const { app } = makeApp();
   const rootCookie = cookieFrom(await syncNew(app));
-  await sync(
-    app,
-    { ops: [{ type: 'ann_create', payload: { title: 'poll', contentMd: ':::vote 好 | 不好' } }] },
-    rootCookie,
-  );
+  // announcement creation moved to the admin API (ann_create no longer an /sync op)
+  const poll = await app.request('http://localhost/admin/announcements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: rootCookie },
+    body: JSON.stringify({ title: 'poll', contentMd: ':::vote 好 | 不好' }),
+  });
+  assert.equal(poll.status, 200);
   const guest = cookieFrom(await syncNew(app));
 
   // any user may vote; target = announcement id, option = 0-based choice
@@ -343,16 +354,20 @@ test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete c
   ).json()) as SyncResponse;
   assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 1 }]);
 
-  // ann_delete cascades the votes rows too
-  snap = (await (
-    await sync(app, { ops: [{ type: 'ann_delete', target: 1 }] }, rootCookie)
-  ).json()) as SyncResponse;
+  // ann_delete cascades the votes rows too (via the admin API now)
+  const del = await app.request('http://localhost/admin/announcements/1', {
+    method: 'DELETE',
+    headers: { Cookie: rootCookie },
+  });
+  assert.equal(del.status, 200);
+  snap = (await (await sync(app, { ops: [] }, rootCookie)).json()) as SyncResponse;
   assert.equal(snap.announcements.length, 0);
-  await sync(
-    app,
-    { ops: [{ type: 'ann_create', payload: { title: 'next', contentMd: 'n' } }] },
-    rootCookie,
-  );
+  const next = await app.request('http://localhost/admin/announcements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: rootCookie },
+    body: JSON.stringify({ title: 'next', contentMd: 'n' }),
+  });
+  assert.equal(next.status, 200);
   const fresh = (await (await syncNew(app, rootCookie)).json()) as SyncResponse;
   assert.deepEqual(fresh.announcements[0]!.votes, []);
   assert.deepEqual(fresh.announcements[0]!.reactions, []);

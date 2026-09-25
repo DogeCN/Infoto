@@ -1,4 +1,4 @@
-// GET /l/:id36 — off-site media proxy (spec: "媒体代理（/l/:id36）").
+// GET /l/:id36 — off-site media proxy (spec: "media proxy (/l/:id36)").
 // Base-36 id -> photos row -> fetch host URL -> pipe the body straight back.
 // The image-host URL never appears in any response; long immutable caching.
 

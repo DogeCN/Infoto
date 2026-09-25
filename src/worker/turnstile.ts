@@ -1,7 +1,6 @@
-// Cloudflare Turnstile verification.
-// No allow-branch (contract): an unconfigured secret must fail closed —
-// deployments inject either the real secret (production) or the official
-// always-pass test secret (test deployment / local).
+// Cloudflare Turnstile verification. No allow-branch (contract): an unconfigured secret
+// must fail closed — deployments inject either the real secret (production) or the
+// official always-pass test secret (test deployment / local).
 
 const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 

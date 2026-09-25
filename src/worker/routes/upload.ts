@@ -1,4 +1,4 @@
-// POST /upload — streaming proxy to the image host (spec: "图床上传代理").
+// POST /upload — streaming proxy to the image host (spec: "image-host upload proxy").
 // Two host origins share one backend; each request picks one at random.
 
 import type { Context } from 'hono';

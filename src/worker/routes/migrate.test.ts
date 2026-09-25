@@ -41,16 +41,32 @@ async function rootCookie(app: ReturnType<typeof createApp>): Promise<string> {
           type: 'upload',
           payload: { sha256: 'aa', url: 'https://h/a.webp', width: 1, height: 1, size: 2, type: 0 },
         },
-        { type: 'ann_create', payload: { title: 't', contentMd: `md\\slash --- ; /* c */ it's` } },
+      ],
+    }),
+  });
+  const m = (res.headers.get('set-cookie') ?? '').match(/uuid=([^;]+)/);
+  assert.ok(m);
+  const cookie = `uuid=${m[1]}`;
+  // announcements are written through the dedicated admin API now
+  // (ann_create is no longer an /sync op); react/vote still ride /sync
+  const created = await app.request('http://localhost/admin/announcements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ title: 't', contentMd: `md\\slash --- ; /* c */ it's` }),
+  });
+  assert.equal(created.status, 200);
+  await app.request('http://localhost/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({
+      ops: [
         { type: 'react', target: 1, payload: { emoji: '🔥' } },
         { type: 'vote', target: 1, payload: { option: 1 } },
         { type: 'fb_create', payload: { contentMd: 'fb' } },
       ],
     }),
   });
-  const m = (res.headers.get('set-cookie') ?? '').match(/uuid=([^;]+)/);
-  assert.ok(m);
-  return `uuid=${m[1]}`;
+  return cookie;
 }
 
 async function counts(db: LocalDb) {
