@@ -1,4 +1,4 @@
-// /upload client — streaming proxy to the image host (spec: "图床上传代理").
+// /upload client — streaming proxy to the image host (spec: "image-host upload proxy").
 // 45s timeout counts as a failed attempt; retry backoff and attempt count
 // constants come from the base pipeline.ts.
 
@@ -60,13 +60,9 @@ function buildForm(blob: Blob): FormData {
 }
 
 /**
- * One /upload attempt (no retry here — retries live in the pipeline layer).
- * multipart field name is fixed `file`; filename extension follows the
- * artifact type: .webp / .webm.
- *
- * Transport: XHR by default so upload progress is observable (fetch has no
- * upload stream) — the waterfall curtain overlay is driven by this. Tests
- * inject fetchFn to stub the transport.
+ * One /upload attempt (no retry here — retries live in the pipeline layer): the multipart
+ * field is fixed `file`, the filename extension follows the artifact type (.webp / .webm).
+ * Transport defaults to XHR so progress stays observable (fetch has no upload stream) — the curtain overlay is driven by it; tests inject fetchFn.
  */
 export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<UploadResult> {
   const origin = io.origin ?? window.location.origin;

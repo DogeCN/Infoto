@@ -1,7 +1,7 @@
 <script lang="ts">
-  // 多选底栏（spec: "多选模式" / "自定义组件清单"）。全宽固定底栏 + 毛玻璃，
-  // transform 滑入/滑出。左端全选 + 已选数，右端下载 + 总大小 + 其余动作。
-  // 退出多选只走顶栏那个多选图标（底栏的「取消选择」按钮已砍）。
+  // Multi-select bottom bar (spec: "multi-select mode" / "custom component list"). Full-width fixed
+  // bar + frosted glass, sliding in/out via transform. Select-all + count left, download + total
+  // size + other actions right. Exit only via the top-bar icon (the bar's "deselect" button was cut).
   import { CheckSquare, Square, Download, Trash2, Undo2 } from '@lucide/svelte';
   import type { Photo } from '$shared/types';
   import { humanSize } from '$base/lib/format';
@@ -36,7 +36,7 @@
   );
   let allSelected = $derived(count === photos.length && photos.length > 0);
 
-  /** 选中项中是否有当前用户已作的标记（无则可取消标记按钮置灰）。 */
+  /** Whether any selected item carries the current user's mark (otherwise the unmark button is greyed out). */
   let hasAnyMark = $derived(
     photos.some(
       (p) =>
@@ -55,7 +55,7 @@
     ? 'visible'
     : 'hidden'}; transition: transform var(--duration-spring) var(--ease-spring), visibility 0s"
 >
-  <!-- 全选 / 取消全选 + 已选数 -->
+  <!-- Select all / clear selection + selected count -->
   <div class="flex items-center gap-1.5">
     <button
       type="button"
@@ -76,7 +76,7 @@
     {/if}
   </div>
 
-  <!-- 下载（含总大小） / 取消标记 / 取消选择 / 删除（根用户） -->
+  <!-- Download (with total size) / unmark / delete (root user) -->
   <div class="flex items-center gap-1">
     <button
       type="button"

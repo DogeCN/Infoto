@@ -1,6 +1,6 @@
 <script lang="ts">
-  // 图片加载失败兜底（spec: "自定义组件清单"）——emoji + id36 标识或 sha256 前 8 字符，
-  // 底色 --card，文字 --muted-foreground。
+  // Image load failure fallback (spec: "custom component list") — emoji + id36 id or the first
+  // 8 chars of the sha256; background --card, text --muted-foreground.
   import { ImageOff } from '@lucide/svelte';
   import { toId36 } from '../../core/id36';
 

@@ -1,8 +1,7 @@
 <script lang="ts">
-  // Sync button with rAF-driven spin and pending-count badge. The spin is
-  // driven by rAF (not animate-spin): when syncing stops the icon completes
-  // the current turn instead of stopping mid-rotation. A manual sync with
-  // zero pending ops enters the spin state as well.
+  // Sync button with rAF-driven spin and pending-count badge. The spin is rAF-driven (not
+  // animate-spin): when syncing stops the icon completes the current turn instead of stopping
+  // mid-rotation. A manual sync with zero pending ops enters the spin state as well.
   import { RefreshCw } from '@lucide/svelte';
   import Tooltip from './Tooltip.svelte';
 

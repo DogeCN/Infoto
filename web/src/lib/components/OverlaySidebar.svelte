@@ -1,7 +1,7 @@
 <script lang="ts">
-  // 弹出式侧边栏（spec: "侧边栏"）。悬浮于主内容之上 + 遮罩，不改变主内容宽度，
-  // 因此瀑布流无需因开合重算布局。桌面端可拖动内缘调整宽度（持久化到 localStorage），
-  // 移动端（< 768px）占满屏宽、不提供拖拽。
+  // Pop-up sidebar (spec: "sidebar"). Floats above the main content behind a scrim and never
+  // changes its width, so the waterfall doesn't relayout on open/close. Desktop drags the inner
+  // edge to resize (persisted to localStorage); mobile (< 768px) is full-width with no dragging.
   import type { Snippet } from 'svelte';
   import { X } from '@lucide/svelte';
 
@@ -22,7 +22,7 @@
   const MIN_W = 280;
   const MAX_W = 720;
   const DEFAULT_W = 360;
-  // side 是响应式 prop，key 必须派生而非顶层常量
+  // side is a reactive prop, so the key must be derived rather than a top-level constant
   let storageKey = $derived(`infoto-sidebar-width-${side}`);
 
   function clamp(w: number): number {
@@ -44,12 +44,12 @@
   let width = $state(DEFAULT_W);
   let dragging = $state(false);
 
-  // 挂载后再读 localStorage / 视口宽度，避免首帧用错值
+  // Read localStorage / viewport width after mount so the first frame doesn't use a wrong value
   $effect(() => {
     width = loadWidth(storageKey);
   });
 
-  /** 拖动内缘：左侧栏向右拖变宽，右侧栏向左拖变宽。 */
+  /** Drag the inner edge: drag a left sidebar right to widen, a right sidebar left to widen. */
   function startResize(e: PointerEvent) {
     e.preventDefault();
     dragging = true;
@@ -98,7 +98,8 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if open}
-  <!-- 遮罩全屏覆盖（含顶栏）：侧栏打开时整体压暗，层级高于顶栏、低于侧栏本体 -->
+  <!-- Full-screen scrim (covers the top bar): dims everything while open, layered above the
+       top bar but below the sidebar itself -->
   <div
     class="fixed inset-0 z-[47] bg-black/50 backdrop-blur-sm"
     role="presentation"
@@ -115,7 +116,8 @@
   class:translate-x-full={side === 'right' && !open}
   style="--sidebar-w: {width}px"
 >
-  <!-- 拖动内缘调整宽度（桌面端）。button 承载交互语义，键盘左右方向键可调整。 -->
+  <!-- Drag the inner edge to resize (desktop). The button carries the interaction semantics;
+       arrow keys adjust the width too. -->
   <button
     type="button"
     aria-label="调整侧栏宽度"
@@ -143,11 +145,9 @@
     </button>
   </div>
 
-  <!-- 内容区独立滚动；min-h-0 让子内容的 h-full / sticky 底栏有确定高度。
-       刻意不加底部 padding：滚动容器的 padding-bottom 会让 sticky 底栏
-       停在它上方 16px，那一条缝里滚动内容会露出来（"下面没盖住"的成因）。
-       底部留白改由各面板自己承担（SettingsPanel / 公告侧栏的 sticky 底栏）。
-       dragging 时禁用选中，避免拖动中选中文本 -->
+  <!-- Content area scrolls independently; min-h-0 gives children's h-full / sticky footers a
+       definite height. No bottom padding on purpose: it would stop the sticky footer 16px short
+       and leak scrolling content through that gap — panels own their bottom spacing; no selection while dragging. -->
   <div
     class="min-h-0 flex-1 overflow-y-auto px-4 pt-4"
     style="user-select: {dragging ? 'none' : 'auto'}"

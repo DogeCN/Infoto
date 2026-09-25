@@ -1,4 +1,4 @@
-// Turnstile first-entry flow (spec: "身份与 Cookie"):
+// Turnstile first-entry flow (spec: "identity and cookies"):
 // explicit rendering (theme dark) → the token rides exactly one first /sync →
 // afterwards Turnstile never appears in any flow again.
 
@@ -14,8 +14,9 @@ export interface TurnstileFlowDeps {
   /** Injected for unit tests and E2E. */
   postSyncFn?: typeof postSync;
   /**
-   * 取 token 的完整策略。缺省自建全屏遮挡层（无 UI 上下文时用：单测、脚本调用）。
-   * 产品 UI 注入自己的实现，把验证码放进页面已有的空态里。
+   * Full token-acquisition strategy. The default builds its own full-screen overlay
+   * (used when there is no UI context: unit tests, scripted calls); the product UI
+   * injects its own implementation that puts the CAPTCHA into an existing empty state.
    */
   requestToken?: (siteKey: string) => Promise<string>;
 }
@@ -55,13 +56,13 @@ function loadTurnstile(): Promise<TurnstileApi> {
 }
 
 /**
- * 已渲染但尚未销毁的 widget id。Turnstile 内部持有轮询定时器，
- * 直接摘 DOM 节点会留下悬空 widget（控制台刷 "Cannot find Widget" +
- * iframe postMessage 报错），必须先 turnstile.remove(id)。
+ * Id of the widget rendered but not yet disposed. Turnstile keeps internal polling
+ * timers, so removing the DOM node alone leaves a dangling widget (console spam plus
+ * iframe postMessage errors) — call turnstile.remove(id) first.
  */
 let activeWidgetId: string | null = null;
 
-/** 销毁当前 widget（幂等）。 */
+/** Dispose the current widget (idempotent). */
 export async function disposeTurnstile(): Promise<void> {
   const id = activeWidgetId;
   activeWidgetId = null;
@@ -70,23 +71,23 @@ export async function disposeTurnstile(): Promise<void> {
     const ts = await loadTurnstile();
     ts.remove(id);
   } catch {
-    // 脚本都没加载成功时无 widget 可销毁
+    // No widget to dispose when the script never loaded
   }
 }
 
-/** Turnstile 无回调的兜底超时：widget 挂住时不能把首屏引导一起挂死。 */
+/** Fallback timeout when Turnstile gives no callback: a stuck widget must not stall first-run onboarding. */
 const TURNSTILE_TIMEOUT_MS = 15_000;
 
 /**
- * widget 销毁前的等待窗口。token 刚回来时 Turnstile iframe 的收尾握手还没发完，
- * 立刻 remove 会让它的 postMessage 打到已拆除的窗口上（控制台报 target origin
- * 不匹配），DOM 节点也必须在 dispose 之后才能摘。
+ * Wait window before disposing the widget. Right after the token arrives the Turnstile
+ * iframe's final handshake is still in flight, so an immediate remove posts into a
+ * torn-down window (target origin mismatch); the DOM node can only go after dispose.
  */
 export const TURNSTILE_DISPOSE_DELAY_MS = 800;
 
 /**
- * Render Turnstile explicitly and wait for the token.
- * widget 挂住（iframe 加载不下来/被拦）时按超时 reject，让调用方走降级路径。
+ * Render Turnstile explicitly and wait for the token. Rejects on timeout when the
+ * widget is stuck (iframe blocked or never loaded) so callers can take the fallback path.
  */
 export async function renderTurnstile(
   siteKey: string,
@@ -94,7 +95,7 @@ export async function renderTurnstile(
   timeoutMs = TURNSTILE_TIMEOUT_MS,
 ): Promise<string> {
   const ts = await loadTurnstile();
-  // 上一个 widget 未清干净时先销毁，避免同容器重复 render
+  // Dispose any leftover widget first, avoiding two renders in the same container
   await disposeTurnstile();
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -117,9 +118,9 @@ export async function renderTurnstile(
 }
 
 /**
- * 缺省取 token 策略：自建全屏遮挡层。只在没有 UI 上下文时使用（单测、脚本调用）。
- * 产品界面（`App.svelte`）注入自己的实现，把验证码放进瀑布流的空态位置 —— 那里本来
- * 就是空的，还省掉一层盖住整个应用的遮罩。
+ * Default token strategy: a self-built full-screen overlay, used only when there is
+ * no UI context (unit tests, scripted calls). `App.svelte` injects its own implementation
+ * that puts the CAPTCHA into the waterfall's empty state, avoiding a full-app mask.
  */
 async function overlayRequestToken(siteKey: string): Promise<string> {
   const container = document.createElement('div');
@@ -134,7 +135,7 @@ async function overlayRequestToken(siteKey: string): Promise<string> {
   try {
     return await renderTurnstile(siteKey, container);
   } finally {
-    // 遮挡层立刻隐藏（不让用户看到多余的黑屏），widget 稍后再销毁并摘除节点
+    // Hide the overlay at once (no needless black screen), then dispose the widget and drop the node
     container.style.display = 'none';
     setTimeout(() => {
       void disposeTurnstile().finally(() => container.remove());
@@ -149,15 +150,9 @@ export interface IdentityBootstrapResult {
 }
 
 /**
- * First-entry flow = one Turnstile check + two /sync calls (spec wording).
- * With a valid cookie (no 401) the full snapshot returns directly and
- * Turnstile never shows up.
- *
- * 首访服务端 401 turnstile_required 时才取 token。
- *
- * 注意：身份 cookie（uuid）是 HttpOnly，前端读不到 document.cookie —— 任何
- * 「本地判断有没有身份、没有就直接进 Turnstile」的优化都是错的：老用户每次刷新
- * 都会被迫再验一次验证码。是否已认证只能由服务端回答，所以永远先探测 /sync。
+ * First entry = one Turnstile check + two /sync calls; with a valid cookie (no 401)
+ * the snapshot returns directly. A token is fetched only on 401 turnstile_required —
+ * the HttpOnly uuid cookie is unreadable client-side, so /sync must always be probed first.
  */
 export async function ensureIdentity(
   ops: Op[] = [],

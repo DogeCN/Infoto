@@ -1,7 +1,6 @@
 // Sync triggers (spec): site open / pagehide / visibilitychange→hidden /
-// op-log at 256 entries / manual.
-// The pagehide handler is registered separately from visibilitychange→hidden
-// (the contract's token-audit clause applies here too).
+// op-log at 256 entries / manual. The pagehide handler is registered separately
+// from visibilitychange→hidden (the contract's token-audit clause applies too).
 
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import { postSync } from '../api/syncClient';
@@ -13,11 +12,9 @@ import { OPLOG_SYNC_THRESHOLD, appendOp, countOps, openOplogDb, readOps } from '
 export const KEEPALIVE_BODY_LIMIT = 65_536;
 
 /**
- * Longest op prefix whose serialized SyncRequest fits the keepalive byte
- * budget. Measurement is exact: TextEncoder over the already-serialized JSON
- * (the `{"ops":[…]}` wrapper and commas are accounted for). Returns null when
- * even the first op alone busts the budget (only possible via a giant
- * ann_create body — abnormal; caller warns and keeps the op for next time).
+ * Longest op prefix whose serialized SyncRequest fits the keepalive byte budget —
+ * measured exactly with TextEncoder over the serialized JSON (wrapper and commas
+ * included). Null only when the first op alone busts it (giant fb_create body); the caller warns and keeps it.
  */
 export function keepalivePrefix(
   ops: Op[],
@@ -128,13 +125,9 @@ export class SyncEngine {
   }
 
   /**
-   * Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule.
-   *
-   * Ops already carried by an in-flight request are skipped: without a client
-   * op id the server cannot tell a replay from a new op, so a second copy
-   * would be applied twice. The skipped ops stay in the op-log — if the
-   * active request is cancelled by the unload they go out in the next session
-   * (losing a beat beats duplicating it). `runSync` applies the mirror filter.
+   * Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule. Ops already carried
+   * by an in-flight request are skipped — with no client op id the server cannot dedupe a
+   * replay (a copy would apply twice), so they go out next session. `runSync` mirrors the filter.
    */
   private flushOnPagehide(): void {
     if (!this.db || this.pending === 0) return;
@@ -209,10 +202,9 @@ export class SyncEngine {
     // Mirror of the pagehide filter: one op belongs to exactly one request at
     // a time — the server has no client op id to deduplicate a replay on.
     const available = entries.filter((entry) => !this.inFlightKeys.has(entry.key));
-    // Confirmation must cover exactly the ops this request carries: an op
-    // excluded because it is still in flight (pagehide keepalive) — or not yet
-    // appended when the snapshot was read — must not be claimed, or
-    // flushThrough would report success for an op the server never saw.
+    // Confirmation must cover exactly the ops this request carries: an op excluded
+    // because it is still in flight (pagehide keepalive) or not yet appended when the
+    // snapshot was read must not be claimed, or flushThrough would report phantom success.
     const maxVersion =
       available.length > 0 ? Math.max(...available.map((entry) => Number(entry.key))) : 0;
     for (const entry of available) this.inFlightKeys.add(entry.key);

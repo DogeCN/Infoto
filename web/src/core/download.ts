@@ -1,13 +1,13 @@
-// 下载（spec: "下载"）。站内下载直接 fetch 图床 URL（优先浏览器缓存），
-// 单张文件名 `{id36}.webp|.webm`；多张本地打包 download.zip（fflate 流式），
-// 内部文件按已选项当前排序序号命名、高位补零。
+// Downloads (spec: "download"). In-app downloads fetch the image-host URL directly
+// (browser cache preferred); one file is named `{id36}.webp|.webm`, several are packed
+// into download.zip (streaming fflate), entries named by sort index, zero-padded.
 
 import { Zip, ZipPassThrough } from 'fflate';
 import type { Photo } from '$shared/types';
 import { extOfType, padName } from '$base/lib/format';
 import { toId36 } from './id36';
 
-/** 触发浏览器保存一个 Blob。 */
+/** Make the browser save a Blob. */
 function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -16,11 +16,11 @@ function saveBlob(blob: Blob, filename: string): void {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  // 交给浏览器完成下载后再释放
+  // Release only after the browser finished the download
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-/** 单张下载：文件名 `{id36}.{ext}`。 */
+/** Single download: filename `{id36}.{ext}`. */
 export async function downloadOne(photo: Photo, fetchFn: typeof fetch = fetch): Promise<void> {
   const res = await fetchFn(photo.url, { cache: 'force-cache' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -29,8 +29,9 @@ export async function downloadOne(photo: Photo, fetchFn: typeof fetch = fetch): 
 }
 
 /**
- * 多张打包为 download.zip。`photos` 须已按当前排序排好 —— 序号即数组下标。
- * 用 fflate 的流式 Zip：每张下载完成后立即写入，避免在内存里同时驻留全部文件。
+ * Pack several photos into download.zip. `photos` must already follow the current sort
+ * order — the index is the array position. Uses fflate's streaming Zip: each file is
+ * written as soon as it downloads, so all of them never sit in memory at once.
  */
 export async function downloadZip(photos: Photo[], fetchFn: typeof fetch = fetch): Promise<void> {
   const total = photos.length;
@@ -54,6 +55,6 @@ export async function downloadZip(photos: Photo[], fetchFn: typeof fetch = fetch
   }
   zip.end();
 
-  // Zip 的 end() 同步回调全部 chunk
+  // Zip's end() synchronously flushes every chunk
   saveBlob(new Blob(chunks as BlobPart[], { type: 'application/zip' }), 'download.zip');
 }

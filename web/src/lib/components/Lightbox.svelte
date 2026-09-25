@@ -1,14 +1,7 @@
 <script lang="ts">
-  // Full-screen media lightbox. Not a shadcn Dialog: focus traps and inert
-  // would interfere with gesture event bubbling, so it is a plain div layer.
-  //
-  // The gesture layer mirrors the v1 interactions (direct DOM transforms for
-  // pointer-following): swipe left = like, swipe right = dislike (auto-advance
-  // afterwards), swipe down = download, swipe up = action sheet. Direction
-  // hints fade and scale with the drag distance; releasing below the threshold
-  // springs back. Double-click, pinch and Ctrl+wheel zoom; dragging while
-  // zoomed pans (clamped). Single-click paging is removed (bottom bar handles
-  // switching, avoiding the double-click delay and mis-taps).
+  // Full-screen media lightbox as a plain div layer: a shadcn Dialog's focus traps and inert would interfere with gesture bubbling.
+  // v1 gestures via direct DOM transforms: swipe left/right = like/dislike (auto-advance), down = download, up = action sheet;
+  // hints fade/scale with the drag and spring back below the threshold; double-click/pinch/Ctrl+wheel zoom, drag pans; no click paging.
   import type { Photo } from '$shared/types';
   import {
     X,
@@ -534,10 +527,9 @@
       </div>
     </div>
 
-    <!-- Media: the gesture layer writes the wrap transform directly to the DOM
-         for pointer-following. Media sizing keeps margin on every edge: using
-         only max-h-screen/max-w-full on narrow screens fills the width (or
-         overflows at native pixel size) and covers the info bars. -->
+    <!-- Media: the gesture layer writes the wrap transform directly to the DOM for pointer-following.
+         Sizing keeps a margin on every edge: only max-h-screen/max-w-full on narrow screens fills the
+         width (or overflows at native pixel size) and covers the info bars. -->
     <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
       <div
         bind:this={wrapEl}
@@ -752,10 +744,9 @@
   }
 
   /*
-   * Media sizing: vertical space for the top/bottom bars, horizontal margins
-   * on narrow screens (also leaves the system edge-gesture area). Using only
-   * max-h-screen + max-w-full relative to an unconstrained flex container
-   * degrades to native-pixel overflow on narrow screens.
+   * Media sizing: vertical space for the top/bottom bars, horizontal margins on narrow screens
+   * (also the system edge-gesture area). Only max-h-screen + max-w-full relative to an
+   * unconstrained flex container degrades to native-pixel overflow on narrow screens.
    */
   .lb-media {
     max-width: calc(100vw - 2.5rem);

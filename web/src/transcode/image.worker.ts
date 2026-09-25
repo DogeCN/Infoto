@@ -1,7 +1,6 @@
-// Image transcode kernel — imported as a module by the SharedWorker and
-// executed on the SharedWorker thread (spec: image transcode happens in the
-// SharedWorker, not a nested DedicatedWorker).
-// createImageBitmap → OffscreenCanvas → WebP quality 0.95.
+// Image transcode kernel — imported as a module by the SharedWorker and executed on the
+// SharedWorker thread (spec: image transcode happens in the SharedWorker, not a nested
+// DedicatedWorker). createImageBitmap → OffscreenCanvas → WebP quality 0.95.
 
 import { WEBP_QUALITY } from '$base/upload/pipeline';
 

@@ -1,8 +1,7 @@
 <script lang="ts">
-  // Lightweight popover (spec: "SQL 导入的 UI"). The content panel is portaled
-  // to <body> and anchored to the trigger, so overflow/transform ancestors
-  // cannot clip it. Closes on outside click or Escape. Only popovers/dialogs
-  // may carry a shadow.
+  // Lightweight popover (spec: "SQL import UI"). The content panel is portaled to <body> and
+  // anchored to the trigger, so overflow/transform ancestors cannot clip it. It closes on
+  // outside click or Escape. Only popovers/dialogs may carry a shadow.
   import type { Snippet } from 'svelte';
   import { scale } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';

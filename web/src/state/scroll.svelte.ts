@@ -1,4 +1,4 @@
-// 主页面滚动位置（瀑布流是内部滚动容器，window scroll 不触发）。
-// 顶栏据此做沉浸切换：顶部时透明无边框，滚动后浮现毛玻璃。
-// x / y 分别对应横向、纵向滚动模式的 主轴位移。
+// Main-page scroll position (the waterfall is an internal scroll container, so window
+// scroll never fires). The top bar drives its immersive switch from it: transparent at
+// the top, frosted glass once scrolled. x / y = main-axis offset in h / v scroll mode.
 export const scroll = $state({ x: 0, y: 0 });

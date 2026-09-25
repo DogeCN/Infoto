@@ -1,5 +1,5 @@
 // Pure formatting helpers — human-readable byte sizes and zero-padded
-// zip-entry names (spec: "下载").
+// zip-entry names (spec: "download").
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] as const;
 
@@ -20,10 +20,9 @@ export function humanSize(bytes: number): string {
 }
 
 /**
- * Compact size text for slider labels: same binary steps as `humanSize`, but the
- * mantissa is capped at 3 significant digits so the text never exceeds 7 chars
- * ("99.4 KB"). `humanSize` can emit 9 chars ("1023.1 KB"), and the slider needs a
- * constant-width value column to avoid reflow while dragging.
+ * Compact size text for slider labels: same binary steps as `humanSize`, but the mantissa
+ * is capped at 3 significant digits so the text never exceeds 7 chars ("99.4 KB"), since
+ * `humanSize` can emit 9 ("1023.1 KB") and the slider needs a constant-width value column.
  */
 export function compactSize(bytes: number): string {
   const b = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;

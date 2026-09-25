@@ -1,4 +1,4 @@
-// Token lease client (spec "令牌租约"): heartbeat every 5s while held;
+// Token lease client (spec "token lease"): heartbeat every 5s while held;
 // every page-side release path is enumerated here — complete / fail /
 // worker onerror / pagehide.
 
@@ -15,13 +15,9 @@ export interface LeaseHandlers {
 }
 
 /**
- * Video token lifecycle. Audit checklist (contract, re-checked each commit):
- * 1. acquire success path = onGranted; release paths: complete / fail /
- *    onerror / pagehide — all four call release();
- * 2. the pagehide handler is registered separately from
- *    visibilitychange→hidden (in install);
- * 3. the heartbeat lives with the lease and stops on release;
- * 4. after onRevoked (server-side forced revocation) the page holds no token.
+ * Video token lifecycle audit (contract, re-checked each commit): acquire = onGranted; release
+ * = complete / fail / onerror / pagehide (all four call release(), pagehide registered
+ * separately from visibilitychange); heartbeat stops with the lease; after onRevoked none remains.
  */
 export class LeaseClient {
   private leaseId: string | null = null;
@@ -88,10 +84,9 @@ export class LeaseClient {
   }
 
   /**
-   * Register the global safety net. Contract audit clause: pagehide is
-   * registered separately and never merged with visibilitychange — a hidden
-   * page has not unloaded yet, its video worker is still encoding, so the
-   * token must stay held until the page actually goes away.
+   * Register the global safety net. pagehide is registered separately from visibilitychange:
+   * a hidden page has not unloaded (its video worker still encodes), so the token must stay
+   * held until the page actually goes away.
    */
   install(scope: { addEventListener: Window['addEventListener'] } = window): void {
     if (this.installed) return;

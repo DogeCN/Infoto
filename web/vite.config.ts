@@ -5,15 +5,15 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 
-// Single-origin SPA: every backend call goes to {origin} (the Worker sends no
-// CORS headers). In dev the proxy forwards API paths to the local Worker started
-// by `wrangler dev` at the repo root (`npm run dev:worker`, port 8787) — no
-// test-site redirect, no local shim runtime. The target is fixed by contract.
+// Single-origin SPA: every backend call goes to {origin} (the Worker sends no CORS headers). In dev the
+// proxy forwards API paths to the local Worker started by `wrangler dev` at the repo root (`npm run
+// dev:worker`, port 8787) — no test-site redirect, no local shim runtime; the target is fixed by contract.
 const backend = 'http://localhost:8787';
 
 /**
- * Turnstile 站点密钥（公开值）。生产由服务端 401 body 下发；dev 下从根目录
- * `.dev.vars` 读同一份，让首访直接进 Turnstile，省掉一次必然 401 的探测请求。
+ * Turnstile site key (public value). In production the server sends it in the 401 body; in dev we
+ * read the same value from `.dev.vars` at the repo root, so the first visit goes straight into
+ * Turnstile and skips a probe request that is bound to 401.
  */
 function devTurnstileSiteKey(): string | undefined {
   const fromEnv = process.env['VITE_TURNSTILE_SITE_KEY'];
@@ -47,7 +47,7 @@ const alias = {
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
   resolve: { alias },
-  // 仅在有值时注入：undefined 会破坏 import.meta.env 访问
+  // Only inject when we have a value: undefined would break import.meta.env access
   define: turnstileSiteKey
     ? { 'import.meta.env.VITE_TURNSTILE_SITE_KEY': JSON.stringify(turnstileSiteKey) }
     : {},
@@ -60,8 +60,8 @@ export default defineConfig({
   build: { outDir: '../dist', emptyOutDir: true },
   server: {
     port: 5173,
-    // 临时脚本/输出若落在 web/ 根目录，Vite 一监听到就整页 reload —— 脚本每写一次
-    // 日志就重载一次页面，能把用户标签页刷成"卡死"、把 Worker 一起拖崩。显式忽略。
+    // Temp scripts/output landing in web/ root make Vite full-reload on every watch event — each log
+    // write would reload the page, freezing the user's tab and taking Workers down with it. Ignored explicitly.
     watch: {
       ignored: ['**/.tmp-*', '**/*.out', '**/.chk*', '**/.shot*', '**/test-results/**'],
     },
@@ -69,12 +69,9 @@ export default defineConfig({
       '/sync': proxy(),
       '/upload': proxy({ proxyTimeout: 120_000 }),
       '/l': proxy({ cookieDomainRewrite: false }),
-      // 只代理 admin 下的真实接口。/admin 页面本身是前端路由：若整路径
-      // 代理给 Worker，它会返回构建产物 dist/index.html（引用带哈希的
-      // /assets/index-*.js/css），而这些文件在 dev server 上不存在，
-      // Vite 回退返回 index.html(text/html) → 浏览器按 MIME 拦截 → /admin
-      // 白屏。dev 下由 Vite 的 SPA 回退吐出 dev shell（/src/main.ts），
-      // 根用户边界由 /sync 下发的 selfId === 0 在前端兜底（同 e2e 约定）。
+      // Only proxy real endpoints under /admin; the /admin page itself is a front-end route. Proxying the whole path to the Worker returns the
+      // built dist/index.html (hashed /assets) that does not exist on the dev server → Vite answers text/html, the browser blocks it → white
+      // screen. In dev Vite's SPA fallback serves the shell (/src/main.ts) and the root check falls back to selfId === 0 from /sync (same as e2e).
       '/admin/migrate': proxy(),
     },
   },

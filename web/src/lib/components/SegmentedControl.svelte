@@ -1,7 +1,7 @@
 <script lang="ts" generics="T extends string = string">
-  // 通用分段胶囊（主页 SortTabs 与管理页共用）：圆角外壳 + 青色滑动指示 pill。
-  // 激活动画统一走 --ease-enter / --duration-enter（滑动 pill 平移），
-  // 文字色过渡走 --ease-exit / --duration-exit，与主站其它控件一致。
+  // Generic segmented pill (shared by the home SortTabs and the admin page): rounded shell
+  // plus a cyan sliding indicator pill. Activation uses --ease-enter / --duration-enter
+  // (pill translation), text color uses --ease-exit / --duration-exit, like other site controls.
   import type { Component } from 'svelte';
   import { cn } from '$lib/utils';
 
@@ -15,9 +15,9 @@
     items: ReadonlyArray<SegmentedItem<T>>;
     value?: T;
     onChange?: (value: T) => void;
-    /** 再次点击已激活项时触发（如「随机」重排）。 */
+    /** Fired when the already-active item is clicked again (e.g. "random" reshuffle). */
     onReselect?: (value: T) => void;
-    /** 窄屏隐藏文字仅留图标，图标配原生 title 提供名称。 */
+    /** Hide the label on narrow screens (icon only); the native title supplies the name. */
     responsiveHideLabel?: boolean;
     size?: 'sm' | 'md';
     ariaLabel?: string;
@@ -33,8 +33,8 @@
     ariaLabel,
   }: Props<T> = $props();
 
-  // 滑动指示器：跟踪当前项按钮的几何位置。
-  // 用 action 记录元素（Svelte 5 下 bind:this 绑到普通对象属性会告警）。
+  // Sliding indicator: tracks the geometry of the active item's button. An action records the
+  // element (in Svelte 5, bind:this onto a plain object property warns).
   const btnEls: Partial<Record<string, HTMLButtonElement>> = {};
   let indicator = $state({ x: 0, w: 0, ready: true });
 
@@ -54,8 +54,8 @@
   }
 
   $effect(() => {
-    // 依赖 value 与 items：切换项、或标签宽度随状态变化（如 最新↔最旧）时重算。
-    // 两行为「触碰依赖」惯用法，副作用是让 $effect 订阅它们。
+    // Depends on value and items: recompute when the item switches or when label width changes
+    // with state (e.g. newest↔oldest). These bare statements are the "touch the dependency" idiom so $effect subscribes to them.
     // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     value;
     // eslint-disable-next-line @typescript-eslint/no-unused-expressions
@@ -86,9 +86,9 @@
   aria-label={ariaLabel}
   class="relative flex items-center gap-1 rounded-full border border-border bg-card/80 p-1"
 >
-  <!-- 滑动指示 pill：切换项时平滑平移到当前项 -->
+  <!-- Sliding indicator pill: smoothly translates to the current item when it changes -->
   <div
-    class="pointer-events-none absolute bottom-1 top-1 rounded-full bg-primary transition-[transform,width,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
+    class="pointer-events-none absolute bottom-1 left-0 top-1 rounded-full bg-primary transition-[transform,width,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
     class:opacity-0={!indicator.ready}
     style="width: {indicator.w}px; transform: translateX({indicator.x}px)"
   ></div>

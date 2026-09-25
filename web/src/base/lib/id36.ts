@@ -1,5 +1,5 @@
 // id36 — autoincrement id <-> base-36 string (0-9a-z), pure functions.
-// External media id representation (spec: "媒体 ID 与地址策略"):
+// External media id representation (spec: "media ID and address strategy"):
 // 7 -> "7", 35 -> "z", 36 -> "10".
 
 /** Numeric id -> base-36 string. Throws on negative / non-integer input. */

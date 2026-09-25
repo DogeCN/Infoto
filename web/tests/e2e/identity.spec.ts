@@ -23,10 +23,9 @@ test.describe('identity & op semantics (local Worker)', () => {
 
     await prepareGate(page);
     await page.goto('/');
-    // the gate renders inside the main area (the bare Turnstile widget, no
-    // extra copy) — the app shell (top bar) stays visible instead of being
-    // covered by a full-screen overlay. prepareGate delays the first /sync,
-    // stretching the gate's brief mount window so expectGate can observe it.
+    // the gate renders inside the main area (the bare Turnstile widget, no extra copy) — the app
+    // shell (top bar) stays visible instead of a full-screen overlay. prepareGate delays the first
+    // /sync, stretching the gate's brief mount window so expectGate can observe it.
     await expectGate(page);
     await expect(page.locator('header')).toBeVisible();
     await expect(page.locator('[data-verify]')).toBeHidden({ timeout: 30_000 });

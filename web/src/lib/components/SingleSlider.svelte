@@ -1,10 +1,7 @@
 <script lang="ts">
-  // 单柄滑块（布局区「目标带宽 / 间距」）。与 RangeSlider（筛选区双柄）共用同一套
-  // 视觉与交互语言 —— 都是真实 DOM 柄 + 指针事件，不再用原生 input[type=range]
-  // （其 thumb 伪元素在 Firefox 上既拖不动也画不出来，还要双份引擎特判）。
-  //
-  // 同样采用归一化内部状态：指针移动只改 [0,1] 的浮点位置，按 step 对齐后**仅当
-  // 映射值变化才 emit** —— 拖动一次不会让上层重算几十上百次（瀑布流重排是卡顿根源）。
+  // Single-handle slider (layout panel: target bandwidth / gap), sharing RangeSlider's visual and
+  // interaction language — a real DOM handle with pointer events, no native input[type=range] (its
+  // thumb can't be dragged or drawn in Firefox). Normalized [0,1] state, step-aligned: it emits only when the mapped value changes, so one drag can't flood upstream recomputes (waterfall reflow is the jank source).
   import type { Component } from 'svelte';
   import { onMount } from 'svelte';
   import { cubicOut } from 'svelte/easing';
@@ -16,11 +13,11 @@
     max: number;
     step?: number;
     value: number;
-    /** 默认值：与之相等时图标与数值回落 muted（与筛选范围滑块同规则）。 */
+    /** Default value: when equal, icon and value fall back to muted (same rule as the range sliders). */
     defaultValue: number;
-    /** 行首图标。 */
+    /** Leading icon of the row. */
     icon: Component;
-    /** 值 → 显示文本。 */
+    /** Value → display text. */
     format?: (v: number) => string;
     onChange?: (v: number) => void;
   }
@@ -36,7 +33,7 @@
     onChange,
   }: Props = $props();
 
-  /** 柄直径（px），与模板里的 size-[18px] 一致；行程换算与几何定位都用它。 */
+  /** Handle diameter (px), matching size-[18px] in the template; used for travel and placement. */
   const THUMB = 18;
   /** Caret half-extent (8px square rotated 45° → 5.7px circumradius); the tip
    *  never sits closer than this to either bubble corner. */
@@ -46,7 +43,7 @@
   let span = $derived(Math.max(1, max - min));
   let active = $derived(value !== defaultValue);
 
-  /** 归一化 → 业务值（按 step 对齐）。 */
+  /** Normalized position → business value (aligned to step). */
   const mapValue = (t: number): number => {
     const raw = min + t * span;
     const aligned = step > 0 ? Math.round(raw / step) * step : raw;
@@ -57,8 +54,9 @@
   let t = $state(clamp01((value - min) / span));
   let curVal = $derived(mapValue(t));
 
-  // 外部受控值回流：只在映射值与 props 不一致时同步（拖动期间 props 是自己刚 emit
-  // 的同值，不会回弹；重置/外部改值则正确吸附）。
+  // External controlled values flow back only when the mapped value differs from props
+  // (during a drag the props are the value just emitted, so it can't snap back; resets
+  // and outside changes still snap correctly).
   $effect(() => {
     void value;
     void min;
@@ -67,11 +65,12 @@
   });
 
   /**
-   * 数值列已取消（右侧数值文本不要了）——数值只走拖动气泡。
-   * 因此不再需要 labelCols：整行就是「图标 + 轨道」，与筛选区双柄行完全同构。
+   * The numeric column was dropped (no right-hand value text): values only appear in the
+   * drag bubble, so labelCols is unnecessary — the row is just "icon + track", structurally
+   * identical to the filter panel's dual-handle row.
    */
 
-  // ---- 几何：ResizeObserver 维护轨道宽；按下时再缓存一份 rect ------------------
+  // ---- geometry: ResizeObserver keeps the track width; rect is re-cached on press ----
   let trackEl = $state<HTMLDivElement | undefined>(undefined);
   let trackWidth = $state(0);
 
@@ -86,17 +85,14 @@
     return () => ro.disconnect();
   });
 
-  /** 拇指中心在轨道上的位置（与 RangeSlider 同一公式，填充端点严格同轴）。 */
+  /** Thumb centre position on the track (same formula as RangeSlider, fill ends stay coaxial). */
   function thumbCenter(n: number): string {
     return `calc(${THUMB / 2}px + ${n * 100}% - ${n * THUMB}px)`;
   }
   /**
-   * Bubble geometry in px, measured against the live track width and the
-   * bubble's own rendered width.
-   *
-   * The caret is the bubble's only pointing anchor, so it must stay on the
-   * thumb centre: near the ends the body stops at the track edge and the caret
-   * slides along the bottom edge instead of leaving the thumb behind.
+   * Bubble geometry in px, measured against the live track width and the bubble's own
+   * rendered width. The caret is the bubble's only pointing anchor, so it must stay on the
+   * thumb centre: near the ends the body stops at the track edge and the caret slides along it.
    */
   function bubblePos(n: number, bw: number): { left: number; tip: number } {
     const w = trackWidth;
@@ -107,9 +103,9 @@
     return { left, tip };
   }
 
-  // ---- 指针交互 --------------------------------------------------------------
+  // ---- pointer interaction -------------------------------------------------
   let drag = $state(false);
-  /** 悬停在柄上（气泡在悬停/按下/拖动/键盘聚焦任一状态下都显示）。 */
+  /** Hovering the handle (the bubble shows on hover / press / drag / keyboard focus alike). */
   let hover = $state(false);
   /** Rendered bubble width (text length varies with the value). */
   let bw = $state(0);
@@ -124,7 +120,7 @@
   function applyT(next: number): void {
     t = clamp01(next);
     const v = mapValue(t);
-    // 只在映射值真的变化时 emit：亚单位抖动不触发上层重算（瀑布流重排是卡顿根源）
+    // Emit only when the mapped value really changes: sub-unit jitter never triggers an upstream recompute (waterfall reflow is the jank source)
     if (v !== value) onChange?.(v);
   }
 
@@ -134,7 +130,7 @@
     trackWidth = dragRect.width;
     drag = true;
     trackEl.setPointerCapture?.(e.pointerId);
-    // 点轨道即吸附到点击点（拉到底部也不会跳变，公式与拖动一致）
+    // Clicking the track snaps to that point (no jump when dragging to the end; same formula as dragging)
     if (!(e.target as HTMLElement).closest?.('[data-thumb]')) applyT(tFromClientX(e.clientX));
     e.preventDefault();
   }
@@ -149,7 +145,7 @@
     dragRect = null;
   }
 
-  // ---- 键盘（柄是 role=slider 的自定义元素） ---------------------------------
+  // ---- keyboard (the handle is a custom role=slider element) ----------------
   let focus = $state(false);
   function onKeydown(e: KeyboardEvent): void {
     const unit = step > 0 ? step / span : 1 / span;
@@ -200,7 +196,7 @@
   );
 </script>
 
-<!-- 图标 + 轨道两列（右侧数值文本已取消，数值只走气泡） -->
+<!-- Two columns: icon + track (the right-hand value text was dropped; values only show in the bubble) -->
 <div class="grid grid-cols-[1rem_minmax(0,1fr)] items-center gap-2">
   <Icon class={iconCls} />
 
@@ -213,15 +209,15 @@
     onpointerup={endDrag}
     onpointercancel={endDrag}
   >
-    <!-- 底轨 -->
+    <!-- base track -->
     <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-border"></div>
-    <!-- 已选区间填充 -->
+    <!-- selected range fill -->
     <div
       class="absolute left-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-primary"
       style="right: calc(100% - {thumbCenter(t)})"
     ></div>
 
-    <!-- 气泡：拖动且映射值已变 / 键盘聚焦时浮出 -->
+    <!-- Bubble: surfaces while dragging, hovering, or keyboard-focused -->
     {#if drag || hover || focus}
       {@const bs = bubblePos(t, bw)}
       <div

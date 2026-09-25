@@ -1,8 +1,7 @@
 <script lang="ts">
-  // Modal dialog with an optional fullscreen mode. Fullscreen mode is used by
-  // the announcement editor. The overlay closes on click; Tab cycles inside
-  // the panel and Escape closes it. Body scrolling is locked while open and
-  // focus returns to the previously focused element on close.
+  // Modal dialog with an optional fullscreen mode (used by the announcement editor). The overlay
+  // closes on click; Tab cycles inside the panel and Escape closes it. Body scrolling is locked
+  // while open and focus returns to the previously focused element on close.
   import type { Snippet } from 'svelte';
   import { X } from '@lucide/svelte';
   import { fade, fly, scale } from 'svelte/transition';

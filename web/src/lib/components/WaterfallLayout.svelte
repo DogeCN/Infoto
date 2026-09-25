@@ -17,9 +17,9 @@
 
   interface Props {
     photos: Photo[];
-    /** 上传乐观条目（契约：紧随信息卡片、先于其他媒体；不参与排序筛选）。 */
+    /** Pending upload entries (contract: right after info cards, before other media; excluded from sorting/filtering). */
     pending?: Photo[];
-    /** 乐观条目的窗帘遮罩：fraction（上传中）/ failed（全遮罩 + 重试）。 */
+    /** Curtain overlays for pending entries: fraction (uploading) / failed (full cover + retry). */
     overlays?: Map<number, { fraction?: number; failed?: boolean }>;
     onRetryUpload?: (photo: Photo) => void;
     dir?: ScrollDir;
@@ -30,18 +30,17 @@
     selfId?: number;
     multiMode?: boolean;
     onMultiModeChange?: (v: boolean) => void;
-    // 写操作全部由上层落成 op（契约：所有写操作走 op-log → /sync 管线）
+    // All write operations are committed upstream as ops (contract: every write goes through op-log → /sync)
     onLike?: (photo: Photo) => void;
     onDislike?: (photo: Photo) => void;
     onRequestDelete?: (photo: Photo) => void;
-    /** 撤销已作的喜欢/不喜欢标记。 */
-    /** 仅根用户：delete op。 */
+    /** Root users only: delete op. */
     onDelete?: (photo: Photo) => void;
     onDeleteSelected?: (ids: number[]) => void;
     onDownloadSelected?: (ids: number[]) => void;
-    /** 批量取消标记（喜欢/不喜欢/请求删除全部撤销）。 */
+    /** Batch unmark (undo likes / dislikes / delete requests all at once). */
     onUnmarkSelected?: (ids: number[]) => void;
-    /** 单张下载（Lightbox 下滑手势）。 */
+    /** Single-photo download (Lightbox swipe-down gesture). */
     onDownload?: (photo: Photo) => void;
   }
 
@@ -73,12 +72,12 @@
   let scrollLeftPos = $state(0);
   let viewportH = $state(0);
   let containerW = $state(0);
-  /** 画布内边距：滚动容器全宽（滚动条贴视口右缘），留白由画布 margin 承担。 */
+  /** Canvas inset: the scroll container is full-width (scrollbar at the viewport edge), whitespace comes from the canvas margin. */
   let padX = $state(16);
-  /** 顶部留白（容纳悬浮顶栏，内容可滚入顶栏之下形成沉浸）。 */
+  /** Top spacing (accommodates the floating top bar; content can scroll under it for immersion). */
   let padTop = $state(80);
 
-  // 缩放（契约：桌面 Ctrl+滚轮 / 移动端捏合，50%–200%），作用于目标带宽
+  // Zoom (contract: desktop Ctrl+wheel / mobile pinch, 50%–200%), applied to the target band width
   let zoom = $state(1);
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 2;
@@ -87,7 +86,7 @@
     zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, factor));
   }
 
-  /** Ctrl+滚轮缩放：需 passive:false 才能阻止浏览器页面缩放，故用 action 绑定。 */
+  /** Ctrl+wheel zoom needs passive:false to block browser page zoom, hence the action binding. */
   function wheelZoom(node: HTMLElement) {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
@@ -102,7 +101,7 @@
     };
   }
 
-  // 移动端双指捏合
+  // Two-finger pinch on mobile
   const pinch = new Map<number, { x: number; y: number }>();
   let pinchStart = 0;
   let pinchZoom = 1;
@@ -146,37 +145,36 @@
   // Marquee state
   let marqueeActive = $state(false);
   let marqueeRect = $state<Rect>({ x: 0, y: 0, w: 0, h: 0 });
-  /** 框选开始时的选中快照：onMove 用「快照 ∪ 命中」重算，避免增量写引发的循环。 */
+  /** Selection snapshot taken when the marquee starts: onMove recomputes snapshot ∪ hits, avoiding loops from incremental writes. */
   let marqueeBase = new Set<number>();
-  /** 框选矩形是否实际拖动过（用于抑制卡片 click）。 */
+  /** Whether the marquee rectangle was actually dragged (used to suppress card clicks). */
   let marqueeMoved = false;
 
   // Lightbox state
   let lightboxOpen = $state(false);
   let lightboxIndex = $state(0);
 
-  // 退出多选模式时清空选中（顶栏图标退出时高亮框不残留）
+  // Clear the selection when leaving multi-select mode (no leftover highlight from the top bar icon)
   $effect(() => {
     if (!multiMode && selected.size > 0) selected = new Set();
   });
 
-  // Layout items: 乐观条目排最前，其余按排序筛选结果
+  // Layout items: pending entries first, the rest follow the sorted/filtered result
   let allPhotos = $derived([...pending, ...photos]);
   let layoutItems = $derived(
     allPhotos.map((p) => ({ id: p.id, w: p.width || 1, h: p.height || 1 })),
   );
   let photoMap = $derived(new Map(allPhotos.map((p) => [p.id, p])));
 
-  // Recompute layout when dependencies change — debounce so rapid resize / slider
-  // drag collapses into one computation per 16 ms frame instead of abort-restart
-  // per event (卡死根源之二).  State writes deferred to a rAF so the sort
-  // (orderByMain) and DOM batch happen in a separate frame from the generator.
+  // Recompute layout when dependencies change — debounce so rapid resize / slider drag collapses
+  // into one computation per 16 ms frame instead of abort-restart per event (a freeze root cause).
+  // State writes deferred to a rAF so the sort (orderByMain) and DOM batch happen in a separate frame from the generator.
   $effect(() => {
     const items = layoutItems;
     const w = containerW;
     const d = dir;
     const s = strategy;
-    // 缩放作用于目标带宽（50%–200%）
+    // Zoom applies to the target band width (50%–200%)
     const b = Math.round(band * zoom);
     const g = gap;
     if (w <= 0 || items.length === 0) {
@@ -197,7 +195,7 @@
       const opts = {
         dir: d,
         strategy: s,
-        // 横向模式垂直方向静态留白：顶 padTop（容纳悬浮顶栏）+ 底 padX
+        // Static cross-axis whitespace in horizontal mode: top padTop (for the floating top bar) + bottom padX
         cross: (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX),
         band: b,
         gap: g,
@@ -253,7 +251,7 @@
       toggleSelect(photo.id);
       return;
     }
-    // 上传中的乐观条目不进预览（等 /sync 落定后可见）
+    // Pending upload entries don't open the preview (they become visible after /sync settles)
     if (overlays.has(photo.id)) return;
     lightboxIndex = allPhotos.findIndex((p) => p.id === photo.id);
     lightboxOpen = true;
@@ -284,18 +282,18 @@
   }
 
   function deselectAll() {
-    // 只清空选中，不退出多选模式（退出由顶栏多选图标承担）
+    // Only clear the selection, don't exit multi-select mode (the top bar icon handles exiting)
     selected = new Set();
   }
 
-  // Marquee: pointerdown on the scroll container（卡片上起始同样框选）
+  // Marquee: pointerdown on the scroll container (starting on a card marquee-selects too)
   function handleMarqueeDown(e: PointerEvent) {
     if (!multiMode) return;
 
     const scrollEl = containerEl;
     if (!scrollEl) return;
 
-    // 框选矩形统一用画布坐标（boxes 的坐标系），与视口/容器偏移解耦
+    // The marquee rectangle always uses canvas coordinates (the boxes' space), decoupled from viewport/container offsets
     const rect = scrollEl.getBoundingClientRect();
     const toCanvas = (cx: number, cy: number) =>
       dir === 'v'
@@ -319,9 +317,9 @@
         w: Math.abs(cur.x - start.x),
         h: Math.abs(cur.y - start.y),
       };
-      // 拖动超过阈值视为框选手势：抑制随后合成到卡片上的 click（点选）
+      // Dragging past the threshold counts as a marquee gesture: suppress the click synthesized onto the card (click-select)
       if (marqueeRect.w > 4 || marqueeRect.h > 4) marqueeMoved = true;
-      // 框选命中实时并入选中集：以快照为底，避免在 effect 中写自身依赖造成循环
+      // Marquee hits join the selection in real time: base on the snapshot, avoiding writes to an effect's own dependency (a cycle)
       const next = new Set(marqueeBase);
       for (const id of marqueeHits(boxes, marqueeRect)) next.add(id);
       selected = next;
@@ -338,7 +336,7 @@
     window.addEventListener('pointerup', onUp);
   }
 
-  /** 框选手势刚结束时抑制卡片 click（capture 阶段截停，避免误点选）。 */
+  /** Suppress the card click right after a marquee gesture (stopped in the capture phase to avoid accidental selection). */
   function suppressCardClick(e: MouseEvent) {
     if (marqueeMoved) {
       e.stopPropagation();

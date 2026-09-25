@@ -1,4 +1,4 @@
-// OPFS artifact read/write (spec "本地持久化"): artifacts land on disk and
+// OPFS artifact read/write (spec "local persistence"): artifacts land on disk and
 // pair with sha256 dedupe.
 
 import { hashBlob } from './hash';

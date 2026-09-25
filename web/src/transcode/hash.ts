@@ -1,4 +1,4 @@
-// hash-wasm streaming SHA-256 (spec "哈希"): the hasher is fed while the
+// hash-wasm streaming SHA-256 (spec "hashing"): the hasher is fed while the
 // artifact streams to OPFS — hashing completes when the file lands.
 
 import { createSHA256 } from 'hash-wasm';

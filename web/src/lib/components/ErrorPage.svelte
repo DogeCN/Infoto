@@ -1,313 +1,319 @@
 <script lang="ts">
-  import { AlertTriangle, ServerCrash } from '@lucide/svelte';
+  import { onMount } from 'svelte';
 
   interface Props {
     code?: number;
-    message?: string;
   }
 
-  let { code = 404, message }: Props = $props();
+  let { code = 404 }: Props = $props();
 
-  let displayMessage = $derived(
-    message ?? (code === 404 ? '页面未找到' : code >= 500 ? '服务器错误' : '请求失败'),
-  );
+  let glitchText = $state('');
+  let burstActive = $state(false);
+  let glitchInterval: ReturnType<typeof setInterval> | null = null;
+
+  $effect(() => {
+    glitchText = String(code);
+  });
+
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+
+  function randomChar() {
+    return chars[Math.floor(Math.random() * chars.length)];
+  }
+
+  function triggerGlitch() {
+    if (glitchInterval !== null) clearInterval(glitchInterval);
+    let iterations = 0;
+    glitchInterval = setInterval(() => {
+      glitchText = String(code)
+        .split('')
+        .map((char, index) => {
+          if (char === ' ') return char;
+          if (index < iterations) return char;
+          return randomChar();
+        })
+        .join('');
+
+      if (iterations >= String(code).length) {
+        clearInterval(glitchInterval!);
+        glitchInterval = null;
+        glitchText = String(code);
+      }
+      iterations += 1 / 3;
+    }, 30);
+  }
+
+  function triggerBurst() {
+    burstActive = true;
+    setTimeout(() => (burstActive = false), 400);
+  }
+
+  onMount(() => {
+    triggerGlitch();
+    const randomBurst = setInterval(() => {
+      if (Math.random() > 0.7) triggerBurst();
+    }, 3000);
+
+    return () => {
+      clearInterval(randomBurst);
+      if (glitchInterval !== null) clearInterval(glitchInterval);
+    };
+  });
 </script>
 
-<div
-  class="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-background p-8 text-center"
->
-  <!-- 故障爆发时的红色暗角 -->
-  <div
-    class="pointer-events-none fixed inset-0 z-0 motion-safe:animate-[danger-flash_3s_linear_infinite]"
-    style="background: radial-gradient(ellipse at center, rgba(239,68,68,0) 45%, rgba(239,68,68,0.3) 100%); opacity: 0;"
-    aria-hidden="true"
-  ></div>
-
-  <div
-    class="relative z-10 mb-6 motion-safe:animate-[glitch-in_.7s_cubic-bezier(.16,.84,.24,1)_both]"
-  >
-    <div class="relative motion-safe:animate-[glitch-shake_3s_linear_infinite]">
-      <span
-        class="relative block select-none text-[8rem] font-black leading-none text-foreground/10 motion-safe:animate-[glitch-base_3s_linear_infinite]"
-      >
-        {code}
-      </span>
-      <span
-        class="absolute inset-0 block select-none pointer-events-none motion-safe:animate-[glitch-top_3s_linear_infinite]"
-        style="color: #ef4444; clip-path: polygon(0 0, 100% 0, 100% 45%, 0 45%); transform: translate(-2px, -1px); opacity: 0.75"
-        aria-hidden="true"
-      >
-        {code}
-      </span>
-      <span
-        class="absolute inset-0 block select-none pointer-events-none motion-safe:animate-[glitch-bottom_3s_linear_infinite]"
-        style="color: #06b6d4; clip-path: polygon(0 55%, 100% 55%, 100% 100%, 0 100%); transform: translate(2px, 1px); opacity: 0.75"
-        aria-hidden="true"
-      >
-        {code}
-      </span>
-      <!-- 白光撕裂条 -->
-      <span
-        class="absolute inset-0 block select-none pointer-events-none motion-safe:animate-[glitch-tear_3s_linear_infinite]"
-        style="color: #ffffff; clip-path: polygon(0 44%, 100% 44%, 100% 56%, 0 56%); opacity: 0; text-shadow: 0 0 20px rgba(255,255,255,0.7);"
-        aria-hidden="true"
-      >
-        {code}
-      </span>
+<div class="flex min-h-screen items-center justify-center bg-background">
+  <div class="flex flex-col items-center px-8 text-center">
+    <div
+      class="glitch-container"
+      class:burst={burstActive}
+      role="img"
+      aria-label="错误代码 {code}"
+      onmouseenter={triggerBurst}
+    >
+      <span class="layer layer-main">{glitchText}</span>
+      <span class="layer layer-magenta">{glitchText}</span>
+      <span class="layer layer-cyan">{glitchText}</span>
     </div>
-  </div>
 
-  <div
-    class="relative z-10 mb-6 flex items-center gap-2 text-muted-foreground motion-safe:animate-[msg-flicker_3s_linear_infinite]"
-  >
-    {#if code >= 500}
-      <ServerCrash class="size-5" />
-    {:else}
-      <AlertTriangle class="size-5" />
-    {/if}
-    <p class="text-lg">{displayMessage}</p>
-  </div>
+    <p class="mt-8 text-lg font-medium tracking-widest text-primary">PAGE NOT FOUND</p>
+    <p class="mt-2 text-muted-foreground">您访问的页面不存在</p>
 
-  <a
-    href="/"
-    class="relative z-10 inline-flex items-center justify-center rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground transition-all duration-200 hover:bg-primary/90 active:scale-[0.98]"
-  >
-    返回首页
-  </a>
+    <a
+      href="/"
+      class="mt-12 inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-md transition-all hover:bg-primary/90 hover:shadow-lg active:scale-[0.98]"
+    >
+      返回首页
+    </a>
+  </div>
 </div>
 
 <style>
-  /* 入场：放大 + 倾斜 + 模糊，猛击定格 */
-  @keyframes glitch-in {
+  .glitch-container {
+    position: relative;
+    font-size: clamp(7rem, 20vw, 14rem);
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: 0.1em;
+    font-family:
+      'Inter',
+      'Noto Sans SC',
+      system-ui,
+      -apple-system,
+      sans-serif;
+    cursor: default;
+    user-select: none;
+  }
+
+  .layer {
+    position: absolute;
+    inset: 0;
+    display: block;
+    pointer-events: none;
+  }
+
+  .layer-main {
+    position: relative;
+    z-index: 3;
+    color: #22d3ee;
+    text-shadow:
+      0 0 20px rgba(34, 211, 238, 0.6),
+      0 0 40px rgba(34, 211, 238, 0.3);
+  }
+
+  .layer-magenta {
+    color: #ff006e;
+    opacity: 0.75;
+    z-index: 2;
+    animation:
+      slice-magenta 2s steps(2) infinite,
+      jitter-magenta 0.35s steps(2) infinite;
+    mix-blend-mode: screen;
+  }
+
+  .layer-cyan {
+    color: #00f0ff;
+    opacity: 0.7;
+    z-index: 1;
+    animation:
+      slice-cyan 2.7s steps(2) infinite,
+      jitter-cyan 0.4s steps(2) infinite;
+    mix-blend-mode: screen;
+  }
+
+  @keyframes slice-magenta {
+    0%,
+    100% {
+      clip-path: inset(15% 0 70% 0);
+    }
+    11% {
+      clip-path: inset(65% 0 15% 0);
+    }
+    22% {
+      clip-path: inset(35% 0 50% 0);
+    }
+    33% {
+      clip-path: inset(75% 0 8% 0);
+    }
+    44% {
+      clip-path: inset(10% 0 75% 0);
+    }
+    55% {
+      clip-path: inset(55% 0 30% 0);
+    }
+    66% {
+      clip-path: inset(25% 0 60% 0);
+    }
+    77% {
+      clip-path: inset(68% 0 18% 0);
+    }
+    88% {
+      clip-path: inset(42% 0 38% 0);
+    }
+  }
+
+  @keyframes slice-cyan {
+    0%,
+    100% {
+      clip-path: inset(68% 0 15% 0);
+    }
+    11% {
+      clip-path: inset(15% 0 65% 0);
+    }
+    22% {
+      clip-path: inset(52% 0 32% 0);
+    }
+    33% {
+      clip-path: inset(8% 0 78% 0);
+    }
+    44% {
+      clip-path: inset(72% 0 12% 0);
+    }
+    55% {
+      clip-path: inset(28% 0 55% 0);
+    }
+    66% {
+      clip-path: inset(80% 0 5% 0);
+    }
+    77% {
+      clip-path: inset(18% 0 68% 0);
+    }
+    88% {
+      clip-path: inset(45% 0 35% 0);
+    }
+  }
+
+  @keyframes jitter-magenta {
+    0%,
+    100% {
+      transform: translate(-4px, 0);
+    }
+    20% {
+      transform: translate(-12px, 2px) skewX(-5deg);
+    }
+    40% {
+      transform: translate(6px, -2px);
+    }
+    60% {
+      transform: translate(-10px, 2px) skewX(4deg);
+    }
+    80% {
+      transform: translate(8px, 0);
+    }
+  }
+
+  @keyframes jitter-cyan {
+    0%,
+    100% {
+      transform: translate(4px, 0);
+    }
+    20% {
+      transform: translate(12px, -2px) skewX(5deg);
+    }
+    40% {
+      transform: translate(-6px, 2px);
+    }
+    60% {
+      transform: translate(10px, -2px) skewX(-4deg);
+    }
+    80% {
+      transform: translate(-8px, 0);
+    }
+  }
+
+  .glitch-container.burst .layer-magenta {
+    animation: burst-magenta 0.4s steps(2) both;
+  }
+  .glitch-container.burst .layer-cyan {
+    animation: burst-cyan 0.4s steps(2) both;
+  }
+
+  @keyframes burst-magenta {
     0% {
-      opacity: 0;
-      transform: scale(1.8) skewX(18deg);
-      filter: blur(12px);
+      transform: translate(-4px, 0);
+      clip-path: inset(0 0 0 0);
     }
-    10% {
-      opacity: 1;
-      transform: scale(1.45) skewX(-14deg);
-      filter: blur(5px);
+    15% {
+      transform: translate(-40px, 0) skewX(-12deg);
+      clip-path: inset(10% 0 70% 0);
     }
-    25% {
-      transform: scale(1.2) skewX(9deg);
-      filter: blur(2px);
+    30% {
+      transform: translate(35px, 0) skewX(10deg);
+      clip-path: inset(60% 0 20% 0);
     }
     45% {
-      transform: scale(1.06) skewX(-4deg);
-      filter: blur(0);
+      transform: translate(-32px, 0) skewX(-8deg);
+      clip-path: inset(30% 0 50% 0);
     }
-    65% {
-      transform: scale(1.02) skewX(1.5deg);
+    60% {
+      transform: translate(38px, 0) skewX(11deg);
+      clip-path: inset(75% 0 10% 0);
+    }
+    75% {
+      transform: translate(-20px, 0);
+      clip-path: inset(45% 0 35% 0);
     }
     100% {
-      opacity: 1;
-      transform: scale(1) skewX(0deg);
-      filter: blur(0);
+      transform: translate(-4px, 0);
+      clip-path: inset(0 0 0 0);
     }
   }
 
-  /* 主体：爆发时掉帧 + 红蓝重影 */
-  @keyframes glitch-base {
-    0%,
-    80%,
+  @keyframes burst-cyan {
+    0% {
+      transform: translate(4px, 0);
+      clip-path: inset(0 0 0 0);
+    }
+    15% {
+      transform: translate(40px, 0) skewX(12deg);
+      clip-path: inset(70% 0 15% 0);
+    }
+    30% {
+      transform: translate(-35px, 0) skewX(-10deg);
+      clip-path: inset(20% 0 60% 0);
+    }
+    45% {
+      transform: translate(32px, 0) skewX(8deg);
+      clip-path: inset(50% 0 30% 0);
+    }
+    60% {
+      transform: translate(-38px, 0) skewX(-11deg);
+      clip-path: inset(10% 0 75% 0);
+    }
+    75% {
+      transform: translate(20px, 0);
+      clip-path: inset(35% 0 45% 0);
+    }
     100% {
-      opacity: 1;
-      text-shadow: none;
-      transform: translate(0, 0);
-    }
-    82% {
-      opacity: 0.75;
-      text-shadow: 5px 0 rgba(239, 68, 68, 0.8), -5px 0 rgba(6, 182, 212, 0.8);
-      transform: translate(1px, 0);
-    }
-    84% {
-      opacity: 1;
-      text-shadow: -8px 0 rgba(239, 68, 68, 0.9), 8px 0 rgba(6, 182, 212, 0.9);
-      transform: translate(-2px, 1px);
-    }
-    86% {
-      opacity: 0.6;
-      text-shadow: 9px 0 rgba(239, 68, 68, 0.7), -9px 0 rgba(6, 182, 212, 0.7);
-      transform: translate(2px, -1px);
-    }
-    88% {
-      opacity: 1;
-      text-shadow: -4px 0 rgba(239, 68, 68, 0.8), 4px 0 rgba(6, 182, 212, 0.8);
-    }
-    92% {
-      opacity: 1;
-      text-shadow: none;
-      transform: translate(0, 0);
+      transform: translate(4px, 0);
+      clip-path: inset(0 0 0 0);
     }
   }
 
-  /* 红色切片：平时静止，80% 后横向撕裂 + 斜切，切片位置不断跳动 */
-  @keyframes glitch-top {
-    0%,
-    80%,
-    100% {
-      clip-path: polygon(0 0, 100% 0, 100% 45%, 0 45%);
-      transform: translate(-2px, -1px) skewX(0deg);
-    }
-    81% {
-      clip-path: polygon(0 4%, 100% 4%, 100% 34%, 0 34%);
-      transform: translate(-16px, 3px) skewX(-12deg);
-    }
-    83% {
-      clip-path: polygon(0 16%, 100% 16%, 100% 56%, 0 56%);
-      transform: translate(18px, -4px) skewX(10deg);
-    }
-    85% {
-      clip-path: polygon(0 0, 100% 0, 100% 22%, 0 22%);
-      transform: translate(-20px, 2px) skewX(-8deg);
-    }
-    87% {
-      clip-path: polygon(0 28%, 100% 28%, 100% 70%, 0 70%);
-      transform: translate(14px, -3px) skewX(6deg);
-    }
-    89% {
-      clip-path: polygon(0 8%, 100% 8%, 100% 40%, 0 40%);
-      transform: translate(-10px, 4px);
-    }
-    92% {
-      clip-path: polygon(0 0, 100% 0, 100% 45%, 0 45%);
-      transform: translate(4px, -1px);
-    }
-  }
-
-  /* 青色切片：反方向撕裂 */
-  @keyframes glitch-bottom {
-    0%,
-    80%,
-    100% {
-      clip-path: polygon(0 55%, 100% 55%, 100% 100%, 0 100%);
-      transform: translate(2px, 1px) skewX(0deg);
-    }
-    82% {
-      clip-path: polygon(0 62%, 100% 62%, 100% 96%, 0 96%);
-      transform: translate(16px, -3px) skewX(12deg);
-    }
-    84% {
-      clip-path: polygon(0 46%, 100% 46%, 100% 84%, 0 84%);
-      transform: translate(-18px, 4px) skewX(-10deg);
-    }
-    86% {
-      clip-path: polygon(0 72%, 100% 72%, 100% 100%, 0 100%);
-      transform: translate(20px, -2px) skewX(8deg);
-    }
-    88% {
-      clip-path: polygon(0 38%, 100% 38%, 100% 78%, 0 78%);
-      transform: translate(-14px, 3px) skewX(-6deg);
-    }
-    90% {
-      clip-path: polygon(0 58%, 100% 58%, 100% 92%, 0 92%);
-      transform: translate(10px, -4px);
-    }
-    93% {
-      clip-path: polygon(0 55%, 100% 55%, 100% 100%, 0 100%);
-      transform: translate(-4px, 1px);
-    }
-  }
-
-  /* 中央白光条：爆发瞬间横向闪过 */
-  @keyframes glitch-tear {
-    0%,
-    80%,
-    100% {
-      opacity: 0;
-      transform: translateX(0);
-    }
-    82% {
-      opacity: 0.95;
-      transform: translateX(-24px);
-    }
-    84% {
-      opacity: 0.2;
-      transform: translateX(20px);
-    }
-    86% {
-      opacity: 0.9;
-      transform: translateX(-12px);
-    }
-    90% {
-      opacity: 0;
-      transform: translateX(0);
-    }
-  }
-
-  /* 整体硬震动 */
-  @keyframes glitch-shake {
-    0%,
-    80%,
-    100% {
-      transform: translate(0, 0) rotate(0deg);
-    }
-    81% {
-      transform: translate(-8px, 5px) rotate(-1deg);
-    }
-    82.5% {
-      transform: translate(9px, -4px) rotate(0.9deg);
-    }
-    84.5% {
-      transform: translate(-11px, -3px) rotate(-0.7deg);
-    }
-    86.5% {
-      transform: translate(7px, 5px) rotate(0.6deg);
-    }
-    88.5% {
-      transform: translate(-5px, 2px) rotate(-0.3deg);
-    }
-    91% {
-      transform: translate(3px, -2px) rotate(0.15deg);
-    }
-    94% {
-      transform: translate(0, 0) rotate(0deg);
-    }
-  }
-
-  /* 红色暗角随爆发闪烁 */
-  @keyframes danger-flash {
-    0%,
-    79%,
-    100% {
-      opacity: 0;
-    }
-    82% {
-      opacity: 1;
-    }
-    84% {
-      opacity: 0.25;
-    }
-    86% {
-      opacity: 1;
-    }
-    90% {
-      opacity: 0.15;
-    }
-    93% {
-      opacity: 0;
-    }
-  }
-
-  /* 提示文案同步掉帧 */
-  @keyframes msg-flicker {
-    0%,
-    80%,
-    100% {
-      opacity: 1;
-    }
-    83% {
-      opacity: 0.2;
-    }
-    85% {
-      opacity: 1;
-    }
-    87% {
-      opacity: 0.5;
-    }
-    90% {
-      opacity: 1;
+  @media (prefers-reduced-motion: reduce) {
+    .layer-magenta,
+    .layer-cyan {
+      animation: none !important;
+      display: none;
     }
   }
 </style>

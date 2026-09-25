@@ -1,5 +1,5 @@
-/** Compact relative time ("刚刚" / "N 分钟前" … "N 年前") against an optional
- *  reference so tests (and stale renders) stay deterministic. */
+/** Compact relative time ("just now" / "N minutes ago" … "N years ago") against
+ *  an optional reference so tests (and stale renders) stay deterministic. */
 export function formatRelativeTime(timestamp: number, reference: number = Date.now()): string {
   const elapsed = Math.max(0, reference - timestamp);
   if (elapsed < 60_000) return '刚刚';

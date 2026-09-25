@@ -1,4 +1,4 @@
-// /sync client — the single write entry + full snapshot (spec: "/sync 协议").
+// /sync client — the single write entry + full snapshot (spec: "/sync protocol").
 // Request/response JSON is camelCase throughout; no secondary mapping.
 
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
@@ -24,12 +24,12 @@ export class TurnstileFailedError extends Error {
 export interface SyncClientIo {
   fetchFn?: typeof fetch;
   origin?: string;
-  /** 覆盖单次尝试的超时（测试注入小值）。 */
+  /** Per-attempt timeout override (tests inject small values). */
   timeoutMs?: number;
   /**
-   * keepalive:页面隐藏/关闭时普通 fetch 会被浏览器取消，keepalive 请求
-   * 可以带着 body 活过卸载。浏览器对 keepalive body 有 64KB 硬上限 ——
-   * 由调用方确认整包放得下，放不下就别开（开了一样会被拒）。
+   * keepalive: a plain fetch is cancelled by the browser when the page is hidden or
+   * closed; a keepalive request survives unload with its body. Keepalive bodies are
+   * capped at 64KB — the caller must verify the payload fits, or leave this off.
    */
   keepalive?: boolean;
 }
@@ -44,23 +44,16 @@ export interface SyncCallResult {
 export const RATE_LIMIT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 
 /**
- * Hard ceiling on one /sync attempt. A dead backend does not refuse the
- * connection (the dev proxy just holds the socket open), so a fetch without a
- * timeout never settles: `engine.syncing` stays true and every write looks
- * frozen. Same shape as `UPLOAD_TIMEOUT_MS` in the upload client.
+ * Hard ceiling on one /sync attempt. A dead backend holds the socket open instead of
+ * refusing it, so a fetch without a timeout never settles: `engine.syncing` stays true
+ * and every write looks frozen. Mirrors `UPLOAD_TIMEOUT_MS` in the upload client.
  */
 export const SYNC_TIMEOUT_MS = 15_000;
 
 /**
- * POST {origin}/sync. Contract edges:
- * - request body never carries a uuid field (the server distrusts body identity);
- * - `keepalive` passes straight through to fetch (engine sets it only when the
- *   document is hidden and the whole body fits the browser's keepalive cap);
- * - 401 turnstile_required → read body turnstileSiteKey, throw TurnstileRequiredError;
- * - 401 turnstile_failed → throw TurnstileFailedError;
- * - 429 → brief backoff retry (edge rate limit), then surface as any other error;
- * - any other non-ok response → throw Error (with the error field);
- * - attempt exceeding `timeoutMs` → abort + throw Error('sync_timeout').
+ * POST {origin}/sync. Contract edges: the request body never carries a uuid field (the server distrusts body identity); `keepalive` passes straight through to fetch, set by the engine only when the document is hidden and the whole body fits the browser's keepalive cap.
+ * 401 turnstile_required → read body turnstileSiteKey and throw TurnstileRequiredError; 401 turnstile_failed → throw TurnstileFailedError; 429 → brief backoff retry (edge rate limit), then surface like any other error.
+ * Any other non-ok response → throw Error carrying the error field; an attempt exceeding `timeoutMs` → abort and throw Error('sync_timeout').
  */
 export async function postSync(body: SyncRequest, io: SyncClientIo = {}): Promise<SyncCallResult> {
   const fetchFn = io.fetchFn ?? fetch;
@@ -80,7 +73,7 @@ export async function postSync(body: SyncRequest, io: SyncClientIo = {}): Promis
         keepalive: io.keepalive,
       });
     } catch (e) {
-      // 超时与网络故障分开：超时给一个稳定标识，UI 据此提示"后端未响应"
+      // Separate timeout from network failure: the stable marker lets the UI show "backend not responding"
       if ((e as Error)?.name === 'AbortError') throw new Error('sync_timeout', { cause: e });
       throw e;
     } finally {

@@ -1,14 +1,14 @@
-// Transcode + upload pipeline against the local Worker (via the Vite dev
-// proxy) — the highest-risk area. Covers image/gif transcode + upload, the
-// 100MB pre-check, the manual retry handle, cross-tab progress, pagehide.
-// Drives the real app UI: the verification gate (always-pass locally) and the
-// top-bar upload button.
+// Transcode + upload pipeline against the local Worker (via the Vite dev proxy) — the highest-risk area.
+// Covers image/gif transcode + upload, the 100MB pre-check, the manual retry handle, cross-tab progress,
+// pagehide; drives the real app UI (the always-pass verification gate and the top-bar upload button).
 import { expect, test, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { passGate } from './helpers';
 
-/** Top-bar upload button (opens the file chooser). */
-const uploadButton = (page: Page) => page.locator('header button:has(svg.lucide-upload)');
+/** Top-bar upload button (opens the file chooser). Title-based: the lucide
+ *  class name for UploadCloud never carried a bare `lucide-upload` token
+ *  (it renders lucide-upload-cloud / lucide-cloud-upload). */
+const uploadButton = (page: Page) => page.locator('header button[title="上传"]');
 
 /** Transcode-panel row for a given file name (visible while the job is active). */
 const taskRow = (page: Page, name: string) => page.getByText(name, { exact: true });
@@ -108,10 +108,9 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
       { timeout: 30_000 },
     );
 
-    // same file again → sha256 hit → duplicate (stage 2 skipped entirely).
-    // The duplicate row is removed within a frame (the snapshot effect strips
-    // sha-matched tasks), so assert on the pipeline log line + the server
-    // snapshot instead of the DOM.
+    // same file again → sha256 hit → duplicate (stage 2 skipped entirely). The duplicate row is
+    // removed within a frame (the snapshot effect strips sha-matched tasks), so assert on the
+    // pipeline log line + the server snapshot instead of the DOM.
     const count = async () => {
       const r = await context.request.post('/sync', { data: { ops: [] } });
       return ((await r.json()) as { photos: unknown[] }).photos.length;

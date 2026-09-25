@@ -25,8 +25,9 @@
   import { applyFilters, defaultFilterSettings } from './settings';
 
   /**
-   * 同步失败可见化：原来只 console.error，用户看到的是"点了没反应"。
-   * 10s 去重 —— 后端躺平时每轮重试都会失败，不去重会把 toast 刷屏。
+   * Surface sync failures: before, only console.error ran, so users saw "nothing
+   * happened". Deduped over 10s — while the backend is down every retry fails and
+   * would flood the toast.
    */
   let lastSyncToastAt = 0;
   function notifySyncFailure(): void {
@@ -36,13 +37,15 @@
     toast.error('同步失败', { description: '操作已排队，稍后自动重试' });
   }
 
-  // store 先建：引擎把 /sync 全量快照直接写进 store（契约：服务端下发为准）
+  // Store first: the engine writes the full /sync snapshot straight into it
+  // (contract: server-delivered state wins)
   const store = createAppStore();
   const engine = getEngine({
     onSyncResponse: (r, context) => store.applySync(r, context),
     onError: (phase, e) => {
       console.error('[sync]', phase, e);
-      // Cookie 丢失/过期 → 回到首次入站流程（Turnstile 渲染由 ensureIdentity 承担）
+      // Cookie lost/expired → return to the first-entry flow (ensureIdentity
+      // handles Turnstile rendering)
       if (e instanceof TurnstileRequiredError) void bootstrapIdentity();
       else notifySyncFailure();
     },
@@ -51,18 +54,18 @@
 
   const pipeline = new UploadPipeline({
     onEvent: (line) => console.log('[upload]', line),
-    // 上传产物 URL 落成 upload op 后交给同步引擎入队（pending 计数与 256
-    // 条阈值都归引擎，契约「所有写操作走 op-log → /sync 管线」）
+    // Once the artifact URL becomes an upload op it is queued on the sync engine
+    // (pending count and the 256-op threshold belong to the engine; contract: all
+    // writes go through the op-log → /sync pipeline)
     onUploadOp: (op) => void engine.addOp(op),
   });
 
   let uploadTasks = $state<Map<string, PipelineTaskSnapshot>>(new Map());
   let fileInputEl: HTMLInputElement | undefined = $state(undefined);
 
-  // ---- 上传乐观条目（契约「上传期间的瀑布流呈现」） ------------------------------
-  // 转码完成（进入上传阶段）即以乐观条目插入瀑布流最前；卡片上覆盖"窗帘"遮罩
-  // 随上传进度自下而上拉开；失败变回全遮罩 + 重试图标；/sync 全量下发后按
-  // sha256 移除乐观条目，以服务端状态为准。
+  // ---- Optimistic upload entries (contract: waterfall during upload) ----------
+  // Transcode done → insert at the top under a "curtain" mask that pulls up with
+  // progress; failure → full mask + retry icon; /sync drops it by sha256 (server wins).
   let nextTempId = -1;
   const tempIdByJob = new Map<string, number>();
   const jobByTempId = new Map<number, string>();
@@ -71,10 +74,11 @@
     const out: Photo[] = [];
     for (const t of uploadTasks.values()) {
       if (!['uploading', 'done', 'failed'].includes(t.phase)) continue;
-      // tempId 在 onTask 回调里统一分配，这里必已存在
+      // tempId is assigned uniformly in the onTask callback; it must exist here
       const id = tempIdByJob.get(t.jobId)!;
-      // 转码失败的任务没有 meta（读不到宽高）：给占位比例让失败可见 ——
-      // 契约要求"失败标记该文件 + 卡片提供手动重试按钮"，不能静默消失
+      // Failed transcodes have no meta: use a placeholder ratio so the failure stays
+      // visible — the contract wants a failure mark + manual retry button, not a
+      // silent disappearance
       const meta = t.meta ?? { width: 800, height: 600, size: 0, type: 0 as const };
       out.push({
         id,
@@ -102,15 +106,16 @@
       if (t.phase === 'uploading') {
         if (t.meta) m.set(id, { fraction: t.fraction ?? 0 });
       } else if (t.phase === 'failed') {
-        // 转码失败（无 meta）同样要挂失败遮罩 —— 重试入口不能依赖转码成功
+        // Transcode failure (no meta) still gets a failure mask — retry must not
+        // depend on a successful transcode
         m.set(id, { failed: true });
       }
-      // done → 无遮罩（窗帘已全开，等 /sync 校正）
+      // done → no mask (curtain fully open, awaiting /sync correction)
     }
     return m;
   });
 
-  // /sync 后真实条目到位：按 sha256 摘掉对应乐观条目
+  // After /sync the real entries land: drop matching optimistic entries by sha256
   $effect(() => {
     const shas = new Set(store.photos.map((p) => p.sha256));
     let changed = false;
@@ -140,20 +145,20 @@
   let multiMode = $state(false);
   let initialized = $state(false);
 
-  // 布局设置（来自 SettingsPanel）
+  // Layout settings (from SettingsPanel)
   let layout = $state<LayoutSettings>({
     dir: 'v',
     strategy: 'sequential',
     band: 320,
     gap: 12,
   });
-  // 筛选设置（来自 SettingsPanel，用于过滤瀑布流）
+  // Filter settings (from SettingsPanel; used to filter the waterfall)
   let filters = $state<FilterSettings>(defaultFilterSettings());
   let filterCount = $state(0);
   let resetToken = $state(0);
 
-  // 排序状态：latest / hottest / random；方向按 key 各自记忆——切到别的排序项
-  // 再切回来，方向不丢（最新↔最旧、最热↔最冷 独立保存）
+  // Sort state: latest / hottest / random; each key remembers its own direction —
+  // switching away and back keeps it (newest↔oldest, hottest↔coldest saved separately)
   let sortKey = $state<SortKey>('latest');
   let latestAsc = $state(false);
   let hottestAsc = $state(false);
@@ -167,21 +172,15 @@
   let bootstrapping = false;
 
   /**
-   * 入站验证态。新用户（无 Cookie）在服务端 401 后进 loading：验证码渲染在瀑布流
-   * 区域中央 —— 那里本来就是空的，还直接表达"通过验证才能看"，不必再单开一层
-   * 盖住整个应用（那样顶栏、侧栏、骨架都被挡住，看着像首屏卡住）。
-   *
-   * 不做额外的失败 UI：widget 失败后留在原地 —— Turnstile 交互式 widget 失败时
-   * 自带可点击的重试，timeout 后默认还会自动重试，用户也可以直接刷新。
-   *
-   * done = token 已拿到，验证层淡出但节点先留着：Turnstile iframe 的收尾握手还没
-   * 发完，dispose 之前摘 DOM 会留下悬空 widget（控制台刷 "Cannot find Widget"）。
+   * Inbound verification state: after a 401 the captcha renders centered in the empty
+   * waterfall (no overlay, no failure UI — Turnstile retries itself). `done` = token in;
+   * keep the node until the iframe handshake ends or the widget dangles.
    */
   type VerifyState = 'idle' | 'loading' | 'done';
   let verifyState = $state<VerifyState>('idle');
   let turnstileEl = $state<HTMLDivElement | undefined>(undefined);
 
-  /** 首次入站（无 Cookie）：Turnstile → 带 token 的 /sync → 建身份 + 全量下发。 */
+  /** First entry (no cookie): Turnstile → /sync with token → build identity + full snapshot. */
   async function bootstrapIdentity() {
     if (bootstrapping) return;
     bootstrapping = true;
@@ -190,11 +189,12 @@
         postSyncFn: postSync,
         requestToken: async (siteKey) => {
           verifyState = 'loading';
-          await tick(); // 等验证态的挂载点渲染出来，再往里渲染 widget
+          await tick(); // wait for the verify mount point to render, then mount the widget
           const el = turnstileEl;
           if (!el) throw new Error('turnstile container missing');
           const token = await renderTurnstile(siteKey, el);
-          // 仅成功路径安排销毁；失败路径让 widget 留在原地自愈或等用户刷新
+          // Only the success path schedules disposal; on failure the widget stays
+          // put to self-heal or wait for a user refresh
           setTimeout(() => {
             void disposeTurnstile().finally(() => {
               if (verifyState === 'done') verifyState = 'idle';
@@ -204,7 +204,8 @@
         },
       });
       store.applySync(response);
-      // 内容就位之后再收起验证层，避免中间闪一帧"还没有照片"的空态
+      // Collapse the verify layer only after content lands, avoiding a one-frame
+      // flash of the "no photos yet" empty state
       if (firstEntry && verifyState === 'loading') verifyState = 'done';
     } catch (e) {
       console.error('[identity] bootstrap failed', e);
@@ -223,8 +224,8 @@
     })();
     pipeline.start();
     pipeline.onTask((t) => {
-      // 乐观条目的 tempId 统一在这里分配：pendingPhotos 与 uploadOverlays 两个
-      // derived 都读它，事件回调先于任何 derived 求值，顺序无关
+      // Optimistic tempIds are assigned here — both pendingPhotos and uploadOverlays
+      // deriveds read them; callbacks run before any derived evaluates, so order is safe
       if (['uploading', 'done', 'failed'].includes(t.phase) && !tempIdByJob.has(t.jobId)) {
         const id = nextTempId--;
         tempIdByJob.set(t.jobId, id);
@@ -234,7 +235,8 @@
     });
   });
 
-  // 照片标记 / 删除：store 负责本地乐观更新 + 提交 op（契约：所有写操作走 op-log）
+  // Photo mark / delete: the store does the local optimistic update + submits the
+  // op (contract: all writes go through the op-log)
   function handleLike(photo: Photo) {
     store.toggleMark(photo.id, 'like');
   }
@@ -250,15 +252,16 @@
   function handleDeleteSelected(ids: number[]) {
     store.deletePhotos(ids);
   }
-  /** 批量取消标记：撤销喜欢 / 不喜欢 / 请求删除（未标记的项为幂等 no-op）。 */
+  /** Bulk unmark: undo like / dislike / request-delete (unmarked items are idempotent no-ops). */
   function handleUnmarkSelected(ids: number[]) {
     store.setMarkMany(ids, 'like', false);
     store.setMarkMany(ids, 'dislike', false);
     store.setMarkMany(ids, 'report', false);
   }
   /**
-   * 下载走 core/download：单张 {id36}.{ext}，多张打包 download.zip
-   * （契约「下载」）。多张按当前可见顺序编号。
+   * Downloads go through core/download: single files as {id36}.{ext}, multiple
+   * files packed into download.zip (contract: "Download"), numbered in current
+   * visible order.
    */
   async function handleDownloadSelected(ids: number[]) {
     const picked = visiblePhotos.filter((p) => ids.includes(p.id));
@@ -278,8 +281,9 @@
     }
   }
 
-  // 上一次传入的 filters 引用：layout-only 变更时 settings.filters 是 spread 保留的同一引用，
-  // 不应触发 visiblePhotos 重算 → 瀑布流重排（卡死根源之一）。
+  // Previous filters reference: on layout-only changes settings.filters keeps the
+  // same spread reference and must not recompute visiblePhotos → waterfall reflow
+  // (one root cause of the freeze)
   let _prevFilterRef: import('./settings').FilterSettings | undefined;
   function handleSettingsChange(s: Settings) {
     layout = {
@@ -288,14 +292,16 @@
       band: s.layout.band,
       gap: s.layout.gap,
     };
-    // 仅当 filters 对象引用真正变化时才更新（layout-only 变更不触发）
+    // Update only when the filters object reference actually changes (layout-only
+    // changes don't trigger it)
     if (s.filters !== _prevFilterRef) {
       _prevFilterRef = s.filters;
       filters = { ...s.filters, types: new Set(s.filters.types) };
     }
   }
 
-  // 排序 + 筛选 → 最终给瀑布流的照片（筛选逻辑在 settings.ts，纯函数可测）
+  // Sort + filter → the photos handed to the waterfall (filter logic lives in
+  // settings.ts, pure and testable)
   let visiblePhotos = $derived.by(() => {
     let list = applyFilters(store.photos, filters, store.selfId);
 
@@ -307,7 +313,7 @@
       const heat = (p: (typeof list)[number]) => p.likes.length - p.dislikes.length;
       list = [...list].sort((a, b) => (hottestAsc ? heat(a) - heat(b) : heat(b) - heat(a)));
     } else {
-      // random：按当前打乱序号重排
+      // random: reorder by the current shuffled index
       const map = new Map(list.map((p) => [p.id, p]));
       const ordered = randomOrder
         .map((id) => map.get(id))
@@ -320,13 +326,14 @@
 
   function onSortChange(key: SortKey) {
     if (key === sortKey && key !== 'random') {
-      // 再次单击 → 反向（最新↔最旧 / 最热↔最冷），方向按 key 各自记忆
+      // Click again → reverse (newest↔oldest / hottest↔coldest); direction
+      // remembered per key
       if (key === 'hottest') hottestAsc = !hottestAsc;
       else latestAsc = !latestAsc;
     } else if (key === 'random' && key === sortKey) {
-      randomOrder = shuffle(store.photos.map((p) => p.id)); // 重新打乱
+      randomOrder = shuffle(store.photos.map((p) => p.id)); // re-shuffle
     } else {
-      // 切换排序项：保留该项上次的方向，不重置
+      // Switching sort keys: keep each key's last direction, don't reset it
       sortKey = key;
       if (key === 'random') randomOrder = shuffle(store.photos.map((p) => p.id));
     }
@@ -340,7 +347,7 @@
     }
     return a;
   }
-  /** 顶栏「随机」再次单击 → 重新打乱（契约：每次单击重新打乱，Fisher-Yates）。 */
+  /** Top-bar "Random" clicked again → re-shuffle (contract: re-shuffle every click, Fisher-Yates). */
   function handleReshuffle() {
     randomOrder = shuffle(store.photos.map((p) => p.id));
     sortKey = 'random';
@@ -377,7 +384,8 @@
     resetToken++;
   }
 
-  // 公告 op：反应 / 投票 / 反馈 → op-log（spec：全部写操作走 op-log → /sync 管线）
+  // Announcement ops: react / vote / feedback → op-log (spec: all writes go through
+  // the op-log → /sync pipeline)
   function handleReact(annId: number, emoji: string | null) {
     store.react(annId, emoji);
   }
@@ -434,8 +442,9 @@
     />
 
     <main class="relative flex-1 overflow-hidden">
-      <!-- 入站验证：新用户的瀑布流本来就是空的，验证码就居中放在这个位置。
-           淡出后才卸载节点（widget 必须先销毁），期间下方内容已经可以被看到。 -->
+      <!-- Inbound verification: a new user's waterfall is empty anyway, so the captcha sits
+           centered here and the content below shows through the fade. The node unmounts only
+           after the fade (widget disposed first). -->
       {#if verifyState !== 'idle'}
         <div
           data-verify
@@ -444,7 +453,7 @@
             ? 'pointer-events-none opacity-0'
             : 'opacity-100'}"
         >
-          <!-- Turnstile 挂载点：固定最小高度，widget 加载完不跳动 -->
+          <!-- Turnstile mount point: fixed min height so the layout doesn't jump when the widget loads -->
           <div bind:this={turnstileEl} class="min-h-[65px]"></div>
         </div>
       {/if}
@@ -521,7 +530,7 @@
     <UploadProgressPanel tasks={uploadTasks} />
   </div>
 
-  <!-- Toast 通知：左下角（不压图片主体），配色/圆角/字体全部对齐站点令牌 -->
+  <!-- Toast notifications: bottom-left (keeps image subjects clear); color, radius, and font all use site tokens -->
   <Toaster
     position="bottom-left"
     theme="dark"
@@ -529,7 +538,8 @@
     offset={{ bottom: '1rem', left: '1rem' }}
     toastOptions={{
       style: [
-        // 表面与描边走站点令牌，richColors 的四种状态也只染边框与图标色
+        // Surface and border use site tokens; richColors' four states tint only the
+        // border and icon colors
         '--normal-bg: var(--color-popover)',
         '--normal-bg-hover: var(--color-surface-top)',
         '--normal-border: var(--color-border)',

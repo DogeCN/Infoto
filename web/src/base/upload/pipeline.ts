@@ -4,7 +4,7 @@
 
 import type { Op, UploadPayload } from '$shared/types';
 
-// ---- constants (spec: "图床上传代理", "上传管线") ------------------------------
+// ---- constants (spec: "image-host upload proxy", "upload pipeline") ----------------
 
 /** WebP quality for image transcoding. */
 export const WEBP_QUALITY = 0.95;
@@ -19,11 +19,9 @@ export const UPLOAD_TIMEOUT_MS = 45_000;
 
 // ---- file type routing (single exit point) ----------------------------------
 
-// The hidden file input accepts `image/*,video/*`; routing below must cover
-// exactly that surface — never a single-MIME bifurcation.
-//   image/gif  | video/*          → WebM pipeline
-//   image/* (anything else)       → WebP pipeline
-//   anything else                 → explicit rejection (unknown MIME)
+// The hidden file input accepts `image/*,video/*`; routing below must cover exactly
+// that surface — never a single-MIME bifurcation: image/gif and video/* → WebM pipeline,
+// any other image/* → WebP pipeline, anything else → explicit rejection (unknown MIME).
 
 /** Which transcoding engine a file goes through. */
 export type TranscodeEngine = 'image' | 'video' | 'gif';
@@ -47,7 +45,7 @@ export function routeByMime(mime: string): RouteDecision | null {
   return null;
 }
 
-/** Artifact extension implied by the kind (spec: type 隐含扩展名). */
+/** Artifact extension implied by the kind (spec: extension implied by type). */
 export function artifactExt(kind: MediaKind): 'webp' | 'webm' {
   return kind === 'image' ? 'webp' : 'webm';
 }
@@ -74,13 +72,9 @@ export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: numbe
 }
 
 /**
- * Video/GIF token pool size (spec: "架构"), decision order:
- * 1. deviceMemory present → ≥ 8 GB: 2 tokens; < 8 GB: 1 token
- * 2. deviceMemory absent (Firefox/Safari) → hardwareConcurrency ≥ 8: 2; < 8: 1
- * 3. both unavailable → 1 (conservative)
- * Hard cap is 2: video encoding is memory- and CPU-dense, higher concurrency
- * freezes low-end devices. deviceMemory is window-only, so the page reports
- * both readings to the SharedWorker (see the poolHint protocol message).
+ * Video/GIF token pool size (spec: "architecture"): deviceMemory ≥ 8 GB → 2, < 8 GB → 1;
+ * absent (Firefox/Safari) → hardwareConcurrency ≥ 8 ? 2 : 1; neither → 1. Hard cap 2 (video
+ * encoding freezes low-end devices); the page reports both readings via the poolHint message.
  */
 export function videoPoolSize(nav: {
   deviceMemory?: unknown;
@@ -103,11 +97,9 @@ export function isOversize(bytes: number): boolean {
 // ---- GIF geometry fallback ---------------------------------------------------------
 
 /**
- * Logical Screen Descriptor size straight from the GIF header (bytes 6–9,
- * little-endian). Used when ImageDecoder's GIF track reports no
- * codedWidth/codedHeight (observed on some Chromium builds — undefined
- * dimensions make VideoEncoder.isConfigSupported reject the config).
- * Returns null for non-GIF data or degenerate sizes.
+ * Logical Screen Descriptor size from the GIF header (bytes 6–9, little-endian), used when
+ * ImageDecoder's GIF track reports no codedWidth/codedHeight — some Chromium builds do this,
+ * and undefined dimensions make isConfigSupported reject the config. Null for non-GIF or degenerate sizes.
  */
 export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: number } | null {
   if (bytes.length < 10) return null;
@@ -127,7 +119,7 @@ export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: num
   return { width, height };
 }
 
-// ---- error summary translation (全量中文化, revalidation fix #4) -----------------
+// ---- error summary translation (fully localized, revalidation fix #4) -----------------
 
 export interface TaskErrorContext {
   oversize?: boolean;
@@ -158,7 +150,7 @@ const TRANSCODE_ERROR_TEXT: Record<string, string> = {
 /**
  * Raw engine/browser messages (mediabunny, WebCodecs, OPFS…) arrive in
  * English — match the common shapes before falling back to the generic
- * 「转码失败」+ detail summary.
+ * "transcode failed" + detail summary.
  */
 const TRANSCODE_ERROR_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/unrecognizable format|unsupported or unrecognizable/i, '无法识别的媒体格式'],
@@ -172,7 +164,7 @@ const TRANSCODE_ERROR_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
 
 /**
  * Fully-Chinese, user-facing summary of one task failure. Unknown transcode
- * errors fall back to 「转码失败」 with the raw detail appended.
+ * errors fall back to "transcode failed" with the raw detail appended.
  */
 export function translateTaskError(error: string | undefined, ctx: TaskErrorContext): string {
   if (ctx.oversize) return '产物超过 100MB，无法上传';

@@ -1,4 +1,4 @@
-// IndexedDB op-log (spec: "/sync 协议"): append-only; 256 entries trigger a
+// IndexedDB op-log (spec: "/sync protocol"): append-only; 256 entries trigger a
 // sync; ops keep accumulating during a sync and the log clears on success.
 
 import type { Op } from '$shared/types';
@@ -32,10 +32,9 @@ export function openOplogDb(factory: IDBFactory = indexedDB): Promise<IDBDatabas
 }
 
 /**
- * Append one op; resolves to the new record's autoincrement key. That key is
- * the op's version handle: monotonic, persisted with the log, never reused —
- * so confirmation tracking stays correct across reloads and tabs (unlike an
- * in-memory counter, which resets and collides across sessions).
+ * Append one op; resolves to the new record's autoincrement key, which is the op's
+ * version handle: monotonic, persisted with the log, never reused — so confirmation
+ * tracking stays correct across reloads and tabs (an in-memory counter would not).
  */
 export async function appendOp(db: IDBDatabase, op: Op): Promise<IDBValidKey> {
   return new Promise((resolve, reject) => {

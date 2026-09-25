@@ -1,9 +1,6 @@
-// SharedWorker entry — transcode queue / image pool / video token pool /
-// heartbeat leases.
-// (Contract: the SharedWorker global has neither WebCodecs nor the Worker
-// constructor — image transcoding runs on this thread by importing
-// image.worker.ts as a module; video is only dispatched here, actual
-// transcoding happens in the page's top-level DedicatedWorker.)
+// SharedWorker entry — transcode queue / image pool / video token pool / heartbeat leases.
+// Contract: neither WebCodecs nor the Worker constructor exists in this global, so image transcoding runs on this thread by importing image.worker.ts as a module;
+// video jobs are only dispatched here — actual transcoding happens in the page's top-level DedicatedWorker.
 
 import type { MediaType } from '$shared/types';
 import {
@@ -82,10 +79,9 @@ interface Lease {
 const leases = new Map<string, Lease>();
 
 /**
- * Global video concurrency (1–2, contract architecture). Computed from the SW's own
- * navigator at startup; refined by each page's poolHint (deviceMemory is
- * window-only). Pages on one machine report identical readings, so a
- * last-write-wins update is exact in practice.
+ * Global video concurrency (1–2, contract architecture). Computed from the SW's own navigator
+ * at startup, then refined by each page's poolHint (deviceMemory is window-only); pages on one
+ * machine report identical readings, so last-write-wins updates are exact in practice.
  */
 let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
 

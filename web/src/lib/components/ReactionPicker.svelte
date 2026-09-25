@@ -1,5 +1,5 @@
 <script lang="ts">
-  // 表情选择浮层（spec: "自定义组件清单"）——八枚固定表情。
+  // Emoji picker popover (spec: "custom component list") — eight fixed emoji.
   import { EMOJI_SET } from '../../core/reactions';
 
   interface Props {

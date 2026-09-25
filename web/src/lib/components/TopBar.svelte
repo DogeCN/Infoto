@@ -1,7 +1,7 @@
 <script lang="ts">
-  // 顶栏（spec: "主页面"）。左：排序胶囊、设置图标（带筛选计数角标）、同步图标
-  // （带未同步计数角标、同步时旋转）；右：公告、多选、上传。
-  // 固定全宽 + 毛玻璃，不用 sticky（iOS Safari 与 backdrop-filter 有已知 bug）。
+  // Top bar (spec: "home page"). Left: sort pill, settings icon (filter-count badge), sync
+  // icon (pending-count badge, spins while syncing); right: announcements, multi-select, upload.
+  // Fixed full width + frosted glass, not sticky (iOS Safari has a known backdrop-filter bug).
   import { Settings, Megaphone, CheckSquare, UploadCloud } from '@lucide/svelte';
   import SortTabs, { type SortKey } from './SortTabs.svelte';
   import SyncButton from './SyncButton.svelte';
@@ -9,7 +9,7 @@
 
   interface Props {
     sortKey?: SortKey;
-    /** 最新↔最旧、最热↔最冷 的次级方向，按排序项各自记忆。 */
+    /** Secondary direction (newest↔oldest, hottest↔coldest), remembered per sort item. */
     sortDirs?: Partial<Record<SortKey, boolean>>;
     onSortChange?: (key: SortKey) => void;
     onSortReshuffle?: () => void;
@@ -46,8 +46,8 @@
     multiSelectActive = false,
   }: Props = $props();
 
-  // 沉浸顶栏：主轴在起点时透明无边框（纵向看 scrollTop、横向看 scrollLeft），
-  // 滚动后浮现毛玻璃
+  // Immersive top bar: transparent with no border at the start of the main axis (scrollTop when
+  // vertical, scrollLeft when horizontal), frosted glass fades in once scrolled.
   let scrolled = $derived(scroll.y > 8 || scroll.x > 8);
 </script>
 
@@ -57,10 +57,10 @@
     : 'border-b border-transparent bg-transparent'}"
 >
   <div class="flex items-center gap-1">
-    <!-- 排序胶囊：三项并列分段选择器 -->
+    <!-- Sort pill: three-item segmented selector -->
     <SortTabs {sortKey} dirs={sortDirs} onChange={onSortChange} onReshuffle={onSortReshuffle} />
 
-    <!-- 设置（有生效筛选时显示计数角标） -->
+    <!-- Settings (count badge shown while filters are active) -->
     <div class="relative">
       <button
         type="button"
@@ -86,7 +86,7 @@
       {/if}
     </div>
 
-    <!-- 同步 -->
+    <!-- Sync -->
     <SyncButton {pendingCount} {isSyncing} onSync={onSyncClick} />
   </div>
 

@@ -38,6 +38,7 @@
   import RangeSlider from './RangeSlider.svelte';
   import SingleSlider from './SingleSlider.svelte';
   import Tooltip from './Tooltip.svelte';
+  import { toast } from 'svelte-sonner';
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
@@ -172,19 +173,13 @@
     2: '视频',
   };
 
-  /** Type button hint; the sole remaining type explains it cannot be removed. */
-  function typeTip(t: MediaType): string {
-    return settings.filters.types.size === 1 && settings.filters.types.has(t)
-      ? '至少保留一个类型'
-      : TYPE_LABELS[t]!;
-  }
-
   function toggleType(t: MediaType) {
     const next = new Set(settings.filters.types);
     if (next.has(t)) {
       if (next.size === 1) {
-        // The last type stays: shake the button and flash the destructive color.
+        // The last type stays: shake the button, flash destructive, explain via toast.
         shakingType = t;
+        toast.error('至少保留一个类型');
         return;
       }
       next.delete(t);
@@ -320,7 +315,7 @@
 
       <!-- Types: three toggles, at least one remains -->
       <div class="flex items-center gap-1">
-        <Tooltip text={typeTip(0)} side="bottom">
+        <Tooltip text={TYPE_LABELS[0]!} side="bottom">
           <button
             type="button"
             class={cn(
@@ -338,7 +333,7 @@
             <Image class="size-4" />
           </button>
         </Tooltip>
-        <Tooltip text={typeTip(1)} side="bottom">
+        <Tooltip text={TYPE_LABELS[1]!} side="bottom">
           <button
             type="button"
             class={cn(
@@ -356,7 +351,7 @@
             <ImagePlay class="size-4" />
           </button>
         </Tooltip>
-        <Tooltip text={typeTip(2)} side="bottom">
+        <Tooltip text={TYPE_LABELS[2]!} side="bottom">
           <button
             type="button"
             class={cn(

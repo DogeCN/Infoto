@@ -6,12 +6,12 @@
   interface Props {
     photo: Photo;
     selfId?: number;
-    /** 布局引擎给出的绝对坐标（瀑布流定位）。 */
+    /** Absolute coordinates from the layout engine (waterfall positioning). */
     x?: number;
     y?: number;
     width: number;
     height: number;
-    /** 上传窗帘遮罩：fraction=进度（拉开比例），failed=全遮罩待重试。 */
+    /** Upload curtain overlay: fraction = progress (reveal ratio), failed = full cover + retry. */
     overlay?: { fraction?: number; failed?: boolean };
     selected?: boolean;
     multiMode?: boolean;
@@ -49,8 +49,8 @@
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
   let loaded = $state(false);
-  // 契约：type=1（无音轨动图）与 type=2（有声视频）都是视频类媒体，
-  // 卡片内一律静音循环播放，不使用海报帧
+  // Contract: type=1 (animated image without audio track) and type=2 (video with sound) are
+  // both video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);
 
   let longPressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -90,7 +90,7 @@
     if (e.key === 'Enter' || e.key === ' ') onClick?.();
   }}
 >
-  <!-- Media：加载失败渲染 <PhotoFallback>（契约「照片卡片」） -->
+  <!-- Media: on load failure render <PhotoFallback> (contract: "photo card") -->
   {#if loadFailed}
     <PhotoFallback id={photo.id} sha256={photo.sha256} />
   {:else}
@@ -125,7 +125,7 @@
     {/if}
   {/if}
 
-  <!-- 上传窗帘遮罩：随进度自下而上拉开；失败回到全遮罩 + 重试 -->
+  <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry -->
   {#if overlay}
     {#if overlay.failed}
       <div
@@ -173,7 +173,7 @@
     </div>
   {/if}
 
-  <!-- 标记徽章：叠图 pill，计数为零则整项隐藏（v1 语言） -->
+  <!-- Mark badges: pills overlaid on the image, each hidden entirely when its count is zero (v1 language) -->
   <div class="absolute bottom-2 left-2 z-10 flex items-center gap-1.5">
     {#if photo.likes.length > 0}
       <button
@@ -224,7 +224,7 @@
     {/if}
   </div>
 
-  <!-- 音量按钮（type=2 有声视频） -->
+  <!-- Volume button (type=2 video with sound) -->
   {#if photo.type === 2}
     <button
       type="button"

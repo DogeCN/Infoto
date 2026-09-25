@@ -1,9 +1,7 @@
 <script lang="ts">
-  // Markdown rendering core. markdown-it produces HTML, DOMPurify sanitizes it;
-  // :::vote lines are parsed by the host into a VoteBlock. Images are off by
-  // default (the public sidebar must not render arbitrary external image hosts,
-  // which would enable tracking pixels); trusted contexts — the editor preview
-  // and the root-only feedback detail — opt in via allowImages.
+  // Markdown rendering core: markdown-it produces HTML, DOMPurify sanitizes it, and the host
+  // parses :::vote lines into a VoteBlock. Images are off by default (user feedback must not
+  // load external hosts = tracking pixels); root-authored content opts in via allowImages.
   import { onDestroy } from 'svelte';
   import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
@@ -42,3 +40,11 @@
   class="prose prose-invert prose-sm max-w-none break-words {className}"
   role="presentation"
 ></div>
+
+<style>
+  /* Rendered images (announcements only, allowImages) follow the site's
+     rounded-card language. */
+  div :global(img) {
+    border-radius: 0.5rem;
+  }
+</style>

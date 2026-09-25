@@ -1,9 +1,7 @@
 <script lang="ts">
-  // Accessible tooltip for a single trigger element. Visible on hover and
-  // keyboard focus, and on a 500ms long-press for touch devices (the native
-  // title attribute is unreachable there). Rendered on top of <body> so
-  // overflow clipping and transformed ancestors cannot trap it. Placement
-  // flips to the opposite side near a viewport edge.
+  // Accessible tooltip for a single trigger element. Visible on hover and keyboard focus, and
+  // on a 500ms long-press for touch devices (the native title attribute is unreachable there).
+  // Portaled above <body> so overflow clipping and transformed ancestors can't trap it; placement flips to the opposite side near a viewport edge.
   import type { Snippet } from 'svelte';
 
   type Side = 'top' | 'bottom' | 'left' | 'right';

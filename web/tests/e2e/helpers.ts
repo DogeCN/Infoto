@@ -1,14 +1,9 @@
 import { expect, type Page } from '@playwright/test';
 
 /**
- * Verification-gate helpers for specs that drive the real first-entry UI.
- *
- * The local Worker runs Cloudflare's always-pass test secret, so the widget
- * solves itself a few hundred ms after mounting — the gate's visible window is
- * too brief to assert with `toBeVisible`. Instead, `prepareGate` delays the
- * first `/sync` (stretching the 401 → gate render path) and records mounts via
- * a sticky MutationObserver flag, `expectGate` asserts that flag, and
- * `passGate` waits for the widget to unmount before the spec drives the UI.
+ * Verification-gate helpers for the real first-entry UI. The local Worker's always-pass secret
+ * makes the widget self-solve in a few hundred ms (too brief for toBeVisible), so prepareGate
+ * delays the first /sync and flags mounts; expectGate asserts the flag, passGate waits for unmount.
  */
 
 declare global {

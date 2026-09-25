@@ -1,14 +1,6 @@
-// Waterfall layout engine — pure functions, no DOM (spec: "瀑布流").
-//
-// Four modes = scroll direction (v/h) x fill strategy (sequential/shortest):
-//   v + sequential → Justified ↓   equal-height rows, strict left→right top→down
-//   v + shortest   → Masonry ↓     equal-width columns, shortest column first
-//   h + sequential → Justified →   equal-width columns, strict top→down left→right
-//   h + shortest   → Masonry →     equal-height rows, shortest row first
-//
-// computeLayoutChunked yields to requestAnimationFrame every few hundred
-// items so huge albums never produce a long task; the total extent is known
-// as soon as the pass finishes, so the scrollbar settles in one shot.
+// Waterfall layout engine — pure functions, no DOM (spec: "waterfall"). Four modes = scroll direction (v/h) × fill strategy (sequential/shortest):
+// v+sequential → Justified ↓ equal-height rows, strict left→right top→down;  v+shortest → Masonry ↓ equal-width columns, shortest column first;  h+sequential → Justified → equal-width columns, strict top→down left→right;
+// h+shortest → Masonry → equal-height rows, shortest row first. computeLayoutChunked yields to requestAnimationFrame every few hundred items so huge albums never block a frame; the extent lands in one shot.
 
 export type ScrollDir = 'v' | 'h';
 export type FillStrategy = 'sequential' | 'shortest';

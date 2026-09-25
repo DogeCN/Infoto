@@ -1,7 +1,7 @@
 <script lang="ts">
-  // 公告投票控件（参考 D:\ToDo\web\announcements.html 的选项区质感，去掉了顶部
-  // 标题/「换一下」与底部「共 N 票」的小字，圆角改用本项目 --radius）。
-  // 语义：点击选项即投票；再点已选项 = 撤回（option null，后端支持）；点其它项 = 改投。
+  // Announcement vote control (after the option area of D:\ToDo\web\announcements.html; drops the
+  // top title / "shuffle" and the bottom "N votes" line, radius uses this project's --radius).
+  // Semantics: click an option to vote; click the chosen one again to retract (option null, backend-supported); click another to change the vote.
   import type { Vote } from '$shared/types';
 
   interface Props {
@@ -13,7 +13,7 @@
 
   let { options, votes, selfId = -1, onVote }: Props = $props();
 
-  // 各选项票数 & 是否最高票
+  // Vote count per option & whether it is the highest
   let counts = $derived.by(() => {
     const c = new Array<number>(options.length).fill(0);
     for (const v of votes) {
@@ -24,7 +24,7 @@
 
   let total = $derived(counts.reduce((a, b) => a + b, 0));
   let max = $derived(counts.length ? Math.max(...counts) : 0);
-  // 当前用户已投的选项序号（-1 表示未投）
+  // Option index the current user voted for (-1 = not voted)
   let chosen = $derived(votes.findLast((v) => v.userId === selfId)?.option ?? -1);
 
   function handle(option: number) {
@@ -38,9 +38,9 @@
     {@const pct = total ? (count / total) * 100 : 0}
     {@const isChosen = chosen === idx}
     {@const isWinner = max > 0 && count === max}
-    <!-- isolate：把内部的 z-10 关在按钮自己的堆叠上下文里。
-         否则 relative + z-index:auto 的按钮不会自建层，里面的 z-10 会逃到
-         外层上下文，越过父级 sticky 的推荐框之类（真出现过穿模）。 -->
+    <!-- isolate: keeps the internal z-10 inside the button's own stacking context. Otherwise a
+         relative + z-index:auto button builds no layer, so the inner z-10 escapes to the outer
+         context and climbs past the parent's sticky frame (this really did clip through). -->
     <button
       type="button"
       class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-200 {isChosen
@@ -48,7 +48,7 @@
         : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'}"
       onclick={() => handle(idx)}
     >
-      <!-- 填充条：主色低透明，随票数比例展开 -->
+      <!-- Fill bar: low-opacity primary, expands with the vote share -->
       <span
         class="vote-fill absolute inset-y-0 left-0 bg-primary/10 transition-[width] duration-500 ease-out"
         style="width: {pct.toFixed(1)}%"

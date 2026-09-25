@@ -1,8 +1,6 @@
-// Page ⇄ SharedWorker message protocol — single source of truth (contract:
-// SharedWorker code drift risk).
-// Four message families: request (page→SW) / response (SW→page) / progress /
-// lease. Note: Blob is not Transferable — always structured-clone across
-// workers, never put a Blob in a transfer list.
+// Page ⇄ SharedWorker message protocol — single source of truth (contract: SharedWorker code drift risk).
+// Four message families: request (page→SW) / response (SW→page) / progress / lease. Note: Blob is not
+// Transferable — always structured-clone across workers, never put a Blob in a transfer list.
 
 import type { MediaType } from '$shared/types';
 

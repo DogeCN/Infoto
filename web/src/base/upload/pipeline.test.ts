@@ -1,4 +1,4 @@
-// Node-side assertions for the pipeline's pure logic (spec: "验证 · 本地"):
+// Node-side assertions for the pipeline's pure logic (spec: "validation · local"):
 // type routing, concurrency pools, oversize gate, op shape.
 
 import assert from 'node:assert/strict';
@@ -20,7 +20,7 @@ import {
   WEBP_QUALITY,
 } from './pipeline.ts';
 
-// ---- constants (spec "架构" / "阶段二") ---------------------------------------
+// ---- constants (spec "architecture" / "phase 2") ----------------------------------
 
 test('spec constants are exact', () => {
   assert.equal(WEBP_QUALITY, 0.95);
@@ -107,7 +107,7 @@ test('imagePoolSize: downlink under 2 Mbps caps the pool at 2', () => {
   assert.equal(imagePoolSize(4, 0.5), 2);
 });
 
-// ---- video token pool (spec "架构": deviceMemory → hardwareConcurrency → 1) ------
+// ---- video token pool (spec "architecture": deviceMemory → hardwareConcurrency → 1) ------
 
 test('videoPoolSize: deviceMemory wins when present (≥8 GB → 2, else 1)', () => {
   assert.equal(videoPoolSize({ deviceMemory: 8, hardwareConcurrency: 2 }), 2);

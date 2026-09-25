@@ -1,16 +1,7 @@
 <script lang="ts">
-  // Normalized dual-thumb range slider. Internal tLo/tHi are high-precision
-  // floats in [0,1], decoupled from the business range (heat -1..1, bytes
-  // 0..tens of millions). A log scale keeps byte-size dragging usable across
-  // orders of magnitude.
-  //
-  // Rules:
-  // 1. Emit only when a mapped value changes (round, or exp/round for log),
-  //    so one drag never triggers hundreds of upstream recomputes. Bubbles
-  //    appear only while dragging / hovering / focus is on a thumb.
-  // 2. Thumbs keep a minimum visual gap; business values are post-adjusted
-  //    to differ by at least one.
-  // 3. Zero transition on the drag path (fill and thumbs).
+  // Normalized dual-thumb range slider: tLo/tHi are high-precision [0,1] floats decoupled from the business range (heat -1..1, bytes up to tens of millions); a log scale keeps byte-size dragging usable across orders of magnitude.
+  // Emit only when a mapped value changes (round, or exp/round for log) so one drag never triggers hundreds of upstream recomputes; bubbles show only while dragging / hovering / focus is on a thumb.
+  // Thumbs keep a minimum visual gap with business values post-adjusted to differ by at least one, and the drag path (fill and thumbs) has zero transition.
   import { onMount } from 'svelte';
   import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
@@ -110,12 +101,9 @@
     return `calc(${THUMB / 2}px + ${pct}% - ${t * THUMB}px)`;
   }
   /**
-   * Bubble geometry in px, measured against the live track width and the
-   * bubble's own rendered width.
-   *
-   * The caret is the bubble's only pointing anchor, so it must stay on the
-   * thumb centre: near the ends the body stops at the track edge and the caret
-   * slides along the bottom edge instead of leaving the thumb behind.
+   * Bubble geometry in px, measured against the live track width and the bubble's own
+   * rendered width. The caret is the bubble's only pointing anchor, so it must stay on
+   * the thumb centre: near the ends the body stops at the track edge and the caret slides along it.
    */
   function bubblePos(t: number, bw: number): { left: number; tip: number } {
     const w = trackWidth;
@@ -263,15 +251,15 @@
     onpointerup={endDrag}
     onpointercancel={endDrag}
   >
-    <!-- 底轨 -->
+    <!-- base track -->
     <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-border"></div>
-    <!-- 两柄之间的高亮填充（端点用拇指中心坐标，与柄严格同轴） -->
+    <!-- Highlight fill between the thumbs (endpoints use thumb centres, strictly coaxial with them) -->
     <div
       class="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-primary"
       style="left: {thumbCenter(tLo)}; right: calc(100% - {thumbCenter(tHi)})"
     ></div>
 
-    <!-- 气泡：仅被拖动且映射值已变 / 键盘聚焦的那一个柄显示 -->
+    <!-- Bubble: shown only for the hovered / dragged thumb (mapped value changed) or the keyboard-focused one -->
     {#if drag === 'lo' || hover === 'lo' || focus === 'lo'}
       {@const bs = bubblePos(tLo, bwLo)}
       <div
@@ -307,7 +295,7 @@
       </div>
     {/if}
 
-    <!-- 下限柄 -->
+    <!-- lower thumb -->
     <div
       data-thumb="lo"
       role="slider"
@@ -329,7 +317,7 @@
       onblur={() => (focus = null)}
     ></div>
 
-    <!-- 上限柄 -->
+    <!-- upper thumb -->
     <div
       data-thumb="hi"
       role="slider"
