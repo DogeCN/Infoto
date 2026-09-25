@@ -1,7 +1,7 @@
 <script lang="ts">
   import App from './App.svelte';
   import Admin from './routes/admin/Admin.svelte';
-  import ErrorPage from '$lib/components/custom/ErrorPage.svelte';
+  import ErrorPage from '$lib/components/ErrorPage.svelte';
 
   let route = $state(window.location.pathname);
 

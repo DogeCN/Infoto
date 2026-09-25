@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 @plugin "@tailwindcss/typography";
 
 @theme {
@@ -46,7 +46,12 @@
   body {
     background: var(--color-background);
     color: var(--color-foreground);
-    font-family: "Inter", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+    font-family:
+      'Inter',
+      'Noto Sans SC',
+      system-ui,
+      -apple-system,
+      sans-serif;
     -webkit-font-smoothing: antialiased;
     -webkit-user-select: none;
     user-select: none;
