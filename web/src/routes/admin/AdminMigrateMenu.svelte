@@ -1,7 +1,6 @@
 <script lang="ts">
   import { Download, Upload } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
-  import Popover from '$lib/components/Popover.svelte';
   import Progress from '$lib/components/Progress.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';
   import { migrateSql } from '../../core/api/migrateClient';
@@ -11,50 +10,36 @@
   }
 
   let { onImported }: Props = $props();
-  let importOpen = $state(false);
-  let selectedFile = $state<File | null>(null);
+  let fileInput = $state<HTMLInputElement | null>(null);
   let importing = $state(false);
   let exporting = $state(false);
+  // Pick-to-import leaves no confirm step, so the progress row below the buttons
+  // is the ONLY feedback an import gives — without it a slow or hung upload looks
+  // exactly like a dead button (the import button stays disabled throughout).
   let progress = $state(0);
-  let status = $state<'idle' | 'uploading' | 'success' | 'error'>('idle');
-  let message = $state('');
-
-  function selectFile(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0] ?? null;
-    input.value = '';
-    selectedFile = file;
-    progress = 0;
-    status = 'idle';
-    message = '';
-  }
+  let importName = $state('');
 
   function setError(nextMessage: string): void {
-    status = 'error';
-    message = nextMessage;
     toast.error('导入失败', { description: nextMessage });
   }
 
-  async function importSelected(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
-    if (importing || !selectedFile) return;
+  /** Picking a file starts the import immediately — no confirm dialog. */
+  async function importSelected(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0] ?? null;
+    input.value = '';
+    if (importing || !file) return;
     importing = true;
-    status = 'uploading';
-    message = '';
+    importName = file.name;
     progress = 0;
-
     try {
-      const result = await migrateSql(selectedFile, {
-        onProgress: (fraction) => (progress = fraction),
-      });
+      const result = await migrateSql(file, { onProgress: (fraction) => (progress = fraction) });
       if (!result.ok) {
         setError(result.message);
         return;
       }
       const completion = await onImported();
       if (completion.ok) {
-        status = 'success';
-        message = completion.message;
         toast.success('导入完成', { description: completion.message });
       } else {
         setError(completion.message);
@@ -99,7 +84,7 @@
   }
 </script>
 
-<div class="flex items-center gap-1">
+<div class="relative flex items-center gap-1">
   <Tooltip text={exporting ? '导出中' : '导出 SQL'}>
     <button
       type="button"
@@ -112,57 +97,30 @@
     </button>
   </Tooltip>
 
-  <Popover bind:open={importOpen} widthClass="w-80">
-    {#snippet trigger()}
-      <button
-        type="button"
-        aria-label="导入 SQL"
-        class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-      >
-        <Upload class="size-5" />
-      </button>
-    {/snippet}
-    <form class="w-72 max-w-[calc(100vw-2rem)] space-y-3" onsubmit={importSelected}>
-      <div>
-        <label for="sql-import-file" class="mb-1.5 block text-sm font-medium">SQL 文件</label>
-        <input
-          id="sql-import-file"
-          type="file"
-          accept=".sql"
-          disabled={importing}
-          class="block w-full text-xs text-muted-foreground file:mr-2 file:rounded-md file:border-0 file:bg-secondary file:px-2.5 file:py-1.5 file:text-xs file:font-medium file:text-secondary-foreground"
-          onchange={selectFile}
-        />
+  <Tooltip text={importing ? '导入中' : '导入 SQL'}>
+    <button
+      type="button"
+      class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground disabled:opacity-50"
+      aria-label="导入 SQL"
+      disabled={importing}
+      onclick={() => fileInput?.click()}
+    >
+      <Upload class="size-5" />
+    </button>
+  </Tooltip>
+  <input bind:this={fileInput} type="file" accept=".sql" class="hidden" onchange={importSelected} />
+
+  {#if importing}
+    <div
+      class="absolute top-full right-0 z-40 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 shadow-lg"
+      role="status"
+      aria-live="polite"
+    >
+      <div class="mb-1.5 flex items-center justify-between gap-2 text-xs">
+        <span class="truncate text-muted-foreground">正在导入 {importName}</span>
+        <span class="shrink-0 tabular-nums">{Math.round(progress * 100)}%</span>
       </div>
-      {#if selectedFile}
-        <Tooltip text={selectedFile.name}>
-          <p class="truncate text-xs text-muted-foreground">已选择：{selectedFile.name}</p>
-        </Tooltip>
-      {/if}
-      <p class="rounded-md bg-warning/10 px-2.5 py-2 text-xs text-warning">导入前请先执行导出</p>
-      {#if status === 'uploading'}
-        <div class="space-y-1.5">
-          <div class="flex items-center justify-between text-xs text-muted-foreground">
-            <span>正在上传</span>
-            <span class="tabular-nums">{Math.round(progress * 100)}%</span>
-          </div>
-          <Progress value={progress} label="SQL 导入进度" />
-        </div>
-      {:else if message}
-        <p
-          class="break-words text-xs {status === 'error' ? 'text-destructive' : 'text-success'}"
-          aria-live="polite"
-        >
-          {message}
-        </p>
-      {/if}
-      <button
-        type="submit"
-        disabled={!selectedFile || importing}
-        class="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {importing ? '导入中' : '开始导入'}
-      </button>
-    </form>
-  </Popover>
+      <Progress value={progress} label="SQL 导入进度" />
+    </div>
+  {/if}
 </div>

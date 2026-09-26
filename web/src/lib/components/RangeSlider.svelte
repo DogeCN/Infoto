@@ -62,25 +62,36 @@
   let loVal = $derived(mapValue(tLo));
   let hiVal = $derived(mapValue(tHi));
 
-  // External controlled values flow back only when the mapped values differ
-  // from props (during a drag props are the values just emitted; resets and
-  // outside changes snap correctly).
+  // External controlled values flow back when the mapped values differ from
+  // props by more than a half business unit. Within a drag the emitted value
+  // is the rounded integer while the thumb sits at the continuous pointer
+  // position, so a sub-unit difference is expected and must NOT yank the thumb
+  // back; only real external changes (resets, other inputs) resync.
   $effect(() => {
     void value;
     void min;
     void max;
     void scale;
-    if (mapValue(tLo) !== value[0]) tLo = tFromValue(value[0]);
-    if (mapValue(tHi) !== value[1]) tHi = tFromValue(value[1]);
+    if (Math.abs(mapValue(tLo) - value[0]) > 0.5) tLo = tFromValue(value[0]);
+    if (Math.abs(mapValue(tHi) - value[1]) > 0.5) tHi = tFromValue(value[1]);
   });
 
   // ---- geometry: ResizeObserver maintains the track width ---------------
   let trackEl = $state<HTMLDivElement | undefined>(undefined);
   let trackWidth = $state(0);
   const usablePx = $derived(Math.max(1, trackWidth - THUMB));
-  /** Minimum normalized gap for visual non-overlap; the business ≥1 rule is
-   *  enforced by the post-adjustment in applyT. */
-  const minGap = $derived((THUMB + BREATHE) / usablePx);
+  /** Minimum normalized gap: at least the visual thumb gap, but never smaller
+   *  than one business unit. When the range is narrow (e.g. 0..5) the pixel
+   *  gap can map to < 1 unit, which would let the two thumbs sit at the same
+   *  integer and trigger a snap-back; taking the larger of the two keeps the
+   *  business values at least one unit apart. */
+  const minGap = $derived.by(() => {
+    const visual = (THUMB + BREATHE) / usablePx;
+    const span = max - min;
+    if (span <= 0) return visual;
+    const unit = Math.abs(tFromValue(min + 1) - tFromValue(min));
+    return Math.max(visual, unit);
+  });
 
   onMount(() => {
     if (!trackEl) return;

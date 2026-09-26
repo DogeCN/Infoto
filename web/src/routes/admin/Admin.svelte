@@ -7,6 +7,7 @@
   import SyncButton from '$lib/components/SyncButton.svelte';
   import { toastOptions } from '$lib/toastOptions';
   import { getEngine } from '../../core/sync/engine';
+  import { TurnstileRequiredError } from '../../core/api/syncClient';
   import { createAppStore } from '../../state/appStore.svelte';
   import { UploadPipeline } from '../../transcode/pipeline';
   import type { PanelTask } from '$lib/components/UploadProgressPanel.svelte';
@@ -22,6 +23,12 @@
     onSyncResponse: (response, context) => store.applySync(response, context),
     onError: (phase, error) => {
       console.error('[sync]', phase, error);
+      // 401 (no cookie / expired): confirmed anonymous — leave /admin for the
+      // home first-entry flow instead of waiting out the grace period.
+      if (error instanceof TurnstileRequiredError) {
+        identityRejected = true;
+        return;
+      }
       const now = Date.now();
       if (now - syncErrorToastAt > 10_000) {
         syncErrorToastAt = now;
@@ -43,6 +50,8 @@
   // Editor image uploads share the SharedWorker pipeline with the waterfall
   // (transcode → hash → upload); this row carries their live stage.
   let editorUploadTask = $state<PanelTask | null>(null);
+  /** Job id of the in-flight editor upload (null when idle/terminal). */
+  let editorJobId: string | null = null;
 
   $effect(() => {
     if (initialized) return;
@@ -55,6 +64,7 @@
   $effect(() =>
     pipeline.onEditorTask((task) => {
       const terminal = task.phase === 'done' || task.phase === 'failed';
+      editorJobId = terminal ? null : task.jobId;
       editorUploadTask = terminal
         ? null
         : {
@@ -68,10 +78,23 @@
 
   const isRoot = $derived(store.selfId === 0);
 
-  // Identity unknown (no cached selfId, /sync not back yet): return home so Turnstile can create
-  // one — don't wait on /admin or show loading. replace() the history entry so Back skips /admin.
+  // Identity gate. selfId === -1 means "unknown", NOT "anonymous": on a cold visit
+  // (no cached self-id) /sync is still in flight, and an unconditional redirect
+  // raced it — a valid root got bounced home whenever /sync answered slowly.
+  // Redirect home only once identity is CONFIRMED absent: the engine saw a 401
+  // (Turnstile required, handled here as "not authed") or /sync stayed unanswered
+  // after a grace period. replace() so Back skips /admin.
+  let identityRejected = false;
   $effect(() => {
-    if (store.selfId === -1) location.replace('/');
+    if (store.selfId !== -1) return;
+    if (identityRejected) {
+      location.replace('/');
+      return;
+    }
+    const grace = setTimeout(() => {
+      if (store.selfId === -1) location.replace('/');
+    }, 3000);
+    return () => clearTimeout(grace);
   });
 
   function openCreateAnnouncement() {
@@ -94,6 +117,14 @@
   }
 
   function closeAnnouncementEditor() {
+    // Closing mid-upload orphans it (the URL would never be inserted) — cancel
+    // so the SW stops the leg and the artifact work isn't wasted; the jobRemoved
+    // echo clears the pipeline's editor snapshot, so reopening shows no stale row.
+    if (editorJobId) {
+      pipeline.cancel(editorJobId);
+      editorJobId = null;
+    }
+    editorUploadTask = null;
     editorOpen = false;
     editingAnnouncement = null;
   }
@@ -186,6 +217,11 @@
         onSave={saveAnnouncement}
         onCancel={closeAnnouncementEditor}
         uploadTask={editorUploadTask}
+        onCancelUpload={() => {
+          const id = editorUploadTask?.jobId;
+          if (id) pipeline.cancel(id);
+        }}
+        onRetryUpload={(jobId) => pipeline.retryEditorUpload(jobId)}
       />
     {/if}
 

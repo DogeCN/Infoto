@@ -40,6 +40,19 @@ describe('markdown toolbar transforms', () => {
     });
   });
 
+  it('carries the source file name into the alt text', () => {
+    expect(insertImageAt('', 0, 'https://img/x.webm', 'clip.gif')).toEqual({
+      value: '![clip.gif](https://img/x.webm)',
+      selection: { start: 31, end: 31 },
+    });
+  });
+
+  it('strips brackets out of the alt text so the link stays parseable', () => {
+    expect(insertImageAt('', 0, 'https://img/x.webm', 'a]b[c').value).toBe(
+      '![abc](https://img/x.webm)',
+    );
+  });
+
   it('keeps asynchronous carets stable across edits before the insertion point', () => {
     expect(mapOffsetThroughEdit(4, 'abcd', 'abXcd')).toBe(5);
     expect(mapOffsetThroughEdit(8, 'abcdefgh', 'abXefgh')).toBe(7);

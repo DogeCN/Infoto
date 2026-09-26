@@ -54,8 +54,10 @@
     onDownload,
   }: Props = $props();
 
-  /** Directional swipe threshold (px). */
+  /** Swipe trigger distance (px) at a 768px-wide viewport; scaled per gesture by page width. */
   const SWIPE_THRESHOLD = 60;
+  /** Distance (px) where the direction hint starts showing, same reference. */
+  const HINT_THRESHOLD = 10;
   /** Zoom bounds. */
   const MIN_SCALE = 1;
   const MAX_SCALE = 5;
@@ -96,6 +98,9 @@
   let pinchStartScale = 1;
   const active = new Map<number, { x: number; y: number }>();
   let downPoint = { x: 0, y: 0 };
+  /** Viewport-scaled thresholds for the gesture in flight (set on pointerdown). */
+  let hintAt = HINT_THRESHOLD;
+  let triggerAt = SWIPE_THRESHOLD;
 
   /** Direction hint (reactive: only these two values go through render). */
   let gestureDir = $state<null | 'left' | 'right' | 'up' | 'down'>(null);
@@ -129,8 +134,18 @@
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
 
+  /** Page-width-proportional thresholds: `base` is defined for a 768px-wide
+   *  viewport and scales linearly with the page width — no device clamping, so
+   *  wide screens need a proportionally longer drag instead of a touch. */
+  function scaledThreshold(base: number): number {
+    const w = typeof window === 'undefined' ? 768 : window.innerWidth;
+    return Math.round((base * w) / 768);
+  }
+
   function onPointerDown(e: PointerEvent) {
     if (showMenu) return;
+    hintAt = scaledThreshold(HINT_THRESHOLD);
+    triggerAt = scaledThreshold(SWIPE_THRESHOLD);
     active.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (active.size === 1) {
       dragging = true;
@@ -193,16 +208,16 @@
     const ay = Math.abs(previewDy);
     const dir = ax > ay ? (previewDx > 0 ? 'right' : 'left') : previewDy > 0 ? 'down' : 'up';
     const dist = Math.max(ax, ay);
-    if (dist > 10) {
+    if (dist > hintAt) {
       gestureDir = dir;
-      gestureRatio = Math.min(dist / SWIPE_THRESHOLD, 1);
+      gestureRatio = Math.min(dist / triggerAt, 1);
     } else {
       gestureDir = null;
       gestureRatio = 0;
     }
   }
 
-  /** Shared entry for mark actions (top-bar icons, keyboard, gestures). */
+  /** Explicit toggles (top-bar icon buttons only). */
   function toggleLike(): void {
     if (!photo) return;
     onLike?.(photo);
@@ -222,18 +237,37 @@
     toast.success(photo.reports.includes(selfId) ? '已请求删除' : '已取消请求删除');
   }
 
+  /** Gesture/arrow marks are one-way: repeating them must not cancel the mark
+   *  (only the top-bar buttons toggle). Cross-marks still switch, since the
+   *  store drops the opposite mark when adding a new one. */
+  function markLike(): void {
+    if (isLiked) {
+      toast.success('已标记喜欢');
+      return;
+    }
+    toggleLike();
+  }
+
+  function markDislike(): void {
+    if (isDisliked) {
+      toast.success('已标记不喜欢');
+      return;
+    }
+    toggleDislike();
+  }
+
   function triggerGesture(dir: 'left' | 'right' | 'up' | 'down'): void {
     if (!photo) return;
     applyWrap(0, 0, true);
     if (dir === 'left' || dir === 'right') {
-      if (dir === 'left') toggleLike();
-      else toggleDislike();
+      if (dir === 'left') markLike();
+      else markDislike();
       gestureDir = dir;
       gestureRatio = 1;
       setTimeout(() => {
         gestureDir = null;
         gestureRatio = 0;
-        if (currentIndex < photos.length - 1) onNavigate?.(currentIndex + 1);
+        onNavigate?.(currentIndex < photos.length - 1 ? currentIndex + 1 : 0);
       }, 200);
     } else if (dir === 'down') {
       onDownload?.(photo);
@@ -275,7 +309,7 @@
     const ax = Math.abs(dx);
     const ay = Math.abs(dy);
     const dist = Math.max(ax, ay);
-    if (dist >= SWIPE_THRESHOLD) {
+    if (dist >= triggerAt) {
       const dir = ax > ay ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
       triggerGesture(dir as 'left' | 'right' | 'up' | 'down');
       return;
@@ -287,7 +321,12 @@
     applyWrap(0, 0, true);
   }
 
-  function onDblClick(): void {
+  function onDblClick(e: MouseEvent): void {
+    // e.target is the capture element (pointer capture retargets click/dblclick
+    // to the stage), so hit-test the point itself: only a dblclick landing on
+    // the media may toggle zoom; bars/buttons/backdrop must not.
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    if (!hit?.closest('.lb-media')) return;
     if (showMenu || gestureMoved) return;
     if (scale > 1.01) resetZoom(true);
     else {
@@ -367,15 +406,14 @@
     }
   }
 
+  // Wrap-around: first and last photos are connected.
   function goPrev() {
-    if (currentIndex > 0) {
-      onNavigate?.(currentIndex - 1);
-    }
+    if (photos.length < 2) return;
+    onNavigate?.(currentIndex > 0 ? currentIndex - 1 : photos.length - 1);
   }
   function goNext() {
-    if (currentIndex < photos.length - 1) {
-      onNavigate?.(currentIndex + 1);
-    }
+    if (photos.length < 2) return;
+    onNavigate?.(currentIndex < photos.length - 1 ? currentIndex + 1 : 0);
   }
 
   // On switch: reset transforms and mute (wrap may be unmounted; the effect
@@ -626,7 +664,7 @@
           <button
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
-            disabled={currentIndex === 0}
+            disabled={photos.length < 2}
             onclick={goPrev}
           >
             <ChevronLeft class="size-6" />
@@ -636,7 +674,7 @@
           <button
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
-            disabled={currentIndex === photos.length - 1}
+            disabled={photos.length < 2}
             onclick={goNext}
           >
             <ChevronRight class="size-6" />
@@ -684,7 +722,7 @@
 
       <button
         type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+        class="flex flex-col items-center gap-2 rounded-xl p-4 text-primary transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/10"
         onclick={() => {
           window.open(
             `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`,

@@ -73,6 +73,7 @@ export default defineConfig({
       // built dist/index.html (hashed /assets) that does not exist on the dev server → Vite answers text/html, the browser blocks it → white
       // screen. In dev Vite's SPA fallback serves the shell (/src/main.ts) and the root check falls back to selfId === 0 from /sync (same as e2e).
       '/admin/migrate': proxy(),
+      '/admin/announcements': proxy(),
     },
   },
   test: {

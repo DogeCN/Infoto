@@ -30,15 +30,20 @@
     onDelete,
   }: Props = $props();
 
+  // Optimistic upload entries carry negative ids and are excluded from the
+  // selection upstream — counting them here would make "select all" permanently
+  // unreachable (selected can never grow to photos.length) and would inflate the
+  // advertised download size with files that cannot be downloaded.
+  let selectable = $derived(photos.filter((p) => p.id >= 0));
   let count = $derived(selected.size);
   let totalSize = $derived(
-    photos.filter((p) => selected.has(p.id)).reduce((sum, p) => sum + (p.size || 0), 0),
+    selectable.filter((p) => selected.has(p.id)).reduce((sum, p) => sum + (p.size || 0), 0),
   );
-  let allSelected = $derived(count === photos.length && photos.length > 0);
+  let allSelected = $derived(count === selectable.length && selectable.length > 0);
 
   /** Whether any selected item carries the current user's mark (otherwise the unmark button is greyed out). */
   let hasAnyMark = $derived(
-    photos.some(
+    selectable.some(
       (p) =>
         selected.has(p.id) &&
         (p.likes.includes(selfId) || p.dislikes.includes(selfId) || p.reports.includes(selfId)),
@@ -46,7 +51,7 @@
   );
 
   const btn =
-    'inline-flex size-10 items-center justify-center rounded-full transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10';
+    'inline-flex items-center justify-center rounded-full transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10';
 </script>
 
 <div
@@ -59,7 +64,7 @@
   <div class="flex items-center gap-1.5">
     <button
       type="button"
-      class="{btn} {allSelected ? 'text-primary' : 'text-muted-foreground'}"
+      class="{btn} size-10 {allSelected ? 'text-primary' : 'text-muted-foreground'}"
       onclick={allSelected ? onDeselectAll : onSelectAll}
       title={allSelected ? '取消全选' : '全选'}
     >
@@ -80,22 +85,22 @@
   <div class="flex items-center gap-1">
     <button
       type="button"
-      class="{btn} text-success hover:bg-success/10 disabled:opacity-40"
+      class="{btn} h-10 text-success hover:bg-success/10 disabled:opacity-40 {count > 0
+        ? 'gap-1 px-2.5'
+        : 'size-10'}"
       onclick={onDownload}
       disabled={count === 0}
       title="下载"
     >
       <Download class="size-5" />
+      {#if count > 0}
+        <span class="text-xs tabular-nums text-muted-foreground">{humanSize(totalSize)}</span>
+      {/if}
     </button>
-    {#if count > 0}
-      <span class="-ml-1 mr-1 text-xs tabular-nums text-muted-foreground">
-        {humanSize(totalSize)}
-      </span>
-    {/if}
 
     <button
       type="button"
-      class="{btn} text-muted-foreground hover:text-foreground disabled:opacity-40"
+      class="{btn} size-10 text-muted-foreground hover:text-foreground disabled:opacity-40"
       class:text-warning={hasAnyMark}
       onclick={onUnmark}
       disabled={!hasAnyMark}
@@ -107,7 +112,7 @@
     {#if selfId === 0}
       <button
         type="button"
-        class="{btn} text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+        class="{btn} size-10 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         onclick={onDelete}
         disabled={count === 0}
         title="删除"

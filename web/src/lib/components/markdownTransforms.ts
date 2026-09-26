@@ -72,9 +72,21 @@ export function insertMarkdownBlock(
   };
 }
 
-export function insertImageAt(value: string, position: number, url: string): TextTransform {
+/**
+ * Inserts `![alt](url)` at a position clamped to the value. `alt` doubles as
+ * the <video> aria-label once a WebM artifact is rendered, so it is worth
+ * passing the source file name.
+ */
+export function insertImageAt(
+  value: string,
+  position: number,
+  url: string,
+  alt = '',
+): TextTransform {
   const safePosition = Math.max(0, Math.min(value.length, position));
-  const markdown = `![](${url})`;
+  // Brackets would break the link text; nothing else in Markdown needs escaping here.
+  const safeAlt = alt.replace(/[[\]]/g, '');
+  const markdown = `![${safeAlt}](${url})`;
   return {
     value: value.slice(0, safePosition) + markdown + value.slice(safePosition),
     selection: {

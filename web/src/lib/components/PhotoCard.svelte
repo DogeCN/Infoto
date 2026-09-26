@@ -1,6 +1,16 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import type { Photo } from '$shared/types';
-  import { ThumbsUp, ThumbsDown, Flag, VolumeX, Volume2, Check, RotateCcw } from '@lucide/svelte';
+  import {
+    ThumbsUp,
+    ThumbsDown,
+    Flag,
+    VolumeX,
+    Volume2,
+    Check,
+    RotateCcw,
+    X,
+  } from '@lucide/svelte';
   import PhotoFallback from './PhotoFallback.svelte';
 
   interface Props {
@@ -12,11 +22,13 @@
     width: number;
     height: number;
     /** Upload curtain overlay: fraction = progress (reveal ratio), failed = full cover + retry. */
-    overlay?: { fraction?: number; failed?: boolean };
+    overlay?: { fraction?: number; failed?: boolean; error?: string };
     selected?: boolean;
     multiMode?: boolean;
     onClick?: () => void;
     onRetryUpload?: () => void;
+    /** Dismiss a failed upload card (removes it from the waterfall). */
+    onDismissUpload?: () => void;
     onLongPress?: () => void;
     onLike?: () => void;
     onDislike?: () => void;
@@ -36,6 +48,7 @@
     multiMode = false,
     onClick,
     onRetryUpload,
+    onDismissUpload,
     onLongPress,
     onLike,
     onDislike,
@@ -48,7 +61,12 @@
   let isReported = $derived(photo.reports.includes(selfId));
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
-  let loaded = $state(false);
+  // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
+  // opacity) is *derived* from `loadedUrl === photo.url`, so a plain object-identity swap on
+  // every /sync — same URL, new reference — keeps the already-loaded image visible without any
+  // effect or manual diff. The browser caches the decoded image by URL itself; we only track
+  // which resource this card is currently showing.
+  let loadedUrl = $state('');
   // Contract: type=1 (animated image without audio track) and type=2 (video with sound) are
   // both video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);
@@ -68,6 +86,15 @@
     if (longPressTimer) clearTimeout(longPressTimer);
   }
 
+  // Releasing outside the card (drag off) or unmounting mid-press must not fire
+  // the long press afterwards — it toggles multi-select from nowhere.
+  function cancelLongPress() {
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = undefined;
+  }
+
+  onDestroy(() => cancelLongPress());
+
   function handleClick() {
     if (didLongPress) return;
     onClick?.();
@@ -86,63 +113,89 @@
   onpointerdown={handlePointerDown}
   onpointerup={handlePointerUp}
   onpointercancel={handlePointerUp}
+  onpointerleave={cancelLongPress}
   onkeydown={(e) => {
     if (e.key === 'Enter' || e.key === ' ') onClick?.();
   }}
 >
-  <!-- Media: on load failure render <PhotoFallback> (contract: "photo card") -->
+  <!-- Media: on load failure render <PhotoFallback> (contract: "photo card").
+       Empty URL (upload still in flight) keeps the skeleton instead of an <img>
+       whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
     <PhotoFallback id={photo.id} sha256={photo.sha256} />
-  {:else}
-    {#if !loaded}
+  {:else if photo.url}
+    {#if loadedUrl !== photo.url}
       <div class="absolute inset-0 skeleton" aria-hidden="true"></div>
     {/if}
     {#if isVideo}
       <video
         src={photo.url}
-        class="h-full w-full object-cover transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loaded
+        class="h-full w-full object-cover transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loadedUrl ===
+        photo.url
           ? 'opacity-100'
           : 'opacity-0'}"
         muted={volumeMuted}
         loop
         autoplay
         playsinline
-        onloadeddata={() => (loaded = true)}
+        onloadeddata={() => (loadedUrl = photo.url)}
         onerror={() => (loadFailed = true)}
       ></video>
     {:else}
       <img
         src={photo.url}
         alt=""
-        class="h-full w-full object-cover transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loaded
+        class="h-full w-full object-cover transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loadedUrl ===
+        photo.url
           ? 'opacity-100'
           : 'opacity-0'}"
         loading="lazy"
         draggable="false"
-        onload={() => (loaded = true)}
+        onload={() => (loadedUrl = photo.url)}
         onerror={() => (loadFailed = true)}
       />
     {/if}
+  {:else}
+    <div class="absolute inset-0 skeleton" aria-hidden="true"></div>
   {/if}
 
-  <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry -->
+  <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry / dismiss -->
   {#if overlay}
     {#if overlay.failed}
       <div
         class="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/75"
       >
-        <button
-          type="button"
-          class="flex size-11 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary hover:text-primary-foreground"
-          title="重试上传"
-          onclick={(e) => {
-            e.stopPropagation();
-            onRetryUpload?.();
-          }}
-        >
-          <RotateCcw class="size-5" />
-        </button>
-        <span class="text-xs text-white/70">上传失败</span>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="flex size-11 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary hover:text-primary-foreground"
+            title="重试上传"
+            aria-label="重试上传"
+            onclick={(e) => {
+              e.stopPropagation();
+              onRetryUpload?.();
+            }}
+          >
+            <RotateCcw class="size-5" />
+          </button>
+          <button
+            type="button"
+            class="flex size-11 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/25 hover:text-white"
+            title="移除此项"
+            aria-label="移除此项"
+            onclick={(e) => {
+              e.stopPropagation();
+              onDismissUpload?.();
+            }}
+          >
+            <X class="size-5" />
+          </button>
+        </div>
+        <!-- "上传失败" stays the first words (stable, scannable); the translated
+             reason underneath tells timeout / oversize / codec / network apart. -->
+        <span class="px-3 text-center text-xs text-white/70">
+          上传失败{overlay.error ? `：${overlay.error.replace(/^转码失败[：:]/, '')}` : ''}
+        </span>
       </div>
     {:else}
       <div
@@ -173,53 +226,51 @@
     </div>
   {/if}
 
-  <!-- Mark badges: pills overlaid on the image, each hidden entirely when its count is zero (v1 language) -->
+  <!-- Mark badges: pills overlaid on the image, each hidden entirely when its count is zero (v1 language).
+       Color language: the user's own mark = solid cyan (fill-current on the icon); everyone else's
+       marks = outline cyan at reduced opacity (plain white read as monotone). -->
   <div class="absolute bottom-2 left-2 z-10 flex items-center gap-1.5">
     {#if photo.likes.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75 {isLiked
-          ? 'text-[#f43f5e]'
-          : ''}"
+        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
         onclick={(e) => {
           e.stopPropagation();
           onLike?.();
         }}
       >
-        <ThumbsUp class="size-3" />
-        <span>{photo.likes.length}</span>
+        <ThumbsUp class="size-3 {isLiked ? 'fill-current text-[#f43f5e]' : 'text-[#f43f5e]/60'}" />
+        <span class="tabular-nums">{photo.likes.length}</span>
       </button>
     {/if}
 
     {#if photo.dislikes.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75 {isDisliked
-          ? 'text-[#3b82f6]'
-          : ''}"
+        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
         onclick={(e) => {
           e.stopPropagation();
           onDislike?.();
         }}
       >
-        <ThumbsDown class="size-3" />
-        <span>{photo.dislikes.length}</span>
+        <ThumbsDown
+          class="size-3 {isDisliked ? 'fill-current text-[#3b82f6]' : 'text-[#3b82f6]/60'}"
+        />
+        <span class="tabular-nums">{photo.dislikes.length}</span>
       </button>
     {/if}
 
     {#if photo.reports.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75 {isReported
-          ? 'text-amber-400'
-          : ''}"
+        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
         onclick={(e) => {
           e.stopPropagation();
           onRequestDelete?.();
         }}
       >
-        <Flag class="size-3" />
-        <span>{photo.reports.length}</span>
+        <Flag class="size-3 {isReported ? 'fill-current text-amber-400' : 'text-amber-400/60'}" />
+        <span class="tabular-nums">{photo.reports.length}</span>
       </button>
     {/if}
   </div>

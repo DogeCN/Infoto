@@ -19,7 +19,8 @@
   import { postSync, TurnstileRequiredError } from './core/api/syncClient';
   import { createAppStore } from './state/appStore.svelte';
   import { downloadOne, downloadZip } from './core/download';
-  import { UploadPipeline, type PipelineTaskSnapshot } from './transcode/pipeline';
+  import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from './transcode/pipeline';
+  import { translateTaskError } from '$base/upload/pipeline';
   import type { Photo } from '$shared/types';
   import type { FilterSettings, LayoutSettings, Settings } from './settings';
   import { applyFilters, defaultFilterSettings } from './settings';
@@ -40,6 +41,8 @@
   // Store first: the engine writes the full /sync snapshot straight into it
   // (contract: server-delivered state wins)
   const store = createAppStore();
+  /** Debounce handle for the post-upload /sync (see the pipeline's onUploadOp). */
+  let uploadSyncTimer: ReturnType<typeof setTimeout> | undefined;
   const engine = getEngine({
     onSyncResponse: (r, context) => store.applySync(r, context),
     onError: (phase, e) => {
@@ -57,11 +60,56 @@
     // Once the artifact URL becomes an upload op it is queued on the sync engine
     // (pending count and the 256-op threshold belong to the engine; contract: all
     // writes go through the op-log → /sync pipeline)
-    onUploadOp: (op) => void engine.addOp(op),
+    onUploadOp: (op) => {
+      void engine.addOp(op);
+      // Without this the finished upload only reached the album on the next tab
+      // switch / manual sync / 256-op threshold — the optimistic card sat there
+      // (and the lightbox index stayed wrong) long after the bytes landed.
+      // Coalesced: a 20-file batch schedules one sync, not twenty.
+      if (uploadSyncTimer !== undefined) clearTimeout(uploadSyncTimer);
+      uploadSyncTimer = setTimeout(() => {
+        uploadSyncTimer = undefined;
+        void engine.sync();
+      }, 1_200);
+    },
+    // cancelJob echo (broadcast): drop the row/card in this tab too
+    onJobRemoved: (jobId) => dropTask(jobId),
+    // Files outside the accept surface (often empty MIME on Windows) — visible notice
+    onRejected: (fileName) =>
+      toast.error(`无法识别 ${fileName} 的文件类型`, { description: '仅支持图片和视频文件' }),
   });
 
   let uploadTasks = $state<Map<string, PipelineTaskSnapshot>>(new Map());
   let fileInputEl: HTMLInputElement | undefined = $state(undefined);
+  /** Source dimensions probed at enqueue — failed transcodes keep the real aspect ratio. */
+  let probedSizeByJob = $state<Map<string, { width: number; height: number }>>(new Map());
+
+  /** Drop a task and its optimistic-card mapping (idempotent; used by cancel + cleanup). */
+  function dropTask(jobId: string) {
+    const id = tempIdByJob.get(jobId);
+    if (id !== undefined) {
+      tempIdByJob.delete(jobId);
+      jobByTempId.delete(id);
+    }
+    probedSizeByJob.delete(jobId);
+    tempCreatedAt.delete(jobId);
+    const next = new Map(uploadTasks);
+    next.delete(jobId);
+    uploadTasks = next;
+  }
+
+  // Probes run sequentially (one decode at a time) so a 20-photo pick never
+  // bursts the main thread with concurrent image decodes.
+  let probeChain = Promise.resolve();
+  function queueSizeProbe(jobId: string, file: File) {
+    probeChain = probeChain
+      .then(async () => {
+        const size = await probeSourceSize(file);
+        // The job may have been cancelled/finished while probing
+        if (size && uploadTasks.has(jobId)) probedSizeByJob.set(jobId, size);
+      })
+      .catch(() => undefined);
+  }
 
   // ---- Optimistic upload entries (contract: waterfall during upload) ----------
   // Transcode done → insert at the top under a "curtain" mask that pulls up with
@@ -69,17 +117,38 @@
   let nextTempId = -1;
   const tempIdByJob = new Map<string, number>();
   const jobByTempId = new Map<number, string>();
+  // Guard against double-toasting the same failure within one session (e.g. a
+  // redundant status echo). Replay across a page reload re-toasts intentionally:
+  // a lingering failed upload deserves a fresh reminder.
+  const toastedFailures = new Set<string>();
+  // Fixed createdAt per optimistic card — using Date.now() inside the derived
+  // would re-stamp every progress frame and thrash the "newest" sort.
+  const tempCreatedAt = new Map<string, number>();
 
   let pendingPhotos = $derived.by(() => {
     const out: Photo[] = [];
+    // Sync-landed shas hide optimistic done/duplicate cards in the same render
+    // cycle the real photo arrives — no one-frame double display while the
+    // cleanup $effect is still scheduled.
+    const landedShas = new Set(store.photos.map((p) => p.sha256));
     for (const t of uploadTasks.values()) {
       if (!['uploading', 'done', 'failed'].includes(t.phase)) continue;
-      // tempId is assigned uniformly in the onTask callback; it must exist here
-      const id = tempIdByJob.get(t.jobId)!;
-      // Failed transcodes have no meta: use a placeholder ratio so the failure stays
-      // visible — the contract wants a failure mark + manual retry button, not a
-      // silent disappearance
-      const meta = t.meta ?? { width: 800, height: 600, size: 0, type: 0 as const };
+      if ((t.phase === 'done' || t.phase === 'duplicate') && t.sha256 && landedShas.has(t.sha256))
+        continue;
+      // tempId is assigned uniformly in the onTask callback; skip anything that
+      // raced a dropTask (cancel / cleanup) instead of emitting id: undefined
+      const id = tempIdByJob.get(t.jobId);
+      if (id === undefined) continue;
+      // Failed transcodes have no meta: fall back to the probed source dimensions
+      // so the failure card keeps the real aspect ratio (placeholder 800×600 only
+      // when probing also failed) — the contract wants a visible failure mark
+      const probed = probedSizeByJob.get(t.jobId);
+      const meta = t.meta ?? {
+        width: probed?.width ?? 800,
+        height: probed?.height ?? 600,
+        size: 0,
+        type: 0 as const,
+      };
       out.push({
         id,
         sha256: t.sha256 ?? '',
@@ -88,7 +157,7 @@
         width: meta.width,
         height: meta.height,
         size: meta.size,
-        createdAt: Date.now(),
+        createdAt: tempCreatedAt.get(t.jobId) ?? Date.now(),
         type: meta.type,
         likes: [],
         dislikes: [],
@@ -99,7 +168,7 @@
   });
 
   let uploadOverlays = $derived.by(() => {
-    const m = new Map<number, { fraction?: number; failed?: boolean }>();
+    const m = new Map<number, { fraction?: number; failed?: boolean; error?: string }>();
     for (const t of uploadTasks.values()) {
       const id = tempIdByJob.get(t.jobId);
       if (id === undefined) continue;
@@ -107,37 +176,53 @@
         if (t.meta) m.set(id, { fraction: t.fraction ?? 0 });
       } else if (t.phase === 'failed') {
         // Transcode failure (no meta) still gets a failure mask — retry must not
-        // depend on a successful transcode
-        m.set(id, { failed: true });
+        // depend on a successful transcode. The translated reason rides along so
+        // the card can say WHY (timeout / oversize / codec) instead of a bare
+        // "upload failed" that hides every cause behind the same words.
+        m.set(id, {
+          failed: true,
+          error: translateTaskError(t.error, {
+            oversize: t.error === 'oversize',
+            sha256: t.sha256 || undefined,
+          }),
+        });
       }
       // done → no mask (curtain fully open, awaiting /sync correction)
     }
     return m;
   });
 
-  // After /sync the real entries land: drop matching optimistic entries by sha256
+  // After /sync the real entries land: drop matching optimistic entries by sha256.
+  // Only terminal phases qualify — an 'uploading' snapshot already carries the sha,
+  // and deleting on it would flicker the card mid-flight (re-added on 'done').
+  // 'duplicate' rows always go: the photo exists (or arrives via /sync), and a
+  // sha absent from the store would otherwise linger forever.
   $effect(() => {
     const shas = new Set(store.photos.map((p) => p.sha256));
-    let changed = false;
     for (const t of uploadTasks.values()) {
-      if (t.sha256 && shas.has(t.sha256)) {
-        const id = tempIdByJob.get(t.jobId);
-        if (id !== undefined) {
-          tempIdByJob.delete(t.jobId);
-          jobByTempId.delete(id);
-        }
-        const next = new Map(uploadTasks);
-        next.delete(t.jobId);
-        uploadTasks = next;
-        changed = true;
+      if (t.phase !== 'done' && t.phase !== 'duplicate') continue;
+      if (t.phase === 'duplicate' || (t.sha256 && shas.has(t.sha256))) {
+        dropTask(t.jobId);
       }
     }
-    void changed;
   });
 
   function handleRetryUpload(photo: Photo) {
     const jobId = jobByTempId.get(photo.id);
     if (jobId) pipeline.retry(jobId);
+  }
+
+  /** Dismiss a failed card: cancel on the SW (stops refresh replay) + drop locally. */
+  function handleDismissUpload(photo: Photo) {
+    const jobId = jobByTempId.get(photo.id);
+    if (!jobId) return;
+    pipeline.cancel(jobId);
+    dropTask(jobId);
+  }
+
+  /** Cancel a queued/lease-wait job from the progress panel. */
+  function handleCancelTask(jobId: string) {
+    pipeline.cancel(jobId);
   }
 
   let leftOpen = $state(false);
@@ -223,17 +308,45 @@
       engine.install();
     })();
     pipeline.start();
+  });
+
+  // Task sink lives in its own effect so its unsubscribe is honoured on teardown.
+  // (Inside the guarded init effect above it would be torn down by the second run
+  // that the `initialized` write triggers.)
+  $effect(() =>
     pipeline.onTask((t) => {
+      // Refresh replay / cross-tab echo: a done/duplicate job whose photo already
+      // landed in the store must not resurrect an optimistic card (double flash).
+      if (
+        (t.phase === 'done' || t.phase === 'duplicate') &&
+        t.sha256 &&
+        store.photos.some((p) => p.sha256 === t.sha256)
+      )
+        return;
+      // Duplicate against a sha not (yet) in the store: brief panel row, toast, and
+      // the cleanup effect drops it — no silent nothing, no lingering row.
+      if (t.phase === 'duplicate' && t.fileName) {
+        toast.info(`${t.fileName} 与已有照片重复`, { description: '已跳过上传' });
+      }
+      // Album upload failure: surface a toast so the user notices even if the
+      // failure card scrolled out of view. Editor failures have inline UI.
+      if (t.phase === 'failed' && t.purpose === 'album' && !toastedFailures.has(t.jobId)) {
+        toastedFailures.add(t.jobId);
+        toast.error(`${t.fileName || '照片'} 上传失败`, {
+          description: translateTaskError(t.error, { sha256: t.sha256 }),
+        });
+      }
       // Optimistic tempIds are assigned here — both pendingPhotos and uploadOverlays
       // deriveds read them; callbacks run before any derived evaluates, so order is safe
       if (['uploading', 'done', 'failed'].includes(t.phase) && !tempIdByJob.has(t.jobId)) {
         const id = nextTempId--;
         tempIdByJob.set(t.jobId, id);
         jobByTempId.set(id, t.jobId);
+        tempCreatedAt.set(t.jobId, Date.now());
       }
       uploadTasks = new Map(uploadTasks.set(t.jobId, t));
-    });
-  });
+    }),
+  );
 
   // Photo mark / delete: the store does the local optimistic update + submits the
   // op (contract: all writes go through the op-log)
@@ -250,13 +363,17 @@
     store.deletePhotos([photo.id]);
   }
   function handleDeleteSelected(ids: number[]) {
-    store.deletePhotos(ids);
+    const real = ids.filter((id) => id >= 0);
+    if (real.length === 0) return;
+    store.deletePhotos(real);
   }
   /** Bulk unmark: undo like / dislike / request-delete (unmarked items are idempotent no-ops). */
   function handleUnmarkSelected(ids: number[]) {
-    store.setMarkMany(ids, 'like', false);
-    store.setMarkMany(ids, 'dislike', false);
-    store.setMarkMany(ids, 'report', false);
+    const real = ids.filter((id) => id >= 0);
+    if (real.length === 0) return;
+    store.setMarkMany(real, 'like', false);
+    store.setMarkMany(real, 'dislike', false);
+    store.setMarkMany(real, 'report', false);
   }
   /**
    * Downloads go through core/download: single files as {id36}.{ext}, multiple
@@ -373,15 +490,12 @@
   function handleFileChange(e: Event) {
     const input = e.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
-      pipeline.addFiles(input.files);
+      pipeline.addFiles(input.files, queueSizeProbe);
       input.value = '';
     }
   }
   function handleSync() {
     void engine.sync();
-  }
-  function handleFilterReset() {
-    resetToken++;
   }
 
   // Announcement ops: react / vote / feedback → op-log (spec: all writes go through
@@ -432,7 +546,6 @@
       onAnnouncementClick={toggleRight}
       onMultiSelectClick={handleMultiSelect}
       onUploadClick={handleUploadClick}
-      onFilterBadgeClick={handleFilterReset}
       pendingCount={store.engineState.pending}
       {filterCount}
       isSyncing={store.engineState.syncing}
@@ -458,7 +571,11 @@
         </div>
       {/if}
 
-      {#if visiblePhotos.length === 0}
+      <!-- Uploads must stay visible even on an empty album: the first upload of a
+           new account would otherwise land in this branch with nowhere to render,
+           and a failed first upload had no retry card at all (contract: failures
+           are never silently dropped). -->
+      {#if visiblePhotos.length === 0 && pendingPhotos.length === 0}
         <div
           class="flex flex-col items-center justify-center py-24 text-center"
           style="animation: fadeInUp var(--duration-enter) var(--ease-enter) both"
@@ -491,6 +608,7 @@
           pending={pendingPhotos}
           overlays={uploadOverlays}
           onRetryUpload={handleRetryUpload}
+          onDismissUpload={handleDismissUpload}
           selfId={store.selfId}
           dir={layout.dir}
           strategy={layout.strategy}
@@ -527,7 +645,7 @@
 
   <!-- Upload progress -->
   <div class="fixed bottom-4 right-4 z-30 w-72">
-    <UploadProgressPanel tasks={uploadTasks} />
+    <UploadProgressPanel tasks={uploadTasks} onCancelTask={handleCancelTask} />
   </div>
 
   <!-- Toast notifications: bottom-left (keeps image subjects clear); color, radius, and font all use site tokens -->

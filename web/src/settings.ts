@@ -75,10 +75,13 @@ export function metricRange(photos: Photo[], key: RangeKey): RangeValue | null {
   return [min, max];
 }
 
-/** A dimension is filterable when it has photos and min differs from max. */
+/** A dimension is filterable when it spans at least three integer values
+ *  (max - min >= 2). A two-value domain like likes 0..1 has no meaningful
+ *  sub-range — [min,max] selects everything and single values are not
+ *  expressible — so the slider stays disabled instead of misbehaving. */
 export function isFilterable(photos: Photo[], key: RangeKey): boolean {
   const r = metricRange(photos, key);
-  return r !== null && r[0] !== r[1];
+  return r !== null && r[1] - r[0] >= 2;
 }
 
 export function defaultFilterSettings(): FilterSettings {

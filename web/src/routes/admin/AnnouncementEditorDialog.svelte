@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
   import type { PanelTask } from '$lib/components/UploadProgressPanel.svelte';
 
@@ -15,9 +15,21 @@
     onCancel: () => void;
     /** Live upload-pipeline row (queue/transcode/hash/upload) to show in the editor. */
     uploadTask?: PanelTask | null;
+    /** Cancel the in-flight editor image upload. */
+    onCancelUpload?: () => void;
+    /** Retry a failed editor image upload; returns the hosted URL. */
+    onRetryUpload?: (jobId: string) => Promise<string>;
   }
 
-  let { announcement, onPickImage, onSave, onCancel, uploadTask = null }: Props = $props();
+  let {
+    announcement,
+    onPickImage,
+    onSave,
+    onCancel,
+    uploadTask = null,
+    onCancelUpload,
+    onRetryUpload,
+  }: Props = $props();
   let title = $state('');
   let contentMd = $state('');
   let titleInput: HTMLInputElement | undefined = $state(undefined);
@@ -27,6 +39,15 @@
   let session = 0;
   let uploadBusy = $state(false);
   let uploadName = $state('');
+  // Track the in-flight editor job id so we can cancel it if the dialog closes
+  // mid-upload (otherwise the artifact is uploaded and immediately discarded).
+  let currentJobId: string | null = null;
+  $effect(() => {
+    if (uploadTask) currentJobId = uploadTask.jobId;
+  });
+  onDestroy(() => {
+    if (currentJobId) onCancelUpload?.();
+  });
   const canSave = $derived(title.trim().length > 0 && contentMd.trim().length > 0 && !uploadBusy);
 
   // Mount-once semantics: Admin.svelte renders this only inside
@@ -46,6 +67,7 @@
     title = announcement?.title ?? '';
     contentMd = announcement?.contentMd ?? '';
     uploadBusy = false;
+    uploadName = '';
     void tick().then(() => titleInput?.focus());
   });
 
@@ -53,13 +75,29 @@
     const input = imageInput;
     if (!input) return null;
     await new Promise<void>((resolve) => {
+      let settled = false;
+      let grace: ReturnType<typeof setTimeout> | undefined;
       const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (grace !== undefined) clearTimeout(grace);
         input.removeEventListener('change', finish);
         input.removeEventListener('cancel', finish);
+        window.removeEventListener('focus', onFocus);
         resolve();
+      };
+      // `cancel` covers modern browsers, but a dismissed picker on an older engine
+      // dispatches nothing at all: the promise would hang forever, latching
+      // `uploadBusy` and disabling the dialog's save button for the rest of the
+      // session. Focus coming back to the window is the remaining signal that the
+      // picker closed — the grace period lets `change` win the race when a file
+      // was actually chosen.
+      const onFocus = () => {
+        grace = setTimeout(finish, 400);
       };
       input.addEventListener('change', finish, { once: true });
       input.addEventListener('cancel', finish, { once: true });
+      window.addEventListener('focus', onFocus);
       input.click();
     });
     const file = input.files?.[0] ?? null;
@@ -74,7 +112,9 @@
       throw error;
     } finally {
       uploadBusy = false;
-      uploadName = '';
+      // `uploadName` is intentionally kept: the editor reads it *after* the await
+      // to build the alt text / aria-label, and clearing it here (before the
+      // caller resumes) always produced an empty `![](url)`.
     }
   }
 
@@ -92,7 +132,7 @@
   }
 </script>
 
-<input bind:this={imageInput} type="file" accept="image/*" class="hidden" />
+<input bind:this={imageInput} type="file" accept="image/*,video/*" class="hidden" />
 
 <!-- Not a full-screen Dialog (it would cover the admin page top bar): a fixed panel instead,
      filling from under the top bar down to the page bottom; the Admin.svelte "New announcement"
@@ -126,6 +166,8 @@
             onPickImage={pickImage}
             {uploadName}
             {uploadTask}
+            {onCancelUpload}
+            {onRetryUpload}
           />
         </div>
       </div>

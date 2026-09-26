@@ -2,7 +2,7 @@
   // Top bar (spec: "home page"). Left: sort pill, settings icon (filter-count badge), sync
   // icon (pending-count badge, spins while syncing); right: announcements, multi-select, upload.
   // Fixed full width + frosted glass, not sticky (iOS Safari has a known backdrop-filter bug).
-  import { Settings, Megaphone, CheckSquare, UploadCloud } from '@lucide/svelte';
+  import { Settings, Megaphone, CheckSquare, UploadCloud, Funnel } from '@lucide/svelte';
   import SortTabs, { type SortKey } from './SortTabs.svelte';
   import SyncButton from './SyncButton.svelte';
   import { scroll } from '../../state/scroll.svelte';
@@ -18,7 +18,6 @@
     onAnnouncementClick?: () => void;
     onMultiSelectClick?: () => void;
     onUploadClick?: () => void;
-    onFilterBadgeClick?: () => void;
     pendingCount?: number;
     filterCount?: number;
     isSyncing?: boolean;
@@ -37,7 +36,6 @@
     onAnnouncementClick,
     onMultiSelectClick,
     onUploadClick,
-    onFilterBadgeClick,
     pendingCount = 0,
     filterCount = 0,
     isSyncing = false,
@@ -72,17 +70,11 @@
         <Settings class="size-5" />
       </button>
       {#if filterCount > 0}
-        <button
-          type="button"
-          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
-          title="重置筛选"
-          onclick={(e) => {
-            e.stopPropagation();
-            onFilterBadgeClick?.();
-          }}
+        <span
+          class="pointer-events-none absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-primary text-primary-foreground"
         >
-          {filterCount > 99 ? '99+' : filterCount}
-        </button>
+          <Funnel class="size-2.5" />
+        </span>
       {/if}
     </div>
 

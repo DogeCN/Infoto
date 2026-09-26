@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Announcement } from '$shared/types';
-  import { GripVertical, Megaphone, Pencil, Trash2 } from '@lucide/svelte';
+  import { Megaphone, Pencil, Trash2 } from '@lucide/svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';
   import { formatAbsoluteTime, formatRelativeTime } from '$lib/time';
@@ -245,18 +245,6 @@
     if (activeDraft) void commitDraft(activeDraft);
   }
 
-  /** Keyboard reorder: move `id` one slot up/down and commit like a pointer drop. */
-  async function nudge(id: number, delta: -1 | 1): Promise<void> {
-    if (dragId !== null || pressId !== null) return;
-    const ids = announcements.map((announcement) => announcement.id);
-    const from = ids.indexOf(id);
-    const to = from + delta;
-    if (from < 0 || to < 0 || to >= ids.length) return;
-    let next = ops.beginAnnouncementReorder(ids, id);
-    next = ops.moveAnnouncementReorderToIndex(next, delta > 0 ? to + 1 : to);
-    await commitDraft(next);
-  }
-
   function onPointerCancel(event: PointerEvent): void {
     if (pressId === null) return;
     event.preventDefault();
@@ -277,7 +265,7 @@
 
 <div class="space-y-4" role="list">
   {#if announcements.length === 0}
-    <EmptyState icon={Megaphone} text="暂无公告。" />
+    <EmptyState icon={Megaphone} text="暂无公告" />
   {:else}
     {#each visibleAnnouncements as announcement (announcement.id)}
       {@const absoluteTime = formatAbsoluteTime(announcement.updatedAt)}
@@ -300,24 +288,6 @@
             </p>
           </div>
           <div class="flex shrink-0 gap-1">
-            <Tooltip text="拖动排序（上下方向键）">
-              <button
-                type="button"
-                class="inline-flex cursor-grab items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground active:cursor-grabbing"
-                aria-label="拖动排序"
-                onkeydown={(event) => {
-                  if (event.key === 'ArrowUp') {
-                    event.preventDefault();
-                    void nudge(announcement.id, -1);
-                  } else if (event.key === 'ArrowDown') {
-                    event.preventDefault();
-                    void nudge(announcement.id, 1);
-                  }
-                }}
-              >
-                <GripVertical class="size-4" />
-              </button>
-            </Tooltip>
             <Tooltip text="编辑">
               <button
                 type="button"

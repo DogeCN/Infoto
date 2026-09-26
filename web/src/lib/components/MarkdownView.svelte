@@ -5,6 +5,7 @@
   import { onDestroy } from 'svelte';
   import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
+  import { upgradeAnimatedMedia } from './markdownMedia';
 
   // Two independent renderers: the default one blocks images (public sidebar
   // must not render arbitrary external image hosts); the trusted one allows them.
@@ -23,7 +24,10 @@
   let html = $derived(DOMPurify.sanitize(renderer.render(content)));
 
   function apply() {
-    if (el) el.innerHTML = html;
+    if (!el) return;
+    el.innerHTML = html;
+    // ![alt](*.webm) renders as <img> — swap in a <video> so GIF/video plays.
+    upgradeAnimatedMedia(el);
   }
   $effect(() => {
     if (!el) return;
@@ -42,9 +46,18 @@
 ></div>
 
 <style>
-  /* Rendered images (announcements only, allowImages) follow the site's
+  /* Rendered media (announcements only, allowImages) follows the site's
      rounded-card language. */
-  div :global(img) {
+  div :global(img),
+  div :global(video.markdown-video) {
     border-radius: 0.5rem;
+  }
+
+  /* <video> has no prose sizing of its own (unlike img) — cap it to the column.
+     Intrinsic track size drives the height. */
+  div :global(video.markdown-video) {
+    display: block;
+    max-width: 100%;
+    height: auto;
   }
 </style>

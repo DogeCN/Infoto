@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     computeLayoutChunked,
     orderByMain,
@@ -20,8 +20,10 @@
     /** Pending upload entries (contract: right after info cards, before other media; excluded from sorting/filtering). */
     pending?: Photo[];
     /** Curtain overlays for pending entries: fraction (uploading) / failed (full cover + retry). */
-    overlays?: Map<number, { fraction?: number; failed?: boolean }>;
+    overlays?: Map<number, { fraction?: number; failed?: boolean; error?: string }>;
     onRetryUpload?: (photo: Photo) => void;
+    /** Dismiss a failed upload card (cancel on the pipeline + drop locally). */
+    onDismissUpload?: (photo: Photo) => void;
     dir?: ScrollDir;
     strategy?: FillStrategy;
     band?: number;
@@ -47,8 +49,9 @@
   let {
     photos,
     pending = [],
-    overlays = new Map<number, { fraction?: number; failed?: boolean }>(),
+    overlays = new Map<number, { fraction?: number; failed?: boolean; error?: string }>(),
     onRetryUpload,
+    onDismissUpload,
     dir = 'v',
     strategy = 'sequential',
     band = 320,
@@ -169,6 +172,14 @@
   // Recompute layout when dependencies change — debounce so rapid resize / slider drag collapses
   // into one computation per 16 ms frame instead of abort-restart per event (a freeze root cause).
   // State writes deferred to a rAF so the sort (orderByMain) and DOM batch happen in a separate frame from the generator.
+  // Content key of the last scheduled run. Upload progress ticks rebuild the
+  // pending Photo objects (new references, same id/width/height), which used to
+  // re-enter this effect on every frame: each entry cleared the 16 ms debounce
+  // and aborted the in-flight computation, so a busy upload starved the layout
+  // and new cards never got a box. Identity churn that changes no geometry must
+  // not reschedule anything.
+  let layoutKey = '';
+
   $effect(() => {
     const items = layoutItems;
     const w = containerW;
@@ -178,12 +189,23 @@
     const b = Math.round(band * zoom);
     const g = gap;
     if (w <= 0 || items.length === 0) {
+      // Empty set: drop whatever was still scheduled so a stale run cannot
+      // repaint boxes for items that are gone.
+      if (layoutTimer !== undefined) {
+        clearTimeout(layoutTimer);
+        layoutTimer = undefined;
+      }
+      currentAbort?.abort();
+      layoutKey = '';
       boxes = [];
       totalH = 0;
       order = [];
       layoutReady = false;
       return;
     }
+    const key = `${w}|${d}|${s}|${b}|${g}|${items.map((i) => `${i.id}:${i.w}:${i.h}`).join(',')}`;
+    if (key === layoutKey) return;
+    layoutKey = key;
     // Cancel previous debounce timer
     if (layoutTimer !== undefined) clearTimeout(layoutTimer);
     // Abort previous computation
@@ -215,12 +237,16 @@
         }
       });
     }, 16);
-    return () => {
-      if (layoutTimer !== undefined) {
-        clearTimeout(layoutTimer);
-        layoutTimer = undefined;
-      }
-    };
+    // Deliberately no per-run cleanup: it would clear the debounce armed by the
+    // previous run, and the unchanged-key early return above never re-arms it —
+    // a progress tick would then cancel a pending layout forever. Re-arming runs
+    // on every path that actually changes the key (clearTimeout above); teardown
+    // is handled once in onDestroy.
+  });
+
+  onDestroy(() => {
+    if (layoutTimer !== undefined) clearTimeout(layoutTimer);
+    currentAbort?.abort();
   });
 
   // Virtual window
@@ -246,18 +272,42 @@
     scroll.x = scrollLeftPos;
   }
 
+  // Optimistic upload entries carry negative temp ids: they must never enter
+  // multi-select — deleting/marking them would send ops pointing at non-existent
+  // photos to the server.
+  const isOptimistic = (id: number) => id < 0;
+
   function handlePhotoClick(photo: Photo) {
     if (multiMode) {
       toggleSelect(photo.id);
       return;
     }
     // Pending upload entries don't open the preview (they become visible after /sync settles)
-    if (overlays.has(photo.id)) return;
-    lightboxIndex = allPhotos.findIndex((p) => p.id === photo.id);
+    if (isOptimistic(photo.id) || overlays.has(photo.id)) return;
+    // The index must be resolved against the very array the Lightbox renders
+    // (`photos`), not the laid-out one (`allPhotos`): an index computed over
+    // pending + photos points one slot off for every optimistic entry and can
+    // land past the end of the preview list.
+    const idx = photos.findIndex((p) => p.id === photo.id);
+    if (idx < 0) return;
+    lightboxIndex = idx;
     lightboxOpen = true;
   }
 
+  // The preview list can shrink underneath an open Lightbox (/sync drops a
+  // duplicate, a photo gets deleted): clamp instead of leaving a dead index.
+  $effect(() => {
+    if (photos.length === 0) {
+      if (lightboxOpen) lightboxOpen = false;
+      lightboxIndex = 0;
+      return;
+    }
+    if (lightboxIndex > photos.length - 1) lightboxIndex = photos.length - 1;
+    if (lightboxIndex < 0) lightboxIndex = 0;
+  });
+
   function handleLongPress(photo: Photo) {
+    if (isOptimistic(photo.id)) return;
     if (!multiMode) {
       multiMode = true;
       onMultiModeChange?.(true);
@@ -267,6 +317,7 @@
   }
 
   function toggleSelect(id: number) {
+    if (isOptimistic(id)) return;
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -278,7 +329,7 @@
   }
 
   function selectAll() {
-    selected = new Set(allPhotos.map((p) => p.id));
+    selected = new Set(allPhotos.filter((p) => !isOptimistic(p.id)).map((p) => p.id));
   }
 
   function deselectAll() {
@@ -321,7 +372,9 @@
       if (marqueeRect.w > 4 || marqueeRect.h > 4) marqueeMoved = true;
       // Marquee hits join the selection in real time: base on the snapshot, avoiding writes to an effect's own dependency (a cycle)
       const next = new Set(marqueeBase);
-      for (const id of marqueeHits(boxes, marqueeRect)) next.add(id);
+      for (const id of marqueeHits(boxes, marqueeRect)) {
+        if (!isOptimistic(id)) next.add(id);
+      }
       selected = next;
     };
 
@@ -421,6 +474,7 @@
             height={box.h}
             overlay={overlays.get(photo.id)}
             onRetryUpload={() => onRetryUpload?.(photo)}
+            onDismissUpload={() => onDismissUpload?.(photo)}
             selected={selected.has(photo.id)}
             {multiMode}
             onClick={() => handlePhotoClick(photo)}
@@ -470,7 +524,7 @@
 <Lightbox
   bind:open={lightboxOpen}
   {photos}
-  currentIndex={lightboxIndex}
+  currentIndex={photos.length > 0 ? Math.min(Math.max(lightboxIndex, 0), photos.length - 1) : 0}
   {selfId}
   onClose={() => (lightboxOpen = false)}
   onNavigate={handleLightboxNavigate}

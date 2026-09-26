@@ -39,6 +39,10 @@
     uploadName?: string;
     /** Live pipeline snapshot (queue/transcode/hash/upload) of that upload. */
     uploadTask?: PanelTask | null;
+    /** Cancel the in-flight editor upload (the parent knows the job id). */
+    onCancelUpload?: () => void;
+    /** Retry a failed editor upload; the parent calls pipeline.retryEditorUpload(jobId). */
+    onRetryUpload?: (jobId: string) => Promise<string>;
   }
 
   let {
@@ -48,12 +52,25 @@
     onChange,
     uploadName = '',
     uploadTask = null,
+    onCancelUpload,
+    onRetryUpload,
   }: Props = $props();
 
   let textareaEl: HTMLTextAreaElement | undefined = $state(undefined);
   let imageUploading = $state(false);
   let imageError = $state('');
   let pendingImageCaret: number | null = null;
+  // True once a real pipeline snapshot arrived this upload — the synthetic
+  // 'queued' row only covers the window before it. Without this flag a terminal
+  // (done/failed) snapshot would fall through to the synthetic branch and flash
+  // a bogus "排队中" row before `imageUploading` resets.
+  let sawLiveSnapshot = $state(false);
+  // Captured from the failed snapshot so the retry button can call pipeline.retry(jobId).
+  let failedJobId = $state<string | null>(null);
+  $effect(() => {
+    if (uploadTask) sawLiveSnapshot = true;
+    if (uploadTask?.phase === 'failed') failedJobId = uploadTask.jobId;
+  });
 
   /**
    * Row shown by UploadProgressPanel (kind='upload'). Prefers the real pipeline
@@ -62,10 +79,11 @@
    */
   let uploadTasks = $derived.by(() => {
     const m = new Map<string, PanelTask>();
+    if (!imageUploading) return m;
     const live = uploadTask;
-    if (imageUploading && live && live.phase !== 'done' && live.phase !== 'failed') {
+    if (live && live.phase !== 'done' && live.phase !== 'failed') {
       m.set(live.jobId, live);
-    } else if (imageUploading) {
+    } else if (!sawLiveSnapshot) {
       m.set('editor-image', {
         jobId: 'editor-image',
         fileName: uploadName || '图片',
@@ -117,13 +135,17 @@
   async function pickImage(): Promise<void> {
     if (!onPickImage || imageUploading) return;
     imageError = '';
+    failedJobId = null;
     imageUploading = true;
+    sawLiveSnapshot = false;
     pendingImageCaret = selection().start;
     try {
       const url = await onPickImage();
       if (url) {
         const caret = pendingImageCaret ?? selection().start;
-        applyTransform(insertImageAt(value, caret, url));
+        // File name (minus extension) becomes the alt text / video aria-label.
+        const alt = (uploadName || '').replace(/\.[^.]+$/, '');
+        applyTransform(insertImageAt(value, caret, url, alt));
       }
     } catch (error) {
       console.error('[editor] image upload failed', error);
@@ -187,10 +209,46 @@
     {#if imageUploading}
       <!-- Same floating spot as the home transcode progress card (fixed bottom-right); bottom-16 clears the editor's bottom cancel/save bar -->
       <div class="fixed right-4 bottom-16 z-40 w-72">
-        <UploadProgressPanel tasks={uploadTasks} kind="upload" />
+        <UploadProgressPanel
+          tasks={uploadTasks}
+          kind="upload"
+          onCancelTask={() => onCancelUpload?.()}
+        />
       </div>
     {:else if imageError}
-      <p class="text-xs text-destructive" aria-live="polite">{imageError}</p>
+      <div class="flex items-center gap-2" aria-live="polite">
+        <p class="text-xs text-destructive">{imageError}</p>
+        {#if failedJobId && onRetryUpload}
+          <button
+            type="button"
+            class="text-xs font-medium text-primary underline-offset-2 hover:underline"
+            onclick={async () => {
+              const id = failedJobId;
+              if (!id || !onRetryUpload) return;
+              imageError = '';
+              failedJobId = null;
+              imageUploading = true;
+              sawLiveSnapshot = false;
+              pendingImageCaret = selection().start;
+              try {
+                const url = await onRetryUpload(id);
+                if (url) {
+                  const caret = pendingImageCaret ?? selection().start;
+                  const alt = (uploadName || '').replace(/\.[^.]+$/, '');
+                  applyTransform(insertImageAt(value, caret, url, alt));
+                }
+              } catch (error) {
+                console.error('[editor] image upload retry failed', error);
+                imageError =
+                  error instanceof Error && error.message ? error.message : '图片上传失败，请重试';
+              } finally {
+                imageUploading = false;
+                pendingImageCaret = null;
+              }
+            }}>重试</button
+          >
+        {/if}
+      </div>
     {/if}
   </div>
 

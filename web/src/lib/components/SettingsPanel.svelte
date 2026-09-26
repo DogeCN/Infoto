@@ -17,6 +17,9 @@
     X,
     Flame,
     HardDrive,
+    SlidersHorizontal,
+    LayoutGrid,
+    Funnel,
   } from '@lucide/svelte';
   import { cn } from '$lib/utils';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
@@ -137,13 +140,6 @@
     };
   }
 
-  /** Clear one range back to the full dynamic range. */
-  function clearRange(key: RangeKey) {
-    const ranges = { ...settings.filters.ranges };
-    delete ranges[key];
-    settings = { ...settings, filters: { ...settings.filters, ranges } };
-  }
-
   // Report the active filter count (settings-icon badge).
   $effect(() => {
     onFilterCount?.(activeFilterCount);
@@ -225,7 +221,7 @@
   <!-- Filters section -->
   <section>
     <div class="flex items-center justify-between px-1">
-      <h3 class="text-sm font-medium">筛选</h3>
+      <h3 class="flex items-center gap-1.5 text-sm font-medium"><Funnel class="size-3.5" />筛选</h3>
       <Tooltip text="重置筛选" side="bottom">
         <button
           type="button"
@@ -267,18 +263,6 @@
                     onChange={(v) => setRange(key, v)}
                   />
                 </div>
-                {#if active}
-                  <Tooltip text="重置此项" side="bottom">
-                    <button
-                      type="button"
-                      class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                      onclick={() => clearRange(key)}
-                      aria-label="重置此项"
-                    >
-                      <X class="size-3.5" />
-                    </button>
-                  </Tooltip>
-                {/if}
               </div>
             {/if}
           {/each}
@@ -376,7 +360,7 @@
   <!-- Layout section -->
   <section>
     <div class="flex items-center justify-between px-1">
-      <h3 class="text-sm font-medium">布局</h3>
+      <h3 class="flex items-center gap-1.5 text-sm font-medium"><LayoutGrid class="size-3.5" />布局</h3>
       <Tooltip text="重置布局" side="bottom">
         <button
           type="button"

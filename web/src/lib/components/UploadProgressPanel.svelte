@@ -2,7 +2,7 @@
   // Progress panel: one visual, two task kinds. kind='transcode' (default): the home waterfall
   // view of the image-host pipeline, hiding uploading/done/failed rows — the waterfall card
   // curtain carries that progress (contract). kind='upload': editor image upload on the same SharedWorker pipeline (queue → transcode → hash → upload), showing every stage since the editor has no card curtain.
-  import { Clapperboard, ImageUp, Check, LoaderCircle } from '@lucide/svelte';
+  import { Clapperboard, ImageUp, Check, LoaderCircle, X } from '@lucide/svelte';
 
   /** Structured task shape shared by pipeline snapshots and synthetic editor tasks. */
   export interface PanelTask {
@@ -16,9 +16,11 @@
     tasks: Map<string, PanelTask>;
     /** 'transcode' (default, image-host progress) or 'upload' (editor image upload). */
     kind?: 'transcode' | 'upload';
+    /** Cancel a queued job (album panel only; the SW broadcasts jobRemoved on success). */
+    onCancelTask?: (jobId: string) => void;
   }
 
-  let { tasks, kind = 'transcode' }: Props = $props();
+  let { tasks, kind = 'transcode', onCancelTask }: Props = $props();
 
   const TRANSCODE_STAGES = new Set(['queued', 'lease-wait', 'transcoding', 'hashing', 'duplicate']);
   // Editor uploads show the whole leg, transcode included.
@@ -32,8 +34,6 @@
   ]);
   let stages = $derived(kind === 'upload' ? UPLOAD_STAGES : TRANSCODE_STAGES);
   let taskList = $derived(Array.from(tasks.values()).filter((t) => stages.has(t.phase)));
-
-  let completedCount = $derived(taskList.filter((t) => t.phase === 'duplicate').length);
 
   /** Stage label used when no progress fraction is available. */
   function phaseLabel(phase: string): string {
@@ -56,6 +56,9 @@
 {#if taskList.length > 0}
   <div
     class="rounded-xl border border-border bg-card/95 p-4 shadow-lg shadow-black/30 backdrop-blur-xl"
+    role="status"
+    aria-live="polite"
+    aria-busy={taskList.some((t) => t.phase !== 'duplicate')}
   >
     <div class="mb-2.5 flex items-center justify-between">
       <div class="flex items-center gap-2">
@@ -67,16 +70,15 @@
           <span class="text-sm font-medium">转码进度</span>
         {/if}
       </div>
-      {#if kind === 'transcode'}
-        <span class="text-xs tabular-nums text-muted-foreground">
-          {completedCount}/{taskList.length}
-        </span>
-      {/if}
     </div>
 
-    <div class="space-y-1">
+    <!-- Row list is capped: picking a few dozen files must not push the panel
+         past the viewport (it is pinned to a corner with no scrolling of its own). -->
+    <div class="max-h-64 space-y-1 overflow-y-auto overscroll-contain">
       {#each taskList as task (task.jobId)}
         {@const done = task.phase === 'duplicate'}
+        {@const cancellable =
+          !!onCancelTask && (task.phase === 'queued' || task.phase === 'lease-wait')}
         {@const pct =
           !done && task.fraction != null && task.fraction > 0
             ? Math.round(task.fraction * 100)
@@ -100,9 +102,27 @@
             >
               {done ? '重复' : pct != null ? `${pct}%` : phaseLabel(task.phase)}
             </span>
+            {#if cancellable}
+              <button
+                type="button"
+                class="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                title="取消"
+                aria-label="取消 {task.fileName}"
+                onclick={() => onCancelTask?.(task.jobId)}
+              >
+                <X class="size-3" />
+              </button>
+            {/if}
           </div>
           {#if pct != null}
-            <div class="mt-1.5 h-0.5 overflow-hidden rounded-full bg-muted-foreground/15">
+            <div
+              class="mt-1.5 h-0.5 overflow-hidden rounded-full bg-muted-foreground/15"
+              role="progressbar"
+              aria-label="{task.fileName} 进度"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow={pct}
+            >
               <div
                 class="h-full rounded-full bg-primary transition-[width] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
                 style="width: {pct}%"
