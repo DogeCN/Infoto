@@ -1,9 +1,8 @@
 name: deploy
 
 # The workflow builds the SPA — dist/ is NOT committed (see .gitignore).
-# Pipeline: checkout -> install frontend deps -> build SPA -> ensure same-name
-#        D1 -> patch wrangler.toml -> apply schema (idempotent)
-#        -> wrangler deploy -> inject secrets.
+# Pipeline: checkout -> install deps -> build SPA -> ensure same-name D1 -> patch
+# wrangler.toml -> apply schema (idempotent) -> wrangler deploy -> inject secrets.
 on:
   push:
     branches: [main]
@@ -103,9 +102,8 @@ jobs:
           sed -i "s/^database_id = .*/database_id = \"$DB_ID\"/" wrangler.toml
           SITE_KEY="${{ inputs.TURNSTILE_SITE_KEY }}"
           # Production (tag): the real site key from repo variables. Test
-          # deployment: Cloudflare's official always-pass TEST site key — it is
-          # the only key whose tokens the always-pass test secret accepts, so
-          # the real widget in a real browser verifies end-to-end.
+          # deployment: Cloudflare's always-pass TEST site key — the only key
+          # whose tokens the always-pass test secret accepts.
           if [ -z "$SITE_KEY" ]; then
             if [ "${{ github.ref_type }}" = "tag" ]; then
               SITE_KEY="${{ vars.TURNSTILE_SITE_KEY }}"
@@ -146,10 +144,9 @@ jobs:
         run: |
           printf '%s' "$TC_SECRET_VALUE" | wrangler secret put TC_SECRET
 
-      # Production only: the real Turnstile secret (contract: 生产 secret 由工作流注入).
-      # The test deployment keeps the Cloudflare always-pass test secret
-      # (1x0000000000000000000000000000000AA) so the e2e harness's fake token
-      # passes while token-less first entries still get 401 turnstile_required.
+      # Production only: the real Turnstile secret, injected by this workflow.
+      # Test deployments keep the always-pass test secret so the e2e harness's
+      # fake token passes while token-less first entries still get 401 turnstile_required.
       - name: Inject Turnstile secret (production only)
         if: github.ref_type == 'tag'
         env:

@@ -221,6 +221,7 @@
       />
     {/if}
 
+    <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->
     <Toaster position="bottom-left" theme="dark" richColors {toastOptions} />
   </div>
 {:else if store.selfId >= 1}

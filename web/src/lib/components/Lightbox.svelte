@@ -2,7 +2,7 @@
   // Full-screen media lightbox as a plain div layer: a shadcn Dialog's focus traps and inert would interfere with gesture bubbling.
   // Gestures via direct DOM transforms: swipe left/right = like/dislike (auto-advance), down = download, up = action sheet;
   // hints fade/scale with the drag and spring back below the threshold; double-click/pinch/Ctrl+wheel zoom, drag pans; no click paging.
-  import type { Photo } from '$shared/types';
+  import { MEDIA_TYPE, type Photo } from '$shared/types';
   import { copy, fmt } from '$shared/copy';
   import {
     X,
@@ -440,41 +440,69 @@
     if (wrapEl) applyWrap();
   });
 
-  // Preload adjacent photos so switching feels instant. Only images are
-  // preloaded via `new Image()` (video preload is costly and browsers handle it).
+  // Preload the two neighbours so switching feels instant, wrapping around the ends.
+  // Only still images warm via `new Image()` — ANIMATED/VIDEO are real video and
+  // preloading those is expensive. Two things this effect deliberately does NOT do:
+  //   • it never cancels a warm-up. `photos` is a brand-new array on every /sync, so a
+  //     cleanup would abort downloads that are already in flight and start them over;
+  //     `img.src = ''` can also fire a stray request at the document URL.
+  //   • it does not warm while the viewer is closed. The Lightbox stays mounted, so
+  //     without the `open` guard every page load would fetch neighbours for a viewer
+  //     nobody opened.
   $effect(() => {
-    const neighbors: Photo[] = [];
-    const prev = photos[currentIndex - 1];
-    const next = photos[currentIndex + 1];
-    if (prev) neighbors.push(prev);
-    if (next) neighbors.push(next);
-    const imgs: HTMLImageElement[] = [];
-    for (const p of neighbors) {
-      if (p.type === 0) {
-        const img = new Image();
-        img.src = p.url;
-        imgs.push(img);
+    if (!open) return;
+    const len = photos.length;
+    if (len < 2) return;
+    const picks = [photos[(currentIndex - 1 + len) % len], photos[(currentIndex + 1) % len]];
+    // Holds this run's elements until the next run — the standard preload idiom relies
+    // on an unreferenced Image() still finishing, but keeping them is free insurance.
+    const warm: HTMLImageElement[] = [];
+    const seen = new Set<string>();
+    for (const p of picks) {
+      if (!p || p.type !== MEDIA_TYPE.IMAGE) continue;
+      if (seen.has(p.url)) continue; // a two-photo set names the same neighbour twice
+      seen.add(p.url);
+      const img = new Image();
+      img.src = p.url;
+      warm.push(img);
+      // Mirror the failure probe, so a neighbour that already 404s has its code cached
+      // before the user ever navigates to it.
+      if (!statusCache.has(p.url)) {
+        fetch(p.url, { method: 'HEAD', cache: 'force-cache' })
+          .then((res) => statusCache.set(p.url, res.ok ? 'ok' : String(res.status)))
+          .catch(() => statusCache.set(p.url, '0'));
       }
     }
-    return () => {
-      for (const img of imgs) img.src = '';
-    };
   });
 
   // <img>/<video> onerror does not expose the HTTP status; send a HEAD probe
   // to get the real code, show it in the glitch fallback, and surface a toast.
+  // Uses the per-URL cache so a repeated failure is instant.
   function probeFailStatus(url: string) {
+    const cached = statusCache.get(url);
+    if (cached && cached !== 'ok') {
+      failStatus = cached;
+      toast.error(
+        cached === '0'
+          ? copy.lightbox.loadFailed
+          : fmt(copy.lightbox.loadFailedStatus, { status: cached }),
+      );
+      return;
+    }
     failController?.abort();
     failController = new AbortController();
     const ctrl = failController;
     fetch(url, { method: 'HEAD', cache: 'force-cache', signal: ctrl.signal })
       .then((res) => {
         if (ctrl.signal.aborted) return;
-        failStatus = String(res.status);
+        const s = String(res.status);
+        statusCache.set(url, s);
+        failStatus = s;
         toast.error(fmt(copy.lightbox.loadFailedStatus, { status: res.status }));
       })
       .catch(() => {
         if (ctrl.signal.aborted) return;
+        statusCache.set(url, '0');
         failStatus = '0';
         toast.error(copy.lightbox.loadFailed);
       });
@@ -624,12 +652,13 @@
         bind:this={wrapEl}
         class="flex max-w-full select-none items-center justify-center will-change-transform"
       >
-        <!-- Skeleton sized from the photo's metadata (aspect ratio via --ar),
-             matching the image's contain-box so there is no size jump on reveal. -->
+        <!-- Skeleton sized from the photo's metadata: native width/height (--w/--h)
+             and aspect ratio (--ar) form the exact box the <img> renders into, so
+             the skeleton caps at --w/--h, not just at the viewport budget. -->
         {#if loadedUrl !== photo.url}
           <div
             class="lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
-            style="--ar: {photo.width /
+            style="--w: {photo.width}px; --h: {photo.height}px; --ar: {photo.width /
               photo.height}; aspect-ratio: {photo.width} / {photo.height};"
             aria-hidden="true"
           >
@@ -876,15 +905,21 @@
       transform 0.3s ease;
   }
 
-  /* Skeleton placeholder sized from the photo's metadata aspect ratio while media
-     decodes. Width = the smaller of (viewport width budget) and (viewport height
-     budget * aspect ratio) — exactly mirrors <img> object-fit:contain, so the
-     skeleton and the revealed media share the same box (no size jump). */
+  /* Skeleton placeholder sized from the photo's metadata while media decodes.
+     The <img> never scales past native pixels, so width = min(--w, viewport width
+     budget, viewport height budget * aspect ratio) — the revealed media's box. */
   .lb-skeleton {
     position: absolute;
-    inset: 0;
-    margin: auto;
-    width: min(calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
+    /* Centred on the wrapper's centre rather than with `inset: 0; margin: auto`: the
+       wrapper holds the media itself and collapses to 0×0 until that media has an
+       intrinsic size, and `margin: auto` cannot centre a box bigger than its
+       containing block — it pinned the skeleton's left/top edge to the centre and let
+       the rest overflow right/down (the off-centre panel). Percent + translate is
+       immune to the container's size. */
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(var(--w), calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
     max-width: calc(100vw - 2.5rem);
     max-height: calc(100dvh - 8rem);
     display: flex;
@@ -909,7 +944,7 @@
 
   @media (min-width: 768px) {
     .lb-skeleton {
-      width: min(calc(100vw - 8rem), calc((100dvh - 9rem) * var(--ar, 1)));
+      width: min(var(--w), calc(100vw - 8rem), calc((100dvh - 9rem) * var(--ar, 1)));
       max-width: calc(100vw - 8rem);
       max-height: calc(100dvh - 9rem);
     }

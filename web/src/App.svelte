@@ -639,6 +639,7 @@
   </div>
 
   <!-- Toast notifications: bottom-left (keeps image subjects clear); color, radius, and font all use site tokens -->
+  <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->
   <Toaster
     position="bottom-left"
     theme="dark"

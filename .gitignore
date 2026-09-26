@@ -15,3 +15,5 @@ dist/
 .svelte-check/
 web/test-results/
 test-results/
+# Wrangler --outdir build scratch (regenerated per dry run).
+.tmp-worker-build/

@@ -1,8 +1,8 @@
 name: ci
 
 # Quality gate: lint (ESLint + Prettier) -> type check -> unit tests.
-# E2E (Playwright) intentionally stays out of CI — it needs a browser
-# channel + a running local stack; see README "红线".
+# E2E (Playwright) stays out of CI on purpose: it needs a browser channel and a
+# running local stack.
 on:
   push:
     branches: [main]
