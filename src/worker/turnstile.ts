@@ -1,18 +1,15 @@
-// Cloudflare Turnstile verification. There is no allow-branch: an unconfigured secret
-// must fail closed — deployments inject either the real secret (production) or the
-// official always-pass test secret (test deployment / local).
+// Cloudflare Turnstile token verification. A missing secret fails closed: the request
+// is rejected rather than waved through.
 
 const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+const VERIFY_TIMEOUT_MS = 5_000;
 
 export async function verifyTurnstile(
   token: string,
   secret: string | undefined,
   remoteIp?: string,
 ): Promise<boolean> {
-  if (!secret) {
-    console.warn('[turnstile] secret is not configured; verification fails closed');
-    return false;
-  }
+  if (!secret) return false;
   if (!token) return false;
   try {
     const body = new URLSearchParams({ secret, response: token });
@@ -21,11 +18,13 @@ export async function verifyTurnstile(
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
+      signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
     });
     if (!res.ok) return false;
     const json = (await res.json()) as { success?: boolean };
     return json.success === true;
-  } catch {
+  } catch (e) {
+    console.error('[turnstile] verification failed', e);
     return false;
   }
 }

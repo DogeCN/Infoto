@@ -1,14 +1,9 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import type { LocalDb } from '../../d1-shim.ts';
-import type { TestApp } from '../../testSupport.ts';
-import { cookieFrom, makeApp, stubSiteverify, sync } from '../../testSupport.ts';
-import {
-  MIGRATE_TABLES,
-  parseSqlStatements,
-  restoreOldTables,
-  setRenameBatchOk,
-} from './migrate.ts';
+import type { LocalDb } from '../../testing/localDb.ts';
+import type { TestApp } from '../../testing/app.ts';
+import { cookieFrom, makeApp, stubSiteverify, sync, syncNew } from '../../testing/app.ts';
+import { MIGRATE_TABLES, parseSqlStatements, restoreOldTables } from './migrate.ts';
 
 stubSiteverify();
 
@@ -77,7 +72,6 @@ test('parseSqlStatements is quote-aware: ; -- /* and quotes inside literals surv
 });
 
 test('export → import round-trip restores rows', async () => {
-  setRenameBatchOk(null);
   const { db, app } = makeApp();
   const cookie = await rootCookie(app);
   const before = await counts(db);
@@ -128,7 +122,6 @@ test('export → import round-trip restores rows', async () => {
 });
 
 test('bad INSERT returns exact statement and leaves all tables intact', async () => {
-  setRenameBatchOk(null);
   const { db, app } = makeApp();
   const cookie = await rootCookie(app);
   const before = await counts(db);
@@ -141,7 +134,7 @@ test('bad INSERT returns exact statement and leaves all tables intact', async ()
     headers: { Cookie: cookie },
     body: bad,
   });
-  assert.equal(imp.status, 500);
+  assert.equal(imp.status, 422);
   const err = (await imp.json()) as {
     ok: boolean;
     error: string;
@@ -149,7 +142,7 @@ test('bad INSERT returns exact statement and leaves all tables intact', async ()
     detail: string;
   };
   assert.equal(err.ok, false);
-  assert.equal(err.error, 'import failed');
+  assert.equal(err.error, 'import_failed');
   assert.ok(/INSERT INTO photos \(id\) VALUES \(999\)/i.test(err.statement));
   assert.deepEqual(await counts(db), before);
   const sha = await db.prepare('SELECT sha256 FROM photos').first<{ sha256: string }>('sha256');
@@ -184,8 +177,7 @@ test('restoreOldTables only swaps tables that have _old copies', async () => {
   assert.equal(uuid, 'u');
 });
 
-test('sequential rename path still round-trips', async () => {
-  setRenameBatchOk(false);
+test('a second round-trip over an already-swapped database still restores rows', async () => {
   const { db, app } = makeApp();
   const cookie = await rootCookie(app);
   const dump = await (
@@ -198,11 +190,10 @@ test('sequential rename path still round-trips', async () => {
   });
   const text = await imp.text();
   assert.equal(imp.status, 200, text);
-  setRenameBatchOk(null);
   assert.equal((await counts(db)).photos, 1);
 });
 
-test('empty import is 400; oversize is 413', async () => {
+test('empty import is 400', async () => {
   const { app } = makeApp();
   const cookie = await rootCookie(app);
   const empty = await app.request('http://localhost/admin/migrate', {
@@ -211,4 +202,44 @@ test('empty import is 400; oversize is 413', async () => {
     body: '   ',
   });
   assert.equal(empty.status, 400);
+  assert.deepEqual(await empty.json(), { ok: false, error: 'bad_request' });
+});
+
+test('a script without any INSERT is 400', async () => {
+  const { app } = makeApp();
+  const cookie = await rootCookie(app);
+  const res = await app.request('http://localhost/admin/migrate', {
+    method: 'POST',
+    headers: { Cookie: cookie },
+    body: 'DELETE FROM users;',
+  });
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { ok: false, error: 'no_valid_sql' });
+});
+
+test('a declared body over the cap is refused before it is read', async () => {
+  const { app } = makeApp();
+  const cookie = await rootCookie(app);
+  const res = await app.request('http://localhost/admin/migrate', {
+    method: 'POST',
+    headers: { Cookie: cookie, 'Content-Length': String(64 * 1024 * 1024) },
+    body: 'INSERT INTO users (id, uuid, created_at) VALUES (9, "u", 1);',
+  });
+  assert.equal(res.status, 413);
+  assert.deepEqual(await res.json(), { ok: false, error: 'payload_too_large' });
+});
+
+test('non-root export and import are 403', async () => {
+  const { app } = makeApp();
+  cookieFrom(await syncNew(app));
+  const guest = cookieFrom(await syncNew(app));
+  for (const method of ['GET', 'POST'] as const) {
+    const res = await app.request('http://localhost/admin/migrate', {
+      method,
+      headers: { Cookie: guest },
+      ...(method === 'POST' ? { body: 'INSERT INTO users (id) VALUES (1);' } : {}),
+    });
+    assert.equal(res.status, 403, method);
+    assert.deepEqual(await res.json(), { ok: false, error: 'forbidden' });
+  }
 });

@@ -1,13 +1,15 @@
 name: ci
 
 # Quality gate: lint (ESLint + Prettier) -> type check -> unit tests.
-# E2E (Playwright) stays out of CI on purpose: it needs a browser channel and a
-# running local stack.
+# E2E (Playwright) is excluded: it needs a browser channel and a running local stack.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   checks:
@@ -19,7 +21,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       - name: Install dependencies (npm workspaces — single lockfile)

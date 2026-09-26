@@ -1,8 +1,13 @@
 import { copy } from '../shared/copy.ts';
 
-// Error pages — dark background #0a0e1a with a large cyan #22d3ee status code in glitch
-// style (red/cyan double-layer offset). The only effect used is the displaced
-// double-text glitch; nothing glows.
+// Error pages: a large cyan status code with a red/cyan double-layer glitch offset on a
+// dark background. The displaced double text is the only effect.
+
+const escapeHtml = (value: string): string =>
+  value.replace(
+    /[&<>"']/g,
+    (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
+  );
 
 function page(code: number, title: string, message: string): Response {
   const html = `<!doctype html>
@@ -94,15 +99,21 @@ function page(code: number, title: string, message: string): Response {
 <body>
 	<div class="box">
 		<div class="code-wrap"><div class="code">${code}</div></div>
-		<div class="title">${title}</div>
-		<div class="msg">${message}</div>
+		<div class="title">${escapeHtml(title)}</div>
+		<div class="msg">${escapeHtml(message)}</div>
 		<a class="home" href="/">${copy.errorPage.backHome}</a>
 	</div>
 </body>
 </html>`;
   return new Response(html, {
     status: code,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy':
+        "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.cn; font-src https://fonts.gstatic.com;",
+    },
   });
 }
 

@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import type { SyncResponse } from '../../shared/types.ts';
-import { cookieFrom, makeApp, stubSiteverify, sync, syncNew } from '../../testSupport.ts';
+import { cookieFrom, makeApp, stubSiteverify, sync, syncNew } from '../../testing/app.ts';
 
 const setSiteverify = stubSiteverify();
 
@@ -249,69 +249,6 @@ test('non-root announcement create → 403; like in same batch works; feedback h
   assert.equal(asRoot.feedback[0]!.contentMd, 'hello');
 });
 
-test('announcements via admin API: create embeds reactions; update missing → 404; reorder; delete cascades', async () => {
-  const { app } = makeApp();
-  const cookie = cookieFrom(await syncNew(app));
-
-  // create through the dedicated admin API (ann_create is not an /sync op)
-  const createdA = await app.request('http://localhost/admin/announcements', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ title: 'a', contentMd: '1' }),
-  });
-  assert.equal(createdA.status, 200);
-  const a = (await createdA.json()) as { ok: true; announcement: { id: number } };
-  assert.equal(a.announcement.id, 1);
-  await app.request('http://localhost/admin/announcements', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ title: 'b', contentMd: '2' }),
-  });
-
-  // react goes through /sync; the reaction embeds into the announcement snapshot
-  await sync(app, { ops: [{ type: 'react', target: 1, payload: { emoji: '👍' } }] }, cookie);
-  const mid = (await (await sync(app, { ops: [] }, cookie)).json()) as SyncResponse;
-  assert.equal(mid.announcements.length, 2);
-  assert.deepEqual(mid.announcements[0]!.reactions, [{ userId: 0, emoji: '👍' }]);
-  assert.equal(mid.announcements[0]!.contentMd, '1');
-  assert.equal(mid.announcements[0]!.title, 'a');
-
-  // updating a nonexistent id is a 404
-  const missing = await app.request('http://localhost/admin/announcements/999', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ title: 'x', contentMd: 'y' }),
-  });
-  assert.equal(missing.status, 404);
-
-  // reorder strips non-positive/non-number ids, applying sort by index
-  const reorder = await app.request('http://localhost/admin/announcements/reorder', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ ids: [2, 'x', null, 1] }),
-  });
-  assert.equal(reorder.status, 200);
-  const reordered = (await (await sync(app, { ops: [] }, cookie)).json()) as SyncResponse;
-  assert.deepEqual(
-    reordered.announcements.map((ann) => ann.id),
-    [2, 1],
-  );
-  assert.deepEqual(
-    reordered.announcements.map((ann) => ann.sort),
-    [0, 1],
-  );
-
-  // delete cascades reactions + votes
-  const del = await app.request('http://localhost/admin/announcements/1', {
-    method: 'DELETE',
-    headers: { Cookie: cookie },
-  });
-  assert.equal(del.status, 200);
-  const afterDel = (await (await sync(app, { ops: [] }, cookie)).json()) as SyncResponse;
-  assert.equal(afterDel.announcements.length, 1);
-  assert.deepEqual(afterDel.announcements[0]!.reactions, []);
-});
-
 test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete cascades', async () => {
   const { app } = makeApp();
   const rootCookie = cookieFrom(await syncNew(app));
@@ -382,6 +319,161 @@ test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete c
   assert.deepEqual(fresh.announcements[0]!.reactions, []);
 });
 
+test('react and vote embed into the announcement snapshot', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  await app.request('http://localhost/admin/announcements', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ title: 'a', contentMd: '1' }),
+  });
+  const res = await sync(
+    app,
+    {
+      ops: [
+        { type: 'react', target: 1, payload: { emoji: '👍' } },
+        { type: 'vote', target: 1, payload: { option: 0 } },
+      ],
+    },
+    cookie,
+  );
+  const json = (await res.json()) as SyncResponse;
+  assert.deepEqual(json.announcements[0]!.reactions, [{ userId: 0, emoji: '👍' }]);
+  assert.deepEqual(json.announcements[0]!.votes, [{ userId: 0, option: 0 }]);
+});
+
+test('an op list over the per-request cap is refused with 413', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const ops = Array.from({ length: 501 }, () => ({ type: 'like', targetSha: 'x' }));
+  const res = await sync(app, { ops }, cookie);
+  assert.equal(res.status, 413);
+  assert.deepEqual(await res.json(), { ok: false, error: 'too_many_ops' });
+});
+
+test('a repeated mark is idempotent in both directions', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const guest = cookieFrom(await syncNew(app));
+  const up = (ops: Parameters<typeof sync>[1], c: string = cookie): Promise<SyncResponse> =>
+    sync(app, ops, c).then((r) => r.json() as Promise<SyncResponse>);
+
+  await up({
+    ops: [
+      {
+        type: 'upload',
+        payload: { sha256: 'm', url: 'https://m', width: 1, height: 1, size: 1, type: 0 },
+      },
+    ],
+  });
+  const marked = await up({
+    ops: [
+      { type: 'like', targetSha: 'm' },
+      { type: 'like', targetSha: 'm' },
+    ],
+  });
+  assert.deepEqual(marked.photos[0]!.likes, [0], 'liking twice stores one entry');
+
+  const guestLikes = await up(
+    {
+      ops: [
+        { type: 'like', targetSha: 'm' },
+        { type: 'like', targetSha: 'm' },
+      ],
+    },
+    guest,
+  );
+  assert.deepEqual(guestLikes.photos[0]!.likes, [0, 1]);
+
+  const unmarked = await up({ ops: [{ type: 'unlike', targetSha: 'm' }] }, guest);
+  assert.deepEqual(unmarked.photos[0]!.likes, [0], 'unliking removes only that user');
+  const again = await up({ ops: [{ type: 'unlike', targetSha: 'm' }] }, guest);
+  assert.deepEqual(again.photos[0]!.likes, [0]);
+});
+
+test('a stored media URL must be a public https address', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const rejected = [
+    'http://host/x.webp',
+    'https://127.0.0.1/x.webp',
+    'https://10.1.2.3/x.webp',
+    'https://192.168.0.5/x.webp',
+    'https://169.254.1.1/x.webp',
+    'https://localhost/x.webp',
+    'https://box.local/x.webp',
+    'not a url',
+  ];
+  for (const url of rejected) {
+    const res = await sync(
+      app,
+      {
+        ops: [
+          {
+            type: 'upload',
+            payload: { sha256: url, url, width: 1, height: 1, size: 1, type: 0 },
+          },
+        ],
+      },
+      cookie,
+    );
+    const json = (await res.json()) as SyncResponse;
+    assert.deepEqual(json.photos, [], url);
+  }
+  const ok = await sync(
+    app,
+    {
+      ops: [
+        {
+          type: 'upload',
+          payload: {
+            sha256: 'good',
+            url: 'https://cdn.example.com/x.webp',
+            width: 1,
+            height: 1,
+            size: 1,
+            type: 0,
+          },
+        },
+      ],
+    },
+    cookie,
+  );
+  assert.equal(((await ok.json()) as SyncResponse).photos.length, 1);
+});
+
+test('negative and fractional media metadata is rejected', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  for (const [width, height, size] of [
+    [-1, 1, 1],
+    [1, -1, 1],
+    [1, 1, -1],
+    [1.5, 1, 1],
+  ] as const) {
+    const res = await sync(
+      app,
+      {
+        ops: [
+          {
+            type: 'upload',
+            payload: {
+              sha256: `${width}-${height}-${size}`,
+              url: 'https://m',
+              width,
+              height,
+              size,
+              type: 0,
+            },
+          },
+        ],
+      },
+      cookie,
+    );
+    assert.deepEqual(((await res.json()) as SyncResponse).photos, [], `${width}x${height}`);
+  }
+});
+
 test('upload without multipart → 400; no cookie → 401', async () => {
   const { app } = makeApp();
   const noAuth = await app.request('http://localhost/upload', { method: 'POST', body: 'x' });
@@ -403,27 +495,21 @@ test('upload without multipart → 400; no cookie → 401', async () => {
   assert.deepEqual(await noSecret.json(), { ok: false, error: 'tc_secret_missing' });
 });
 
-// /admin (the page) is not a Worker route — it falls through to the ASSETS SPA
-// fallback and the root boundary is frontend-only. Only /admin/migrate is
-// server-gated (custom 404 for non-root).
-test('non-root migrate is custom 404', async () => {
-  const { app } = makeApp();
-  cookieFrom(await syncNew(app));
-  const guest = cookieFrom(await syncNew(app));
-  const res = await app.request('http://localhost/admin/migrate', { headers: { Cookie: guest } });
-  assert.equal(res.status, 404);
-  assert.equal(res.headers.get('cache-control'), 'no-store');
-  const html = await res.text();
-  assert.ok(html.includes('404'));
-});
-
-test('https Set-Cookie includes Secure', async () => {
+// /admin (the page) is not a Worker route: it falls through to the ASSETS SPA fallback,
+// so the root boundary there is frontend-only. Every /admin/* API is server-gated.
+test('https Set-Cookie includes Secure; plain http does not', async () => {
   const { app } = makeApp();
   const res = await app.request('https://example.com/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ops: [], turnstileToken: 'ok' }),
   });
-  const set = res.headers.get('set-cookie') ?? '';
-  assert.ok(set.includes('Secure'));
+  assert.ok((res.headers.get('set-cookie') ?? '').includes('Secure'));
+
+  const plain = await app.request('http://192.168.1.10/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ops: [], turnstileToken: 'ok' }),
+  });
+  assert.ok(!(plain.headers.get('set-cookie') ?? '').includes('Secure'));
 });

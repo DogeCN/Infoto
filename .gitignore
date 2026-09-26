@@ -20,3 +20,5 @@ test-results/
 .tmp-worker-build/
 # Playwright / Vite run-time temp scripts (regenerated per run; not source).
 **/.tmp-*
+# Seeded sample media (downloaded + transcoded once into the repo for local-DB seeding).
+scripts/seed-media/

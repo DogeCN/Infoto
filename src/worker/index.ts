@@ -1,10 +1,8 @@
-// Infoto Worker entry.
-// Route order: /sync -> /upload -> /l/:id36 -> /admin/{migrate,announcements,feedback}
-// (+ /admin/* 404) -> ASSETS static fallback (the /admin page uses the SPA fallback).
+// Worker entry: maps the D1 and ASSETS bindings onto the app environment and caches
+// one Hono app per isolate.
 
-import { createApp } from './app.ts';
+import { createApp, type AppEnv } from './app.ts';
 import { d1Db } from './db-d1.ts';
-import type { AppEnv } from './env.ts';
 
 export interface Env {
   DB: D1Database;

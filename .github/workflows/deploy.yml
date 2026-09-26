@@ -1,8 +1,11 @@
 name: deploy
 
-# The workflow builds the SPA — dist/ is NOT committed (see .gitignore).
 # Pipeline: checkout -> install deps -> build SPA -> ensure same-name D1 -> patch
 # wrangler.toml -> apply schema (idempotent) -> wrangler deploy -> inject secrets.
+#
+# A tag push deploys production (the real Turnstile key/secret); any other push
+# deploys the same Worker under the test Turnstile key/secret so the e2e harness's
+# fake token passes. dist/ is not committed — this workflow builds it.
 on:
   push:
     branches: [main]
@@ -35,6 +38,15 @@ env:
   CLOUDFLARE_API_TOKEN: ${{ inputs.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ inputs.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+permissions:
+  contents: read
+
+# One deploy at a time per ref: two overlapping runs would race on wrangler deploy
+# and on the wrangler.toml rewrite below.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Quality gate runs first: a broken lint/type/test state never deploys.
   checks:
@@ -50,29 +62,25 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
-      # Single npm workspace install covers Worker deps (hono, wrangler from
-      # the root) and frontend deps (web/) — one lockfile at the repo root.
+      # One npm workspace install covers Worker deps (hono, wrangler from the root)
+      # and frontend deps (web/) — a single lockfile at the repo root. wrangler runs
+      # through npx, so it stays the pinned devDependency rather than a global copy.
       - name: Install dependencies
         run: npm ci
 
-      - name: Build SPA (-> dist/)
+      - name: Build SPA into dist/
         run: |
-          set -e
           npm run build
           test -f dist/index.html
           echo "dist/ built: $(find dist -type f | wc -l) files"
 
-      - name: Install wrangler
-        run: npm i -g wrangler
-
       - name: Ensure same-name D1 exists
         run: |
-          set -e
           get_db_id() {
-            wrangler d1 list --json 2>/dev/null | node -e '
+            npx wrangler d1 list --json 2>/dev/null | node -e '
               let d = "";
               process.stdin.on("data", c => d += c).on("end", () => {
                 const m = d.match(/\[[\s\S]*\]/);
@@ -85,7 +93,7 @@ jobs:
           DB_ID="$(get_db_id)"
           if [ -z "$DB_ID" ]; then
             echo "D1 '$DEPLOY_NAME' not found — creating"
-            wrangler d1 create "$DEPLOY_NAME"
+            npx wrangler d1 create "$DEPLOY_NAME"
             DB_ID="$(get_db_id)"
           fi
           if [ -z "$DB_ID" ]; then
@@ -100,10 +108,9 @@ jobs:
           sed -i "s/^name = .*/name = \"$DEPLOY_NAME\"/" wrangler.toml
           sed -i "s/^database_name = .*/database_name = \"$DEPLOY_NAME\"/" wrangler.toml
           sed -i "s/^database_id = .*/database_id = \"$DB_ID\"/" wrangler.toml
+          # The site key must match the secret injected below: a tag push uses the
+          # real key, a branch push the Cloudflare test key.
           SITE_KEY="${{ inputs.TURNSTILE_SITE_KEY }}"
-          # Production (tag): the real site key from repo variables. Test
-          # deployment: Cloudflare's always-pass TEST site key — the only key
-          # whose tokens the always-pass test secret accepts.
           if [ -z "$SITE_KEY" ]; then
             if [ "${{ github.ref_type }}" = "tag" ]; then
               SITE_KEY="${{ vars.TURNSTILE_SITE_KEY }}"
@@ -116,40 +123,56 @@ jobs:
           fi
           cat wrangler.toml
 
-      - name: Apply schema (idempotent)
+      - name: Apply schema when missing
         run: |
-          set -e
-          CHECK="$(wrangler d1 execute "$DEPLOY_NAME" --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name='users'" --json)"
+          CHECK="$(npx wrangler d1 execute "$DEPLOY_NAME" --remote --command "SELECT name FROM sqlite_master WHERE type='table' AND name='users'" --json)"
           COUNT="$(printf '%s' "$CHECK" | node -e '
             let d = "";
             process.stdin.on("data", c => d += c).on("end", () => {
               try {
                 const m = d.match(/\[[\s\S]*\]/);
+                if (!m) throw new Error("no JSON array in output");
                 console.log(JSON.parse(m[0])[0].results.length);
               } catch { console.log("ERR"); }
             });')"
+          if [ "$COUNT" = "ERR" ]; then
+            echo "::error::could not read the table list — refusing to guess the schema state"
+            exit 1
+          fi
           if [ "$COUNT" = "0" ]; then
             echo "Tables missing — applying schema.sql"
-            wrangler d1 execute "$DEPLOY_NAME" --remote --file=schema.sql
+            npx wrangler d1 execute "$DEPLOY_NAME" --remote --file=schema.sql
           else
             echo "Schema already applied (users table exists) — skipping"
           fi
 
       - name: Deploy Worker
-        run: wrangler deploy
+        run: npx wrangler deploy
 
       - name: Inject Worker secrets
         env:
           TC_SECRET_VALUE: ${{ secrets.TC_SECRET }}
         run: |
-          printf '%s' "$TC_SECRET_VALUE" | wrangler secret put TC_SECRET
+          if [ -z "$TC_SECRET_VALUE" ]; then
+            echo "::error::repo secret TC_SECRET is empty"
+            exit 1
+          fi
+          printf '%s' "$TC_SECRET_VALUE" | npx wrangler secret put TC_SECRET
 
-      # Production only: the real Turnstile secret, injected by this workflow.
-      # Test deployments keep the always-pass test secret so the e2e harness's
-      # fake token passes while token-less first entries still get 401 turnstile_required.
-      - name: Inject Turnstile secret (production only)
+      # A branch deployment runs against the always-pass test secret, which is the
+      # only secret whose tokens the test site key above accepts.
+      - name: Inject Turnstile test secret (non-production)
+        if: github.ref_type != 'tag'
+        run: |
+          printf '%s' "0x00000000000000000000000000000000" | npx wrangler secret put TURNSTILE_SECRET_KEY
+
+      - name: Inject Turnstile secret (production)
         if: github.ref_type == 'tag'
         env:
           TURNSTILE_SECRET_VALUE: ${{ inputs.TURNSTILE_SECRET_KEY || secrets.TURNSTILE_SECRET_KEY }}
         run: |
-          printf '%s' "$TURNSTILE_SECRET_VALUE" | wrangler secret put TURNSTILE_SECRET_KEY
+          if [ -z "$TURNSTILE_SECRET_VALUE" ]; then
+            echo "::error::repo secret TURNSTILE_SECRET_KEY is empty"
+            exit 1
+          fi
+          printf '%s' "$TURNSTILE_SECRET_VALUE" | npx wrangler secret put TURNSTILE_SECRET_KEY
