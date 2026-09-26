@@ -25,11 +25,21 @@ export type MigrateImportResult =
 
 export type XhrFactory = () => XMLHttpRequest;
 
+/**
+ * Whole-request deadline. Without it `xhr.timeout` stayed 0 (never fires), so a
+ * stalled connection left `importing` latched forever — the import button was
+ * disabled with no way out. Deliberately generous: the server runs arbitrary SQL
+ * inside this window, not just the upload.
+ */
+export const MIGRATE_TIMEOUT_MS = 5 * 60_000;
+
 export interface MigrateSqlOptions {
   onProgress?: (fraction: number) => void;
   xhrFactory?: XhrFactory;
   endpoint?: string;
   maxBytes?: number;
+  /** Whole-request timeout override (tests). */
+  timeoutMs?: number;
 }
 
 export async function migrateSql(
@@ -57,6 +67,7 @@ export async function migrateSql(
     xhr = xhrFactory();
     xhr.open('POST', options.endpoint ?? '/admin/migrate');
     xhr.withCredentials = true;
+    xhr.timeout = options.timeoutMs ?? MIGRATE_TIMEOUT_MS;
   } catch {
     return { ok: false, kind: 'network', message: '无法创建上传请求' };
   }

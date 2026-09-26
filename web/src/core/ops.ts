@@ -2,7 +2,7 @@
 // syncs, and is corrected by the next full server snapshot. Pure reducers live here so
 // they are unit-testable without a browser; the store binds them to reactive state and the engine.
 
-import type { Announcement, Feedback, Op, Photo } from '$shared/types';
+import type { Announcement, Feedback, Op, Photo, ReactPayload, VotePayload } from '$shared/types';
 
 /** add/remove `userId` in a JSON mark array; idempotent (contains check first). */
 export function toggleId(list: number[], userId: number, add: boolean): number[] {
@@ -59,6 +59,63 @@ export function applyMarkMany(
 export function applyDelete(photos: Photo[], ids: number[]): Photo[] {
   const set = new Set(ids);
   return photos.filter((p) => !set.has(p.id));
+}
+
+/**
+ * Re-fold ops that are still queued in the local oplog onto a fresh server snapshot.
+ * A snapshot computed before those ops reached the server must not revert the
+ * optimistic state — marks / deletes / votes / reactions are idempotent reducers,
+ * so folding them again over the snapshot restores the intended view. `upload` and
+ * `fb_create` are excluded: their optimistic rows are managed outside this fold
+ * (upload pipeline pending entries; fb temp ids must not duplicate).
+ */
+export function reapplyQueued(
+  photos: Photo[],
+  announcements: Announcement[],
+  feedback: Feedback[],
+  queued: Op[],
+  selfId: number,
+): { photos: Photo[]; announcements: Announcement[]; feedback: Feedback[] } {
+  let p = photos;
+  let a = announcements;
+  let f = feedback;
+  for (const op of queued) {
+    switch (op.type) {
+      case 'like':
+      case 'unlike':
+      case 'dislike':
+      case 'undislike':
+      case 'report':
+      case 'unreport': {
+        if (op.target == null) break;
+        const kind: MarkKind =
+          op.type === 'like' || op.type === 'unlike'
+            ? 'like'
+            : op.type === 'dislike' || op.type === 'undislike'
+              ? 'dislike'
+              : 'report';
+        p = applyMark(p, op.target, kind, selfId, !op.type.startsWith('un'));
+        break;
+      }
+      case 'delete':
+        if (op.target != null) p = applyDelete(p, [op.target]);
+        break;
+      case 'vote':
+        if (op.target != null)
+          a = applyVote(a, op.target, selfId, (op.payload as VotePayload | null)?.option ?? null);
+        break;
+      case 'react':
+        if (op.target != null)
+          a = applyReact(a, op.target, selfId, (op.payload as ReactPayload | null)?.emoji ?? null);
+        break;
+      case 'fb_delete':
+        if (op.target != null) f = applyFbDelete(f, op.target);
+        break;
+      default:
+        break; // upload / fb_create — see doc comment
+    }
+  }
+  return { photos: p, announcements: a, feedback: f };
 }
 
 /** Optimistically set / retract the single vote of `userId` on one announcement. */

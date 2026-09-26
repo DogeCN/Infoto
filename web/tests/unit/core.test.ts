@@ -8,6 +8,7 @@ import {
   artifactExt,
   parseGifLsdSize,
   videoPoolSize,
+  translateTaskError,
 } from '$base/upload/pipeline';
 import { toId36, fromId36, proxyUrl } from '$base/lib/id36';
 import { keepalivePrefix, KEEPALIVE_BODY_LIMIT } from '../../src/core/sync/engine';
@@ -21,6 +22,23 @@ describe('pipeline pure functions', () => {
 
   it('upload timeout matches the contract (no auto-retry anywhere)', () => {
     expect(UPLOAD_TIMEOUT_MS).toBe(45_000);
+  });
+
+  it('maps the codes that actually reach the upload leg (the proxy prefers body over status)', () => {
+    const onUpload = { sha256: 'abc' };
+    expect(translateTaskError('unauthorized', onUpload)).toBe('未授权，请先通过验证');
+    expect(translateTaskError('http_401', onUpload)).toBe('未授权，请先通过验证');
+    expect(translateTaskError('timeout', onUpload)).toBe('上传超时');
+    expect(translateTaskError('http_418', onUpload)).toBe('上传失败（HTTP 418）');
+    expect(translateTaskError('garbage_code', onUpload)).toBe('上传失败');
+    expect(translateTaskError('oversize', { oversize: true })).toBe('产物超过 100MB，无法上传');
+  });
+
+  it('keeps transcode failures distinguishable from upload failures', () => {
+    expect(translateTaskError('source_missing', {})).toBe('转码失败：源文件已被清理');
+    expect(translateTaskError('file is corrupt on disk', {})).toBe('转码失败：文件可能已损坏');
+    expect(translateTaskError('brand_new_code', {})).toBe('转码失败（brand_new_code）');
+    expect(translateTaskError(undefined, {})).toBe('转码失败');
   });
 
   it('image pool clamp(2,6,floor(cores*0.75)) with downlink cap', () => {

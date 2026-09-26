@@ -1,6 +1,7 @@
 // /upload client — streaming proxy to the image host (spec: "image-host upload proxy").
-// 45s timeout counts as a failed attempt; retry backoff and attempt count
-// constants come from the base pipeline.ts.
+// One attempt per call: no retry here (the contract forbids automatic retries — a
+// failure is surfaced and the manual retry handle takes over). The 45s budget is an
+// idle/no-progress deadline from the base pipeline.ts, not a wall-clock cap.
 
 import type { TcUploadResponse } from '$shared/types';
 import { UPLOAD_TIMEOUT_MS } from '$base/upload/pipeline';
@@ -28,6 +29,8 @@ export interface UploadCallIo {
   timeoutMs?: number;
   /** Upload progress 0…1 (XHR upload.onprogress; fetch cannot observe it). */
   onProgress?: (fraction: number) => void;
+  /** Injected XHR transport (tests); defaults to the real XMLHttpRequest. */
+  xhrFactory?: () => XMLHttpRequest;
 }
 
 function parseTcResponse(text: string, status: number): UploadResult {
@@ -89,18 +92,48 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
   }
 
   return new Promise<UploadResult>((resolve) => {
-    const xhr = new XMLHttpRequest();
+    const xhr = (io.xhrFactory ?? (() => new XMLHttpRequest()))();
     xhr.open('POST', `${origin}/upload`);
-    xhr.timeout = timeoutMs;
     xhr.withCredentials = true;
+    // XHR's built-in `timeout` measures the WHOLE attempt (connect + body + response),
+    // so a 100MB artifact on a <2 Mbps uplink was guaranteed to die at 45s even while
+    // every byte was still moving — and the contract has no automatic retry, so that
+    // was a permanent failure. Watch for silence instead: the attempt only fails after
+    // `timeoutMs` with no progress at all (dead connection, stalled stream, silent
+    // response). Progress keeps re-arming the watchdog for as long as it flows.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const settle = (result: UploadResult): void => {
+      if (settled) return;
+      settled = true;
+      if (watchdog !== undefined) clearTimeout(watchdog);
+      resolve(result);
+    };
+    const arm = (): void => {
+      if (watchdog !== undefined) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        xhr.abort();
+        settle({ ok: false, error: 'timeout', detail: 'no progress before deadline' });
+      }, timeoutMs);
+    };
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && e.total > 0) {
         io.onProgress?.(Math.max(0, Math.min(1, e.loaded / e.total)));
       }
+      arm();
     };
-    xhr.onload = () => resolve(parseTcResponse(xhr.responseText, xhr.status));
-    xhr.onerror = () => resolve({ ok: false, error: 'network_error', detail: 'xhr error' });
-    xhr.ontimeout = () => resolve({ ok: false, error: 'timeout', detail: 'upload timeout' });
-    xhr.send(buildForm(blob));
+    xhr.onload = () => settle(parseTcResponse(xhr.responseText, xhr.status));
+    xhr.onerror = () => settle({ ok: false, error: 'network_error', detail: 'xhr error' });
+    // Abort only ever comes from the watchdog above (nothing else cancels it).
+    xhr.onabort = () =>
+      settle({ ok: false, error: 'timeout', detail: 'no progress before deadline' });
+    arm();
+    try {
+      xhr.send(buildForm(blob));
+    } catch (e) {
+      // a throw here used to leave the promise pending forever, which wedged the
+      // SharedWorker's image pool (its running counter never came back down)
+      settle({ ok: false, error: 'network_error', detail: String(e) });
+    }
   });
 }

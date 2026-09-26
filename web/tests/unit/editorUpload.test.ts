@@ -142,4 +142,30 @@ describe('editor upload progress', () => {
 
     expect(rows).toHaveLength(1); // only the local 'queued' row
   });
+
+  it('retryEditorUpload re-registers a waiter and delivers the URL on retry success', async () => {
+    const { pipeline, port } = setup();
+    const first = pipeline.uploadEditorImage(png());
+    const jobId = jobIdOf(port);
+
+    // First attempt fails on the upload leg → waiter consumed.
+    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.1 });
+    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'failed', error: 'timeout' });
+    await expect(first).rejects.toThrow('上传超时');
+    expect(port.sent.some((m) => m['t'] === 'editorResultAck')).toBe(true);
+
+    // Retry: a fresh waiter is registered and retryJob is sent.
+    const retry = pipeline.retryEditorUpload(jobId);
+    expect(port.sent.at(-1)).toMatchObject({ t: 'retryJob', jobId });
+
+    status(port, {
+      t: 'jobStatus',
+      jobId,
+      purpose: 'editor',
+      phase: 'done',
+      url: 'https://host/b.webp',
+    });
+
+    await expect(retry).resolves.toBe('https://host/b.webp');
+  });
 });

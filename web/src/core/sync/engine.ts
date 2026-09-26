@@ -50,6 +50,13 @@ export interface EngineIo {
 
 export interface SyncSnapshotContext {
   attempt: number;
+  /**
+   * Ops still queued in the oplog when this snapshot landed (appended after the
+   * request was read, or carried by a concurrent pagehide flush). The snapshot
+   * cannot reflect them — the sink must fold them back on top or the optimistic
+   * state reverts until the next sync.
+   */
+  queuedOps: Op[];
 }
 
 export type SyncAttemptResult =
@@ -220,7 +227,12 @@ export class SyncEngine {
         available.map((entry) => entry.key),
       );
       this.pending = await countOps(db);
-      await this.applySnapshot(db, response, { attempt });
+      // Ops appended after this request's op read (or owned by a concurrent pagehide
+      // flush) are not in the snapshot — hand them along so the sink can re-fold them.
+      const queuedOps = (await readOps(db))
+        .filter((entry) => !this.inFlightKeys.has(entry.key))
+        .map((entry) => entry.op);
+      await this.applySnapshot(db, response, { attempt, queuedOps });
       return { ok: true, confirmedThroughVersion: maxVersion };
     } catch (error) {
       try {

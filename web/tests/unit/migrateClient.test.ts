@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { migrateSql, type XhrFactory } from '../../src/core/api/migrateClient';
+import { migrateSql, MIGRATE_TIMEOUT_MS, type XhrFactory } from '../../src/core/api/migrateClient';
 
 class FakeUpload {
   onprogress: ((event: ProgressEvent) => void) | null = null;
@@ -15,6 +15,7 @@ class FakeXhr {
   responseText = '';
   response: unknown = null;
   withCredentials = false;
+  timeout = 0;
   method = '';
   url = '';
   sentBody: XMLHttpRequestBodyInit | null = null;
@@ -122,6 +123,17 @@ describe('migrateSql', () => {
       message: '服务器响应格式无效',
       status: 200,
     });
+  });
+
+  it('arms a whole-request deadline (xhr.timeout stayed 0, so a hung import never gave up)', async () => {
+    const xhr = new FakeXhr({ status: 200, body: JSON.stringify({ ok: true, imported: 1 }) });
+
+    await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
+      xhrFactory: factoryFor(xhr),
+    });
+
+    expect(MIGRATE_TIMEOUT_MS).toBe(5 * 60_000);
+    expect(xhr.timeout).toBe(MIGRATE_TIMEOUT_MS);
   });
 
   it('validates the SQL extension and 50 MiB limit before creating a request', async () => {

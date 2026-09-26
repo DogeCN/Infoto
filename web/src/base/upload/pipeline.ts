@@ -14,7 +14,11 @@ export const VP9_QUANTIZER = 30;
 export const OPUS_BITRATE = 128_000;
 /** Cloudflare request-body ceiling — artifacts above this never hit /upload. */
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-/** Per-attempt upload timeout; timeouts count as upload failure. */
+/**
+ * Per-attempt upload deadline, measured as *silence*: the attempt fails only after
+ * this long with no progress at all. Deliberately not a wall-clock cap — a large
+ * artifact on a slow uplink keeps moving for minutes and must not be killed for it.
+ */
 export const UPLOAD_TIMEOUT_MS = 45_000;
 
 // ---- file type routing (single exit point) ----------------------------------
@@ -130,7 +134,12 @@ export interface TaskErrorContext {
 const UPLOAD_ERROR_TEXT: Record<string, string> = {
   timeout: '上传超时',
   network_error: '网络错误',
+  // The proxy answers 401 with a JSON body, and the client prefers that body's
+  // `error` field over the status code — so the real code that reaches here is
+  // `unauthorized`, not `http_401` (which was therefore dead). Map both.
+  unauthorized: '未授权，请先通过验证',
   http_401: '未授权，请先通过验证',
+  oversize: '产物超过 100MB，无法上传',
   http_413: '文件过大',
 };
 

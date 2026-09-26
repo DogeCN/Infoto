@@ -42,6 +42,10 @@ export interface PipelineIo {
    * the pipeline writes directly to the op-log for harnesses and unit tests.
    */
   onUploadOp?: (op: Op) => void | Promise<void>;
+  /** A job left the SharedWorker (cancelJob) — the page must drop its row/card. */
+  onJobRemoved?: (jobId: string) => void;
+  /** File outside the accept surface in addFiles — surface a user-visible notice. */
+  onRejected?: (fileName: string) => void;
 }
 
 export interface WorkerLike {
@@ -158,7 +162,16 @@ export class UploadPipeline {
     this.bc = 'BroadcastChannel' in window ? new BroadcastChannel(CH) : null;
     this.bc?.addEventListener('message', (e: MessageEvent) => {
       const m = e.data;
-      if (!isSwToPage(m) || m.t !== 'jobStatus' || m.purpose !== 'album') return;
+      if (!isSwToPage(m)) return;
+      // A cancel issued in another tab drops the row here too — the direct port
+      // only reaches the tab that owns it, and a pruned/cancelled job would
+      // otherwise leave a panel row with no job behind it.
+      if (m.t === 'jobRemoved') {
+        this.snapshots.delete(m.jobId);
+        this.io.onJobRemoved?.(m.jobId);
+        return;
+      }
+      if (m.t !== 'jobStatus' || m.purpose !== 'album') return;
       this.emit({
         jobId: m.jobId,
         fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
@@ -174,6 +187,21 @@ export class UploadPipeline {
   }
 
   private onSwMessage(m: SwToPageMessage): void {
+    if (m.t === 'jobRemoved') {
+      // cancelJob echoed back (broadcast — every tab holding the row drops it).
+      // An in-flight editor waiter rejects so its owner's await settles; the
+      // editor row state clears so a reopened dialog never replays it.
+      const waiter = this.editorWaiters.get(m.jobId);
+      if (waiter) {
+        this.editorWaiters.delete(m.jobId);
+        waiter.reject(new Error('上传已取消'));
+      }
+      if (this.editorSnapshot?.jobId === m.jobId) this.editorSnapshot = null;
+      this.editorPhase.delete(m.jobId);
+      this.snapshots.delete(m.jobId);
+      this.io.onJobRemoved?.(m.jobId);
+      return;
+    }
     if (m.t !== 'jobStatus') return;
     const action = pipelineResultAction(m, this.editorWaiters.has(m.jobId));
     if (action === 'resolve' || action === 'reject') {
@@ -282,8 +310,10 @@ export class UploadPipeline {
 
   uploadEditorImage(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
-      if (!file.type.startsWith('image/')) {
-        reject(new Error('editor_upload_requires_image'));
+      // Same accept surface as the waterfall (image/*,video/*): the editor
+      // rides the identical pipeline, and GIF / video both come out as VP9 WebM.
+      if (!routeByMime(file.type)) {
+        reject(new Error('不支持的文件类型'));
         return;
       }
       const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -311,19 +341,25 @@ export class UploadPipeline {
   /**
    * Entry: picked files (the accept list is `image/*,video/*` — exactly
    * routeByMime's coverage surface, per the contract audit clause).
+   * `onQueued` fires per accepted file with its job id — the page can grab the
+   * File (the SW clone takes over from here) e.g. to probe source dimensions.
    */
-  addFiles(files: FileList | File[]): void {
+  addFiles(files: FileList | File[], onQueued?: (jobId: string, file: File) => void): void {
     if (!this.sw) this.start();
     for (const file of Array.from(files)) {
       const route = routeByMime(file.type);
       if (!route) {
+        // Empty MIME (common on Windows) and exotic types land here — a silent
+        // console line left users clicking upload with zero feedback.
         this.log(
           `file ${file.name} (${file.type || 'no MIME'}) is outside the accept surface, rejected`,
         );
+        this.io.onRejected?.(file.name);
         continue;
       }
       const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       this.emit({ jobId, fileName: file.name, purpose: 'album', phase: 'queued' });
+      onQueued?.(jobId, file);
       this.sw!.port.postMessage({
         t: 'addJob',
         jobId,
@@ -338,6 +374,28 @@ export class UploadPipeline {
   /** Manual retry handle (failed jobs; artifacts stay in OPFS). */
   retry(jobId: string): void {
     this.sw?.port.postMessage({ t: 'retryJob', jobId });
+  }
+
+  /**
+   * Retry a failed editor upload and deliver the URL via a fresh Promise.
+   * The original waiter was consumed on the first failure, so we re-register
+   * one before telling the SW to re-run (the OPFS artifact is reused when
+   * stage 1 already succeeded).
+   */
+  retryEditorUpload(jobId: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      this.editorWaiters.set(jobId, { resolve, reject });
+      this.retry(jobId);
+    });
+  }
+
+  /**
+   * Cancel handle (any phase): the SW deletes the record and broadcasts
+   * `jobRemoved`, which drops the row/card in every holding tab. Also the
+   * only way to stop a failed job from replaying its card after a refresh.
+   */
+  cancel(jobId: string): void {
+    this.sw?.port.postMessage({ t: 'cancelJob', jobId });
   }
 
   /** One of the token release paths: destroy this page's video worker when done. */
@@ -410,4 +468,47 @@ export class UploadPipeline {
 function routeEngine(mime: string): 'video' | 'gif' {
   const r = routeByMime(mime);
   return r?.engine === 'gif' ? 'gif' : 'video';
+}
+
+/**
+ * Source-file dimensions, probed on the page while it still holds the File
+ * (after addJob only the SW's clone remains). A transcode that dies before
+ * producing meta reuses these so its failure card keeps the real aspect
+ * ratio instead of the 800×600 placeholder. Null when probing fails.
+ */
+export async function probeSourceSize(
+  file: Blob,
+): Promise<{ width: number; height: number } | null> {
+  const mime = (file.type || '').toLowerCase();
+  try {
+    if (mime.startsWith('image/')) {
+      // Decodes the first frame (works for GIF too); the bitmap is closed right away.
+      const bmp = await createImageBitmap(file);
+      const size = { width: bmp.width, height: bmp.height };
+      bmp.close();
+      return size.width > 0 && size.height > 0 ? size : null;
+    }
+    if (mime.startsWith('video/')) {
+      // Metadata-only load — no frame decoding, cheap even for large files.
+      return await new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const v = document.createElement('video');
+        v.preload = 'metadata';
+        v.muted = true;
+        v.onloadedmetadata = () => {
+          const size = { width: v.videoWidth, height: v.videoHeight };
+          URL.revokeObjectURL(url);
+          resolve(size.width > 0 && size.height > 0 ? size : null);
+        };
+        v.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve(null);
+        };
+        v.src = url;
+      });
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }

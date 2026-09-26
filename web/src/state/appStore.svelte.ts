@@ -72,14 +72,23 @@ class AppState {
   }
 
   /** Apply one authoritative full snapshot. */
-  applySync(r: SyncResponse, _context?: SyncSnapshotContext): Map<number, number> {
+  applySync(r: SyncResponse, context?: SyncSnapshotContext): Map<number, number> {
     this.selfId = r.selfId;
     try {
       localStorage.setItem(SELF_ID_KEY, String(r.selfId));
     } catch {
       /* noop */
     }
-    this.photos = r.photos;
+    // A snapshot computed before our just-appended ops reached the server must not
+    // revert the optimistic state: re-fold every op still queued in the oplog.
+    const refolded = ops.reapplyQueued(
+      r.photos,
+      r.announcements,
+      r.selfId === 0 ? (r.feedback ?? []) : [],
+      context?.queuedOps ?? [],
+      r.selfId,
+    );
+    this.photos = refolded.photos;
 
     // Announcements are authoritative from the snapshot; optimistic rows that
     // are still saving (temp id) or failed are kept so an unsaved edit is
@@ -87,9 +96,9 @@ class AppState {
     const unconfirmed = this.announcements.filter(
       (announcement) => announcement.id < 0 || this.annSave[announcement.id] === 'error',
     );
-    this.announcements = [...r.announcements, ...unconfirmed];
+    this.announcements = [...refolded.announcements, ...unconfirmed];
 
-    this.feedback = r.selfId === 0 ? r.feedback : [];
+    this.feedback = refolded.feedback;
     this.pendingFbTempIds = [];
     this.lastSync = r;
     // Announcement writes go through the admin API, so no queued op references

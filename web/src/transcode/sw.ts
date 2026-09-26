@@ -13,7 +13,7 @@ import {
 import { postUpload } from '../core/api/uploadClient';
 import { lookupSha } from '../core/oplog/cache';
 import { openOplogDb } from '../core/oplog/store';
-import { readArtifact, storeArtifact } from './opfs';
+import { readArtifact, removeArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
 import { shouldDedupeArtifact } from './uploadPurpose';
 import {
@@ -58,6 +58,8 @@ interface JobRec {
   editorResultAcked: boolean;
   /** Cancellation flag for image jobs. */
   cancelled: boolean;
+  /** First time the sweep observed this job in a terminal phase (prune clock). */
+  terminalAt?: number;
   /** Token lease info (video/gif). */
   leaseId?: string;
 }
@@ -90,6 +92,9 @@ function uid(): string {
 }
 
 function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
+  // Cancelled jobs (record already deleted from `jobs`) stay silent — otherwise
+  // late progress/result notifications would resurrect the row they just dropped.
+  if (rec.cancelled) return;
   const message: JobStatusMessage = {
     t: 'jobStatus',
     jobId: rec.jobId,
@@ -171,6 +176,32 @@ const owners = new Map<string, number>();
 const portIds = new Map<MessagePort, number>();
 let nextPortId = 1;
 const portById = new Map<number, MessagePort>();
+/** Last message time per port — the only liveness signal a port offers. */
+const portLastSeen = new Map<number, number>();
+/**
+ * Silence from a port that holds a lease. A live page heartbeats every 5s and
+ * even under background timer throttling (≈1/min) stays well inside this; a
+ * closed tab says nothing at all. Used to tell "gone" from "throttled".
+ */
+const DEAD_OWNER_MS = 120_000;
+/** A port with no owned jobs that has been silent this long is swept (it re-registers on its next message). */
+const PORT_IDLE_MS = 10 * 60_000;
+/** How many terminal job records are kept for replay / manual retry. */
+const TERMINAL_JOB_CAP = 30;
+/** A failed job keeps its source file this long (retry needs it) before it is released. */
+const FAILED_JOB_TTL_MS = 10 * 60_000;
+/** Source release placeholder — an empty Blob keeps the field type without holding bytes. */
+const EMPTY_BLOB = new Blob();
+
+/** Forget a job everywhere it is indexed (no broadcast: pages own their own rows). */
+function forgetJob(jobId: string): void {
+  jobs.delete(jobId);
+  owners.delete(jobId);
+  const vi = videoQueue.indexOf(jobId);
+  if (vi >= 0) videoQueue.splice(vi, 1);
+  const ii = imageQueue.indexOf(jobId);
+  if (ii >= 0) imageQueue.splice(ii, 1);
+}
 
 // ---- stage 1: images (on the SharedWorker thread) ---------------------------------
 
@@ -226,6 +257,7 @@ async function afterStage1(rec: JobRec): Promise<void> {
 async function runUpload(rec: JobRec): Promise<void> {
   const ext = artifactExt(rec.meta!.type === 0 ? 'image' : 'webm');
   const blob = await readArtifact(rec.jobId, ext);
+  if (rec.cancelled) return;
   if (!blob) {
     rec.phase = 'failed';
     rec.error = 'source_unavailable';
@@ -243,6 +275,9 @@ async function runUpload(rec: JobRec): Promise<void> {
     origin: self.location.origin,
     onProgress: (fraction) => notify(rec, { fraction }),
   });
+  // Cancelled mid-upload: discard the result — no URL, no op write, no notify
+  // (a photo whose owner cancelled must never land in the album).
+  if (rec.cancelled) return;
   if (r.ok) {
     rec.url = r.url;
     rec.phase = 'done';
@@ -295,7 +330,13 @@ function onVideoFailed(rec: JobRec, error: string): void {
 /** Manual retry handle: re-enqueue a failed job; skip transcode when the artifact is already in OPFS. */
 function onRetry(jobId: string): void {
   const rec = jobs.get(jobId);
-  if (!rec || (rec.phase !== 'failed' && rec.phase !== 'done')) return;
+  if (!rec) {
+    // The record was reclaimed (or cancelled elsewhere) while the card was still
+    // up — tell every holder to drop it, otherwise the retry button dead-ends.
+    broadcast({ t: 'jobRemoved', jobId });
+    return;
+  }
+  if (rec.phase !== 'failed' && rec.phase !== 'done') return;
   rec.error = undefined;
   rec.url = undefined;
   rec.opWritten = false;
@@ -328,6 +369,17 @@ setInterval(() => {
       leases.delete(leaseId);
       const rec = jobs.get(lease.jobId);
       if (rec && rec.leaseId === leaseId) {
+        const pid = owners.get(rec.jobId);
+        const seen = pid === undefined ? 0 : (portLastSeen.get(pid) ?? 0);
+        if (pid === undefined || now - seen > DEAD_OWNER_MS) {
+          // The owning page stopped talking long before its lease did — it is
+          // closed, not throttled. Re-enqueueing would hand the token back to a
+          // dead port every 15s forever, permanently pinning the video pool (top
+          // of 2) and blocking every other video upload. Drop the job instead;
+          // pages keep their own row and clean it up on their side.
+          forgetJob(rec.jobId);
+          continue;
+        }
         rec.leaseId = undefined;
         rec.phase = 'lease-wait';
         // in-flight job re-enqueues (transcoding is idempotent; OPFS artifact sha256 dedupe backstops)
@@ -339,6 +391,54 @@ setInterval(() => {
     }
   }
 }, 2_000);
+
+/**
+ * Terminal-job housekeeping. Two things grow without bound otherwise: the source
+ * Blob each job holds (a picked video can be gigabytes) and the records
+ * themselves, which are only useful for refresh replay and manual retry.
+ * Runs off the same clock as the lease reaper so a long-lived session stays flat.
+ */
+function reclaimTerminalJobs(): void {
+  const now = Date.now();
+  const pruneable: JobRec[] = [];
+  for (const rec of jobs.values()) {
+    if (rec.phase !== 'done' && rec.phase !== 'failed' && rec.phase !== 'duplicate') continue;
+    rec.terminalAt ??= now;
+    // Stage 1 can be skipped when the artifact alone is enough to re-run the
+    // upload leg — that is the point where the source stops being worth keeping.
+    if (rec.phase !== 'failed' || (rec.artifact && rec.sha256)) rec.file = EMPTY_BLOB;
+    const spent =
+      rec.phase === 'duplicate' ||
+      (rec.phase === 'done' && (rec.purpose === 'editor' || rec.opWritten)) ||
+      (rec.phase === 'failed' && now - rec.terminalAt > FAILED_JOB_TTL_MS);
+    if (spent) pruneable.push(rec);
+  }
+  // Map iteration is insertion-ordered: the front is the oldest record.
+  while (pruneable.length > TERMINAL_JOB_CAP) {
+    const rec = pruneable.shift()!;
+    const ext = rec.artifact?.ext;
+    forgetJob(rec.jobId);
+    // The artifact is unreferenced once the record is gone; failed jobs keep
+    // theirs until this point precisely so a manual retry can reuse it.
+    if (ext) void removeArtifact(rec.jobId, ext);
+  }
+}
+
+setInterval(reclaimTerminalJobs, 15_000);
+/** Idle ports own no jobs by definition, so sweeping them can't orphan work. */
+setInterval(() => {
+  const now = Date.now();
+  const busy = new Set(owners.values());
+  for (const [port, pid] of portIds) {
+    if (!ports.has(port)) continue;
+    if (busy.has(pid)) continue;
+    if (now - (portLastSeen.get(pid) ?? 0) <= PORT_IDLE_MS) continue;
+    ports.delete(port);
+    portIds.delete(port);
+    portById.delete(pid);
+    portLastSeen.delete(pid);
+  }
+}, 60_000);
 
 // ---- connection & message dispatch ---------------------------------------------------
 
@@ -355,9 +455,13 @@ onconnect = (e: MessageEvent) => {
   };
   port.onmessageerror = () => undefined;
   // Album jobs replay for refresh recovery. Editor results stay with the
-  // original owner and never cross a page-reload boundary.
+  // original owner and never cross a page-reload boundary. Terminal album
+  // states are skipped: /sync already delivers `done` photos and a duplicate
+  // never landed at all — replaying them flashed a batch of stale rows (and
+  // resurrected cards the store had already absorbed) on every refresh.
   for (const rec of jobs.values()) {
     if (rec.purpose === 'editor') continue;
+    if (rec.phase === 'done' || rec.phase === 'duplicate') continue;
     port.postMessage({
       t: 'jobStatus',
       jobId: rec.jobId,
@@ -373,6 +477,17 @@ onconnect = (e: MessageEvent) => {
 };
 
 function handleMessage(port: MessagePort, m: PageToSwMessage): void {
+  // Liveness stamp (lease reaper / port sweep read it), and re-registration for a
+  // port that was swept while its page sat idle — it must be back in `ports`
+  // before anything is posted to it.
+  let pid = portIds.get(port);
+  if (pid === undefined) {
+    pid = nextPortId++;
+    ports.add(port);
+    portIds.set(port, pid);
+    portById.set(pid, port);
+  }
+  portLastSeen.set(pid, Date.now());
   switch (m.t) {
     case 'addJob': {
       const route = routeByMime(m.mime);
@@ -415,13 +530,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       const rec = jobs.get(m.jobId);
       if (!rec) return;
       rec.cancelled = true;
-      jobs.delete(m.jobId);
-      owners.delete(m.jobId);
-      const qi = videoQueue.indexOf(m.jobId);
-      if (qi >= 0) videoQueue.splice(qi, 1);
-      const ii = imageQueue.indexOf(m.jobId);
-      if (ii >= 0) imageQueue.splice(ii, 1);
+      forgetJob(m.jobId);
       if (rec.leaseId) leases.delete(rec.leaseId);
+      // Cancel is the one path that may drop the artifact (contract): the job
+      // will never be retried, so nothing else will ever read it again.
+      if (rec.artifact) void removeArtifact(m.jobId, rec.artifact.ext);
       broadcast({ t: 'jobRemoved', jobId: m.jobId });
       return;
     }
