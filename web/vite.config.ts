@@ -1,6 +1,5 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url';
-import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
@@ -9,25 +8,6 @@ import tailwindcss from '@tailwindcss/vite';
 // proxy forwards API paths to the local Worker started by `wrangler dev` at the repo root (`npm run
 // dev:worker`, port 8787) — no test-site redirect, no local shim runtime; the target is fixed by contract.
 const backend = 'http://localhost:8787';
-
-/**
- * Turnstile site key (public value). In production the server sends it in the 401 body; in dev we
- * read the same value from `.dev.vars` at the repo root, so the first visit goes straight into
- * Turnstile and skips a probe request that is bound to 401.
- */
-function devTurnstileSiteKey(): string | undefined {
-  const fromEnv = process.env['VITE_TURNSTILE_SITE_KEY'];
-  if (fromEnv) return fromEnv;
-  try {
-    const vars = readFileSync(fileURLToPath(new URL('../.dev.vars', import.meta.url)), 'utf8');
-    const m = /^TURNSTILE_SITE_KEY=(.+)$/m.exec(vars);
-    return m?.[1]?.trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-const turnstileSiteKey = devTurnstileSiteKey();
 
 const proxy = (extra: Record<string, unknown> = {}) => ({
   target: backend,
@@ -47,10 +27,6 @@ const alias = {
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
   resolve: { alias },
-  // Only inject when we have a value: undefined would break import.meta.env access
-  define: turnstileSiteKey
-    ? { 'import.meta.env.VITE_TURNSTILE_SITE_KEY': JSON.stringify(turnstileSiteKey) }
-    : {},
   // Pre-bundle at server start: discovering these deps mid-session (first page
   // that loads the video worker) re-optimizes deps and full-reloads the page —
   // fatal for e2e (execution contexts destroyed mid-test).
@@ -74,6 +50,7 @@ export default defineConfig({
       // screen. In dev Vite's SPA fallback serves the shell (/src/main.ts) and the root check falls back to selfId === 0 from /sync (same as e2e).
       '/admin/migrate': proxy(),
       '/admin/announcements': proxy(),
+      '/admin/feedback': proxy(),
     },
   },
   test: {

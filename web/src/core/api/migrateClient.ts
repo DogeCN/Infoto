@@ -1,3 +1,5 @@
+import { copy, fmt } from '$shared/copy';
+
 export const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 
 export type MigrateImportFailureKind = 'validation' | 'network' | 'http' | 'server' | 'malformed';
@@ -25,12 +27,9 @@ export type MigrateImportResult =
 
 export type XhrFactory = () => XMLHttpRequest;
 
-/**
- * Whole-request deadline. Without it `xhr.timeout` stayed 0 (never fires), so a
- * stalled connection left `importing` latched forever — the import button was
- * disabled with no way out. Deliberately generous: the server runs arbitrary SQL
- * inside this window, not just the upload.
- */
+/** Whole-request deadline: without it `xhr.timeout` never fires, so a stalled
+ * connection leaves `importing` latched forever with no way out. Deliberately
+ * generous — the server runs arbitrary SQL inside this window, not just the upload. */
 export const MIGRATE_TIMEOUT_MS = 5 * 60_000;
 
 export interface MigrateSqlOptions {
@@ -48,17 +47,17 @@ export async function migrateSql(
 ): Promise<MigrateImportResult> {
   const maxBytes = options.maxBytes ?? MAX_IMPORT_BYTES;
   if (!file.name.toLowerCase().endsWith('.sql')) {
-    return { ok: false, kind: 'validation', message: '仅支持 .sql 文件' };
+    return { ok: false, kind: 'validation', message: copy.migrate.onlySqlFiles };
   }
   if (file.size > maxBytes) {
-    return { ok: false, kind: 'validation', message: '文件不能超过 50 MiB' };
+    return { ok: false, kind: 'validation', message: copy.migrate.fileTooLarge };
   }
 
   let body: ArrayBuffer;
   try {
     body = await file.arrayBuffer();
   } catch {
-    return { ok: false, kind: 'network', message: '读取文件失败，请重试' };
+    return { ok: false, kind: 'network', message: copy.migrate.readFileFailed };
   }
 
   const xhrFactory = options.xhrFactory ?? (() => new XMLHttpRequest());
@@ -69,7 +68,7 @@ export async function migrateSql(
     xhr.withCredentials = true;
     xhr.timeout = options.timeoutMs ?? MIGRATE_TIMEOUT_MS;
   } catch {
-    return { ok: false, kind: 'network', message: '无法创建上传请求' };
+    return { ok: false, kind: 'network', message: copy.migrate.cannotCreateRequest };
   }
 
   return new Promise<MigrateImportResult>((resolve) => {
@@ -93,9 +92,9 @@ export async function migrateSql(
         reportProgress(Math.max(0, Math.min(1, event.loaded / event.total)));
       }
     };
-    xhr.onerror = () => fail('network', '上传失败，请检查网络');
-    xhr.onabort = () => fail('network', '上传已取消');
-    xhr.ontimeout = () => fail('network', '上传超时，请重试');
+    xhr.onerror = () => fail('network', copy.migrate.uploadFailedCheckNetwork);
+    xhr.onabort = () => fail('network', copy.migrate.uploadCancelled);
+    xhr.ontimeout = () => fail('network', copy.migrate.uploadTimeout);
     xhr.onload = () => {
       reportProgress(1);
       const status = xhr.status;
@@ -104,7 +103,7 @@ export async function migrateSql(
         if (isServerFailure(payload)) {
           fail('server', formatServerMessage(payload), status);
         } else {
-          fail('http', `服务器返回 HTTP ${status}`, status);
+          fail('http', fmt(copy.migrate.httpError, { status }), status);
         }
         return;
       }
@@ -113,7 +112,7 @@ export async function migrateSql(
         return;
       }
       if (!isRecord(payload) || payload.ok !== true) {
-        fail('malformed', '服务器响应格式无效', status);
+        fail('malformed', copy.migrate.invalidResponse, status);
         return;
       }
       finish({ ok: true, response: payload as MigrateImportResponse });
@@ -122,7 +121,7 @@ export async function migrateSql(
     try {
       xhr.send(body);
     } catch {
-      fail('network', '上传失败，请检查网络');
+      fail('network', copy.migrate.uploadFailedCheckNetwork);
     }
   });
 }
@@ -151,13 +150,13 @@ function isServerFailure(value: unknown): boolean {
 }
 
 function formatServerMessage(value: unknown): string {
-  if (!isRecord(value)) return '服务器未返回错误详情';
+  if (!isRecord(value)) return copy.migrate.noErrorDetail;
   const details = [value.error, value.detail, value.statement]
     .map((detail) => (typeof detail === 'string' ? detail : ''))
     .map((detail) => detail.replace(/\s+/g, ' ').trim())
     .filter(Boolean)
     .slice(0, 3);
   return details.length > 0
-    ? `导入失败：${details.join(' · ').slice(0, 240)}`
-    : '导入失败：服务器未返回错误详情';
+    ? fmt(copy.migrate.serverFailure, { details: details.join(' · ').slice(0, 240) })
+    : copy.migrate.serverFailureNoDetail;
 }

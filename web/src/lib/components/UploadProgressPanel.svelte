@@ -1,8 +1,9 @@
 <script lang="ts">
   // Progress panel: one visual, two task kinds. kind='transcode' (default): the home waterfall
-  // view of the image-host pipeline, hiding uploading/done/failed rows — the waterfall card
-  // curtain carries that progress (contract). kind='upload': editor image upload on the same SharedWorker pipeline (queue → transcode → hash → upload), showing every stage since the editor has no card curtain.
+  // view of the image-host pipeline, hiding uploading/done/failed rows (the card curtain carries
+  // that progress); kind='upload': editor upload, showing every stage since the editor has no curtain.
   import { Clapperboard, ImageUp, Check, LoaderCircle, X } from '@lucide/svelte';
+  import { copy, fmt } from '$shared/copy';
 
   /** Structured task shape shared by pipeline snapshots and synthetic editor tasks. */
   export interface PanelTask {
@@ -40,15 +41,15 @@
     switch (phase) {
       case 'queued':
       case 'lease-wait':
-        return '排队中';
+        return copy.uploadPanel.queued;
       case 'transcoding':
-        return '转码中';
+        return copy.uploadPanel.transcoding;
       case 'hashing':
-        return '校验中';
+        return copy.uploadPanel.hashing;
       case 'uploading':
-        return '上传中';
+        return copy.uploadPanel.uploading;
       default:
-        return kind === 'upload' ? '上传中' : '转码中';
+        return kind === 'upload' ? copy.uploadPanel.uploading : copy.uploadPanel.transcoding;
     }
   }
 </script>
@@ -64,10 +65,10 @@
       <div class="flex items-center gap-2">
         {#if kind === 'upload'}
           <ImageUp class="size-4 text-muted-foreground" />
-          <span class="text-sm font-medium">上传进度</span>
+          <span class="text-sm font-medium">{copy.uploadPanel.uploadTitle}</span>
         {:else}
           <Clapperboard class="size-4 text-muted-foreground" />
-          <span class="text-sm font-medium">转码进度</span>
+          <span class="text-sm font-medium">{copy.uploadPanel.transcodeTitle}</span>
         {/if}
       </div>
     </div>
@@ -100,14 +101,14 @@
                 ? 'text-success'
                 : 'text-muted-foreground/70'}"
             >
-              {done ? '重复' : pct != null ? `${pct}%` : phaseLabel(task.phase)}
+              {done ? copy.uploadPanel.duplicate : pct != null ? `${pct}%` : phaseLabel(task.phase)}
             </span>
             {#if cancellable}
               <button
                 type="button"
                 class="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-                title="取消"
-                aria-label="取消 {task.fileName}"
+                title={copy.uploadPanel.cancel}
+                aria-label={fmt(copy.uploadPanel.cancelFile, { fileName: task.fileName })}
                 onclick={() => onCancelTask?.(task.jobId)}
               >
                 <X class="size-3" />
@@ -118,7 +119,7 @@
             <div
               class="mt-1.5 h-0.5 overflow-hidden rounded-full bg-muted-foreground/15"
               role="progressbar"
-              aria-label="{task.fileName} 进度"
+              aria-label={fmt(copy.uploadPanel.fileProgress, { fileName: task.fileName })}
               aria-valuemin="0"
               aria-valuemax="100"
               aria-valuenow={pct}

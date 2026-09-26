@@ -3,9 +3,10 @@
 // so a refresh never loses tasks.
 
 import { buildUploadOp, routeByMime, translateTaskError } from '$base/upload/pipeline';
+import { copy } from '$shared/copy';
 import { openOplogDb, appendOp } from '../core/oplog/store';
 import { LeaseClient } from './lease';
-import { isSwToPage, type JobMeta, type JobPurpose, type SwToPageMessage } from './shared/protocol';
+import { isSwToPage, type JobMeta, type JobPurpose, type SwToPageMessage } from './protocol';
 import { pipelineResultAction, shouldWriteAlbumUploadOp } from './uploadPurpose';
 import type { Op, UploadPayload } from '$shared/types';
 // ?sharedworker puts the SW through Vite's bundler (a bare new URL('./sw.ts',
@@ -38,8 +39,7 @@ export interface PipelineIo {
   ) => WorkerLike;
   onEvent?: (line: string) => void;
   /**
-   * Album upload op exit. The sync engine queues it when provided; otherwise
-   * the pipeline writes directly to the op-log for harnesses and unit tests.
+   * Album upload op exit: the sync engine queues it when provided, otherwise the pipeline writes directly to the op-log for harnesses and unit tests.
    */
   onUploadOp?: (op: Op) => void | Promise<void>;
   /** A job left the SharedWorker (cancelJob) — the page must drop its row/card. */
@@ -92,9 +92,7 @@ export class UploadPipeline {
   }
 
   /**
-   * Editor-image progress (purpose='editor'). Editor jobs run through the very same SharedWorker
-   * pipeline as album uploads (transcode → hash → upload); only the result stays private to the
-   * owning page, so progress is delivered here instead of to the album listener.
+   * Editor-image progress (purpose='editor'): the same SharedWorker pipeline as album uploads (transcode → hash → upload), but the result stays on the owning page's listener.
    */
   onEditorTask(l: (t: PipelineTaskSnapshot) => void): () => void {
     this.editorListeners.add(l);
@@ -104,7 +102,10 @@ export class UploadPipeline {
   }
 
   private emit(t: PipelineTaskSnapshot): void {
-    this.snapshots.set(t.jobId, t);
+    // Terminal rows are dropped, not cached: nothing reads them after the panel
+    // has cleared, and a long session would otherwise keep every finished job.
+    if (t.phase === 'done' || t.phase === 'failed') this.snapshots.delete(t.jobId);
+    else this.snapshots.set(t.jobId, t);
     if (t.purpose === 'album') {
       for (const l of this.listeners) l(t);
     }
@@ -194,7 +195,7 @@ export class UploadPipeline {
       const waiter = this.editorWaiters.get(m.jobId);
       if (waiter) {
         this.editorWaiters.delete(m.jobId);
-        waiter.reject(new Error('上传已取消'));
+        waiter.reject(new Error(copy.migrate.uploadCancelled));
       }
       if (this.editorSnapshot?.jobId === m.jobId) this.editorSnapshot = null;
       this.editorPhase.delete(m.jobId);
@@ -286,7 +287,7 @@ export class UploadPipeline {
   }
 
   private async writeUploadOp(jobId: string, url: string, meta: JobMeta): Promise<void> {
-    // payload has no created_at / uploader — server-authoritative (spec)
+    // payload has no created_at / uploader — both are server-authoritative
     const payload: UploadPayload = {
       sha256: this.shaByJob.get(jobId) ?? '',
       url,
@@ -313,7 +314,7 @@ export class UploadPipeline {
       // Same accept surface as the waterfall (image/*,video/*): the editor
       // rides the identical pipeline, and GIF / video both come out as VP9 WebM.
       if (!routeByMime(file.type)) {
-        reject(new Error('不支持的文件类型'));
+        reject(new Error(copy.transcode.errors.unsupportedFileType));
         return;
       }
       const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -339,18 +340,15 @@ export class UploadPipeline {
   }
 
   /**
-   * Entry: picked files (the accept list is `image/*,video/*` — exactly
-   * routeByMime's coverage surface, per the contract audit clause).
-   * `onQueued` fires per accepted file with its job id — the page can grab the
-   * File (the SW clone takes over from here) e.g. to probe source dimensions.
+   * Entry: picked files (the accept list is `image/*,video/*` — exactly routeByMime's coverage surface). `onQueued` fires per accepted file with its job id, letting the page grab the File (the SW clone takes over from here) e.g. to probe source dimensions.
    */
   addFiles(files: FileList | File[], onQueued?: (jobId: string, file: File) => void): void {
     if (!this.sw) this.start();
     for (const file of Array.from(files)) {
       const route = routeByMime(file.type);
       if (!route) {
-        // Empty MIME (common on Windows) and exotic types land here — a silent
-        // console line left users clicking upload with zero feedback.
+        // Empty MIME (common on Windows) and exotic types land here — they must reach
+        // the user as a notice, not just a console line.
         this.log(
           `file ${file.name} (${file.type || 'no MIME'}) is outside the accept surface, rejected`,
         );
@@ -377,10 +375,7 @@ export class UploadPipeline {
   }
 
   /**
-   * Retry a failed editor upload and deliver the URL via a fresh Promise.
-   * The original waiter was consumed on the first failure, so we re-register
-   * one before telling the SW to re-run (the OPFS artifact is reused when
-   * stage 1 already succeeded).
+   * Retry a failed editor upload, delivering the URL via a fresh Promise: the first failure consumed the waiter, so a new one is registered before the SW re-runs (the OPFS artifact is reused when stage 1 already succeeded).
    */
   retryEditorUpload(jobId: string): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -390,9 +385,7 @@ export class UploadPipeline {
   }
 
   /**
-   * Cancel handle (any phase): the SW deletes the record and broadcasts
-   * `jobRemoved`, which drops the row/card in every holding tab. Also the
-   * only way to stop a failed job from replaying its card after a refresh.
+   * Cancel handle (any phase): the SW deletes the record and broadcasts `jobRemoved`, dropping the row/card in every holding tab and stopping a failed job from replaying its card after a refresh.
    */
   cancel(jobId: string): void {
     this.sw?.port.postMessage({ t: 'cancelJob', jobId });
@@ -408,9 +401,7 @@ export class UploadPipeline {
   }
 
   /**
-   * After leaseGranted, create/reuse this page's top-level DedicatedWorker. Worker creation
-   * failure or onerror → mark failed and return the token; never fall back to the main thread
-   * (the contract forbids main-thread video encoding).
+   * After leaseGranted, create/reuse this page's top-level DedicatedWorker. Worker creation failure or onerror → mark failed and return the token; never fall back to the main thread, which is too slow for video encoding.
    */
   private startVideoWorker(jobId: string, file: Blob, mime: string, engine: 'video' | 'gif'): void {
     let w: WorkerLike;
@@ -455,7 +446,7 @@ export class UploadPipeline {
       }
     };
     w.onerror = (e: ErrorEvent) => {
-      // release path: worker onerror (one of the contract's four token audit paths)
+      // release path: worker onerror — return the token like every other exit
       this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: `worker_error:${e.message}` });
       this.lease?.release();
       w.terminate();
@@ -471,10 +462,7 @@ function routeEngine(mime: string): 'video' | 'gif' {
 }
 
 /**
- * Source-file dimensions, probed on the page while it still holds the File
- * (after addJob only the SW's clone remains). A transcode that dies before
- * producing meta reuses these so its failure card keeps the real aspect
- * ratio instead of the 800×600 placeholder. Null when probing fails.
+ * Source-file dimensions, probed on the page while it still holds the File (after addJob only the SW's clone remains); null when probing fails. A transcode that dies before producing meta reuses these so its failure card keeps the real aspect ratio instead of the 800×600 placeholder.
  */
 export async function probeSourceSize(
   file: Blob,

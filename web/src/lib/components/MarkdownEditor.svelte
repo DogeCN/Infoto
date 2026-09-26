@@ -13,6 +13,7 @@
     ImagePlus,
     Vote,
   } from '@lucide/svelte';
+  import { copy } from '$shared/copy';
   import { cn } from '$lib/utils';
   import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';
@@ -60,10 +61,9 @@
   let imageUploading = $state(false);
   let imageError = $state('');
   let pendingImageCaret: number | null = null;
-  // True once a real pipeline snapshot arrived this upload — the synthetic
-  // 'queued' row only covers the window before it. Without this flag a terminal
-  // (done/failed) snapshot would fall through to the synthetic branch and flash
-  // a bogus "排队中" row before `imageUploading` resets.
+  // True once a real pipeline snapshot arrived this upload — the synthetic 'queued'
+  // row only covers the window before it. Without this flag a terminal snapshot would
+  // fall through to the synthetic branch and flash a bogus "queued" row.
   let sawLiveSnapshot = $state(false);
   // Captured from the failed snapshot so the retry button can call pipeline.retry(jobId).
   let failedJobId = $state<string | null>(null);
@@ -72,11 +72,8 @@
     if (uploadTask?.phase === 'failed') failedJobId = uploadTask.jobId;
   });
 
-  /**
-   * Row shown by UploadProgressPanel (kind='upload'). Prefers the real pipeline
-   * snapshot so the shared transcode → hash → upload stages are visible; the
-   * synthetic row only covers the window before the first snapshot arrives.
-   */
+  /** Row shown by UploadProgressPanel (kind='upload'): the real pipeline snapshot when
+   *  live, else the synthetic row covering the window before the first one arrives. */
   let uploadTasks = $derived.by(() => {
     const m = new Map<string, PanelTask>();
     if (!imageUploading) return m;
@@ -86,7 +83,7 @@
     } else if (!sawLiveSnapshot) {
       m.set('editor-image', {
         jobId: 'editor-image',
-        fileName: uploadName || '图片',
+        fileName: uploadName || copy.editor.defaultUploadName,
         phase: 'queued',
         fraction: null,
       });
@@ -150,7 +147,8 @@
     } catch (error) {
       console.error('[editor] image upload failed', error);
       // The pipeline already translates engine error codes into localized copy.
-      imageError = error instanceof Error && error.message ? error.message : '图片上传失败，请重试';
+      imageError =
+        error instanceof Error && error.message ? error.message : copy.editor.imageUploadFailed;
     } finally {
       imageUploading = false;
       pendingImageCaret = null;
@@ -163,15 +161,31 @@
     run: () => void;
     image?: boolean;
   }> = [
-    { icon: Bold, title: '粗体', run: () => surround('**', '**', '粗体') },
-    { icon: Italic, title: '斜体', run: () => surround('*', '*', '斜体') },
-    { icon: Strikethrough, title: '删除线', run: () => surround('~~', '~~', '删除线') },
-    { icon: Quote, title: '引用', run: () => prefixSelected('> ') },
-    { icon: Code, title: '代码块', run: () => insertBlock('```\n\n```', 4) },
-    { icon: List, title: '列表', run: () => prefixSelected('- ') },
-    { icon: Link, title: '链接', run: () => surround('[', '](https://)', '链接') },
-    { icon: ImagePlus, title: '图片', run: () => void pickImage(), image: true },
-    { icon: Vote, title: '投票', run: () => insertBlock(':::vote 选项A | 选项B') },
+    {
+      icon: Bold,
+      title: copy.editor.tools.bold,
+      run: () => surround('**', '**', copy.editor.tools.bold),
+    },
+    {
+      icon: Italic,
+      title: copy.editor.tools.italic,
+      run: () => surround('*', '*', copy.editor.tools.italic),
+    },
+    {
+      icon: Strikethrough,
+      title: copy.editor.tools.strikethrough,
+      run: () => surround('~~', '~~', copy.editor.tools.strikethrough),
+    },
+    { icon: Quote, title: copy.editor.tools.quote, run: () => prefixSelected('> ') },
+    { icon: Code, title: copy.editor.tools.code, run: () => insertBlock('```\n\n```', 4) },
+    { icon: List, title: copy.editor.tools.list, run: () => prefixSelected('- ') },
+    {
+      icon: Link,
+      title: copy.editor.tools.link,
+      run: () => surround('[', '](https://)', copy.editor.tools.link),
+    },
+    { icon: ImagePlus, title: copy.editor.tools.image, run: () => void pickImage(), image: true },
+    { icon: Vote, title: copy.editor.tools.vote, run: () => insertBlock(':::vote 选项A | 选项B') },
   ];
 
   let previewVote = $derived(splitVote(value));
@@ -181,7 +195,10 @@
   <div class="flex min-h-0 min-w-0 flex-col gap-3">
     <div class="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/60 p-1">
       {#each TOOLS as tool (tool.title)}
-        <Tooltip text={imageUploading && tool.image ? '上传中' : tool.title} side="bottom">
+        <Tooltip
+          text={imageUploading && tool.image ? copy.editor.uploading : tool.title}
+          side="bottom"
+        >
           <button
             type="button"
             aria-label={tool.title}
@@ -240,12 +257,14 @@
               } catch (error) {
                 console.error('[editor] image upload retry failed', error);
                 imageError =
-                  error instanceof Error && error.message ? error.message : '图片上传失败，请重试';
+                  error instanceof Error && error.message
+                    ? error.message
+                    : copy.editor.imageUploadFailed;
               } finally {
                 imageUploading = false;
                 pendingImageCaret = null;
               }
-            }}>重试</button
+            }}>{copy.editor.retry}</button
           >
         {/if}
       </div>
@@ -254,7 +273,7 @@
 
   <div
     class="min-h-[12rem] min-w-0 h-full overflow-y-auto rounded-md border border-border bg-card px-4 py-3"
-    aria-label="实时预览"
+    aria-label={copy.editor.previewAria}
   >
     {#if value.trim()}
       <div class="flex flex-col gap-4">
@@ -269,7 +288,7 @@
         {/if}
       </div>
     {:else}
-      <p class="text-sm text-muted-foreground">预览</p>
+      <p class="text-sm text-muted-foreground">{copy.editor.previewEmpty}</p>
     {/if}
   </div>
 </div>

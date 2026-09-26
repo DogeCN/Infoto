@@ -1,8 +1,9 @@
 <script lang="ts">
-  // Pop-up sidebar (spec: "sidebar"). Floats above the main content behind a scrim and never
-  // changes its width, so the waterfall doesn't relayout on open/close. Desktop drags the inner
-  // edge to resize (persisted to localStorage); mobile (< 768px) is full-width with no dragging.
+  // Pop-up sidebar: floats above the main content behind a scrim and never changes its
+  // width, so the waterfall doesn't relayout on open/close. Desktop drags the inner edge
+  // to resize (persisted to localStorage); mobile (< 768px) is full-width with no dragging.
   import type { Snippet } from 'svelte';
+  import { copy } from '$shared/copy';
   import { X } from '@lucide/svelte';
 
   let {
@@ -120,8 +121,8 @@
        arrow keys adjust the width too. -->
   <button
     type="button"
-    aria-label="调整侧栏宽度"
-    title="拖动调整宽度"
+    aria-label={copy.sidebar.resizeAria}
+    title={copy.sidebar.resizeTitle}
     class="absolute inset-y-0 hidden w-1.5 cursor-col-resize transition-colors hover:bg-primary/40 md:block {dragging
       ? 'bg-primary/60'
       : ''} {side === 'left' ? 'right-0' : 'left-0'}"
@@ -139,7 +140,7 @@
     <button
       class="flex items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-all duration-200 hover:bg-background hover:text-foreground hover:scale-105 active:scale-95"
       onclick={close}
-      title="关闭"
+      title={copy.sidebar.close}
     >
       <X class="size-5" />
     </button>

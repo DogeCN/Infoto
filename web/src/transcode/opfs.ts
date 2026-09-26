@@ -1,5 +1,4 @@
-// OPFS artifact read/write (spec "local persistence"): artifacts land on disk and
-// pair with sha256 dedupe.
+// OPFS artifact read/write: artifacts land on disk and pair with sha256 dedupe.
 
 import { hashBlob } from './hash';
 
@@ -25,8 +24,7 @@ export function artifactPath(jobId: string, ext: 'webp' | 'webm'): string {
 }
 
 /**
- * Write to OPFS while hashing the same stream (one pass, two uses).
- * Hashing completes when the artifact lands.
+ * Write to OPFS while hashing the same stream — one pass, two uses; hashing completes when the artifact lands.
  */
 export async function storeArtifact(
   jobId: string,

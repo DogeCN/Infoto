@@ -45,8 +45,7 @@
     aria-modal="true"
     aria-label={title}
   >
-    <!-- Panel: full-width flush to the bottom on mobile, bottom-centered floating on desktop (v1 language).
-         Drag-down-to-close was dropped: it fought the panel's buttons and scrolling for pointer events. -->
+    <!-- Panel: full-width flush to the bottom on mobile, bottom-centered floating on desktop -->
     <div
       class="absolute inset-x-0 bottom-0 md:inset-x-auto md:left-1/2 md:bottom-6 md:w-[min(28rem,calc(100vw-2rem))] md:-translate-x-1/2 rounded-t-[1.5rem] md:rounded-[1.5rem] bg-popover pt-2 shadow-2xl"
       transition:fly={{ y: 120, duration: 300, opacity: 1 }}

@@ -7,6 +7,7 @@
   import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
   import { cn } from '$lib/utils';
+  import { copy } from '$shared/copy';
 
   interface Props {
     min: number;
@@ -64,11 +65,8 @@
     if (mapValue(t) !== value) t = clamp01((value - min) / Math.max(1, max - min));
   });
 
-  /**
-   * The numeric column was dropped (no right-hand value text): values only appear in the
-   * drag bubble, so labelCols is unnecessary — the row is just "icon + track", structurally
-   * identical to the filter panel's dual-handle row.
-   */
+  /** No numeric column on the right: values only appear in the drag bubble, so the row
+   *  is just "icon + track", structurally identical to the filter panel's dual-handle row. */
 
   // ---- geometry: ResizeObserver keeps the track width; rect is re-cached on press ----
   let trackEl = $state<HTMLDivElement | undefined>(undefined);
@@ -89,11 +87,9 @@
   function thumbCenter(n: number): string {
     return `calc(${THUMB / 2}px + ${n * 100}% - ${n * THUMB}px)`;
   }
-  /**
-   * Bubble geometry in px, measured against the live track width and the bubble's own
-   * rendered width. The caret is the bubble's only pointing anchor, so it must stay on the
-   * thumb centre: near the ends the body stops at the track edge and the caret slides along it.
-   */
+  /** Bubble geometry in px against the live track width and the bubble's own width. The
+   *  caret is the bubble's only pointing anchor, so it stays on the thumb centre: near the
+   *  ends the body stops at the track edge and the caret slides along it. */
   function bubblePos(n: number, bw: number): { left: number; tip: number } {
     const w = trackWidth;
     const center = THUMB / 2 + n * Math.max(0, w - THUMB);
@@ -196,7 +192,7 @@
   );
 </script>
 
-<!-- Two columns: icon + track (the right-hand value text was dropped; values only show in the bubble) -->
+<!-- Two columns: icon + track (values only show in the bubble) -->
 <div class="grid grid-cols-[1rem_minmax(0,1fr)] items-center gap-2">
   <Icon class={iconCls} />
 
@@ -240,7 +236,7 @@
       data-thumb="single"
       role="slider"
       tabindex="0"
-      aria-label="数值"
+      aria-label={copy.settings.sliderValue}
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={curVal}

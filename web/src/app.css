@@ -2,7 +2,7 @@
 @plugin "@tailwindcss/typography";
 
 @theme {
-  /* The v1 blue-black ladder: brighter and airier than the neutral near-black, easing the migration. */
+  /* Blue-black surface ladder: brighter and airier than a neutral near-black. */
   --color-background: #0a0e1a;
   --color-foreground: #e2e8f0;
   --color-muted-foreground: #7b85a0;

@@ -2,6 +2,7 @@
   // GitHub-style reaction count buttons plus an add-reaction button. With no
   // reactions, only the add button shows.
   import { SmilePlus } from '@lucide/svelte';
+  import { copy } from '$shared/copy';
   import { cn } from '$lib/utils';
   import { reactionCounts } from '../../core/reactions';
   import type { Announcement } from '$shared/types';
@@ -43,7 +44,7 @@
     </button>
   {/each}
 
-  <Tooltip text="添加反应">
+  <Tooltip text={copy.reactions.add}>
     <button
       type="button"
       class="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"

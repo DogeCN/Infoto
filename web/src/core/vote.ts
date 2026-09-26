@@ -1,6 +1,6 @@
-// `:::vote` parsing — a pure, DOM-free helper (spec: markdown editor / data
-// model). Only the first `:::vote` block is used: the data model keeps a
-// single per-user vote per announcement, so an announcement has at most one vote.
+// `:::vote` parsing — a pure, DOM-free helper. Only the first `:::vote` block is
+// used: the data model keeps a single per-user vote per announcement, so an
+// announcement has at most one vote.
 
 /** Positional variant: keeps the text before / after the `:::vote` line so
  *  renderers can place the VoteBlock exactly where it was authored. */

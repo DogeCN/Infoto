@@ -1,9 +1,10 @@
 <script lang="ts">
-  // Multi-select bottom bar (spec: "multi-select mode" / "custom component list"). Full-width fixed
-  // bar + frosted glass, sliding in/out via transform. Select-all + count left, download + total
-  // size + other actions right. Exit only via the top-bar icon (the bar's "deselect" button was cut).
+  // Multi-select bottom bar: full-width fixed bar + frosted glass, sliding in/out via
+  // transform. Select-all + count left, download + total size + other actions right.
+  // Exit only via the top-bar icon.
   import { CheckSquare, Square, Download, Trash2, Undo2 } from '@lucide/svelte';
   import type { Photo } from '$shared/types';
+  import { copy } from '$shared/copy';
   import { humanSize } from '$base/lib/format';
 
   interface Props {
@@ -30,10 +31,9 @@
     onDelete,
   }: Props = $props();
 
-  // Optimistic upload entries carry negative ids and are excluded from the
-  // selection upstream — counting them here would make "select all" permanently
-  // unreachable (selected can never grow to photos.length) and would inflate the
-  // advertised download size with files that cannot be downloaded.
+  // Optimistic upload entries carry negative ids and are excluded from the selection
+  // upstream — counting them here would keep "select all" unreachable (selected can never
+  // reach photos.length) and would inflate the advertised download size with undownloadable files.
   let selectable = $derived(photos.filter((p) => p.id >= 0));
   let count = $derived(selected.size);
   let totalSize = $derived(
@@ -66,7 +66,7 @@
       type="button"
       class="{btn} size-10 {allSelected ? 'text-primary' : 'text-muted-foreground'}"
       onclick={allSelected ? onDeselectAll : onSelectAll}
-      title={allSelected ? '取消全选' : '全选'}
+      title={allSelected ? copy.multiSelect.deselectAll : copy.multiSelect.selectAll}
     >
       {#if allSelected}
         <CheckSquare class="size-5" />
@@ -90,7 +90,7 @@
         : 'size-10'}"
       onclick={onDownload}
       disabled={count === 0}
-      title="下载"
+      title={copy.multiSelect.download}
     >
       <Download class="size-5" />
       {#if count > 0}
@@ -104,7 +104,7 @@
       class:text-warning={hasAnyMark}
       onclick={onUnmark}
       disabled={!hasAnyMark}
-      title="取消标记"
+      title={copy.multiSelect.unmark}
     >
       <Undo2 class="size-5" />
     </button>
@@ -115,7 +115,7 @@
         class="{btn} size-10 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         onclick={onDelete}
         disabled={count === 0}
-        title="删除"
+        title={copy.multiSelect.delete}
       >
         <Trash2 class="size-5" />
       </button>

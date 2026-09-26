@@ -72,11 +72,9 @@ export function insertMarkdownBlock(
   };
 }
 
-/**
- * Inserts `![alt](url)` at a position clamped to the value. `alt` doubles as
- * the <video> aria-label once a WebM artifact is rendered, so it is worth
- * passing the source file name.
- */
+/** Inserts `![alt](url)` at a position clamped to the value. `alt` doubles as the
+ *  <video> aria-label once a WebM artifact is rendered, so it is worth passing the
+ *  source file name. */
 export function insertImageAt(
   value: string,
   position: number,

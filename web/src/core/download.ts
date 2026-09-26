@@ -1,11 +1,11 @@
-// Downloads (spec: "download"). In-app downloads fetch the image-host URL directly
-// (browser cache preferred); one file is named `{id36}.webp|.webm`, several are packed
-// into download.zip (streaming fflate), entries named by sort index, zero-padded.
+// Downloads. In-app downloads fetch the image-host URL directly (browser cache
+// preferred); one file is named `{id36}.webp|.webm`, several are packed into
+// download.zip (streaming fflate), entries named by sort index, zero-padded.
 
 import { Zip, ZipPassThrough } from 'fflate';
 import type { Photo } from '$shared/types';
 import { extOfType, padName } from '$base/lib/format';
-import { toId36 } from './id36';
+import { toId36 } from '$base/lib/id36';
 
 /** Make the browser save a Blob. */
 function saveBlob(blob: Blob, filename: string): void {
@@ -28,11 +28,9 @@ export async function downloadOne(photo: Photo, fetchFn: typeof fetch = fetch): 
   saveBlob(blob, `${toId36(photo.id)}.${extOfType(photo.type)}`);
 }
 
-/**
- * Pack several photos into download.zip. `photos` must already follow the current sort
- * order — the index is the array position. Uses fflate's streaming Zip: each file is
- * written as soon as it downloads, so all of them never sit in memory at once.
- */
+/** Pack several photos into download.zip. `photos` must follow the current sort
+ * order — the index is the array position. fflate's streaming Zip writes each file
+ * as soon as it downloads, so they never all sit in memory at once. */
 export async function downloadZip(photos: Photo[], fetchFn: typeof fetch = fetch): Promise<void> {
   const total = photos.length;
   if (total === 0) return;

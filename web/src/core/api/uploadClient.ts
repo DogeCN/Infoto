@@ -1,7 +1,6 @@
-// /upload client — streaming proxy to the image host (spec: "image-host upload proxy").
-// One attempt per call: no retry here (the contract forbids automatic retries — a
-// failure is surfaced and the manual retry handle takes over). The 45s budget is an
-// idle/no-progress deadline from the base pipeline.ts, not a wall-clock cap.
+// /upload client — streaming proxy to the image host. One attempt per call: no
+// retry here (automatic retries are disabled — a failure is surfaced and the manual
+// retry handle takes over). The 45s budget is an idle/no-progress deadline from the base pipeline.ts, not a wall-clock cap.
 
 import type { TcUploadResponse } from '$shared/types';
 import { UPLOAD_TIMEOUT_MS } from '$base/upload/pipeline';
@@ -62,11 +61,9 @@ function buildForm(blob: Blob): FormData {
   return fd;
 }
 
-/**
- * One /upload attempt (no retry here — retries live in the pipeline layer): the multipart
- * field is fixed `file`, the filename extension follows the artifact type (.webp / .webm).
- * Transport defaults to XHR so progress stays observable (fetch has no upload stream) — the curtain overlay is driven by it; tests inject fetchFn.
- */
+/** One /upload attempt (no retry here — retries live in the pipeline layer): the
+ * multipart field is fixed `file`, the extension follows the artifact type (.webp /
+ * .webm). Transport defaults to XHR so progress stays observable (fetch has no upload stream) — the curtain overlay is driven by it; tests inject fetchFn. */
 export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<UploadResult> {
   const origin = io.origin ?? window.location.origin;
   const timeoutMs = io.timeoutMs ?? UPLOAD_TIMEOUT_MS;
@@ -96,11 +93,8 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     xhr.open('POST', `${origin}/upload`);
     xhr.withCredentials = true;
     // XHR's built-in `timeout` measures the WHOLE attempt (connect + body + response),
-    // so a 100MB artifact on a <2 Mbps uplink was guaranteed to die at 45s even while
-    // every byte was still moving — and the contract has no automatic retry, so that
-    // was a permanent failure. Watch for silence instead: the attempt only fails after
-    // `timeoutMs` with no progress at all (dead connection, stalled stream, silent
-    // response). Progress keeps re-arming the watchdog for as long as it flows.
+    // so a slow upload dies mid-transfer while bytes still move. Watch for silence
+    // instead: it fails only after `timeoutMs` with no progress; progress re-arms it.
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     const settle = (result: UploadResult): void => {
@@ -131,8 +125,8 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     try {
       xhr.send(buildForm(blob));
     } catch (e) {
-      // a throw here used to leave the promise pending forever, which wedged the
-      // SharedWorker's image pool (its running counter never came back down)
+      // a throw here must settle the promise or it stays pending forever, wedging the
+      // SharedWorker's image pool (its running counter never comes back down)
       settle({ ok: false, error: 'network_error', detail: String(e) });
     }
   });

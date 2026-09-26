@@ -4,8 +4,8 @@ import type { Mock } from 'vitest';
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import type { SyncCallResult, SyncClientIo } from '../../src/core/api/syncClient';
 import { clearOps, openOplogDb, readOps } from '../../src/core/oplog/store';
-import type { EngineIo } from '../../src/core/sync/engine';
-import { KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/sync/engine';
+import type { EngineIo } from '../../src/core/engine';
+import { KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/engine';
 
 const op = (target: number): Op => ({
   type: 'react',
@@ -136,45 +136,6 @@ describe('SyncEngine awaitable sync', () => {
     await expect(secondFlush).resolves.toMatchObject({ ok: true });
   });
 
-  it('remaps queued temp targets from the snapshot mapping before the follow-up', async () => {
-    const first = deferred<SyncCallResult>();
-    const second = deferred<SyncCallResult>();
-    const requests: SyncRequest[] = [];
-    const engine = new SyncEngine({
-      db,
-      postSyncFn: (body) => {
-        requests.push(body);
-        return requests.length === 1 ? first.promise : second.promise;
-      },
-      onSyncResponse: () => new Map([[-1, 9]]),
-    });
-    await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body' } });
-    engine.sync();
-    await vi.waitFor(() => expect(requests).toHaveLength(1));
-    const version = await engine.addOp(op(-1));
-    const flushed = engine.flushThrough(version);
-    first.resolve(
-      result(
-        snapshot([
-          {
-            id: 9,
-            title: 'new',
-            contentMd: 'body',
-            sort: 0,
-            updatedAt: 1_000,
-            reactions: [],
-            votes: [],
-          },
-        ]),
-      ),
-    );
-    await vi.waitFor(() => expect(requests).toHaveLength(2));
-
-    expect(requests[1]!.ops).toEqual([{ type: 'react', target: 9, payload: { emoji: '👍' } }]);
-    second.resolve(result(snapshot()));
-    await expect(flushed).resolves.toMatchObject({ ok: true });
-  });
-
   it('keeps the op queued when its sync attempt fails', async () => {
     const engine = new SyncEngine({
       db,
@@ -248,11 +209,8 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     windowStub.dispatch('pagehide');
   };
 
-  /**
-   * Await an oplog read issued *after* a dispatch. IndexedDB runs same-store
-   * transactions in creation order, so by the time this resolves the pagehide
-   * dump has finished its send/skip decision — deterministic, no fixed sleeps.
-   */
+  /** Await an oplog read issued *after* a dispatch — same-store transactions run
+   * in creation order, so this resolves once the pagehide dump has decided. */
   const pagehideReadDone = async (): Promise<void> => {
     await readOps(db);
   };
@@ -265,7 +223,7 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     return reports(sink);
   };
 
-  it('install() wires pagehide and a hidden-document visibilitychange', async () => {
+  it('install() wires the pagehide dump only — hiding the tab is not a trigger', async () => {
     const e = engine();
     e.install(windowStub as unknown as Window);
     await e.addOp(op(-1));
@@ -274,9 +232,22 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
     expect(fetchFn.mock.calls[0]![1]).toMatchObject({ keepalive: true });
 
+    // The oplog is durable, so a tab switch pushes nothing: pagehide, the next page
+    // load (init), the 256-op threshold and the manual button cover every flush.
     documentStub.visibilityState = 'hidden';
     documentStub.dispatch('visibilitychange');
-    await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(1));
+    await pagehideReadDone();
+    expect(postSyncFn).not.toHaveBeenCalled();
+  });
+
+  it('a sync requested while the document is hidden goes out keepalive', async () => {
+    const e = engine();
+    await e.addOp(op(-1));
+    documentStub.visibilityState = 'hidden';
+
+    await e.sync();
+
+    expect(postSyncFn).toHaveBeenCalledTimes(1);
     expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: true });
   });
 

@@ -1,8 +1,9 @@
 <script lang="ts">
   // Full-screen media lightbox as a plain div layer: a shadcn Dialog's focus traps and inert would interfere with gesture bubbling.
-  // v1 gestures via direct DOM transforms: swipe left/right = like/dislike (auto-advance), down = download, up = action sheet;
+  // Gestures via direct DOM transforms: swipe left/right = like/dislike (auto-advance), down = download, up = action sheet;
   // hints fade/scale with the drag and spring back below the threshold; double-click/pinch/Ctrl+wheel zoom, drag pans; no click paging.
   import type { Photo } from '$shared/types';
+  import { copy, fmt } from '$shared/copy';
   import {
     X,
     ChevronLeft,
@@ -21,10 +22,12 @@
     Volume2,
   } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
-  import { proxyUrl } from '../../core/id36';
+  import { proxyUrl } from '$base/lib/id36';
   import { humanSize } from '$base/lib/format';
   import ActionSheet from './ActionSheet.svelte';
+  import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
+  import GlitchText from './GlitchText.svelte';
 
   interface Props {
     photos: Photo[];
@@ -64,23 +67,21 @@
 
   let showMenu = $state(false);
   let volumeMuted = $state(true);
+  // loadedUrl === photo.url means the current media finished decoding (drives skeleton + opacity).
+  let loadedUrl = $state('');
+  // Media load failure: show a glitching status code + toast.
+  let loadFailed = $state(false);
+  let failStatus = $state('404');
+  let failController: AbortController | null = null;
+
+  // Per-URL status cache so switching back to a known-failing photo is instant
+  // (no second HEAD round-trip). '0' = network/CORS failure, undefined = unknown.
+  const statusCache = new Map<string, string>();
 
   let photo = $derived(photos[currentIndex]);
   let isLiked = $derived(photo?.likes.includes(selfId) ?? false);
   let isDisliked = $derived(photo?.dislikes.includes(selfId) ?? false);
   let isReported = $derived(photo?.reports.includes(selfId) ?? false);
-  /** Timestamp label (year-month-day hour:minute), bottom-left. */
-  let createdLabel = $derived(
-    photo
-      ? new Date(photo.createdAt).toLocaleString('zh-CN', {
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
-      : '',
-  );
   let origin = $derived(typeof window === 'undefined' ? '' : window.location.origin);
 
   // ---- gesture state (non-reactive: high-frequency pointer moves write the
@@ -221,20 +222,24 @@
   function toggleLike(): void {
     if (!photo) return;
     onLike?.(photo);
-    toast.success(photo.likes.includes(selfId) ? '已标记喜欢' : '已取消喜欢');
+    toast.success(photo.likes.includes(selfId) ? copy.lightbox.liked : copy.lightbox.unliked);
   }
 
   function toggleDislike(): void {
     if (!photo) return;
     onDislike?.(photo);
-    toast.success(photo.dislikes.includes(selfId) ? '已标记不喜欢' : '已取消不喜欢');
+    toast.success(
+      photo.dislikes.includes(selfId) ? copy.lightbox.disliked : copy.lightbox.undisliked,
+    );
   }
 
   function toggleReport(): void {
     if (!photo) return;
     onRequestDelete?.(photo);
     // Direction note: reports containing self means "delete requested".
-    toast.success(photo.reports.includes(selfId) ? '已请求删除' : '已取消请求删除');
+    toast.success(
+      photo.reports.includes(selfId) ? copy.lightbox.reported : copy.lightbox.reportCancelled,
+    );
   }
 
   /** Gesture/arrow marks are one-way: repeating them must not cancel the mark
@@ -242,7 +247,7 @@
    *  store drops the opposite mark when adding a new one. */
   function markLike(): void {
     if (isLiked) {
-      toast.success('已标记喜欢');
+      toast.success(copy.lightbox.liked);
       return;
     }
     toggleLike();
@@ -250,7 +255,7 @@
 
   function markDislike(): void {
     if (isDisliked) {
-      toast.success('已标记不喜欢');
+      toast.success(copy.lightbox.disliked);
       return;
     }
     toggleDislike();
@@ -271,7 +276,7 @@
       }, 200);
     } else if (dir === 'down') {
       onDownload?.(photo);
-      toast.success('开始下载');
+      toast.success(copy.lightbox.downloadStarted);
       gestureDir = dir;
       gestureRatio = 1;
       setTimeout(() => {
@@ -426,8 +431,54 @@
     scale = 1;
     zoomX = 0;
     zoomY = 0;
+    // New photo: reset loaded/failure state so the skeleton shows until decode.
+    loadedUrl = '';
+    failController?.abort();
+    failController = null;
+    loadFailed = false;
+    failStatus = '404';
     if (wrapEl) applyWrap();
   });
+
+  // Preload adjacent photos so switching feels instant. Only images are
+  // preloaded via `new Image()` (video preload is costly and browsers handle it).
+  $effect(() => {
+    const neighbors: Photo[] = [];
+    const prev = photos[currentIndex - 1];
+    const next = photos[currentIndex + 1];
+    if (prev) neighbors.push(prev);
+    if (next) neighbors.push(next);
+    const imgs: HTMLImageElement[] = [];
+    for (const p of neighbors) {
+      if (p.type === 0) {
+        const img = new Image();
+        img.src = p.url;
+        imgs.push(img);
+      }
+    }
+    return () => {
+      for (const img of imgs) img.src = '';
+    };
+  });
+
+  // <img>/<video> onerror does not expose the HTTP status; send a HEAD probe
+  // to get the real code, show it in the glitch fallback, and surface a toast.
+  function probeFailStatus(url: string) {
+    failController?.abort();
+    failController = new AbortController();
+    const ctrl = failController;
+    fetch(url, { method: 'HEAD', cache: 'force-cache', signal: ctrl.signal })
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        failStatus = String(res.status);
+        toast.error(fmt(copy.lightbox.loadFailedStatus, { status: res.status }));
+      })
+      .catch(() => {
+        if (ctrl.signal.aborted) return;
+        failStatus = '0';
+        toast.error(copy.lightbox.loadFailed);
+      });
+  }
 
   // Lock page scrolling while open.
   $effect(() => {
@@ -445,18 +496,15 @@
       await navigator.clipboard.writeText(text);
       toast.success(label);
     } catch {
-      toast.error('复制失败');
+      toast.error(copy.lightbox.copyFailed);
     }
   }
 
   /** Proxy URL for out-of-site sharing (host URLs never leave the Worker). */
   let shareUrl = $derived(photo ? proxyUrl(origin, photo.id) : '');
 
-  /**
-   * Open transition: the element mounts inside `{#if open}`; if it already
-   * had `.show` the transition would not play. Mount without it and add the
-   * class on the next frame.
-   */
+  /** Open transition: the element mounts inside `{#if open}` — mount without `.show`
+   *  and add the class on the next frame, or the transition would not play. */
   let shown = $state(false);
   $effect(() => {
     if (!open) {
@@ -476,7 +524,7 @@
         // User cancellation: no toast.
       }
     } else {
-      await copyText(shareUrl, '链接已复制');
+      await copyText(shareUrl, copy.lightbox.linkCopied);
     }
     showMenu = false;
   }
@@ -505,7 +553,7 @@
     >
       <div class="lb-meta flex items-center gap-3 text-base">
         <span class="tabular-nums text-white/90">{currentIndex + 1} / {photos.length}</span>
-        <Tooltip text={isLiked ? '取消喜欢' : '喜欢'} side="bottom">
+        <Tooltip text={isLiked ? copy.lightbox.unlike : copy.lightbox.like} side="bottom">
           <button
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isLiked
@@ -517,7 +565,7 @@
             <span class="tabular-nums">{photo.likes.length}</span>
           </button>
         </Tooltip>
-        <Tooltip text={isDisliked ? '取消不喜欢' : '不喜欢'} side="bottom">
+        <Tooltip text={isDisliked ? copy.lightbox.undislike : copy.lightbox.dislike} side="bottom">
           <button
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isDisliked
@@ -529,7 +577,10 @@
             <span class="tabular-nums">{photo.dislikes.length}</span>
           </button>
         </Tooltip>
-        <Tooltip text={isReported ? '取消请求删除' : '请求删除'} side="bottom">
+        <Tooltip
+          text={isReported ? copy.lightbox.cancelReport : copy.lightbox.report}
+          side="bottom"
+        >
           <button
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isReported
@@ -544,7 +595,7 @@
       </div>
 
       <div class="flex items-center gap-0.5">
-        <Tooltip text="更多" side="bottom">
+        <Tooltip text={copy.lightbox.more} side="bottom">
           <button
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10"
@@ -553,7 +604,7 @@
             <MoreHorizontal class="size-6" />
           </button>
         </Tooltip>
-        <Tooltip text="关闭" side="bottom">
+        <Tooltip text={copy.lightbox.close} side="bottom">
           <button
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10"
@@ -573,19 +624,48 @@
         bind:this={wrapEl}
         class="flex max-w-full select-none items-center justify-center will-change-transform"
       >
+        <!-- Skeleton sized from the photo's metadata (aspect ratio via --ar),
+             matching the image's contain-box so there is no size jump on reveal. -->
+        {#if loadedUrl !== photo.url}
+          <div
+            class="lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
+            style="--ar: {photo.width /
+              photo.height}; aspect-ratio: {photo.width} / {photo.height};"
+            aria-hidden="true"
+          >
+            {#if loadFailed}
+              <GlitchText text={failStatus} size="clamp(4rem, 14vw, 9rem)" />
+            {/if}
+          </div>
+        {/if}
         {#if photo.type !== 0}
           <!-- type=1 (silent WebM) and type=2 (video with audio) both use video -->
           <video
             src={photo.url}
-            class="lb-media"
+            class="lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
             draggable="false"
             muted={volumeMuted}
             loop
             autoplay
             playsinline
+            onloadeddata={() => (loadedUrl = photo.url)}
+            onerror={() => {
+              loadFailed = true;
+              probeFailStatus(photo.url);
+            }}
           ></video>
         {:else}
-          <img src={photo.url} alt="" class="lb-media" draggable="false" />
+          <img
+            src={photo.url}
+            alt=""
+            class="lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
+            draggable="false"
+            onload={() => (loadedUrl = photo.url)}
+            onerror={() => {
+              loadFailed = true;
+              probeFailStatus(photo.url);
+            }}
+          />
         {/if}
       </div>
     </div>
@@ -629,7 +709,7 @@
 
     <!-- Video volume button (type=2, 2.4rem in the lightbox) -->
     {#if photo.type === 2}
-      <Tooltip text={volumeMuted ? '取消静音' : '静音'} side="left">
+      <Tooltip text={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute} side="left">
         <button
           type="button"
           class="absolute bottom-24 right-5 z-10 flex items-center justify-center rounded-full text-white/75 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 md:right-6"
@@ -656,11 +736,13 @@
           {photo.width}×{photo.height}
           {humanSize(photo.size)}
         </div>
-        <div class="tabular-nums text-white/55">{createdLabel}</div>
+        <div class="tabular-nums text-white/55">
+          <TimeLabel time={photo.createdAt} />
+        </div>
       </div>
 
       <div class="flex items-center gap-1">
-        <Tooltip text="上一张">
+        <Tooltip text={copy.lightbox.prev}>
           <button
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
@@ -670,7 +752,7 @@
             <ChevronLeft class="size-6" />
           </button>
         </Tooltip>
-        <Tooltip text="下一张">
+        <Tooltip text={copy.lightbox.next}>
           <button
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
@@ -691,24 +773,24 @@
         type="button"
         class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
         onclick={() => {
-          void copyText(photo.url, '原图地址已复制');
+          void copyText(photo.url, copy.lightbox.originalUrlCopied);
           showMenu = false;
         }}
       >
         <Copy class="size-6" />
-        <span class="text-sm">复制原图</span>
+        <span class="text-sm">{copy.lightbox.copyOriginal}</span>
       </button>
 
       <button
         type="button"
         class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
         onclick={() => {
-          void copyText(shareUrl, '链接已复制');
+          void copyText(shareUrl, copy.lightbox.linkCopied);
           showMenu = false;
         }}
       >
         <Link2 class="size-6" />
-        <span class="text-sm">复制链接</span>
+        <span class="text-sm">{copy.lightbox.copyLink}</span>
       </button>
 
       <button
@@ -717,7 +799,7 @@
         onclick={share}
       >
         <Share2 class="size-6" />
-        <span class="text-sm">分享</span>
+        <span class="text-sm">{copy.lightbox.share}</span>
       </button>
 
       <button
@@ -732,7 +814,7 @@
         }}
       >
         <Search class="size-6" />
-        <span class="text-sm">谷歌搜图</span>
+        <span class="text-sm">{copy.lightbox.googleLens}</span>
       </button>
 
       <button
@@ -744,7 +826,8 @@
         }}
       >
         <Flag class="size-6" />
-        <span class="text-sm">{isReported ? '取消删除' : '请求删除'}</span>
+        <span class="text-sm">{isReported ? copy.lightbox.cancelDelete : copy.lightbox.report}</span
+        >
       </button>
 
       <button
@@ -756,7 +839,7 @@
         }}
       >
         <Download class="size-6" />
-        <span class="text-sm">下载</span>
+        <span class="text-sm">{copy.lightbox.download}</span>
       </button>
 
       {#if selfId === 0}
@@ -769,7 +852,7 @@
           }}
         >
           <Trash2 class="size-6" />
-          <span class="text-sm">删除</span>
+          <span class="text-sm">{copy.lightbox.delete}</span>
         </button>
       {/if}
     </div>
@@ -781,16 +864,55 @@
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
   }
 
-  /*
-   * Media sizing: vertical space for the top/bottom bars, horizontal margins on narrow screens
-   * (also the system edge-gesture area). Only max-h-screen + max-w-full relative to an
-   * unconstrained flex container degrades to native-pixel overflow on narrow screens.
-   */
+  /* Media sizing: vertical space for the bars, horizontal margins on narrow screens (also the
+     edge-gesture area); only max-h-screen + max-w-full degrades to native pixels. */
   .lb-media {
     max-width: calc(100vw - 2.5rem);
     max-height: calc(100dvh - 8rem);
     border-radius: 14px;
     object-fit: contain;
+    transition:
+      opacity 0.3s ease,
+      transform 0.3s ease;
+  }
+
+  /* Skeleton placeholder sized from the photo's metadata aspect ratio while media
+     decodes. Width = the smaller of (viewport width budget) and (viewport height
+     budget * aspect ratio) — exactly mirrors <img> object-fit:contain, so the
+     skeleton and the revealed media share the same box (no size jump). */
+  .lb-skeleton {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: min(calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
+    max-width: calc(100vw - 2.5rem);
+    max-height: calc(100dvh - 8rem);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(
+      90deg,
+      var(--color-card) 0%,
+      var(--color-surface-top) 40%,
+      var(--color-card) 80%
+    );
+    background-size: 800px 100%;
+    animation: shimmer 1.8s infinite ease-in-out;
+    border-radius: 14px;
+  }
+
+  /* On load failure: drop the shimmer, keep a flat solid surface behind the glitch code. */
+  .lb-skeleton-solid {
+    background: var(--color-card);
+    animation: none;
+  }
+
+  @media (min-width: 768px) {
+    .lb-skeleton {
+      width: min(calc(100vw - 8rem), calc((100dvh - 9rem) * var(--ar, 1)));
+      max-width: calc(100vw - 8rem);
+      max-height: calc(100dvh - 9rem);
+    }
   }
 
   @media (min-width: 768px) {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LeaseClient } from '../../src/transcode/lease';
-import type { SwToPageMessage } from '../../src/transcode/shared/protocol';
+import type { SwToPageMessage } from '../../src/transcode/protocol';
 import { postSync } from '../../src/core/api/syncClient';
 import { postUpload } from '../../src/core/api/uploadClient';
 
@@ -22,7 +22,7 @@ describe('syncClient', () => {
     });
     const call = fetchFn.mock.calls[0]!;
     const body = JSON.parse(call[1].body);
-    expect(Object.keys(body)).not.toContain('uuid'); // contract: no uuid in the request body
+    expect(Object.keys(body)).not.toContain('uuid'); // uuid never crosses the wire
   });
 
   it('surfaces turnstile_failed', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatAbsoluteTime, formatRelativeTime } from '../../src/lib/time';
+import { formatRelativeTime, formatSmartAbsolute } from '../../src/lib/time';
 
 const reference = Date.UTC(2026, 8, 25, 12, 0, 0);
 
@@ -17,18 +17,29 @@ describe('announcement time formatting', () => {
   it('clamps a future timestamp to the reference', () => {
     expect(formatRelativeTime(reference + 60_000, reference)).toBe('刚刚');
   });
+});
 
-  it('formats deterministic absolute time with an explicit time zone', () => {
-    expect(formatAbsoluteTime(reference, { timeZone: 'UTC' })).toBe(
-      new Date(reference).toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-        timeZone: 'UTC',
-      }),
-    );
+describe('formatSmartAbsolute', () => {
+  // Built from local components so the ladder never depends on the runner's time zone.
+  const now = new Date(2026, 8, 26, 14, 30).getTime();
+
+  it('drops the whole date for a same-day moment', () => {
+    expect(formatSmartAbsolute(new Date(2026, 8, 26, 6, 5).getTime(), now)).toBe('06:05');
+  });
+
+  it('drops only the year for another day in the same year', () => {
+    expect(formatSmartAbsolute(new Date(2026, 8, 24, 14, 30).getTime(), now)).toBe('9月24日 14:30');
+  });
+
+  it('keeps the full date across years with Chinese units, never slashes or dashes', () => {
+    const out = formatSmartAbsolute(new Date(2025, 11, 31, 23, 59).getTime(), now);
+    expect(out).toBe('2025年12月31日 23:59');
+    expect(out).not.toContain('/');
+    expect(out).not.toContain('-');
+  });
+
+  it('keeps the date when the elapsed time is short but the day differs', () => {
+    // 35 minutes earlier yet yesterday: a bare "23:55" would read as today.
+    expect(formatSmartAbsolute(new Date(2026, 8, 25, 23, 55).getTime(), now)).toBe('9月25日 23:55');
   });
 });

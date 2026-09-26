@@ -1,21 +1,18 @@
-// Sync triggers (spec): site open / pagehide / visibilitychange→hidden /
-// op-log at 256 entries / manual. The pagehide handler is registered separately
-// from visibilitychange→hidden (the contract's token-audit clause applies too).
+// Sync triggers: site open (init) / pagehide dump / op-log at 256 entries / manual.
+// Ops are durable in IndexedDB, so a flush that never happens is only late — the next
+// page load resends it. Hiding the tab deliberately does NOT trigger a sync.
 
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
-import { postSync } from '../api/syncClient';
-import { remapOpTarget } from '../ops';
-import { rebuildCache } from '../oplog/cache';
-import { OPLOG_SYNC_THRESHOLD, appendOp, countOps, openOplogDb, readOps } from '../oplog/store';
+import { postSync } from './api/syncClient';
+import { rebuildCache } from './oplog/cache';
+import { OPLOG_SYNC_THRESHOLD, appendOp, countOps, openOplogDb, readOps } from './oplog/store';
 
 /** Browser hard limit for a keepalive request body. */
 export const KEEPALIVE_BODY_LIMIT = 65_536;
 
-/**
- * Longest op prefix whose serialized SyncRequest fits the keepalive byte budget —
+/** Longest op prefix whose serialized SyncRequest fits the keepalive byte budget,
  * measured exactly with TextEncoder over the serialized JSON (wrapper and commas
- * included). Null only when the first op alone busts it (giant fb_create body); the caller warns and keeps it.
- */
+ * included). Null only when the first op alone busts it (giant fb_create body) — the caller warns and keeps it. */
 export function keepalivePrefix(
   ops: Op[],
   budget: number = KEEPALIVE_BODY_LIMIT,
@@ -44,18 +41,15 @@ export interface EngineIo {
   fetchFn?: typeof fetch;
   postSyncFn?: typeof postSync;
   /** Response sink (store write). */
-  onSyncResponse?: (r: SyncResponse, context: SyncSnapshotContext) => Map<number, number> | void;
+  onSyncResponse?: (r: SyncResponse, context: SyncSnapshotContext) => void;
   onError?: (phase: 'submit' | 'pagehide', e: unknown) => void;
 }
 
 export interface SyncSnapshotContext {
   attempt: number;
-  /**
-   * Ops still queued in the oplog when this snapshot landed (appended after the
-   * request was read, or carried by a concurrent pagehide flush). The snapshot
-   * cannot reflect them — the sink must fold them back on top or the optimistic
-   * state reverts until the next sync.
-   */
+  /** Ops still queued in the oplog when this snapshot landed (appended after the
+   * request was read, or carried by a concurrent pagehide flush). The sink must fold
+   * them back on top or the optimistic state reverts until the next sync. */
   queuedOps: Op[];
 }
 
@@ -102,10 +96,6 @@ export class SyncEngine {
     return () => this.listeners.delete(l);
   }
 
-  get currentSyncAttempt(): number {
-    return this.attempt;
-  }
-
   async init(): Promise<void> {
     if (!this.db) this.db = await openOplogDb();
     this.pending = await countOps(this.db);
@@ -113,11 +103,9 @@ export class SyncEngine {
     void this.sync();
   }
 
-  /**
-   * Append one op and resolve with its version handle — the oplog record's
-   * autoincrement key (monotonic, persisted, never reused; see appendOp).
-   * Callers pass it to flushThrough to await server confirmation.
-   */
+  /** Append one op and resolve with its version handle — the oplog record's
+   * autoincrement key (monotonic, persisted, never reused; see appendOp). Callers
+   * pass it to flushThrough to await server confirmation. */
   async addOp(op: Op): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
     const key = await appendOp(this.db, op);
@@ -131,11 +119,9 @@ export class SyncEngine {
     return `${window.location.origin}/sync`;
   }
 
-  /**
-   * Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule. Ops already carried
-   * by an in-flight request are skipped — with no client op id the server cannot dedupe a
-   * replay (a copy would apply twice), so they go out next session. `runSync` mirrors the filter.
-   */
+  /** Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule. Ops already
+   * carried by an in-flight request are skipped — with no client op id the server
+   * cannot dedupe a replay — so they go out next session. `runSync` mirrors the filter. */
   private flushOnPagehide(): void {
     if (!this.db || this.pending === 0) return;
     const db = this.db;
@@ -195,8 +181,7 @@ export class SyncEngine {
     response: SyncResponse,
     context: SyncSnapshotContext,
   ): Promise<void> {
-    const mapping = this.io.onSyncResponse?.(response, context);
-    if (mapping && mapping.size > 0) await remapQueuedTargets(db, mapping);
+    this.io.onSyncResponse?.(response, context);
     await rebuildCache(db, response.photos).catch((error) => {
       console.warn('[sync] SHA cache rebuild failed', error);
     });
@@ -248,11 +233,9 @@ export class SyncEngine {
     }
   }
 
-  /**
-   * A request started on a hidden document dies with the page unless it is
-   * keepalive, so the last edit before closing the tab can leave — but only
-   * when the whole batch fits the browser's keepalive body cap.
-   */
+  /** A request started on a hidden document dies with the page unless it is
+   * keepalive, so the last edit before closing the tab can leave — but only when the
+   * whole batch fits the browser's keepalive body cap. */
   private keepaliveEligible(ops: Op[]): boolean {
     if (typeof document === 'undefined' || document.visibilityState === 'visible') return false;
     const fit = keepalivePrefix(ops);
@@ -328,36 +311,14 @@ export class SyncEngine {
     });
   }
 
-  /** Register all triggers; keep pagehide and hidden-document sync separate. */
+  /** Register the pagehide dump — the only global trigger. Hiding the tab is not
+   * one: the oplog is durable, so anything the dump misses is resent by the next
+   * page load (init) or the manual sync button; a tab switch must not cost a request. */
   install(windowObj: Window = window): void {
     windowObj.addEventListener('pagehide', () => {
       this.flushOnPagehide();
     });
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') void this.sync();
-    });
   }
-}
-
-async function remapQueuedTargets(
-  db: IDBDatabase,
-  mapping: ReadonlyMap<number, number>,
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('oplog', 'readwrite');
-    const req = tx.objectStore('oplog').openCursor();
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return;
-      const op = cursor.value as Op;
-      const remapped = remapOpTarget(op, mapping);
-      if (remapped !== op) cursor.update(remapped);
-      cursor.continue();
-    };
-    req.onerror = () => reject(req.error ?? new Error('oplog remap failed'));
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('oplog remap failed'));
-  });
 }
 
 async function clearKeys(db: IDBDatabase, keys: IDBValidKey[]): Promise<void> {

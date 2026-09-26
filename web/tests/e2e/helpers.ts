@@ -1,10 +1,8 @@
 import { expect, type Page } from '@playwright/test';
 
-/**
- * Verification-gate helpers for the real first-entry UI. The local Worker's always-pass secret
- * makes the widget self-solve in a few hundred ms (too brief for toBeVisible), so prepareGate
- * delays the first /sync and flags mounts; expectGate asserts the flag, passGate waits for unmount.
- */
+// Verification-gate helpers for the real first-entry UI: prepareGate delays the
+// first /sync and flags mounts, expectGate asserts it, passGate waits for unmount
+// (the always-pass secret self-solves too fast for toBeVisible).
 
 declare global {
   interface Window {

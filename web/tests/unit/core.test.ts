@@ -11,7 +11,7 @@ import {
   translateTaskError,
 } from '$base/upload/pipeline';
 import { toId36, fromId36, proxyUrl } from '$base/lib/id36';
-import { keepalivePrefix, KEEPALIVE_BODY_LIMIT } from '../../src/core/sync/engine';
+import { keepalivePrefix, KEEPALIVE_BODY_LIMIT } from '../../src/core/engine';
 import type { Op } from '$shared/types';
 
 describe('pipeline pure functions', () => {
@@ -101,7 +101,7 @@ describe('id36', () => {
   });
 });
 
-// ---- keepalive 64KB prefix rule (contract "/sync protocol · sync trigger points") ------------
+// ---- keepalive 64KB prefix rule --------------------------------------------------
 
 const like = (i: number): Op => ({ type: 'like', target: i, payload: null });
 const bytes = (s: string) => new TextEncoder().encode(s).length;

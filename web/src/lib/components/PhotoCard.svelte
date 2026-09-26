@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import type { Photo } from '$shared/types';
+  import { copy } from '$shared/copy';
   import {
     ThumbsUp,
     ThumbsDown,
@@ -11,7 +12,7 @@
     RotateCcw,
     X,
   } from '@lucide/svelte';
-  import PhotoFallback from './PhotoFallback.svelte';
+  import GlitchText from './GlitchText.svelte';
 
   interface Props {
     photo: Photo;
@@ -33,7 +34,6 @@
     onLike?: () => void;
     onDislike?: () => void;
     onRequestDelete?: () => void;
-    onVolumeToggle?: () => void;
   }
 
   let {
@@ -53,7 +53,6 @@
     onLike,
     onDislike,
     onRequestDelete,
-    onVolumeToggle,
   }: Props = $props();
 
   let isLiked = $derived(photo.likes.includes(selfId));
@@ -61,14 +60,16 @@
   let isReported = $derived(photo.reports.includes(selfId));
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
+  // HTTP status probed after a load failure; "0" = network error / CORS-blocked.
+  // Falls back to "404" until the HEAD probe resolves.
+  let failStatus = $state('404');
+  let failController: AbortController | null = null;
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
-  // opacity) is *derived* from `loadedUrl === photo.url`, so a plain object-identity swap on
-  // every /sync — same URL, new reference — keeps the already-loaded image visible without any
-  // effect or manual diff. The browser caches the decoded image by URL itself; we only track
-  // which resource this card is currently showing.
+  // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
+  // every /sync keeps the loaded image visible; the browser caches decoding by URL itself.
   let loadedUrl = $state('');
-  // Contract: type=1 (animated image without audio track) and type=2 (video with sound) are
-  // both video media — inside the card they always play muted and looping, no poster frame.
+  // type=1 (animated image without audio track) and type=2 (video with sound) are both
+  // video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);
 
   let longPressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -93,7 +94,23 @@
     longPressTimer = undefined;
   }
 
-  onDestroy(() => cancelLongPress());
+  onDestroy(() => {
+    cancelLongPress();
+    failController?.abort();
+  });
+
+  // <img>/<video> onerror does not expose the HTTP status (browser security).
+  // Send a HEAD probe so the fallback can show the real code (404/403/500…).
+  // 0 means the request itself failed (network / CORS).
+  function probeFailStatus(url: string) {
+    failController?.abort();
+    failController = new AbortController();
+    fetch(url, { method: 'HEAD', cache: 'force-cache', signal: failController.signal })
+      .then((res) => (failStatus = String(res.status)))
+      .catch(() => {
+        if (!failController?.signal.aborted) failStatus = '0';
+      });
+  }
 
   function handleClick() {
     if (didLongPress) return;
@@ -118,11 +135,13 @@
     if (e.key === 'Enter' || e.key === ' ') onClick?.();
   }}
 >
-  <!-- Media: on load failure render <PhotoFallback> (contract: "photo card").
+  <!-- Media: on load failure render a glitching error code.
        Empty URL (upload still in flight) keeps the skeleton instead of an <img>
        whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
-    <PhotoFallback id={photo.id} sha256={photo.sha256} />
+    <div class="flex h-full w-full items-center justify-center bg-card">
+      <GlitchText text={failStatus} size="clamp(2rem, 12vw, 3.5rem)" />
+    </div>
   {:else if photo.url}
     {#if loadedUrl !== photo.url}
       <div class="absolute inset-0 skeleton" aria-hidden="true"></div>
@@ -139,7 +158,10 @@
         autoplay
         playsinline
         onloadeddata={() => (loadedUrl = photo.url)}
-        onerror={() => (loadFailed = true)}
+        onerror={() => {
+          loadFailed = true;
+          probeFailStatus(photo.url);
+        }}
       ></video>
     {:else}
       <img
@@ -152,7 +174,10 @@
         loading="lazy"
         draggable="false"
         onload={() => (loadedUrl = photo.url)}
-        onerror={() => (loadFailed = true)}
+        onerror={() => {
+          loadFailed = true;
+          probeFailStatus(photo.url);
+        }}
       />
     {/if}
   {:else}
@@ -162,52 +187,37 @@
   <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry / dismiss -->
   {#if overlay}
     {#if overlay.failed}
-      <div
-        class="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/75"
-      >
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            class="flex size-11 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary hover:text-primary-foreground"
-            title="重试上传"
-            aria-label="重试上传"
-            onclick={(e) => {
-              e.stopPropagation();
-              onRetryUpload?.();
-            }}
-          >
-            <RotateCcw class="size-5" />
-          </button>
-          <button
-            type="button"
-            class="flex size-11 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/25 hover:text-white"
-            title="移除此项"
-            aria-label="移除此项"
-            onclick={(e) => {
-              e.stopPropagation();
-              onDismissUpload?.();
-            }}
-          >
-            <X class="size-5" />
-          </button>
-        </div>
-        <!-- "上传失败" stays the first words (stable, scannable); the translated
-             reason underneath tells timeout / oversize / codec / network apart. -->
-        <span class="px-3 text-center text-xs text-white/70">
-          上传失败{overlay.error ? `：${overlay.error.replace(/^转码失败[：:]/, '')}` : ''}
-        </span>
+      <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
+        <button
+          type="button"
+          class="absolute top-2 right-2 flex size-8 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/25 hover:text-white"
+          title={copy.photoCard.dismiss}
+          aria-label={copy.photoCard.dismiss}
+          onclick={(e) => {
+            e.stopPropagation();
+            onDismissUpload?.();
+          }}
+        >
+          <X class="size-4" />
+        </button>
+        <button
+          type="button"
+          class="flex size-11 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary hover:text-primary-foreground"
+          title={copy.photoCard.retry}
+          aria-label={copy.photoCard.retry}
+          onclick={(e) => {
+            e.stopPropagation();
+            onRetryUpload?.();
+          }}
+        >
+          <RotateCcw class="size-5" />
+        </button>
       </div>
     {:else}
       <div
         class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70"
         style="height: {Math.max(0, 1 - (overlay.fraction ?? 0)) * 100}%"
-      >
-        <div
-          class="absolute inset-x-0 bottom-1 text-center text-[10px] font-medium tabular-nums text-white/60"
-        >
-          {Math.round((overlay.fraction ?? 0) * 100)}%
-        </div>
-      </div>
+      ></div>
     {/if}
   {/if}
 
@@ -226,7 +236,7 @@
     </div>
   {/if}
 
-  <!-- Mark badges: pills overlaid on the image, each hidden entirely when its count is zero (v1 language).
+  <!-- Mark badges: pills overlaid on the image, each hidden entirely when its count is zero.
        Color language: the user's own mark = solid cyan (fill-current on the icon); everyone else's
        marks = outline cyan at reduced opacity (plain white read as monotone). -->
   <div class="absolute bottom-2 left-2 z-10 flex items-center gap-1.5">
@@ -284,7 +294,6 @@
       onclick={(e) => {
         e.stopPropagation();
         volumeMuted = !volumeMuted;
-        onVolumeToggle?.();
       }}
     >
       {#if volumeMuted}

@@ -3,9 +3,9 @@ import type { Feedback } from '$shared/types';
 import { filterFeedback } from '../../src/routes/admin/feedbackView';
 
 const feedback: Feedback[] = [
-  { id: 10, userId: 2, contentMd: 'Improve **search**', createdAt: 1 },
-  { id: 11, userId: 20, contentMd: 'Please add image previews', createdAt: 2 },
-  { id: 12, userId: 3, contentMd: '导出更快', createdAt: 3 },
+  { id: 10, userId: 2, contentMd: 'Improve **search**', createdAt: 1, sort: 0 },
+  { id: 11, userId: 20, contentMd: 'Please add image previews', createdAt: 2, sort: 1 },
+  { id: 12, userId: 3, contentMd: '导出更快', createdAt: 3, sort: 2 },
 ];
 
 describe('admin feedback view', () => {

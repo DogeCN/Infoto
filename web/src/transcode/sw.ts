@@ -1,5 +1,5 @@
 // SharedWorker entry — transcode queue / image pool / video token pool / heartbeat leases.
-// Contract: neither WebCodecs nor the Worker constructor exists in this global, so image transcoding runs on this thread by importing image.worker.ts as a module;
+// Neither WebCodecs nor the Worker constructor exists in this global, so image transcoding runs on this thread by importing image.worker.ts as a module;
 // video jobs are only dispatched here — actual transcoding happens in the page's top-level DedicatedWorker.
 
 import type { MediaType } from '$shared/types';
@@ -25,7 +25,7 @@ import {
   type JobStatusMessage,
   type PageToSwMessage,
   type SwToPageMessage,
-} from './shared/protocol';
+} from './protocol';
 
 // ---- environment & channels ----------------------------------------------------
 
@@ -81,9 +81,7 @@ interface Lease {
 const leases = new Map<string, Lease>();
 
 /**
- * Global video concurrency (1–2, contract architecture). Computed from the SW's own navigator
- * at startup, then refined by each page's poolHint (deviceMemory is window-only); pages on one
- * machine report identical readings, so last-write-wins updates are exact in practice.
+ * Global video concurrency (1–2): computed from the SW's own navigator at startup, then refined by each page's poolHint (deviceMemory is window-only); pages on one machine report identical readings, so last-write-wins updates are exact in practice.
  */
 let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
 
@@ -179,9 +177,7 @@ const portById = new Map<number, MessagePort>();
 /** Last message time per port — the only liveness signal a port offers. */
 const portLastSeen = new Map<number, number>();
 /**
- * Silence from a port that holds a lease. A live page heartbeats every 5s and
- * even under background timer throttling (≈1/min) stays well inside this; a
- * closed tab says nothing at all. Used to tell "gone" from "throttled".
+ * Silence from a port that holds a lease: a live page heartbeats every 5s and stays well inside this even under background timer throttling (≈1/min), while a closed tab says nothing at all — distinguishes a gone page from a throttled one.
  */
 const DEAD_OWNER_MS = 120_000;
 /** A port with no owned jobs that has been silent this long is swept (it re-registers on its next message). */
@@ -252,8 +248,8 @@ async function afterStage1(rec: JobRec): Promise<void> {
   await runUpload(rec);
 }
 
-/** Stage 2: 100MB pre-check + one /upload attempt (contract: no auto-retry — a
- *  failure marks the file, the artifact stays in OPFS, retryJob is manual-only). */
+/** Stage 2: 100MB pre-check + one /upload attempt, no auto-retry — a failure marks
+ *  the file, the artifact stays in OPFS, and retryJob is manual-only. */
 async function runUpload(rec: JobRec): Promise<void> {
   const ext = artifactExt(rec.meta!.type === 0 ? 'image' : 'webm');
   const blob = await readArtifact(rec.jobId, ext);
@@ -264,7 +260,7 @@ async function runUpload(rec: JobRec): Promise<void> {
     notify(rec);
     return;
   }
-  // >100MB fails immediately, artifact stays in OPFS (spec size limit)
+  // >100MB fails immediately; the artifact stays in OPFS (size limit)
   if (isOversize(blob.size)) {
     rec.phase = 'failed';
     rec.error = 'oversize';
@@ -372,11 +368,9 @@ setInterval(() => {
         const pid = owners.get(rec.jobId);
         const seen = pid === undefined ? 0 : (portLastSeen.get(pid) ?? 0);
         if (pid === undefined || now - seen > DEAD_OWNER_MS) {
-          // The owning page stopped talking long before its lease did — it is
-          // closed, not throttled. Re-enqueueing would hand the token back to a
-          // dead port every 15s forever, permanently pinning the video pool (top
-          // of 2) and blocking every other video upload. Drop the job instead;
-          // pages keep their own row and clean it up on their side.
+          // The owning page stopped talking long before its lease did — closed, not throttled.
+          // Re-enqueueing would pin the token pool (top of 2) forever, blocking every other
+          // video upload; drop the job instead and let each page clean up its own row.
           forgetJob(rec.jobId);
           continue;
         }
@@ -393,10 +387,7 @@ setInterval(() => {
 }, 2_000);
 
 /**
- * Terminal-job housekeeping. Two things grow without bound otherwise: the source
- * Blob each job holds (a picked video can be gigabytes) and the records
- * themselves, which are only useful for refresh replay and manual retry.
- * Runs off the same clock as the lease reaper so a long-lived session stays flat.
+ * Terminal-job housekeeping: each job's source Blob (a picked video can be gigabytes) and its record (useful only for refresh replay and manual retry) grow without bound otherwise; it runs on the lease reaper's clock so long-lived sessions stay flat.
  */
 function reclaimTerminalJobs(): void {
   const now = Date.now();
@@ -454,11 +445,9 @@ onconnect = (e: MessageEvent) => {
     handleMessage(port, m);
   };
   port.onmessageerror = () => undefined;
-  // Album jobs replay for refresh recovery. Editor results stay with the
-  // original owner and never cross a page-reload boundary. Terminal album
-  // states are skipped: /sync already delivers `done` photos and a duplicate
-  // never landed at all — replaying them flashed a batch of stale rows (and
-  // resurrected cards the store had already absorbed) on every refresh.
+  // Album jobs replay for refresh recovery; editor results stay with the original owner
+  // and never cross a page-reload boundary. Terminal album states are skipped: /sync
+  // already delivers `done` photos and a duplicate never landed at all.
   for (const rec of jobs.values()) {
     if (rec.purpose === 'editor') continue;
     if (rec.phase === 'done' || rec.phase === 'duplicate') continue;
@@ -532,8 +521,8 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       rec.cancelled = true;
       forgetJob(m.jobId);
       if (rec.leaseId) leases.delete(rec.leaseId);
-      // Cancel is the one path that may drop the artifact (contract): the job
-      // will never be retried, so nothing else will ever read it again.
+      // Cancel is the one path that may drop the artifact: the job will never be
+      // retried, so nothing else will ever read it again.
       if (rec.artifact) void removeArtifact(m.jobId, rec.artifact.ext);
       broadcast({ t: 'jobRemoved', jobId: m.jobId });
       return;

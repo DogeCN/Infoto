@@ -1,8 +1,9 @@
 <script lang="ts">
-  // Announcement vote control (after the option area of D:\ToDo\web\announcements.html; drops the
-  // top title / "shuffle" and the bottom "N votes" line, radius uses this project's --radius).
-  // Semantics: click an option to vote; click the chosen one again to retract (option null, backend-supported); click another to change the vote.
+  // Announcement vote control: one button per option with a vote-share fill bar.
+  // Semantics: click an option to vote; click the chosen one again to retract (option
+  // null, backend-supported); click another to change the vote.
   import type { Vote } from '$shared/types';
+  import { copy, fmt } from '$shared/copy';
 
   interface Props {
     options: string[];
@@ -61,7 +62,9 @@
         </span>
         <span class="inline-flex items-baseline gap-1.5 tabular-nums">
           <span class="font-mono text-xs text-primary">{pct.toFixed(0)}%</span>
-          <span class="font-mono text-[11px] text-muted-foreground/70">{count} 票</span>
+          <span class="font-mono text-[11px] text-muted-foreground/70">
+            {fmt(copy.vote.count, { count })}
+          </span>
         </span>
       </span>
     </button>

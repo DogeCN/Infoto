@@ -32,22 +32,20 @@ describe('reapplyQueued', () => {
     // Server snapshot computed BEFORE the unlike reached the server: still liked.
     const stale = [photo(1, [7])];
     const queued: Op[] = [{ type: 'unlike', target: 1 }];
-    const out = reapplyQueued(stale, [], [], queued, 7);
+    const out = reapplyQueued(stale, [], queued, 7);
     expect(out.photos[0]!.likes).toEqual([]);
   });
 
-  it('re-folds queued like, dislike exclusion, delete, vote, react, fb_delete', () => {
+  it('re-folds queued like, dislike exclusion, delete, vote, react', () => {
     const out = reapplyQueued(
       [photo(1), photo(2, [7])],
       [ann(10)],
-      [{ id: 5, userId: 7, contentMd: 'x', createdAt: 0 }],
       [
         { type: 'like', target: 1 },
         { type: 'dislike', target: 2 }, // must clear the like (mutual exclusion is toggleMark's job; reducer just applies)
         { type: 'delete', target: 1 },
         { type: 'vote', target: 10, payload: { option: 1 } },
         { type: 'react', target: 10, payload: { emoji: '👍' } },
-        { type: 'fb_delete', target: 5 },
       ],
       7,
     );
@@ -55,13 +53,11 @@ describe('reapplyQueued', () => {
     expect(out.photos[0]!.dislikes).toEqual([7]);
     expect(out.announcements[0]!.votes).toEqual([{ userId: 7, option: 1 }]);
     expect(out.announcements[0]!.reactions).toEqual([{ userId: 7, emoji: '👍' }]);
-    expect(out.feedback).toEqual([]);
   });
 
   it('ignores upload / fb_create (managed outside the fold)', () => {
     const out = reapplyQueued(
       [photo(1)],
-      [],
       [],
       [
         {
@@ -73,12 +69,11 @@ describe('reapplyQueued', () => {
       7,
     );
     expect(out.photos).toHaveLength(1);
-    expect(out.feedback).toEqual([]);
   });
 
   it('no queued ops → snapshot passes through unchanged', () => {
     const photos = [photo(1, [7])];
-    const out = reapplyQueued(photos, [], [], [], 7);
+    const out = reapplyQueued(photos, [], [], 7);
     expect(out.photos).toBe(photos);
   });
 });

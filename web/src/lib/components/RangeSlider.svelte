@@ -6,6 +6,7 @@
   import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
   import { cn } from '$lib/utils';
+  import { copy } from '$shared/copy';
   import { normalizeRangeValue, mapRangeValue, type RangeScale } from './rangeScale';
 
   type SliderScale = 'linear' | 'log';
@@ -16,8 +17,6 @@
     value: [number, number];
     /** Log scale is used for byte sizes (linear is the default). */
     scale?: SliderScale;
-    /** Reserved: muted look when the value equals the full range. */
-    active?: boolean;
     disabled?: boolean;
     /** Value -> display text (e.g. bytes to human-readable). */
     format?: (v: number) => string;
@@ -62,11 +61,9 @@
   let loVal = $derived(mapValue(tLo));
   let hiVal = $derived(mapValue(tHi));
 
-  // External controlled values flow back when the mapped values differ from
-  // props by more than a half business unit. Within a drag the emitted value
-  // is the rounded integer while the thumb sits at the continuous pointer
-  // position, so a sub-unit difference is expected and must NOT yank the thumb
-  // back; only real external changes (resets, other inputs) resync.
+  // External controlled values flow back when mapped values differ from props by more
+  // than a half business unit: during a drag the emitted value is the rounded integer
+  // while the thumb sits continuously, so sub-unit drift must not yank the thumb back.
   $effect(() => {
     void value;
     void min;
@@ -80,11 +77,9 @@
   let trackEl = $state<HTMLDivElement | undefined>(undefined);
   let trackWidth = $state(0);
   const usablePx = $derived(Math.max(1, trackWidth - THUMB));
-  /** Minimum normalized gap: at least the visual thumb gap, but never smaller
-   *  than one business unit. When the range is narrow (e.g. 0..5) the pixel
-   *  gap can map to < 1 unit, which would let the two thumbs sit at the same
-   *  integer and trigger a snap-back; taking the larger of the two keeps the
-   *  business values at least one unit apart. */
+  /** Minimum normalized gap: the visual thumb gap, but never below one business unit.
+   *  On a narrow range (e.g. 0..5) the pixel gap maps to < 1 unit, letting both thumbs
+   *  land on the same integer and snap back; the larger of the two prevents that. */
   const minGap = $derived.by(() => {
     const visual = (THUMB + BREATHE) / usablePx;
     const span = max - min;
@@ -111,11 +106,9 @@
     const pct = t * 100;
     return `calc(${THUMB / 2}px + ${pct}% - ${t * THUMB}px)`;
   }
-  /**
-   * Bubble geometry in px, measured against the live track width and the bubble's own
-   * rendered width. The caret is the bubble's only pointing anchor, so it must stay on
-   * the thumb centre: near the ends the body stops at the track edge and the caret slides along it.
-   */
+  /** Bubble geometry in px against the live track width and the bubble's own width. The
+   *  caret is the bubble's only pointing anchor, so it stays on the thumb centre: near the
+   *  ends the body stops at the track edge and the caret slides along it. */
   function bubblePos(t: number, bw: number): { left: number; tip: number } {
     const w = trackWidth;
     const center = THUMB / 2 + t * Math.max(0, w - THUMB);
@@ -231,9 +224,8 @@
     applyT(which, target);
   }
 
-  /** Thumb: 18px primary dot with a 3px background border ("punched into
-   *  the card", per the design spec). No shadow; hover scales 1.1, drag 1.22
-   *  with transitions off while dragging. */
+  /** Thumb: 18px primary dot with a 3px background border ("punched into the card").
+   *  No shadow; hover scales 1.1, drag 1.22, with transitions off while dragging. */
   const thumbCls = cn(
     'absolute top-1/2 size-[18px] -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full outline-none',
     'border-[3px] border-background bg-primary',
@@ -311,7 +303,7 @@
       data-thumb="lo"
       role="slider"
       tabindex={disabled ? -1 : 0}
-      aria-label="范围下限"
+      aria-label={copy.settings.rangeMin}
       aria-valuemin={Math.round(min)}
       aria-valuemax={Math.round(max)}
       aria-valuenow={loVal}
@@ -333,7 +325,7 @@
       data-thumb="hi"
       role="slider"
       tabindex={disabled ? -1 : 0}
-      aria-label="范围上限"
+      aria-label={copy.settings.rangeMax}
       aria-valuemin={Math.round(min)}
       aria-valuemax={Math.round(max)}
       aria-valuenow={hiVal}

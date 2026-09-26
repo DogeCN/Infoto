@@ -1,4 +1,4 @@
-import type { JobMeta, JobPurpose, JobStatusMessage } from './shared/protocol';
+import type { JobMeta, JobPurpose, JobStatusMessage } from './protocol';
 
 export type PipelineResultAction = 'observe' | 'resolve' | 'reject' | 'ignore';
 

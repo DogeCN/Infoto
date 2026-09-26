@@ -2,6 +2,7 @@
   import { onDestroy, tick } from 'svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
   import type { PanelTask } from '$lib/components/UploadProgressPanel.svelte';
+  import { copy } from '$shared/copy';
 
   interface Props {
     announcement: {
@@ -86,12 +87,9 @@
         window.removeEventListener('focus', onFocus);
         resolve();
       };
-      // `cancel` covers modern browsers, but a dismissed picker on an older engine
-      // dispatches nothing at all: the promise would hang forever, latching
-      // `uploadBusy` and disabling the dialog's save button for the rest of the
-      // session. Focus coming back to the window is the remaining signal that the
-      // picker closed — the grace period lets `change` win the race when a file
-      // was actually chosen.
+      // `cancel` covers modern browsers; an older engine dispatches nothing at
+      // all, hanging the promise and latching `uploadBusy` (save stays disabled).
+      // Window focus is the fallback signal; its 400ms grace lets `change` win.
       const onFocus = () => {
         grace = setTimeout(finish, 400);
       };
@@ -112,9 +110,9 @@
       throw error;
     } finally {
       uploadBusy = false;
-      // `uploadName` is intentionally kept: the editor reads it *after* the await
-      // to build the alt text / aria-label, and clearing it here (before the
-      // caller resumes) always produced an empty `![](url)`.
+      // `uploadName` is kept: the editor reads it *after* the await to build the
+      // alt text / aria-label, so clearing it here (before the caller resumes)
+      // yields an empty `![](url)`.
     }
   }
 
@@ -155,8 +153,8 @@
             bind:value={title}
             required
             type="text"
-            placeholder="标题"
-            aria-label="标题"
+            placeholder={copy.admin.editor.titlePlaceholder}
+            aria-label={copy.admin.editor.titlePlaceholder}
             class="w-full rounded-md border border-input bg-background px-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
@@ -179,14 +177,14 @@
         class="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:bg-secondary/80"
         onclick={onCancel}
       >
-        取消
+        {copy.admin.editor.cancel}
       </button>
       <button
         type="submit"
         disabled={!canSave || uploadBusy}
         class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {uploadBusy ? '上传中' : '保存'}
+        {uploadBusy ? copy.admin.editor.uploading : copy.admin.editor.save}
       </button>
     </div>
   </form>

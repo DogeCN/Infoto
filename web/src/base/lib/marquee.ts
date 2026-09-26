@@ -1,5 +1,5 @@
 // Marquee (rubber-band) hit-testing — pure rectangle intersection over
-// layout boxes (spec: "multi-select · drag rubber-band selection").
+// layout boxes.
 
 import type { LayoutBox } from './layout.ts';
 

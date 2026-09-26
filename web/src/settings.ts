@@ -12,14 +12,6 @@ export type RangeKey = 'heat' | 'likes' | 'dislikes' | 'reports' | 'size';
 export const RANGE_KEYS: readonly RangeKey[] = ['heat', 'likes', 'dislikes', 'reports', 'size'];
 const MEDIA_TYPES = [MEDIA_TYPE.IMAGE, MEDIA_TYPE.ANIMATED, MEDIA_TYPE.VIDEO] as const;
 
-export const RANGE_LABELS: Record<RangeKey, string> = {
-  heat: '热度',
-  likes: '喜欢数',
-  dislikes: '不喜欢数',
-  reports: '请求删除数',
-  size: '文件大小',
-};
-
 /** The current interval for one range filter; absent means the full range. */
 export type RangeValue = [number, number];
 
@@ -76,9 +68,8 @@ export function metricRange(photos: Photo[], key: RangeKey): RangeValue | null {
 }
 
 /** A dimension is filterable when it spans at least three integer values
- *  (max - min >= 2). A two-value domain like likes 0..1 has no meaningful
- *  sub-range — [min,max] selects everything and single values are not
- *  expressible — so the slider stays disabled instead of misbehaving. */
+ * (max - min >= 2): a two-value domain has no meaningful sub-range, so the slider
+ * stays disabled instead of misbehaving. */
 export function isFilterable(photos: Photo[], key: RangeKey): boolean {
   const r = metricRange(photos, key);
   return r !== null && r[1] - r[0] >= 2;
@@ -98,67 +89,58 @@ export function defaultFilterSettings(): FilterSettings {
 export function defaultSettings(): Settings {
   return {
     filters: defaultFilterSettings(),
-    layout: { dir: 'v', strategy: 'sequential', band: 260, gap: 12 },
+    layout: { dir: 'v', strategy: 'shortest', band: 260, gap: 12 },
   };
 }
 
-const TRI_STATES: readonly TriState[] = ['off', 'only', 'exclude'];
+const STORAGE_KEY = 'infoto-settings';
 
-/**
- * Normalize persisted settings one field at a time and fall back to defaults
- * for invalid values.
- */
-export function normalizeSettings(raw: unknown): Settings {
-  const d = defaultSettings();
-  if (!raw || typeof raw !== 'object') return d;
-  const src = raw as Record<string, unknown>;
+/** Bump whenever the persisted shape changes: a blob written by any other version
+ * is dropped wholesale and replaced by defaults — there is deliberately no
+ * per-field migration; the version tag is the guard. */
+const SETTINGS_VERSION = 1;
 
-  const rf = (src['filters'] ?? {}) as Record<string, unknown>;
-  const types = new Set<MediaType>(
-    Array.isArray(rf['types'])
-      ? (rf['types'] as unknown[]).filter(
-          (t): t is MediaType => typeof t === 'number' && MEDIA_TYPES.includes(t as MediaType),
-        )
-      : [],
-  );
-  if (types.size === 0) for (const t of d.filters.types) types.add(t);
+/** Persisted shape: a `Set` is not JSON-serializable, so media types are stored as an array. */
+interface StoredSettings {
+  v: number;
+  filters: Omit<FilterSettings, 'types'> & { types: MediaType[] };
+  layout: LayoutSettings;
+}
 
-  const tri = (v: unknown): TriState =>
-    typeof v === 'string' && (TRI_STATES as readonly string[]).includes(v)
-      ? (v as TriState)
-      : 'off';
-
-  const rawRanges = (rf['ranges'] ?? {}) as Record<string, unknown>;
-  const ranges: Partial<Record<RangeKey, RangeValue>> = {};
-  for (const key of RANGE_KEYS) {
-    const v = rawRanges[key];
-    if (!Array.isArray(v) || v.length !== 2) continue;
-    const [a, b] = v as unknown[];
-    if (typeof a !== 'number' || typeof b !== 'number') continue;
-    if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
-    ranges[key] = [Math.min(a, b), Math.max(a, b)];
+/** Read persisted settings. An untagged, mangled or unreadable blob resets to defaults. */
+export function loadSettings(storage: Pick<Storage, 'getItem'> = localStorage): Settings {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(STORAGE_KEY);
+  } catch {
+    return defaultSettings(); // storage blocked (private mode / disabled cookies)
   }
+  if (!raw) return defaultSettings();
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredSettings>;
+    if (parsed.v !== SETTINGS_VERSION || !parsed.filters || !parsed.layout) {
+      return defaultSettings();
+    }
+    return {
+      filters: { ...parsed.filters, types: new Set(parsed.filters.types) },
+      layout: parsed.layout,
+    };
+  } catch {
+    return defaultSettings();
+  }
+}
 
-  const rl = (src['layout'] ?? {}) as Record<string, unknown>;
-  const num = (v: unknown, fallback: number): number =>
-    typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-
-  return {
-    filters: {
-      types,
-      ownedByMe: tri(rf['ownedByMe']),
-      likedByMe: tri(rf['likedByMe']),
-      dislikedByMe: tri(rf['dislikedByMe']),
-      reportedByMe: tri(rf['reportedByMe']),
-      ranges,
-    },
-    layout: {
-      dir: rl['dir'] === 'h' ? 'h' : 'v',
-      strategy: rl['strategy'] === 'shortest' ? 'shortest' : 'sequential',
-      band: num(rl['band'], d.layout.band),
-      gap: num(rl['gap'], d.layout.gap),
-    },
+export function saveSettings(s: Settings, storage: Pick<Storage, 'setItem'> = localStorage): void {
+  const stored: StoredSettings = {
+    v: SETTINGS_VERSION,
+    filters: { ...s.filters, types: [...s.filters.types] },
+    layout: s.layout,
   };
+  try {
+    storage.setItem(STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // Storage blocked or full: the panel still applies in memory for this session.
+  }
 }
 
 /** Apply all filters with AND semantics; absent ranges do not filter. */

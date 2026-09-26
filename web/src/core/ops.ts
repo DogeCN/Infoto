@@ -61,24 +61,17 @@ export function applyDelete(photos: Photo[], ids: number[]): Photo[] {
   return photos.filter((p) => !set.has(p.id));
 }
 
-/**
- * Re-fold ops that are still queued in the local oplog onto a fresh server snapshot.
- * A snapshot computed before those ops reached the server must not revert the
- * optimistic state — marks / deletes / votes / reactions are idempotent reducers,
- * so folding them again over the snapshot restores the intended view. `upload` and
- * `fb_create` are excluded: their optimistic rows are managed outside this fold
- * (upload pipeline pending entries; fb temp ids must not duplicate).
- */
+/** Re-fold ops still queued in the local oplog onto a fresh server snapshot: a snapshot
+ * computed before they reached the server must not revert optimistic state (the reducers
+ * are idempotent). `upload`/`fb_create` rows are managed outside this fold; feedback is snapshot-authoritative. */
 export function reapplyQueued(
   photos: Photo[],
   announcements: Announcement[],
-  feedback: Feedback[],
   queued: Op[],
   selfId: number,
-): { photos: Photo[]; announcements: Announcement[]; feedback: Feedback[] } {
+): { photos: Photo[]; announcements: Announcement[] } {
   let p = photos;
   let a = announcements;
-  let f = feedback;
   for (const op of queued) {
     switch (op.type) {
       case 'like':
@@ -108,14 +101,11 @@ export function reapplyQueued(
         if (op.target != null)
           a = applyReact(a, op.target, selfId, (op.payload as ReactPayload | null)?.emoji ?? null);
         break;
-      case 'fb_delete':
-        if (op.target != null) f = applyFbDelete(f, op.target);
-        break;
       default:
         break; // upload / fb_create — see doc comment
     }
   }
-  return { photos: p, announcements: a, feedback: f };
+  return { photos: p, announcements: a };
 }
 
 /** Optimistically set / retract the single vote of `userId` on one announcement. */
@@ -175,38 +165,40 @@ export function applyAnnDelete(anns: Announcement[], id: number): Announcement[]
   return anns.filter((a) => a.id !== id);
 }
 
-/** Reorder to the given id sequence; sort renormalized to 0…n-1 (server does the same). */
-export function applyAnnReorder(anns: Announcement[], orderedIds: number[]): Announcement[] {
-  const map = new Map(anns.map((a) => [a.id, a]));
-  const ordered: Announcement[] = [];
+/** Reorder `list` to follow `orderedIds` and renumber `sort` to 0…n-1 (the server
+ * assigns the same numbers). Ids not mentioned keep their relative order at the
+ * end, so a reorder from a filtered/dragged subset never drops rows. */
+export function applyReorder<T extends { id: number; sort: number }>(
+  list: readonly T[],
+  orderedIds: readonly number[],
+): T[] {
+  const map = new Map(list.map((item) => [item.id, item]));
+  const ordered: T[] = [];
   for (const id of orderedIds) {
-    const a = map.get(id);
-    if (a) {
-      ordered.push(a);
+    const item = map.get(id);
+    if (item) {
+      ordered.push(item);
       map.delete(id);
     }
   }
   // anything not mentioned keeps its relative order at the end
-  for (const a of anns) if (map.has(a.id)) ordered.push(a);
-  return ordered.map((a, i) => ({ ...a, sort: i }));
+  for (const item of list) if (map.has(item.id)) ordered.push(item);
+  return ordered.map((item, index) => ({ ...item, sort: index }));
 }
 
-export interface AnnouncementReorderDraft {
+export interface ReorderDraft {
   sourceIds: number[];
   orderedIds: number[];
   dragId: number | null;
   finalized: boolean;
 }
 
-export function beginAnnouncementReorder(ids: number[], dragId: number): AnnouncementReorderDraft {
+export function beginReorder(ids: readonly number[], dragId: number): ReorderDraft {
   return { sourceIds: [...ids], orderedIds: [...ids], dragId, finalized: false };
 }
 
 /** Move the dragged id so it lands at insertion slot `slot` (0…n, positions in final order). */
-export function moveAnnouncementReorderToIndex(
-  draft: AnnouncementReorderDraft,
-  slot: number,
-): AnnouncementReorderDraft {
+export function moveReorderToIndex(draft: ReorderDraft, slot: number): ReorderDraft {
   if (draft.finalized || draft.dragId === null) return draft;
   const from = draft.orderedIds.indexOf(draft.dragId);
   if (from < 0) return draft;
@@ -220,8 +212,8 @@ export function moveAnnouncementReorderToIndex(
   return { ...draft, orderedIds };
 }
 
-export function finalizeAnnouncementReorder(draft: AnnouncementReorderDraft): {
-  draft: AnnouncementReorderDraft;
+export function finalizeReorder(draft: ReorderDraft): {
+  draft: ReorderDraft;
   /** New order when it actually changed, else null (nothing to send). */
   orderedIds: number[] | null;
 } {
@@ -233,26 +225,6 @@ export function finalizeAnnouncementReorder(draft: AnnouncementReorderDraft): {
   return { draft: finalized, orderedIds: [...draft.orderedIds] };
 }
 
-export function cancelAnnouncementReorder(
-  draft: AnnouncementReorderDraft,
-): AnnouncementReorderDraft {
-  return { ...draft, dragId: null, finalized: true };
-}
-
-export function rollbackAnnouncementOrder(
-  anns: Announcement[],
-  previousIds: number[],
-): Announcement[] {
-  return applyAnnReorder(anns, previousIds);
-}
-
-/** Rewrite op targets that referenced optimistic temp ids. */
-export function remapOpTarget(op: Op, mapping: ReadonlyMap<number, number>): Op {
-  if (op.target == null || op.target >= 0) return op;
-  const real = mapping.get(op.target);
-  return real === undefined ? op : { ...op, target: real };
-}
-
 /** Feedback list helpers (root only sees real rows; others are optimistic-only). */
 export function applyFbCreate(
   list: Feedback[],
@@ -261,7 +233,9 @@ export function applyFbCreate(
   contentMd: string,
   now: number,
 ): Feedback[] {
-  return [{ id: tempId, userId, contentMd, createdAt: now }, ...list];
+  // Same rule as the server's INSERT: one below the current minimum → newest on top.
+  const minSort = list.reduce((min, item) => Math.min(min, item.sort), 0);
+  return [{ id: tempId, userId, contentMd, createdAt: now, sort: minSort - 1 }, ...list];
 }
 
 export function applyFbDelete(list: Feedback[], id: number): Feedback[] {

@@ -1,5 +1,5 @@
-// Shared constants and aggregation for announcement emoji reactions (spec:
-// "announcement sidebar") — eight fixed emojis, one response per user per announcement.
+// Shared constants and aggregation for announcement emoji reactions — eight fixed
+// emojis, one response per user per announcement.
 
 import type { Announcement } from '$shared/types';
 
@@ -13,11 +13,9 @@ export interface ReactionCount {
   selfReacted: boolean;
 }
 
-/**
- * Aggregate an announcement's responses in fixed emoji order (emojis that never
+/** Aggregate an announcement's responses in fixed emoji order (emojis that never
  * appeared are skipped). The server keeps one response per user per announcement,
- * so this side only counts occurrences.
- */
+ * so this side only counts occurrences. */
 export function reactionCounts(ann: Announcement, selfId: number): ReactionCount[] {
   const map = new Map<string, { count: number; selfReacted: boolean }>();
   for (const r of ann.reactions) {

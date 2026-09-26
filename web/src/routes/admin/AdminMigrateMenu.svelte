@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Download, Upload } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
+  import { copy, fmt } from '$shared/copy';
   import Progress from '$lib/components/Progress.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';
   import { migrateSql } from '../../core/api/migrateClient';
@@ -20,7 +21,7 @@
   let importName = $state('');
 
   function setError(nextMessage: string): void {
-    toast.error('导入失败', { description: nextMessage });
+    toast.error(copy.migrate.importFailed, { description: nextMessage });
   }
 
   /** Picking a file starts the import immediately — no confirm dialog. */
@@ -40,12 +41,12 @@
       }
       const completion = await onImported();
       if (completion.ok) {
-        toast.success('导入完成', { description: completion.message });
+        toast.success(copy.migrate.importComplete, { description: completion.message });
       } else {
         setError(completion.message);
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : '导入失败，请重试');
+      setError(error instanceof Error ? error.message : copy.migrate.importRetry);
     } finally {
       importing = false;
     }
@@ -60,8 +61,11 @@
         const detail = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim();
         throw new Error(
           detail
-            ? `服务器返回 HTTP ${response.status}：${detail.slice(0, 180)}`
-            : `服务器返回 HTTP ${response.status}`,
+            ? fmt(copy.migrate.httpErrorWithDetail, {
+                status: response.status,
+                detail: detail.slice(0, 180),
+              })
+            : fmt(copy.migrate.httpError, { status: response.status }),
         );
       }
       const blob = await response.blob();
@@ -73,10 +77,10 @@
       anchor.click();
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      toast.success('导出完成');
+      toast.success(copy.migrate.exportComplete);
     } catch (error) {
-      toast.error('导出失败', {
-        description: error instanceof Error ? error.message : '请稍后重试',
+      toast.error(copy.migrate.exportFailed, {
+        description: error instanceof Error ? error.message : copy.migrate.tryAgainLater,
       });
     } finally {
       exporting = false;
@@ -85,11 +89,11 @@
 </script>
 
 <div class="relative flex items-center gap-1">
-  <Tooltip text={exporting ? '导出中' : '导出 SQL'}>
+  <Tooltip text={exporting ? copy.migrate.exporting : copy.migrate.exportSql}>
     <button
       type="button"
       class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground disabled:opacity-50"
-      aria-label="导出 SQL"
+      aria-label={copy.migrate.exportSql}
       disabled={exporting}
       onclick={exportSql}
     >
@@ -97,11 +101,11 @@
     </button>
   </Tooltip>
 
-  <Tooltip text={importing ? '导入中' : '导入 SQL'}>
+  <Tooltip text={importing ? copy.migrate.importing : copy.migrate.importSql}>
     <button
       type="button"
       class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground disabled:opacity-50"
-      aria-label="导入 SQL"
+      aria-label={copy.migrate.importSql}
       disabled={importing}
       onclick={() => fileInput?.click()}
     >
@@ -117,10 +121,12 @@
       aria-live="polite"
     >
       <div class="mb-1.5 flex items-center justify-between gap-2 text-xs">
-        <span class="truncate text-muted-foreground">正在导入 {importName}</span>
+        <span class="truncate text-muted-foreground">
+          {fmt(copy.migrate.importingFile, { importName })}
+        </span>
         <span class="shrink-0 tabular-nums">{Math.round(progress * 100)}%</span>
       </div>
-      <Progress value={progress} label="SQL 导入进度" />
+      <Progress value={progress} label={copy.migrate.progressLabel} />
     </div>
   {/if}
 </div>

@@ -95,9 +95,9 @@ describe('ops: announcements', () => {
     expect(list[0]!.reactions).toEqual([]);
   });
 
-  it('applyAnnReorder normalizes sort to 0…n-1 and appends the unmentioned', () => {
+  it('applyReorder normalizes sort to 0…n-1 and appends the unmentioned', () => {
     const list = [ann({ id: 1, sort: 0 }), ann({ id: 2, sort: 1 }), ann({ id: 3, sort: 2 })];
-    const out = ops.applyAnnReorder(list, [3, 1]);
+    const out = ops.applyReorder(list, [3, 1]);
     expect(out.map((a) => a.id)).toEqual([3, 1, 2]);
     expect(out.map((a) => a.sort)).toEqual([0, 1, 2]);
   });
@@ -107,15 +107,6 @@ describe('ops: announcements', () => {
     const out = ops.applyAnnCreate(list, -1, 'new', 'body', 123);
     expect(out).toHaveLength(2);
     expect(out[1]!).toMatchObject({ id: -1, title: 'new', sort: 1, updatedAt: 123 });
-  });
-});
-
-describe('ops: temp id remap', () => {
-  it('remapOpTarget rewrites only negative targets that are mapped', () => {
-    const mapping = new Map([[-1, 9]]);
-    expect(ops.remapOpTarget({ type: 'fb_delete', target: -1 }, mapping).target).toBe(9);
-    expect(ops.remapOpTarget({ type: 'fb_delete', target: -2 }, mapping).target).toBe(-2);
-    expect(ops.remapOpTarget({ type: 'like', target: 3 }, mapping).target).toBe(3);
   });
 });
 
@@ -240,11 +231,15 @@ describe('filters', () => {
 });
 
 describe('ops: feedback', () => {
-  it('applyFbCreate prepends; applyFbDelete removes by id', () => {
+  it('applyFbCreate prepends with a top-of-list sort; applyFbDelete removes by id', () => {
     let list: Feedback[] = [];
     list = ops.applyFbCreate(list, -1, 0, 'hi', 5);
-    expect(list).toEqual([{ id: -1, userId: 0, contentMd: 'hi', createdAt: 5 }]);
-    expect(ops.applyFbDelete(list, -1)).toEqual([]);
+    // sort one below the current minimum, matching the server's INSERT → newest on top
+    expect(list).toEqual([{ id: -1, userId: 0, contentMd: 'hi', createdAt: 5, sort: -1 }]);
+    list = ops.applyFbCreate(list, -2, 0, 'newer', 6);
+    expect(list.map((f) => f.id)).toEqual([-2, -1]);
+    expect(list.map((f) => f.sort)).toEqual([-2, -1]);
+    expect(ops.applyFbDelete(list, -1).map((f) => f.id)).toEqual([-2]);
   });
 });
 

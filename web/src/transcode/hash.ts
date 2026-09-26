@@ -1,5 +1,5 @@
-// hash-wasm streaming SHA-256 (spec "hashing"): the hasher is fed while the
-// artifact streams to OPFS — hashing completes when the file lands.
+// hash-wasm streaming SHA-256: the hasher is fed as the artifact streams to OPFS,
+// so hashing completes when the file lands.
 
 import { createSHA256 } from 'hash-wasm';
 
@@ -10,8 +10,7 @@ export interface TeeResult {
 }
 
 /**
- * Consume `source`, writing each chunk simultaneously to the OPFS sink and
- * the hasher. Write and hash failures both propagate (caller marks the job failed).
+ * Consume `source`, writing each chunk to the OPFS sink and the hasher; write and hash failures both propagate (the caller marks the job failed).
  */
 export async function teeToHash(
   source: ReadableStream<Uint8Array>,

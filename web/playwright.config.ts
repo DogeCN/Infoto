@@ -1,9 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
-// E2E: real Chromium against the Vite dev server. Every API call is forwarded by
-// the dev proxy to the local Worker started with `wrangler dev` (port 8787) over
-// its local D1 — no test-deployment redirect. Serial because all tests share
-// that one local D1.
+// E2E: real Chromium against the Vite dev server, every API call proxied to the
+// local Worker (`wrangler dev`, port 8787) on its local D1. Serial because all
+// tests share that one local D1.
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 120_000,

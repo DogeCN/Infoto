@@ -4,7 +4,7 @@ import {
   isSwToPage,
   LEASE_HEARTBEAT_MS,
   LEASE_TIMEOUT_MS,
-} from '../../src/transcode/shared/protocol';
+} from '../../src/transcode/protocol';
 
 describe('protocol', () => {
   it('classifies page→sw messages', () => {

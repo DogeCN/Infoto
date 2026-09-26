@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Announcement } from '$shared/types';
+  import { copy } from '$shared/copy';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
   import { splitVote } from '../../core/vote';
   import MarkdownView from './MarkdownView.svelte';
@@ -61,7 +62,7 @@
   <!-- Announcement list: all items laid out flat; scrolling is handled by the OverlaySidebar content area -->
   <div class="flex-1 space-y-4">
     {#if announcements.length === 0}
-      <p class="py-8 text-center text-sm text-muted-foreground">暂无公告</p>
+      <p class="py-8 text-center text-sm text-muted-foreground">{copy.announcements.empty}</p>
     {/if}
 
     {#each announcements as ann (ann.id)}
@@ -137,14 +138,14 @@
           {#if feedbackText.trim()}
             <MarkdownView content={feedbackText} class="text-muted-foreground" />
           {:else}
-            <p class="text-sm text-muted-foreground">暂无内容</p>
+            <p class="text-sm text-muted-foreground">{copy.announcements.previewEmpty}</p>
           {/if}
         </div>
       {:else}
         <textarea
           bind:value={feedbackText}
           style="height: {taH}px"
-          placeholder="写下你的建议"
+          placeholder={copy.announcements.feedbackPlaceholder}
           class="block w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
         ></textarea>
       {/if}
@@ -153,7 +154,7 @@
       <div
         role="presentation"
         class="absolute right-1 top-1 flex h-5 w-5 cursor-ns-resize items-center justify-center text-muted-foreground/50 transition-colors hover:text-muted-foreground"
-        title="拖动调整高度"
+        title={copy.announcements.resizeHandle}
         onpointerdown={startResize}
       >
         <ChevronsUpDown class="size-3.5" />
@@ -162,7 +163,7 @@
       <button
         type="button"
         class="absolute right-8 top-2 inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-background hover:text-foreground"
-        title={previewMode ? '编辑' : '预览'}
+        title={previewMode ? copy.announcements.editToggle : copy.announcements.previewToggle}
         onclick={() => (previewMode = !previewMode)}
       >
         {#if previewMode}
@@ -178,7 +179,7 @@
           class="absolute bottom-3 right-3 inline-flex items-center justify-center rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:bg-primary/90"
           onclick={handleSend}
         >
-          发送
+          {copy.announcements.send}
         </button>
       {/if}
     </div>

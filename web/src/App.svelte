@@ -9,7 +9,8 @@
   import { tick } from 'svelte';
   import { Toaster, toast } from 'svelte-sonner';
   import { Settings as SettingsIcon, Megaphone } from '@lucide/svelte';
-  import { getEngine } from './core/sync/engine';
+  import { toastOptions } from '$lib/toastOptions';
+  import { getEngine } from './core/engine';
   import {
     ensureIdentity,
     renderTurnstile,
@@ -22,24 +23,21 @@
   import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from './transcode/pipeline';
   import { translateTaskError } from '$base/upload/pipeline';
   import type { Photo } from '$shared/types';
+  import { copy, fmt } from '$shared/copy';
   import type { FilterSettings, LayoutSettings, Settings } from './settings';
-  import { applyFilters, defaultFilterSettings } from './settings';
+  import { applyFilters, defaultFilterSettings, defaultSettings } from './settings';
 
-  /**
-   * Surface sync failures: before, only console.error ran, so users saw "nothing
-   * happened". Deduped over 10s — while the backend is down every retry fails and
-   * would flood the toast.
-   */
+  /** Surface sync failures, deduped over 10s: while the backend is down every
+   *  retry fails and would flood the toast. */
   let lastSyncToastAt = 0;
   function notifySyncFailure(): void {
     const now = Date.now();
     if (now - lastSyncToastAt < 10_000) return;
     lastSyncToastAt = now;
-    toast.error('同步失败', { description: '操作已排队，稍后自动重试' });
+    toast.error(copy.sync.failed, { description: copy.sync.queuedRetry });
   }
 
   // Store first: the engine writes the full /sync snapshot straight into it
-  // (contract: server-delivered state wins)
   const store = createAppStore();
   /** Debounce handle for the post-upload /sync (see the pipeline's onUploadOp). */
   let uploadSyncTimer: ReturnType<typeof setTimeout> | undefined;
@@ -58,14 +56,12 @@
   const pipeline = new UploadPipeline({
     onEvent: (line) => console.log('[upload]', line),
     // Once the artifact URL becomes an upload op it is queued on the sync engine
-    // (pending count and the 256-op threshold belong to the engine; contract: all
-    // writes go through the op-log → /sync pipeline)
+    // (pending count and the 256-op threshold belong to the engine)
     onUploadOp: (op) => {
       void engine.addOp(op);
-      // Without this the finished upload only reached the album on the next tab
-      // switch / manual sync / 256-op threshold — the optimistic card sat there
-      // (and the lightbox index stayed wrong) long after the bytes landed.
-      // Coalesced: a 20-file batch schedules one sync, not twenty.
+      // Without this a finished upload waits for the next tab switch / manual
+      // sync / 256-op threshold. Coalesced: a 20-file batch schedules one sync,
+      // not twenty.
       if (uploadSyncTimer !== undefined) clearTimeout(uploadSyncTimer);
       uploadSyncTimer = setTimeout(() => {
         uploadSyncTimer = undefined;
@@ -76,7 +72,9 @@
     onJobRemoved: (jobId) => dropTask(jobId),
     // Files outside the accept surface (often empty MIME on Windows) — visible notice
     onRejected: (fileName) =>
-      toast.error(`无法识别 ${fileName} 的文件类型`, { description: '仅支持图片和视频文件' }),
+      toast.error(fmt(copy.upload.unknownType, { fileName }), {
+        description: copy.upload.acceptHint,
+      }),
   });
 
   let uploadTasks = $state<Map<string, PipelineTaskSnapshot>>(new Map());
@@ -111,7 +109,7 @@
       .catch(() => undefined);
   }
 
-  // ---- Optimistic upload entries (contract: waterfall during upload) ----------
+  // ---- Optimistic upload entries ----
   // Transcode done → insert at the top under a "curtain" mask that pulls up with
   // progress; failure → full mask + retry icon; /sync drops it by sha256 (server wins).
   let nextTempId = -1;
@@ -141,7 +139,7 @@
       if (id === undefined) continue;
       // Failed transcodes have no meta: fall back to the probed source dimensions
       // so the failure card keeps the real aspect ratio (placeholder 800×600 only
-      // when probing also failed) — the contract wants a visible failure mark
+      // when probing also failed)
       const probed = probedSizeByJob.get(t.jobId);
       const meta = t.meta ?? {
         width: probed?.width ?? 800,
@@ -177,8 +175,7 @@
       } else if (t.phase === 'failed') {
         // Transcode failure (no meta) still gets a failure mask — retry must not
         // depend on a successful transcode. The translated reason rides along so
-        // the card can say WHY (timeout / oversize / codec) instead of a bare
-        // "upload failed" that hides every cause behind the same words.
+        // the card can say WHY instead of a bare "upload failed".
         m.set(id, {
           failed: true,
           error: translateTaskError(t.error, {
@@ -193,10 +190,8 @@
   });
 
   // After /sync the real entries land: drop matching optimistic entries by sha256.
-  // Only terminal phases qualify — an 'uploading' snapshot already carries the sha,
-  // and deleting on it would flicker the card mid-flight (re-added on 'done').
-  // 'duplicate' rows always go: the photo exists (or arrives via /sync), and a
-  // sha absent from the store would otherwise linger forever.
+  // Only terminal phases qualify — deleting on 'uploading' would flicker the card
+  // mid-flight. 'duplicate' rows always go, or a sha absent from the store lingers.
   $effect(() => {
     const shas = new Set(store.photos.map((p) => p.sha256));
     for (const t of uploadTasks.values()) {
@@ -230,14 +225,10 @@
   let multiMode = $state(false);
   let initialized = $state(false);
 
-  // Layout settings (from SettingsPanel)
-  let layout = $state<LayoutSettings>({
-    dir: 'v',
-    strategy: 'sequential',
-    band: 320,
-    gap: 12,
-  });
-  // Filter settings (from SettingsPanel; used to filter the waterfall)
+  // Layout settings (from SettingsPanel). Seeded from the same factory defaults the
+  // panel persists against, so the first frame cannot disagree with a stored value.
+  let layout = $state<LayoutSettings>(defaultSettings().layout);
+  // Filter settings (from SettingsPanel; drives the waterfall filter)
   let filters = $state<FilterSettings>(defaultFilterSettings());
   let filterCount = $state(0);
   let resetToken = $state(0);
@@ -256,11 +247,8 @@
 
   let bootstrapping = false;
 
-  /**
-   * Inbound verification state: after a 401 the captcha renders centered in the empty
-   * waterfall (no overlay, no failure UI — Turnstile retries itself). `done` = token in;
-   * keep the node until the iframe handshake ends or the widget dangles.
-   */
+  /** Inbound verification: after a 401 the captcha renders centered in the empty
+   *  waterfall; `done` = token in, kept until the handshake ends. */
   type VerifyState = 'idle' | 'loading' | 'done';
   let verifyState = $state<VerifyState>('idle');
   let turnstileEl = $state<HTMLDivElement | undefined>(undefined);
@@ -315,26 +303,34 @@
   // that the `initialized` write triggers.)
   $effect(() =>
     pipeline.onTask((t) => {
-      // Refresh replay / cross-tab echo: a done/duplicate job whose photo already
-      // landed in the store must not resurrect an optimistic card (double flash).
+      // Done/duplicate echo whose photo already landed must not resurrect an
+      // optimistic card, but an existing row still drops — otherwise it freezes at
+      // its last stage (the cleanup effect below only scans done/duplicate).
       if (
         (t.phase === 'done' || t.phase === 'duplicate') &&
         t.sha256 &&
         store.photos.some((p) => p.sha256 === t.sha256)
-      )
+      ) {
+        if (uploadTasks.has(t.jobId)) dropTask(t.jobId);
         return;
+      }
       // Duplicate against a sha not (yet) in the store: brief panel row, toast, and
       // the cleanup effect drops it — no silent nothing, no lingering row.
       if (t.phase === 'duplicate' && t.fileName) {
-        toast.info(`${t.fileName} 与已有照片重复`, { description: '已跳过上传' });
+        toast.info(fmt(copy.upload.duplicate, { fileName: t.fileName }), {
+          description: copy.upload.duplicateSkipped,
+        });
       }
       // Album upload failure: surface a toast so the user notices even if the
       // failure card scrolled out of view. Editor failures have inline UI.
       if (t.phase === 'failed' && t.purpose === 'album' && !toastedFailures.has(t.jobId)) {
         toastedFailures.add(t.jobId);
-        toast.error(`${t.fileName || '照片'} 上传失败`, {
-          description: translateTaskError(t.error, { sha256: t.sha256 }),
-        });
+        toast.error(
+          fmt(copy.upload.failed, { fileName: t.fileName || copy.upload.defaultFileName }),
+          {
+            description: translateTaskError(t.error, { sha256: t.sha256 }),
+          },
+        );
       }
       // Optimistic tempIds are assigned here — both pendingPhotos and uploadOverlays
       // deriveds read them; callbacks run before any derived evaluates, so order is safe
@@ -348,8 +344,7 @@
     }),
   );
 
-  // Photo mark / delete: the store does the local optimistic update + submits the
-  // op (contract: all writes go through the op-log)
+  // Photo mark / delete: the store does the local optimistic update + submits the op
   function handleLike(photo: Photo) {
     store.toggleMark(photo.id, 'like');
   }
@@ -375,11 +370,8 @@
     store.setMarkMany(real, 'dislike', false);
     store.setMarkMany(real, 'report', false);
   }
-  /**
-   * Downloads go through core/download: single files as {id36}.{ext}, multiple
-   * files packed into download.zip (contract: "Download"), numbered in current
-   * visible order.
-   */
+  /** Downloads go through core/download: single files as {id36}.{ext}, multiple
+   *  files packed into download.zip, numbered in current visible order. */
   async function handleDownloadSelected(ids: number[]) {
     const picked = visiblePhotos.filter((p) => ids.includes(p.id));
     if (picked.length === 0) return;
@@ -464,7 +456,7 @@
     }
     return a;
   }
-  /** Top-bar "Random" clicked again → re-shuffle (contract: re-shuffle every click, Fisher-Yates). */
+  /** Top-bar "Random" clicked again → re-shuffle (Fisher-Yates, every click). */
   function handleReshuffle() {
     randomOrder = shuffle(store.photos.map((p) => p.id));
     sortKey = 'random';
@@ -498,8 +490,7 @@
     void engine.sync();
   }
 
-  // Announcement ops: react / vote / feedback → op-log (spec: all writes go through
-  // the op-log → /sync pipeline)
+  // Announcement ops: react / vote / feedback → op-log → /sync pipeline
   function handleReact(annId: number, emoji: string | null) {
     store.react(annId, emoji);
   }
@@ -522,7 +513,7 @@
 
 <div class="flex h-screen overflow-hidden bg-background">
   <!-- Left Sidebar (Settings) -->
-  <OverlaySidebar bind:open={leftOpen} side="left" title="设置">
+  <OverlaySidebar bind:open={leftOpen} side="left" title={copy.sidebar.settingsTitle}>
     {#snippet icon()}
       <SettingsIcon class="size-5 text-primary" />
     {/snippet}
@@ -572,9 +563,8 @@
       {/if}
 
       <!-- Uploads must stay visible even on an empty album: the first upload of a
-           new account would otherwise land in this branch with nowhere to render,
-           and a failed first upload had no retry card at all (contract: failures
-           are never silently dropped). -->
+           new account would land in this branch with nowhere to render, and a
+           failed first upload needs its retry card. -->
       {#if visiblePhotos.length === 0 && pendingPhotos.length === 0}
         <div
           class="flex flex-col items-center justify-center py-24 text-center"
@@ -596,10 +586,10 @@
             </svg>
           </div>
           <p class="text-lg font-medium tracking-[-0.02em] text-foreground/85">
-            {store.photos.length === 0 ? '还没有照片' : '没有符合筛选的照片'}
+            {store.photos.length === 0 ? copy.gallery.empty : copy.gallery.emptyFiltered}
           </p>
           <p class="mt-1.5 text-sm text-muted-foreground">
-            {store.photos.length === 0 ? '点击右上角上传你的第一张照片' : '试试调整筛选条件'}
+            {store.photos.length === 0 ? copy.gallery.emptyHint : copy.gallery.emptyFilteredHint}
           </p>
         </div>
       {:else}
@@ -630,7 +620,7 @@
   </div>
 
   <!-- Right Sidebar (Announcements) -->
-  <OverlaySidebar bind:open={rightOpen} side="right" title="公告">
+  <OverlaySidebar bind:open={rightOpen} side="right" title={copy.sidebar.announcementsTitle}>
     {#snippet icon()}
       <Megaphone class="size-5 text-primary" />
     {/snippet}
@@ -654,34 +644,6 @@
     theme="dark"
     richColors
     offset={{ bottom: '1rem', left: '1rem' }}
-    toastOptions={{
-      style: [
-        // Surface and border use site tokens; richColors' four states tint only the
-        // border and icon colors
-        '--normal-bg: var(--color-popover)',
-        '--normal-bg-hover: var(--color-surface-top)',
-        '--normal-border: var(--color-border)',
-        '--normal-border-hover: var(--color-primary)',
-        '--normal-text: var(--color-foreground)',
-        '--success-bg: var(--color-popover)',
-        '--success-border: rgba(16, 185, 129, 0.45)',
-        '--success-text: var(--color-success)',
-        '--info-bg: var(--color-popover)',
-        '--info-border: rgba(34, 211, 238, 0.45)',
-        '--info-text: var(--color-primary)',
-        '--warning-bg: var(--color-popover)',
-        '--warning-border: rgba(245, 158, 11, 0.45)',
-        '--warning-text: var(--color-warning)',
-        '--error-bg: var(--color-popover)',
-        '--error-border: rgba(244, 63, 94, 0.45)',
-        '--error-text: var(--color-destructive)',
-        '--border-radius: 14px',
-        '--width: min(20rem, calc(100vw - 2rem))',
-        'padding: 11px 14px',
-        'font-family: "Inter", "Noto Sans SC", system-ui, -apple-system, sans-serif',
-        'box-shadow: var(--shadow-lg)',
-        'backdrop-filter: blur(12px)',
-      ].join(';'),
-    }}
+    {toastOptions}
   />
 </div>

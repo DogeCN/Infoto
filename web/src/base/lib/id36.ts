@@ -1,6 +1,5 @@
 // id36 — autoincrement id <-> base-36 string (0-9a-z), pure functions.
-// External media id representation (spec: "media ID and address strategy"):
-// 7 -> "7", 35 -> "z", 36 -> "10".
+// External media id representation: 7 -> "7", 35 -> "z", 36 -> "10".
 
 /** Numeric id -> base-36 string. Throws on negative / non-integer input. */
 export function toId36(id: number): string {
@@ -15,7 +14,7 @@ export function fromId36(s: string): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
-/** Short media URL for off-site scenarios: `{origin}/l/{id36}` (spec). */
+/** Short media URL for off-site scenarios: `{origin}/l/{id36}`. */
 export function proxyUrl(origin: string, id: number): string {
   return `${origin}/l/${toId36(id)}`;
 }

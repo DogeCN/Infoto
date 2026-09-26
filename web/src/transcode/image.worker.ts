@@ -1,6 +1,6 @@
 // Image transcode kernel — imported as a module by the SharedWorker and executed on the
-// SharedWorker thread (spec: image transcode happens in the SharedWorker, not a nested
-// DedicatedWorker). createImageBitmap → OffscreenCanvas → WebP quality 0.95.
+// SharedWorker thread rather than a nested DedicatedWorker.
+// createImageBitmap → OffscreenCanvas → WebP quality 0.95.
 
 import { WEBP_QUALITY } from '$base/upload/pipeline';
 
@@ -19,9 +19,7 @@ export interface ImageTranscodeErr {
 export type ImageTranscodeResult = ImageTranscodeOk | ImageTranscodeErr;
 
 /**
- * Image → WebP. A non-`image/webp` blob.type means the environment does not
- * support it — reject the upload (contract mandate). Unparsable sources and
- * zero dimensions are rejected too.
+ * Image → WebP: a non-`image/webp` blob.type means the environment lacks WebP support, so the upload is rejected; unparsable sources and zero dimensions are rejected too.
  */
 export async function transcodeImage(file: Blob): Promise<ImageTranscodeResult> {
   let bitmap: ImageBitmap;

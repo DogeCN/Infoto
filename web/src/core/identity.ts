@@ -1,23 +1,17 @@
-// Turnstile first-entry flow (spec: "identity and cookies"):
-// explicit rendering (theme dark) → the token rides exactly one first /sync →
-// afterwards Turnstile never appears in any flow again.
+// Turnstile first-entry flow: explicit rendering (theme dark) → the token rides
+// exactly one first /sync → afterwards Turnstile never appears in any flow again.
 
 import { TurnstileRequiredError, postSync } from './api/syncClient';
 import type { Op, SyncResponse } from '$shared/types';
 
 const TURNSTILE_SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
 
-/** Dev fallback site key (Cloudflare's always-passing test key). */
-const DEV_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined;
-
 export interface TurnstileFlowDeps {
   /** Injected for unit tests and E2E. */
   postSyncFn?: typeof postSync;
-  /**
-   * Full token-acquisition strategy. The default builds its own full-screen overlay
-   * (used when there is no UI context: unit tests, scripted calls); the product UI
-   * injects its own implementation that puts the CAPTCHA into an existing empty state.
-   */
+  /** Full token-acquisition strategy. The default builds its own full-screen
+   * overlay (no UI context: unit tests, scripted calls); the product UI injects
+   * its own implementation that puts the CAPTCHA into an existing empty state. */
   requestToken?: (siteKey: string) => Promise<string>;
 }
 
@@ -39,7 +33,7 @@ let scriptPromise: Promise<TurnstileApi> | null = null;
 
 function loadTurnstile(): Promise<TurnstileApi> {
   if (scriptPromise) return scriptPromise;
-  scriptPromise = new Promise((resolve, reject) => {
+  const promise = new Promise<TurnstileApi>((resolve, reject) => {
     const w = window as unknown as { turnstile?: TurnstileApi };
     if (w.turnstile) return resolve(w.turnstile);
     const s = document.createElement('script');
@@ -52,14 +46,17 @@ function loadTurnstile(): Promise<TurnstileApi> {
     s.onerror = () => reject(new Error('turnstile script load failed'));
     document.head.appendChild(s);
   });
-  return scriptPromise;
+  scriptPromise = promise;
+  // A failed load must not poison the cache: the next attempt retries the script.
+  promise.catch(() => {
+    if (scriptPromise === promise) scriptPromise = null;
+  });
+  return promise;
 }
 
-/**
- * Id of the widget rendered but not yet disposed. Turnstile keeps internal polling
+/** Id of the widget rendered but not yet disposed. Turnstile keeps internal polling
  * timers, so removing the DOM node alone leaves a dangling widget (console spam plus
- * iframe postMessage errors) — call turnstile.remove(id) first.
- */
+ * iframe postMessage errors) — call turnstile.remove(id) first. */
 let activeWidgetId: string | null = null;
 
 /** Dispose the current widget (idempotent). */
@@ -78,17 +75,13 @@ export async function disposeTurnstile(): Promise<void> {
 /** Fallback timeout when Turnstile gives no callback: a stuck widget must not stall first-run onboarding. */
 const TURNSTILE_TIMEOUT_MS = 15_000;
 
-/**
- * Wait window before disposing the widget. Right after the token arrives the Turnstile
- * iframe's final handshake is still in flight, so an immediate remove posts into a
- * torn-down window (target origin mismatch); the DOM node can only go after dispose.
- */
+/** Wait window before disposing the widget. Right after the token arrives the
+ * Turnstile iframe's final handshake is still in flight, so an immediate remove
+ * posts into a torn-down window (target origin mismatch); the node goes only after dispose. */
 export const TURNSTILE_DISPOSE_DELAY_MS = 800;
 
-/**
- * Render Turnstile explicitly and wait for the token. Rejects on timeout when the
- * widget is stuck (iframe blocked or never loaded) so callers can take the fallback path.
- */
+/** Render Turnstile explicitly and wait for the token. Rejects on timeout when the
+ * widget is stuck (iframe blocked or never loaded) so callers can take the fallback path. */
 export async function renderTurnstile(
   siteKey: string,
   container: HTMLElement,
@@ -117,11 +110,9 @@ export async function renderTurnstile(
   });
 }
 
-/**
- * Default token strategy: a self-built full-screen overlay, used only when there is
- * no UI context (unit tests, scripted calls). `App.svelte` injects its own implementation
- * that puts the CAPTCHA into the waterfall's empty state, avoiding a full-app mask.
- */
+/** Default token strategy: a self-built full-screen overlay, used only when there
+ * is no UI context (unit tests, scripted calls). `App.svelte` injects its own
+ * implementation that puts the CAPTCHA into the waterfall's empty state. */
 async function overlayRequestToken(siteKey: string): Promise<string> {
   const container = document.createElement('div');
   container.id = 'infoto-turnstile';
@@ -149,11 +140,9 @@ export interface IdentityBootstrapResult {
   firstEntry: boolean;
 }
 
-/**
- * First entry = one Turnstile check + two /sync calls; with a valid cookie (no 401)
+/** First entry = one Turnstile check + two /sync calls; with a valid cookie (no 401)
  * the snapshot returns directly. A token is fetched only on 401 turnstile_required —
- * the HttpOnly uuid cookie is unreadable client-side, so /sync must always be probed first.
- */
+ * the HttpOnly uuid cookie is unreadable client-side, so /sync must always be probed first. */
 export async function ensureIdentity(
   ops: Op[] = [],
   deps: TurnstileFlowDeps = {},
@@ -167,8 +156,10 @@ export async function ensureIdentity(
     if (!(e instanceof TurnstileRequiredError)) throw e;
     serverSiteKey = e.turnstileSiteKey;
   }
-  const siteKey = serverSiteKey ?? DEV_SITE_KEY ?? null;
-  if (!siteKey) throw new Error('turnstile_required but no site key');
+  // The server owns the key (it sends it in the 401 body); a missing one is a
+  // configuration error and must fail loudly, never be papered over by a build-time key.
+  if (!serverSiteKey) throw new Error('turnstile_required but no site key');
+  const siteKey = serverSiteKey;
   const requestToken = deps.requestToken ?? overlayRequestToken;
   const token = await requestToken(siteKey);
   // the token rides exactly one first /sync

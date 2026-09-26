@@ -1,26 +1,19 @@
 <script lang="ts">
-  // Reactive sort pill (spec: "custom component list" / "home page"): three-segment selector —
-  // newest / hottest / random, icon and text diff with state, label hidden when narrow with a
-  // native title for the name (contract: no DropdownMenu fallback). SegmentedControl provides the visuals and the sliding pill; this component owns only the domain logic (per-item direction, random reshuffle).
-  import {
-    ArrowDownWideNarrow,
-    ArrowUpWideNarrow,
-    Flame,
-    Snowflake,
-    Shuffle,
-  } from '@lucide/svelte';
+  // Three-segment sort selector: newest / hottest / random, icon and text diff with
+  // state, label hidden when narrow with a native title for the name. SegmentedControl
+  // provides the visuals; this component owns the domain logic (per-item direction, random reshuffle).
+  import { Clock4, Clock10, Flame, Snowflake, Shuffle } from '@lucide/svelte';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import type { SegmentedItem } from '$lib/components/SegmentedControl.svelte';
+  import { copy } from '$shared/copy';
 
   export type SortKey = 'latest' | 'hottest' | 'random';
 
   interface Props {
     sortKey?: SortKey;
-    /**
-     * The direction each sort item **remembers for itself** (newest↔oldest, hottest↔coldest).
-     * Passing only the active direction would revert inactive items to default labels when you
-     * switch away, jumping to the real direction only on the way back (a visual glitch).
-     */
+    /** The direction each sort item remembers for itself (newest↔oldest, hottest↔coldest):
+     *  with only the active direction passed, inactive items revert to default labels on
+     *  switch-away and jump to the real direction only on the way back. */
     dirs?: Partial<Record<SortKey, boolean>>;
     onChange?: (key: SortKey) => void;
     onReshuffle?: () => void;
@@ -29,21 +22,22 @@
   let { sortKey = 'latest', dirs = {}, onChange, onReshuffle }: Props = $props();
 
   const SORTS: Array<{ key: SortKey; label: string }> = [
-    { key: 'latest', label: '最新' },
-    { key: 'hottest', label: '最热' },
-    { key: 'random', label: '随机' },
+    { key: 'latest', label: copy.sort.latest },
+    { key: 'hottest', label: copy.sort.hottest },
+    { key: 'random', label: copy.sort.random },
   ];
 
   function iconFor(key: SortKey, asc: boolean) {
-    if (key === 'latest') return asc ? ArrowUpWideNarrow : ArrowDownWideNarrow;
+    // Newest = clock hand at 4 o'clock, oldest = hand at 10 o'clock (opposite direction).
+    if (key === 'latest') return asc ? Clock10 : Clock4;
     if (key === 'hottest') return asc ? Snowflake : Flame;
     return Shuffle;
   }
 
   function labelFor(key: SortKey, asc: boolean): string {
-    if (key === 'latest') return asc ? '最旧' : '最新';
-    if (key === 'hottest') return asc ? '最冷' : '最热';
-    return '随机';
+    if (key === 'latest') return asc ? copy.sort.oldest : copy.sort.latest;
+    if (key === 'hottest') return asc ? copy.sort.coldest : copy.sort.hottest;
+    return copy.sort.random;
   }
 
   // Labels/icons diff with dirs, fed to the generic pill.
@@ -59,17 +53,12 @@
   {items}
   value={sortKey}
   responsiveHideLabel
-  ariaLabel="排序方式"
+  ariaLabel={copy.sort.ariaLabel}
   onChange={(k) => onChange?.(k)}
   onReselect={(k) => {
-    if (k === 'random') {
-      // Random item: clicking again = reshuffle (the short-circuit branch of the old 24b1bf2 pick)
-      onReshuffle?.();
-    } else {
-      // Newest/hottest: clicking again flips direction (newest↔oldest / hottest↔coldest). The old
-      // version routed "re-click active" through onChange, where the parent's onSortChange flipped
-      // direction in its key===sortKey branch; the refactor dropped that path, so clicks couldn't flip.
-      onChange?.(k);
-    }
+    // Re-clicking the active tab: random reshuffles, newest/hottest flip direction
+    // (the parent owns the direction state and flips it in its onChange branch).
+    if (k === 'random') onReshuffle?.();
+    else onChange?.(k);
   }}
 />

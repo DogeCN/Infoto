@@ -9,15 +9,13 @@
     Video,
     ArrowDownToLine,
     ArrowRightToLine,
-    ListOrdered,
-    AlignHorizontalDistributeCenter,
+    Rows3,
+    Columns3,
     MoveHorizontal,
-    UnfoldHorizontal,
+    Ruler,
     RotateCcw,
-    X,
     Flame,
     HardDrive,
-    SlidersHorizontal,
     LayoutGrid,
     Funnel,
   } from '@lucide/svelte';
@@ -28,7 +26,8 @@
   import {
     defaultSettings,
     defaultFilterSettings,
-    normalizeSettings,
+    loadSettings,
+    saveSettings,
     countActiveFilters,
     isFilterable,
     metricRange,
@@ -42,6 +41,7 @@
   import SingleSlider from './SingleSlider.svelte';
   import Tooltip from './Tooltip.svelte';
   import { toast } from 'svelte-sonner';
+  import { copy } from '$shared/copy';
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
@@ -50,26 +50,6 @@
     onFilterCount?: (count: number) => void;
     /** Increment to trigger "reset all filters" (top-bar badge). */
     resetToken?: number;
-  }
-
-  const STORAGE_KEY = 'infoto-settings';
-
-  function loadSettings(): Settings {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return normalizeSettings(JSON.parse(raw));
-    } catch {
-      /* noop */
-    }
-    return defaultSettings();
-  }
-
-  function saveSettings(s: Settings) {
-    const toSave = {
-      ...s,
-      filters: { ...s.filters, types: Array.from(s.filters.types) },
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
   }
 
   let { onSettingsChange, photos = [], onFilterCount, resetToken = 0 }: Props = $props();
@@ -164,9 +144,9 @@
 
   let shakingType = $state<MediaType | null>(null);
   const TYPE_LABELS: Record<number, string> = {
-    0: '图片',
-    1: '动图',
-    2: '视频',
+    0: copy.settings.typeImage,
+    1: copy.settings.typeAnimated,
+    2: copy.settings.typeVideo,
   };
 
   function toggleType(t: MediaType) {
@@ -175,7 +155,7 @@
       if (next.size === 1) {
         // The last type stays: shake the button, flash destructive, explain via toast.
         shakingType = t;
-        toast.error('至少保留一个类型');
+        toast.error(copy.settings.keepOneType);
         return;
       }
       next.delete(t);
@@ -208,12 +188,6 @@
   function setGap(v: number) {
     settings = { ...settings, layout: { ...settings.layout, gap: v } };
   }
-
-  export function getSettings(): Settings {
-    return settings;
-  }
-
-  /** Section title row with the per-section reset control. */
 </script>
 
 <!-- pb-4: the scroll container has no bottom padding (see OverlaySidebar) -->
@@ -221,8 +195,10 @@
   <!-- Filters section -->
   <section>
     <div class="flex items-center justify-between px-1">
-      <h3 class="flex items-center gap-1.5 text-sm font-medium"><Funnel class="size-3.5" />筛选</h3>
-      <Tooltip text="重置筛选" side="bottom">
+      <h3 class="flex items-center gap-1.5 text-sm font-medium">
+        <Funnel class="size-3.5" />{copy.settings.filterSection}
+      </h3>
+      <Tooltip text={copy.settings.resetFilters} side="bottom">
         <button
           type="button"
           class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
@@ -237,7 +213,7 @@
       <!-- Ranges: rows of icon + dual-thumb slider -->
       <div class="space-y-3.5">
         {#if noFilterableRange}
-          <p class="text-xs text-muted-foreground">上传照片后可按数值筛选</p>
+          <p class="text-xs text-muted-foreground">{copy.settings.hint}</p>
         {:else}
           {#each RANGE_KEYS as key (key)}
             {@const full = metricRange(photos, key)}
@@ -257,7 +233,6 @@
                     max={full[1]}
                     value={rangeValue(key)}
                     scale={key === 'size' ? 'log' : 'linear'}
-                    {active}
                     disabled={!filterable}
                     format={key === 'size' ? compactSize : (v) => String(v)}
                     onChange={(v) => setRange(key, v)}
@@ -272,25 +247,25 @@
       <!-- Ownership: four tri-state toggles -->
       <div class="grid grid-cols-2 gap-2">
         <TriStateToggle
-          label="我上传的"
+          label={copy.settings.ownedByMe}
           icon={Upload}
           state={settings.filters.ownedByMe}
           onCycle={() => cycleTriState('ownedByMe')}
         />
         <TriStateToggle
-          label="我喜欢的"
+          label={copy.settings.likedByMe}
           icon={ThumbsUp}
           state={settings.filters.likedByMe}
           onCycle={() => cycleTriState('likedByMe')}
         />
         <TriStateToggle
-          label="我不喜欢的"
+          label={copy.settings.dislikedByMe}
           icon={ThumbsDown}
           state={settings.filters.dislikedByMe}
           onCycle={() => cycleTriState('dislikedByMe')}
         />
         <TriStateToggle
-          label="我请求删除的"
+          label={copy.settings.reportedByMe}
           icon={Flag}
           state={settings.filters.reportedByMe}
           onCycle={() => cycleTriState('reportedByMe')}
@@ -360,8 +335,10 @@
   <!-- Layout section -->
   <section>
     <div class="flex items-center justify-between px-1">
-      <h3 class="flex items-center gap-1.5 text-sm font-medium"><LayoutGrid class="size-3.5" />布局</h3>
-      <Tooltip text="重置布局" side="bottom">
+      <h3 class="flex items-center gap-1.5 text-sm font-medium">
+        <LayoutGrid class="size-3.5" />{copy.settings.layoutSection}
+      </h3>
+      <Tooltip text={copy.settings.resetLayout} side="bottom">
         <button
           type="button"
           class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
@@ -386,7 +363,7 @@
           onclick={() => setDir('v')}
         >
           <ArrowDownToLine class="size-3.5" />
-          <span class="truncate">纵向</span>
+          <span class="truncate">{copy.settings.dirVertical}</span>
         </button>
         <button
           type="button"
@@ -399,20 +376,7 @@
           onclick={() => setDir('h')}
         >
           <ArrowRightToLine class="size-3.5" />
-          <span class="truncate">横向</span>
-        </button>
-        <button
-          type="button"
-          class={cn(
-            'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-            settings.layout.strategy === 'sequential'
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-          )}
-          onclick={() => setStrategy('sequential')}
-        >
-          <ListOrdered class="size-3.5" />
-          <span class="truncate">顺序</span>
+          <span class="truncate">{copy.settings.dirHorizontal}</span>
         </button>
         <button
           type="button"
@@ -424,8 +388,21 @@
           )}
           onclick={() => setStrategy('shortest')}
         >
-          <AlignHorizontalDistributeCenter class="size-3.5" />
-          <span class="truncate">最短</span>
+          <Columns3 class="size-3.5" />
+          <span class="truncate">{copy.settings.strategyEqualWidth}</span>
+        </button>
+        <button
+          type="button"
+          class={cn(
+            'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
+            settings.layout.strategy === 'sequential'
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+          )}
+          onclick={() => setStrategy('sequential')}
+        >
+          <Rows3 class="size-3.5" />
+          <span class="truncate">{copy.settings.strategyEqualHeight}</span>
         </button>
       </div>
 
@@ -436,7 +413,7 @@
         step={10}
         value={settings.layout.band}
         defaultValue={LAYOUT_DEFAULTS.band}
-        icon={UnfoldHorizontal}
+        icon={Ruler}
         format={(v) => `${v}px`}
         onChange={setBand}
       />

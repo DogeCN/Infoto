@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UploadPipeline, type PipelineTaskSnapshot } from '../../src/transcode/pipeline';
 
-// Editor image uploads ride the same SharedWorker pipeline as the waterfall
-// (queued → transcoding → hashing → uploading). These tests pin that the page
-// side actually surfaces those stages instead of swallowing them, and that a
-// failure is translated against the leg it happened on.
+// Editor image uploads ride the same SharedWorker pipeline as the waterfall. These
+// tests pin that the page side surfaces those stages instead of swallowing them,
+// and that a failure is translated against the leg it happened on.
 
 class FakePort {
   sent: Array<Record<string, unknown>> = [];

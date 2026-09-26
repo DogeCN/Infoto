@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Emoji picker popover (spec: "custom component list") — eight fixed emoji.
+  // Emoji picker popover — eight fixed emoji.
   import { EMOJI_SET } from '../../core/reactions';
 
   interface Props {

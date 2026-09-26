@@ -4,6 +4,7 @@
   // mid-rotation. A manual sync with zero pending ops enters the spin state as well.
   import { RefreshCw } from '@lucide/svelte';
   import Tooltip from './Tooltip.svelte';
+  import { copy, fmt } from '$shared/copy';
 
   interface Props {
     pendingCount?: number;
@@ -47,10 +48,12 @@
   });
 </script>
 
-<Tooltip text="同步">
+<Tooltip text={copy.sync.button}>
   <button
     type="button"
-    aria-label={pendingCount > 0 ? `同步（${pendingCount} 条待发送）` : '同步'}
+    aria-label={pendingCount > 0
+      ? fmt(copy.sync.pendingCount, { count: pendingCount })
+      : copy.sync.button}
     aria-busy={isSyncing}
     class="relative flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground {isSyncing
       ? 'text-primary'

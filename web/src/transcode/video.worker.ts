@@ -1,4 +1,4 @@
-// Video / GIF transcode DedicatedWorker (contract: WebCodecs exists only in Window and DedicatedWorker — the SharedWorker global has no Worker constructor, so video runs here).
+// Video / GIF transcode DedicatedWorker — WebCodecs exists only in Window and DedicatedWorker, and the SharedWorker global has no Worker constructor, so video runs here.
 // Video: Mediabunny conversion, VP9 quantizer 30 CQ → VP8 fallback 'high' (auto-downgrades when probing fails), Opus 128kbps, resolution / framerate / channels preserved.
 // GIF: ImageDecoder frames → VideoSampleSource (drives VideoEncoder), no audio track; the audio-track probe decides type (0/1/2). postMessage carries no transfer list (Blob is not Transferable).
 

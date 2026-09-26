@@ -1,12 +1,12 @@
 <script lang="ts">
   import { Megaphone, MessageSquare, Plus } from '@lucide/svelte';
   import type { Announcement } from '$shared/types';
+  import { copy } from '$shared/copy';
   import { Toaster, toast } from 'svelte-sonner';
   import ErrorPage from '$lib/components/ErrorPage.svelte';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
-  import SyncButton from '$lib/components/SyncButton.svelte';
   import { toastOptions } from '$lib/toastOptions';
-  import { getEngine } from '../../core/sync/engine';
+  import { getEngine } from '../../core/engine';
   import { TurnstileRequiredError } from '../../core/api/syncClient';
   import { createAppStore } from '../../state/appStore.svelte';
   import { UploadPipeline } from '../../transcode/pipeline';
@@ -32,8 +32,8 @@
       const now = Date.now();
       if (now - syncErrorToastAt > 10_000) {
         syncErrorToastAt = now;
-        toast.error('同步失败', {
-          description: '改动已排队，稍后自动重试；也可点击同步按钮手动重试',
+        toast.error(copy.sync.failed, {
+          description: copy.sync.dataMayBeStale,
         });
       }
     },
@@ -57,8 +57,10 @@
     if (initialized) return;
     initialized = true;
     pipeline.start();
+    // No engine.install(): the admin page creates no /sync ops (every write is an
+    // immediate admin-API call), so the pagehide dump has nothing to flush. init()
+    // alone pulls the one snapshot the page needs.
     engine.init().catch(console.error);
-    engine.install();
   });
 
   $effect(() =>
@@ -78,12 +80,9 @@
 
   const isRoot = $derived(store.selfId === 0);
 
-  // Identity gate. selfId === -1 means "unknown", NOT "anonymous": on a cold visit
-  // (no cached self-id) /sync is still in flight, and an unconditional redirect
-  // raced it — a valid root got bounced home whenever /sync answered slowly.
-  // Redirect home only once identity is CONFIRMED absent: the engine saw a 401
-  // (Turnstile required, handled here as "not authed") or /sync stayed unanswered
-  // after a grace period. replace() so Back skips /admin.
+  // Identity gate: selfId === -1 means "unknown", NOT "anonymous" — on a cold
+  // visit /sync is still in flight, so redirect home only once identity is
+  // CONFIRMED absent (401 or grace period). replace() so Back skips /admin.
   let identityRejected = false;
   $effect(() => {
     if (store.selfId !== -1) return;
@@ -148,10 +147,10 @@
     store.resetAfterImport();
     try {
       const result = await engine.sync();
-      if (result.ok) return { ok: true, message: '数据已导入并同步' };
-      return { ok: false, message: '数据已导入，但同步失败，请稍后重试' };
+      if (result.ok) return { ok: true, message: copy.migrate.importSynced };
+      return { ok: false, message: copy.migrate.importSyncFailed };
     } catch {
-      return { ok: false, message: '数据已导入，但同步失败，请稍后重试' };
+      return { ok: false, message: copy.migrate.importSyncFailed };
     }
   }
 </script>
@@ -165,17 +164,12 @@
         <!-- Segmented control: reuses the shared SegmentedControl (sliding-pill animation matches the home SortTabs exactly) -->
         <SegmentedControl
           items={[
-            { value: 'announcements', label: '公告', icon: Megaphone },
-            { value: 'feedback', label: '建议', icon: MessageSquare },
+            { value: 'announcements', label: copy.admin.tabs.announcements, icon: Megaphone },
+            { value: 'feedback', label: copy.admin.tabs.feedback, icon: MessageSquare },
           ]}
           value={activeTab}
-          ariaLabel="管理页分区"
+          ariaLabel={copy.admin.sectionLabel}
           onChange={(v) => (activeTab = v)}
-        />
-        <SyncButton
-          pendingCount={store.engineState.pending}
-          isSyncing={store.engineState.syncing}
-          onSync={() => engine.sync()}
         />
       </div>
 
@@ -185,7 +179,7 @@
           type="button"
           class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
           class:text-primary={editorOpen && editingAnnouncement === null}
-          aria-label="新增公告"
+          aria-label={copy.admin.newAnnouncement}
           aria-pressed={editorOpen && editingAnnouncement === null}
           onclick={toggleCreateAnnouncement}
         >
@@ -199,14 +193,16 @@
       {#if activeTab === 'announcements'}
         <AnnouncementList
           announcements={store.announcements}
-          saveState={store.annSave}
-          timeReference={store.lastSync?.serverTime ?? Date.now()}
           onEdit={openEditAnnouncement}
           onDelete={(id) => store.annDelete(id)}
           onReorder={handleAnnouncementReorder}
         />
       {:else}
-        <FeedbackList feedback={store.feedback} onDelete={(id) => store.fbDelete(id)} />
+        <FeedbackList
+          feedback={store.feedback}
+          onDelete={(id) => store.fbDelete(id)}
+          onReorder={(ids) => store.fbReorder(ids)}
+        />
       {/if}
     </main>
 
@@ -228,7 +224,7 @@
     <Toaster position="bottom-left" theme="dark" richColors {toastOptions} />
   </div>
 {:else if store.selfId >= 1}
-  <!-- Known non-root (confirmed by cache or /sync): equivalent to the old server-rendered 404 page -->
+  <!-- Known non-root (confirmed by cache or /sync): show the 404 page -->
   <ErrorPage code={404} />
 {/if}
 <!-- selfId === -1: redirect already triggered; render nothing this frame -->

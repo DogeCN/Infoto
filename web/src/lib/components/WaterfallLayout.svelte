@@ -17,7 +17,7 @@
 
   interface Props {
     photos: Photo[];
-    /** Pending upload entries (contract: right after info cards, before other media; excluded from sorting/filtering). */
+    /** Pending upload entries (placed right after info cards, before other media; excluded from sorting/filtering). */
     pending?: Photo[];
     /** Curtain overlays for pending entries: fraction (uploading) / failed (full cover + retry). */
     overlays?: Map<number, { fraction?: number; failed?: boolean; error?: string }>;
@@ -32,7 +32,7 @@
     selfId?: number;
     multiMode?: boolean;
     onMultiModeChange?: (v: boolean) => void;
-    // All write operations are committed upstream as ops (contract: every write goes through op-log → /sync)
+    // All write operations are committed upstream as ops (op-log → /sync)
     onLike?: (photo: Photo) => void;
     onDislike?: (photo: Photo) => void;
     onRequestDelete?: (photo: Photo) => void;
@@ -80,7 +80,7 @@
   /** Top spacing (accommodates the floating top bar; content can scroll under it for immersion). */
   let padTop = $state(80);
 
-  // Zoom (contract: desktop Ctrl+wheel / mobile pinch, 50%–200%), applied to the target band width
+  // Zoom (desktop Ctrl+wheel / mobile pinch, 50%–200%), applied to the target band width
   let zoom = $state(1);
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 2;
@@ -169,15 +169,9 @@
   );
   let photoMap = $derived(new Map(allPhotos.map((p) => [p.id, p])));
 
-  // Recompute layout when dependencies change — debounce so rapid resize / slider drag collapses
-  // into one computation per 16 ms frame instead of abort-restart per event (a freeze root cause).
-  // State writes deferred to a rAF so the sort (orderByMain) and DOM batch happen in a separate frame from the generator.
-  // Content key of the last scheduled run. Upload progress ticks rebuild the
-  // pending Photo objects (new references, same id/width/height), which used to
-  // re-enter this effect on every frame: each entry cleared the 16 ms debounce
-  // and aborted the in-flight computation, so a busy upload starved the layout
-  // and new cards never got a box. Identity churn that changes no geometry must
-  // not reschedule anything.
+  // Recompute layout when dependencies change, debounced to one computation per 16 ms frame
+  // (abort-restart per event is a freeze root cause); state writes land in a rAF. layoutKey is
+  // the last run's content key: churn that changes no geometry must not reschedule anything.
   let layoutKey = '';
 
   $effect(() => {
@@ -237,11 +231,9 @@
         }
       });
     }, 16);
-    // Deliberately no per-run cleanup: it would clear the debounce armed by the
-    // previous run, and the unchanged-key early return above never re-arms it —
-    // a progress tick would then cancel a pending layout forever. Re-arming runs
-    // on every path that actually changes the key (clearTimeout above); teardown
-    // is handled once in onDestroy.
+    // Deliberately no per-run cleanup: it would clear the debounce armed by the previous run,
+    // and the unchanged-key early return never re-arms it — a progress tick would then cancel a
+    // pending layout forever. Re-arming happens on every key change; teardown runs in onDestroy.
   });
 
   onDestroy(() => {
@@ -284,10 +276,9 @@
     }
     // Pending upload entries don't open the preview (they become visible after /sync settles)
     if (isOptimistic(photo.id) || overlays.has(photo.id)) return;
-    // The index must be resolved against the very array the Lightbox renders
-    // (`photos`), not the laid-out one (`allPhotos`): an index computed over
-    // pending + photos points one slot off for every optimistic entry and can
-    // land past the end of the preview list.
+    // The index must be resolved against the array the Lightbox renders (`photos`), not the
+    // laid-out one (`allPhotos`): an index over pending + photos points one slot off per
+    // optimistic entry and can land past the end of the preview list.
     const idx = photos.findIndex((p) => p.id === photo.id);
     if (idx < 0) return;
     lightboxIndex = idx;

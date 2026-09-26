@@ -3,8 +3,9 @@
 // APIs here: every function is runnable under Node for unit assertions.
 
 import type { Op, UploadPayload } from '$shared/types';
+import { copy, fmt } from '$shared/copy';
 
-// ---- constants (spec: "image-host upload proxy", "upload pipeline") ----------------
+// ---- constants -------------------------------------------------------------
 
 /** WebP quality for image transcoding. */
 export const WEBP_QUALITY = 0.95;
@@ -14,11 +15,9 @@ export const VP9_QUANTIZER = 30;
 export const OPUS_BITRATE = 128_000;
 /** Cloudflare request-body ceiling — artifacts above this never hit /upload. */
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-/**
- * Per-attempt upload deadline, measured as *silence*: the attempt fails only after
- * this long with no progress at all. Deliberately not a wall-clock cap — a large
- * artifact on a slow uplink keeps moving for minutes and must not be killed for it.
- */
+/** Per-attempt upload deadline, measured as *silence*: the attempt fails only after
+ *  this long with no progress at all — not a wall-clock cap, so a large artifact on
+ *  a slow uplink keeps moving for minutes. */
 export const UPLOAD_TIMEOUT_MS = 45_000;
 
 // ---- file type routing (single exit point) ----------------------------------
@@ -37,10 +36,8 @@ export interface RouteDecision {
   engine: TranscodeEngine;
 }
 
-/**
- * Single routing exit for picked files. Returns null for MIME types outside
- * the `accept` surface (`image/*,video/*`) — callers must surface an error.
- */
+/** Single routing exit for picked files. Returns null for MIME types outside
+ *  the `accept` surface (`image/*,video/*`) — callers must surface an error. */
 export function routeByMime(mime: string): RouteDecision | null {
   const m = (mime ?? '').toLowerCase().split(';')[0]!.trim();
   if (m === 'image/gif') return { kind: 'webm', engine: 'gif' };
@@ -49,18 +46,16 @@ export function routeByMime(mime: string): RouteDecision | null {
   return null;
 }
 
-/** Artifact extension implied by the kind (spec: extension implied by type). */
+/** Artifact extension implied by the kind. */
 export function artifactExt(kind: MediaKind): 'webp' | 'webm' {
   return kind === 'image' ? 'webp' : 'webm';
 }
 
 // ---- concurrency pools --------------------------------------------------------
 
-/**
- * Image pool: `clamp(2, 6, floor(hardwareConcurrency × 0.75))`;
- * missing/invalid hardwareConcurrency falls back to 4; a reported downlink
- * under 2 Mbps caps the pool at 2 (network is the bottleneck, not CPU).
- */
+/** Image pool: `clamp(2, 6, floor(hardwareConcurrency × 0.75))`; missing/invalid
+ *  hardwareConcurrency falls back to 4; a reported downlink under 2 Mbps caps the
+ *  pool at 2 (network is the bottleneck, not CPU). */
 export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: number): number {
   const cores =
     typeof hardwareConcurrency === 'number' &&
@@ -75,11 +70,9 @@ export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: numbe
   return cap;
 }
 
-/**
- * Video/GIF token pool size (spec: "architecture"): deviceMemory ≥ 8 GB → 2, < 8 GB → 1;
- * absent (Firefox/Safari) → hardwareConcurrency ≥ 8 ? 2 : 1; neither → 1. Hard cap 2 (video
- * encoding freezes low-end devices); the page reports both readings via the poolHint message.
- */
+/** Video/GIF token pool size: deviceMemory ≥ 8 GB → 2, else 1; absent (Firefox/Safari)
+ *  → hardwareConcurrency ≥ 8 ? 2 : 1; neither → 1. Hard cap 2 (video encoding freezes
+ *  low-end devices); the page reports both readings via the poolHint message. */
 export function videoPoolSize(nav: {
   deviceMemory?: unknown;
   hardwareConcurrency?: unknown;
@@ -100,11 +93,9 @@ export function isOversize(bytes: number): boolean {
 
 // ---- GIF geometry fallback ---------------------------------------------------------
 
-/**
- * Logical Screen Descriptor size from the GIF header (bytes 6–9, little-endian), used when
- * ImageDecoder's GIF track reports no codedWidth/codedHeight — some Chromium builds do this,
- * and undefined dimensions make isConfigSupported reject the config. Null for non-GIF or degenerate sizes.
- */
+/** Logical Screen Descriptor size from the GIF header (bytes 6–9, little-endian),
+ *  used when ImageDecoder's GIF track reports no codedWidth/codedHeight — undefined
+ *  dimensions make isConfigSupported reject the config. Null for non-GIF/degenerate. */
 export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: number } | null {
   if (bytes.length < 10) return null;
   // 'GIF87a' | 'GIF89a'
@@ -123,7 +114,7 @@ export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: num
   return { width, height };
 }
 
-// ---- error summary translation (fully localized, revalidation fix #4) -----------------
+// ---- error summary translation (fully localized) ----------------------------
 
 export interface TaskErrorContext {
   oversize?: boolean;
@@ -132,64 +123,62 @@ export interface TaskErrorContext {
 }
 
 const UPLOAD_ERROR_TEXT: Record<string, string> = {
-  timeout: '上传超时',
-  network_error: '网络错误',
-  // The proxy answers 401 with a JSON body, and the client prefers that body's
-  // `error` field over the status code — so the real code that reaches here is
-  // `unauthorized`, not `http_401` (which was therefore dead). Map both.
-  unauthorized: '未授权，请先通过验证',
-  http_401: '未授权，请先通过验证',
-  oversize: '产物超过 100MB，无法上传',
-  http_413: '文件过大',
+  timeout: copy.upload.errors.timeout,
+  network_error: copy.upload.errors.network,
+  // The proxy answers 401 with a JSON body whose `error` field the client prefers
+  // over the status code, so the code reaching here is `unauthorized` — map both.
+  unauthorized: copy.upload.errors.unauthorized,
+  http_401: copy.upload.errors.unauthorized,
+  oversize: copy.upload.errors.oversize,
+  http_413: copy.upload.errors.tooLarge,
 };
 
 const TRANSCODE_ERROR_TEXT: Record<string, string> = {
-  no_supported_video_codec: '不支持的编码（无可用 VP9/VP8 编码器）',
-  no_video_track: '未找到视频轨',
-  webp_encode_unsupported: '当前环境不支持 WebP 编码',
-  conversion_invalid: '无法解析该媒体格式',
-  empty_output: '转码产出为空',
-  gif_decode_failed: 'GIF 解码失败',
-  gif_dimensions_unknown: '无法确定 GIF 尺寸',
-  source_unavailable: '源文件丢失',
-  source_missing: '源文件已被清理',
-  canvas_2d_unavailable: '无法创建画布',
+  no_supported_video_codec: copy.transcode.errors.noSupportedVideoCodec,
+  no_video_track: copy.transcode.errors.noVideoTrack,
+  webp_encode_unsupported: copy.transcode.errors.webpEncodeUnsupported,
+  conversion_invalid: copy.transcode.errors.conversionInvalid,
+  empty_output: copy.transcode.errors.emptyOutput,
+  gif_decode_failed: copy.transcode.errors.gifDecodeFailed,
+  gif_dimensions_unknown: copy.transcode.errors.gifDimensionsUnknown,
+  source_unavailable: copy.transcode.errors.sourceUnavailable,
+  source_missing: copy.transcode.errors.sourceMissing,
+  canvas_2d_unavailable: copy.transcode.errors.canvas2dUnavailable,
 };
 
-/**
- * Raw engine/browser messages (mediabunny, WebCodecs, OPFS…) arrive in
- * English — match the common shapes before falling back to the generic
- * "transcode failed" + detail summary.
- */
+/** Raw engine/browser messages (mediabunny, WebCodecs, OPFS…) arrive in English —
+ *  match the common shapes before falling back to the generic "transcode failed"
+ *  + detail summary. */
 const TRANSCODE_ERROR_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/unrecognizable format|unsupported or unrecognizable/i, '无法识别的媒体格式'],
-  [/no (primary )?video track/i, '未找到视频轨'],
-  [/no.*audio.*encoder|audio.*not supported/i, '不支持的音频编码'],
-  [/encoder(?!.*supported).*error|encoding error/i, '编码器错误'],
-  [/corrupt|invalid (data|frame)|malformed/i, '文件可能已损坏'],
-  [/decode|decoder/i, '文件解码失败，可能已损坏'],
-  [/not enough memory|out of memory/i, '内存不足'],
+  [
+    /unrecognizable format|unsupported or unrecognizable/i,
+    copy.transcode.errors.unrecognizableFormat,
+  ],
+  [/no (primary )?video track/i, copy.transcode.errors.noVideoTrack],
+  [/no.*audio.*encoder|audio.*not supported/i, copy.transcode.errors.audioCodec],
+  [/encoder(?!.*supported).*error|encoding error/i, copy.transcode.errors.encoderError],
+  [/corrupt|invalid (data|frame)|malformed/i, copy.transcode.errors.corrupt],
+  [/decode|decoder/i, copy.transcode.errors.decodeFailed],
+  [/not enough memory|out of memory/i, copy.transcode.errors.outOfMemory],
 ];
 
-/**
- * Fully-Chinese, user-facing summary of one task failure. Unknown transcode
- * errors fall back to "transcode failed" with the raw detail appended.
- */
+/** Fully-Chinese, user-facing summary of one task failure. Unknown transcode
+ *  errors fall back to "transcode failed" with the raw detail appended. */
 export function translateTaskError(error: string | undefined, ctx: TaskErrorContext): string {
-  if (ctx.oversize) return '产物超过 100MB，无法上传';
+  if (ctx.oversize) return copy.upload.errors.oversize;
   const e = error ?? '';
   if (ctx.sha256) {
     // Stage 1 already succeeded → the failure is on the upload leg.
     if (UPLOAD_ERROR_TEXT[e]) return UPLOAD_ERROR_TEXT[e]!;
-    if (e.startsWith('http_')) return `上传失败（HTTP ${e.slice(5)}）`;
-    return '上传失败';
+    if (e.startsWith('http_')) return fmt(copy.upload.errors.httpFailed, { status: e.slice(5) });
+    return copy.upload.errors.failed;
   }
   const mapped = TRANSCODE_ERROR_TEXT[e];
-  if (mapped) return `转码失败：${mapped}`;
+  if (mapped) return fmt(copy.transcode.errors.summary, { detail: mapped });
   for (const [re, text] of TRANSCODE_ERROR_PATTERNS) {
-    if (re.test(e)) return `转码失败：${text}`;
+    if (re.test(e)) return fmt(copy.transcode.errors.summary, { detail: text });
   }
-  return e ? `转码失败（${e}）` : '转码失败';
+  return e ? fmt(copy.transcode.errors.withCode, { error: e }) : copy.transcode.errors.failed;
 }
 
 // ---- op construction -------------------------------------------------------------

@@ -1,4 +1,4 @@
-// Page ⇄ SharedWorker message protocol — single source of truth (contract: SharedWorker code drift risk).
+// Page ⇄ SharedWorker message protocol — the single source of truth for both sides.
 // Four message families: request (page→SW) / response (SW→page) / progress / lease. Note: Blob is not
 // Transferable — always structured-clone across workers, never put a Blob in a transfer list.
 
@@ -98,9 +98,7 @@ export interface EditorResultAckRequest {
 }
 
 /**
- * Video token pool hint: the page reports its navigator readings on connect
- * (deviceMemory is window-only — the SW cannot see it). The SW computes the
- * pool size with the base videoPoolSize() pure function.
+ * Video token pool hint: the page reports its navigator readings on connect (deviceMemory is window-only — the SW cannot see it); the SW computes the pool size with the base videoPoolSize() pure function.
  */
 export interface PoolHintRequest {
   t: 'poolHint';

@@ -1,11 +1,12 @@
 <script lang="ts">
-  // Top bar (spec: "home page"). Left: sort pill, settings icon (filter-count badge), sync
-  // icon (pending-count badge, spins while syncing); right: announcements, multi-select, upload.
+  // Top bar. Left: sort pill, settings icon (filter-count badge), sync icon
+  // (pending-count badge, spins while syncing); right: announcements, multi-select, upload.
   // Fixed full width + frosted glass, not sticky (iOS Safari has a known backdrop-filter bug).
   import { Settings, Megaphone, CheckSquare, UploadCloud, Funnel } from '@lucide/svelte';
   import SortTabs, { type SortKey } from './SortTabs.svelte';
   import SyncButton from './SyncButton.svelte';
   import { scroll } from '../../state/scroll.svelte';
+  import { copy } from '$shared/copy';
 
   interface Props {
     sortKey?: SortKey;
@@ -65,7 +66,7 @@
         class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
         class:text-primary={settingsActive}
         onclick={onSettingsClick}
-        title="设置"
+        title={copy.topbar.settings}
       >
         <Settings class="size-5" />
       </button>
@@ -88,7 +89,7 @@
       class="relative flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
       class:text-primary={announcementActive}
       onclick={onAnnouncementClick}
-      title="公告"
+      title={copy.topbar.announcements}
     >
       <Megaphone class="size-5" />
     </button>
@@ -98,7 +99,7 @@
       class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
       class:text-primary={multiSelectActive}
       onclick={onMultiSelectClick}
-      title="多选"
+      title={copy.topbar.multiSelect}
     >
       <CheckSquare class="size-5" />
     </button>
@@ -107,7 +108,7 @@
       type="button"
       class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-primary"
       onclick={onUploadClick}
-      title="上传"
+      title={copy.topbar.upload}
     >
       <UploadCloud class="size-5" />
     </button>

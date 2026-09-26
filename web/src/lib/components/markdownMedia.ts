@@ -1,7 +1,6 @@
-// Animated artifacts in Markdown: the source text only carries a URL, so the
-// artifact extension is the only signal available — the same reason the upload
-// pipeline names artifacts `.webp` / `.webm` (GIF and video/* both come out of
-// the shared pipeline as VP9 WebM).
+// Animated artifacts in Markdown: the source text only carries a URL, so the artifact
+// extension is the only signal available — the same reason the upload pipeline names
+// artifacts `.webp` / `.webm` (GIF and video/* both come out as VP9 WebM).
 
 /** True when the URL points at a WebM artifact (GIF → VP9, or real video). */
 export function isAnimatedArtifact(url: string | null | undefined): boolean {
@@ -17,12 +16,9 @@ export function isAnimatedArtifact(url: string | null | undefined): boolean {
   return path.toLowerCase().endsWith('.webm');
 }
 
-/**
- * In-place upgrade of rendered Markdown: markdown-it emits `![alt](url)` as
- * <img>, which cannot play WebM. Runs after DOMPurify, so the <video> we build
- * bypasses the sanitizer's tag allowlist — only the already-vetted src (and
- * alt) is carried over.
- */
+/** In-place upgrade of rendered Markdown: markdown-it emits `![alt](url)` as <img>,
+ *  which cannot play WebM. Runs after DOMPurify, so only the already-vetted src (and
+ *  alt) is carried over onto the <video> built outside the sanitizer's allowlist. */
 export function upgradeAnimatedMedia(root: ParentNode): void {
   for (const img of Array.from(root.querySelectorAll('img'))) {
     const src = img.getAttribute('src');

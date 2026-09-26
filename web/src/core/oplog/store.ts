@@ -1,5 +1,5 @@
-// IndexedDB op-log (spec: "/sync protocol"): append-only; 256 entries trigger a
-// sync; ops keep accumulating during a sync and the log clears on success.
+// IndexedDB op-log: append-only; 256 entries trigger a sync; ops keep accumulating
+// during a sync and the log clears on success.
 
 import type { Op } from '$shared/types';
 
@@ -31,11 +31,9 @@ export function openOplogDb(factory: IDBFactory = indexedDB): Promise<IDBDatabas
   });
 }
 
-/**
- * Append one op; resolves to the new record's autoincrement key, which is the op's
+/** Append one op; resolves to the new record's autoincrement key, which is the op's
  * version handle: monotonic, persisted with the log, never reused — so confirmation
- * tracking stays correct across reloads and tabs (an in-memory counter would not).
- */
+ * tracking stays correct across reloads and tabs (an in-memory counter would not). */
 export async function appendOp(db: IDBDatabase, op: Op): Promise<IDBValidKey> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
@@ -77,23 +75,12 @@ export async function countOps(db: IDBDatabase): Promise<number> {
   });
 }
 
-/** Clear everything — only called after a successful sync (spec). */
+/** Clear everything — only called after a successful sync. */
 export async function clearOps(db: IDBDatabase): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
     tx.objectStore(STORE).clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('oplog clear failed'));
-  });
-}
-
-/** Delete all records below (exclusive) a key — precise cleanup after incremental submits. */
-export async function deleteOpsBelow(db: IDBDatabase, upperKey: IDBValidKey): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    const range = IDBKeyRange.upperBound(upperKey, true);
-    tx.objectStore(STORE).delete(range);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('oplog delete failed'));
   });
 }

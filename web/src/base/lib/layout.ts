@@ -1,4 +1,4 @@
-// Waterfall layout engine — pure functions, no DOM (spec: "waterfall"). Four modes = scroll direction (v/h) × fill strategy (sequential/shortest):
+// Waterfall layout engine — pure functions, no DOM. Four modes = scroll direction (v/h) × fill strategy (sequential/shortest):
 // v+sequential → Justified ↓ equal-height rows, strict left→right top→down;  v+shortest → Masonry ↓ equal-width columns, shortest column first;  h+sequential → Justified → equal-width columns, strict top→down left→right;
 // h+shortest → Masonry → equal-height rows, shortest row first. computeLayoutChunked yields to requestAnimationFrame every few hundred items so huge albums never block a frame; the extent lands in one shot.
 
@@ -173,11 +173,8 @@ const nextFrame = (): Promise<void> =>
     else setTimeout(resolve, 16);
   });
 
-/**
- * Frame-sliced pass: yields to the event loop every `chunk` boxes
- * (spec: 200–500 per frame). Returns null when `signal` aborts (a newer
- * layout pass superseded this one).
- */
+/** Frame-sliced pass: yields to the event loop every `chunk` boxes. Returns
+ *  null when `signal` aborts (a newer layout pass superseded this one). */
 export async function computeLayoutChunked(
   items: LayoutItem[],
   opts: LayoutOptions,
@@ -205,11 +202,9 @@ export function orderByMain(boxes: LayoutBox[], dir: ScrollDir): number[] {
   return idx;
 }
 
-/**
- * Indices of boxes intersecting the main-axis interval [from, to].
- * Binary search locates a conservative start (boxes can be at most
- * `maxExtent` long), then a short linear scan filters precisely.
- */
+/** Indices of boxes intersecting the main-axis interval [from, to]. Binary
+ *  search locates a conservative start (boxes are at most `maxExtent` long),
+ *  then a short linear scan filters precisely. */
 export function windowIndices(
   boxes: LayoutBox[],
   order: number[],

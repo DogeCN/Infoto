@@ -1,5 +1,7 @@
 export const toastOptions = {
   style: [
+    // Surface and border use site tokens; richColors' four states tint only the
+    // border and icon colors
     '--normal-bg: var(--color-popover)',
     '--normal-bg-hover: var(--color-surface-top)',
     '--normal-border: var(--color-border)',
