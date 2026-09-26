@@ -15,7 +15,7 @@
 
 ```
 src/worker/        Worker 入口与 API（Hono 路由、D1 实现、身份/同步/上传）
-src/local/         本地开发适配（D1 的 node:sqlite shim，勿在 Worker 里引用）
+src/d1-shim.ts     本地开发适配（D1 的 node:sqlite shim，勿在 Worker 里引用）
 schema.sql         D1 建表脚本（db:local 本地灌入，部署流程幂等应用）
 web/src/
   base/            通用层：lib/（布局、媒体、工具）+ upload/（上传管线）
@@ -65,7 +65,7 @@ web 子包专用：`npm run e2e -w infoto-web`（Playwright，本地手动；需
 1. **单 lockfile**：不要在 `web/` 下生成 `package-lock.json`；安装永远在根执行 `npm ci`。
 2. **单测试栈**：测试文件用 `import { test } from 'vitest'` + `node:assert`，不用 `node:test`。
 3. **vitest 锁定 2.1.x**：根与 web 统一；升级 5.x 有已知 SSR/node:sqlite 兼容问题。
-4. **`src/local/d1-shim.ts` 的 `node:sqlite` 必须走 `createRequire`**：vite SSR 会剥 `node:` 前缀导致静态 import 解析失败。
+4. **`src/d1-shim.ts` 的 `node:sqlite` 必须走 `createRequire`**：vite SSR 会剥 `node:` 前缀导致静态 import 解析失败。
 5. **e2e 不进 CI**：需要浏览器渠道与本地栈，本地手动跑；CI 只跑 lint/类型/单测。
 6. **提交前 `npm run lint` + `npm run ts-check` + `npm test` 必须全绿**。
 7. **分层不许倒挂**：`base/` 不 import 业务层；新组件放 `lib/components`，通用逻辑下沉 `core/`（纯 TS 可测）。

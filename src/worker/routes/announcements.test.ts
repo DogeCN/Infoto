@@ -1,67 +1,16 @@
 // Tests for the root-only announcement write API (POST|PUT|DELETE /admin/announcements
-// + POST /admin/announcements/reorder). Reads still come from the /sync snapshot,
+// + POST /admin/announcements/reorder). Reads come from the /sync snapshot,
 // so we assert write effects by re-pulling /sync afterwards.
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { createApp } from '../app.ts';
-import { openLocalDb } from '../../local/d1-shim.ts';
-import type { SyncResponse } from '../../shared/types.ts';
+import type { TestApp } from '../../testSupport.ts';
+import { cookieFrom, makeApp, snap, stubSiteverify, syncNew } from '../../testSupport.ts';
 
-const schema = readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'schema.sql'), 'utf8');
-
-const TEST_SECRET = 'test-secret';
-
-// Siteverify stub (contract: no allow-branch — identity creation always goes
-// through verification). Toggle via siteverifySuccess.
-const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
-const siteverifySuccess = true;
-const origFetch = globalThis.fetch;
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-  const url =
-    typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
-  if (url === VERIFY_URL) {
-    return new Response(JSON.stringify({ success: siteverifySuccess }), { status: 200 });
-  }
-  return origFetch(input as never, init);
-}) as typeof fetch;
-
-function makeApp() {
-  const db = openLocalDb(':memory:');
-  db.exec(schema);
-  const app = createApp({ db, turnstileSecret: TEST_SECRET });
-  return { db, app };
-}
-
-function cookieFrom(res: Response): string {
-  const raw = res.headers.get('set-cookie') ?? '';
-  const m = raw.match(/uuid=([^;]+)/);
-  assert.ok(m, 'Set-Cookie uuid');
-  return `uuid=${m[1]}`;
-}
-
-async function syncNew(app: ReturnType<typeof createApp>): Promise<Response> {
-  return app.request('http://localhost/sync', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ops: [], turnstileToken: 'ok' }),
-  });
-}
-
-async function snap(app: ReturnType<typeof createApp>, cookie: string): Promise<SyncResponse> {
-  return (await (
-    await app.request('http://localhost/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookie },
-      body: JSON.stringify({ ops: [] }),
-    })
-  ).json()) as SyncResponse;
-}
+stubSiteverify();
 
 async function annCreate(
-  app: ReturnType<typeof createApp>,
+  app: TestApp,
   cookie: string,
   title: string,
   contentMd: string,
@@ -74,7 +23,7 @@ async function annCreate(
 }
 
 async function annPut(
-  app: ReturnType<typeof createApp>,
+  app: TestApp,
   cookie: string,
   id: number | string,
   title: string,
@@ -87,22 +36,14 @@ async function annPut(
   });
 }
 
-async function annDelete(
-  app: ReturnType<typeof createApp>,
-  cookie: string,
-  id: number | string,
-): Promise<Response> {
+async function annDelete(app: TestApp, cookie: string, id: number | string): Promise<Response> {
   return app.request(`http://localhost/admin/announcements/${id}`, {
     method: 'DELETE',
     headers: { Cookie: cookie },
   });
 }
 
-async function annReorder(
-  app: ReturnType<typeof createApp>,
-  cookie: string,
-  ids: unknown,
-): Promise<Response> {
+async function annReorder(app: TestApp, cookie: string, ids: unknown): Promise<Response> {
   return app.request('http://localhost/admin/announcements/reorder', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
@@ -163,7 +104,7 @@ test('delete cascades reactions + votes', async () => {
   const { app } = makeApp();
   const rootCookie = cookieFrom(await syncNew(app));
   await annCreate(app, rootCookie, 'poll', ':::vote 好 | 不好');
-  // react + vote still ride /sync, targeting the new announcement id 1
+  // react + vote go through /sync, targeting the new announcement id 1
   await app.request('http://localhost/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: rootCookie },

@@ -1,5 +1,5 @@
 // Runtime environment handed to the Hono app: Worker (D1 + ASSETS fetcher).
-// Unit tests use the node:sqlite shim (src/local/d1-shim.ts) as the Db.
+// Unit tests use the node:sqlite shim (src/d1-shim.ts) as the Db.
 
 import type { Db } from './db.ts';
 

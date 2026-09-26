@@ -1,4 +1,4 @@
-// GET /l/:id36 — off-site media proxy (spec: "media proxy (/l/:id36)").
+// GET /l/:id36 — off-site media proxy.
 // Base-36 id -> photos row -> fetch host URL -> pipe the body straight back.
 // The image-host URL never appears in any response; long immutable caching.
 
@@ -13,14 +13,10 @@ export function mediaHandler(env: AppEnv) {
     const id = parseInt(id36, 36);
     if (!Number.isSafeInteger(id)) return notFoundPage();
 
-    const row = await env.db
-      .prepare('SELECT id, url, type FROM photos WHERE id = ?')
-      .bind(id)
-      .first<{
-        id: number;
-        url: string;
-        type: number;
-      }>();
+    const row = await env.db.prepare('SELECT url, type FROM photos WHERE id = ?').bind(id).first<{
+      url: string;
+      type: number;
+    }>();
     if (!row) return notFoundPage();
 
     let upstream: Response;

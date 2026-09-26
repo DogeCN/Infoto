@@ -89,7 +89,7 @@ export async function restoreOldTables(db: Db): Promise<void> {
   }
 }
 
-/** D1 batch of five ALTER RENAME: probe at start-up; fallback is sequential. */
+/** Batched ALTER RENAME is probed once on first use; a failed probe falls back to sequential. */
 let renameBatchOk: boolean | null = null;
 
 export function setRenameBatchOk(v: boolean | null): void {
@@ -167,7 +167,13 @@ export function migrateExportHandler(env: AppEnv) {
     sql += '\n';
     sql += await dumpTable(env.db, 'votes', ['ann_id', 'user_id', 'option']);
     sql += '\n';
-    sql += await dumpTable(env.db, 'feedback', ['id', 'user_id', 'content_md', 'created_at']);
+    sql += await dumpTable(env.db, 'feedback', [
+      'id',
+      'user_id',
+      'content_md',
+      'created_at',
+      'sort',
+    ]);
     const filename = `infoto-export-${Date.now()}.sql`;
     return new Response(sql, {
       headers: {

@@ -1,11 +1,19 @@
-// POST /sync — the single write entry point (spec: "/sync protocol").
+// POST /sync — the single write entry point.
 // Applies every op in array order, then returns the full state snapshot.
 // Non-root admin ops are silently dropped; malformed ops never break the batch.
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../env.ts';
 import type { Db } from '../db.ts';
-import type { Announcement, Feedback, Op, Photo, SyncRequest } from '../../shared/types.ts';
+import type {
+  Announcement,
+  Feedback,
+  Op,
+  Photo,
+  Reaction,
+  SyncRequest,
+  Vote,
+} from '../../shared/types.ts';
 import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '../identity.ts';
 import { verifyTurnstile } from '../turnstile.ts';
 
@@ -35,6 +43,7 @@ interface FbRow {
   user_id: number;
   content_md: string;
   created_at: number;
+  sort: number;
 }
 interface ReactRow {
   ann_id: number;
@@ -132,17 +141,17 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
         const p = rec(op.payload);
         const contentMd = str(p.contentMd);
         if (!contentMd) return;
+        // Newest lands on top: sort is ascending, so take one below the current minimum.
         await db
-          .prepare('INSERT INTO feedback (user_id, content_md, created_at) VALUES (?, ?, ?)')
+          .prepare(
+            `INSERT INTO feedback (user_id, content_md, created_at, sort)
+             VALUES (?, ?, ?, (SELECT COALESCE(MIN(sort), 0) - 1 FROM feedback))`,
+          )
           .bind(user.id, contentMd, serverTime)
           .run();
         return;
       }
-      case 'fb_delete': {
-        if (!isRoot || op.target == null) return;
-        await db.prepare('DELETE FROM feedback WHERE id = ?').bind(op.target).run();
-        return;
-      }
+      // fb_delete is not an op: moderation deletes go through DELETE /admin/feedback/:id.
       case 'react': {
         if (op.target == null) return;
         const ann = await db
@@ -192,8 +201,9 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
       default:
         return;
     }
-  } catch {
-    // A broken op must never break its batch — drop it silently.
+  } catch (e) {
+    // A broken op must never break its batch — drop it, but leave a trace.
+    console.error('[sync] op dropped', op.type, e);
   }
 }
 
@@ -226,13 +236,13 @@ async function snapshot(
     db.prepare('SELECT ann_id, user_id, emoji FROM reactions').all<ReactRow>(),
     db.prepare('SELECT ann_id, user_id, option FROM votes').all<VoteRow>(),
   ]);
-  const byAnn = new Map<number, Array<{ userId: number; emoji: string }>>();
+  const byAnn = new Map<number, Reaction[]>();
   for (const r of reactRows.results) {
     const list = byAnn.get(r.ann_id) ?? [];
     list.push({ userId: r.user_id, emoji: r.emoji });
     byAnn.set(r.ann_id, list);
   }
-  const votesByAnn = new Map<number, Array<{ userId: number; option: number }>>();
+  const votesByAnn = new Map<number, Vote[]>();
   for (const r of voteRows.results) {
     const list = votesByAnn.get(r.ann_id) ?? [];
     list.push({ userId: r.user_id, option: r.option });
@@ -251,13 +261,15 @@ async function snapshot(
   let feedback: Feedback[] = [];
   if (selfId === ROOT_ID) {
     const fb = await db
-      .prepare('SELECT * FROM feedback ORDER BY created_at DESC, id DESC')
+      // Manual order, lowest first; sort is unique by construction (full renumber).
+      .prepare('SELECT * FROM feedback ORDER BY sort ASC')
       .all<FbRow>();
     feedback = fb.results.map((r) => ({
       id: r.id,
       userId: r.user_id,
       contentMd: r.content_md,
       createdAt: r.created_at,
+      sort: r.sort,
     }));
   }
   return { photos, announcements, feedback };
@@ -277,8 +289,8 @@ export function syncHandler(env: AppEnv) {
 
     let user = await resolveUser(env.db, c.req.header('cookie'));
     if (!user) {
-      // first entry: tokenless /sync only hands out the site key; the token
-      // rides exactly one follow-up /sync (spec "Identity & Cookie")
+      // first entry: tokenless /sync only hands out the site key; a turnstile
+      // token is verified here before a new identity is created
       const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
       if (!token) {
         return c.json(

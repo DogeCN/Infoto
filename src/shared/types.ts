@@ -1,5 +1,5 @@
 // Infoto shared contract types — used by both runtimes (Worker / local Node)
-// and the frontend (phase 2+). Keep this file stable and complete.
+// and the frontend.
 
 /** Media kind encoded in photos.type. */
 export const MEDIA_TYPE = {
@@ -65,6 +65,8 @@ export interface Feedback {
   userId: number;
   contentMd: string;
   createdAt: number;
+  /** Manual (root-only) display order; lowest first. */
+  sort: number;
 }
 
 /** All op kinds accepted by POST /sync (the single write entry point). */
@@ -80,13 +82,12 @@ export type OpType =
   | 'delete' // root only
   // vote area (everyone, targets an announcement)
   | 'vote'
-  // feedback area
+  // feedback area (creation only; deletion is DELETE /admin/feedback/:id)
   | 'fb_create' // everyone
-  | 'fb_delete' // root only
   // reaction area
   | 'react';
 
-/** Payload carried by an `upload` op (metadata of a finished stage-2 upload). */
+/** Payload carried by an `upload` op (metadata of a photo already on the host). */
 export interface UploadPayload {
   sha256: string;
   /** Image-host direct URL returned by /upload (`data` field). */
@@ -124,7 +125,7 @@ export interface Op {
 }
 
 export interface SyncRequest {
-  /** Required exactly once, when no identity exists yet. */
+  /** Required when no identity exists yet. */
   turnstileToken?: string | null;
   ops: Op[];
 }
@@ -141,18 +142,7 @@ export interface SyncResponse {
 }
 
 /**
- * 401 `turnstile_required` body — carries the public site key so the client
- * can render the Turnstile widget without any extra config endpoint.
- */
-export interface TurnstileRequiredError {
-  ok: false;
-  error: 'turnstile_required';
-  turnstileSiteKey: string | null;
-}
-
-/**
- * Image-host JSON returned verbatim by POST /upload.
- * Success: URL lives in `data`. Failure: human message in `msg` / `error`.
+ * Image-host JSON returned verbatim by POST /upload: URL in `data`, message in `msg` / `error`.
  */
 export interface TcUploadResponse {
   data?: string;

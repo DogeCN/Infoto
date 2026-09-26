@@ -1,63 +1,9 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { createApp } from '../app.ts';
-import { openLocalDb } from '../../local/d1-shim.ts';
 import type { SyncResponse } from '../../shared/types.ts';
+import { cookieFrom, makeApp, stubSiteverify, sync, syncNew } from '../../testSupport.ts';
 
-const schema = readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'schema.sql'), 'utf8');
-
-// Siteverify stub (contract: no allow-branch — identity creation always goes
-// through verification). Toggle via siteverifySuccess; everything else passes
-// through to the real fetch.
-const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
-let siteverifySuccess = true;
-const origFetch = globalThis.fetch;
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-  const url =
-    typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
-  if (url === VERIFY_URL) {
-    return new Response(JSON.stringify({ success: siteverifySuccess }), { status: 200 });
-  }
-  return origFetch(input as never, init);
-}) as typeof fetch;
-
-const TEST_SECRET = 'test-secret';
-
-function makeApp() {
-  const db = openLocalDb(':memory:');
-  db.exec(schema);
-  const app = createApp({ db, turnstileSecret: TEST_SECRET });
-  return { db, app };
-}
-
-/** Identity-creating empty sync (fake token; the stub verifies it as ok). */
-function syncNew(app: ReturnType<typeof createApp>, cookie?: string): Promise<Response> {
-  return sync(app, { ops: [], turnstileToken: 'ok' }, cookie);
-}
-
-function cookieFrom(res: Response): string {
-  const raw = res.headers.get('set-cookie') ?? '';
-  const m = raw.match(/uuid=([^;]+)/);
-  assert.ok(m, 'Set-Cookie uuid');
-  return `uuid=${m[1]}`;
-}
-
-async function sync(
-  app: ReturnType<typeof createApp>,
-  body: unknown,
-  cookie?: string,
-): Promise<Response> {
-  return app.request('http://localhost/sync', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(cookie ? { Cookie: cookie } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-}
+const setSiteverify = stubSiteverify();
 
 test('no token → 401 turnstile_required; secret-less deployments fail closed (no allow branch)', async () => {
   const { app } = makeApp();
@@ -70,9 +16,7 @@ test('no token → 401 turnstile_required; secret-less deployments fail closed (
   });
 
   // a token against a secret-less deployment must NOT slip through either
-  const db = openLocalDb(':memory:');
-  db.exec(schema);
-  const bare = createApp({ db });
+  const { app: bare } = makeApp({ turnstileSecret: undefined });
   const res2 = await sync(bare, { ops: [], turnstileToken: 'ok' });
   assert.equal(res2.status, 401);
   assert.deepEqual(await res2.json(), { ok: false, error: 'turnstile_failed' });
@@ -98,9 +42,7 @@ test('first identity: fake token ok, selfId 0, camelCase, no users, empty feedba
 });
 
 test('secret configured, no token → turnstile_required', async () => {
-  const db = openLocalDb(':memory:');
-  db.exec(schema);
-  const app = createApp({ db, turnstileSecret: 'sk' });
+  const { app } = makeApp({ turnstileSecret: 'sk' });
   const res = await sync(app, { ops: [] });
   assert.equal(res.status, 401);
   assert.deepEqual(await res.json(), {
@@ -111,9 +53,7 @@ test('secret configured, no token → turnstile_required', async () => {
 });
 
 test('body uuid is ignored; still requires turnstile', async () => {
-  const db = openLocalDb(':memory:');
-  db.exec(schema);
-  const app = createApp({ db, turnstileSecret: 'sk', turnstileSiteKey: 'site-key' });
+  const { app } = makeApp({ turnstileSecret: 'sk', turnstileSiteKey: 'site-key' });
   const res = await sync(app, { uuid: '00000000-0000-4000-8000-000000000000', ops: [] });
   assert.equal(res.status, 401);
   assert.deepEqual(await res.json(), {
@@ -124,14 +64,14 @@ test('body uuid is ignored; still requires turnstile', async () => {
 });
 
 test('bad turnstile token → turnstile_failed', async () => {
-  siteverifySuccess = false;
+  setSiteverify(false);
   try {
     const { app } = makeApp();
     const res = await sync(app, { turnstileToken: 'bad', ops: [] });
     assert.equal(res.status, 401);
     assert.deepEqual(await res.json(), { ok: false, error: 'turnstile_failed' });
   } finally {
-    siteverifySuccess = true;
+    setSiteverify(true);
   }
 });
 
@@ -210,7 +150,7 @@ test('non-root announcement create → 403; like in same batch works; feedback h
   assert.equal(((await guest.json()) as SyncResponse).selfId, 1);
   const guestCookie = cookieFrom(guest);
   // the announcement write API is root-only; a guest is rejected, not silently
-  // queued (ann_create is no longer an /sync op)
+  // queued (ann_create is not an /sync op)
   const forbidden = await app.request('http://localhost/admin/announcements', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: guestCookie },
@@ -244,7 +184,7 @@ test('announcements via admin API: create embeds reactions; update missing → 4
   const { app } = makeApp();
   const cookie = cookieFrom(await syncNew(app));
 
-  // create through the dedicated admin API (ann_create is no longer an /sync op)
+  // create through the dedicated admin API (ann_create is not an /sync op)
   const createdA = await app.request('http://localhost/admin/announcements', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
@@ -259,7 +199,7 @@ test('announcements via admin API: create embeds reactions; update missing → 4
     body: JSON.stringify({ title: 'b', contentMd: '2' }),
   });
 
-  // react still rides /sync; reaction embeds into the announcement snapshot
+  // react goes through /sync; the reaction embeds into the announcement snapshot
   await sync(app, { ops: [{ type: 'react', target: 1, payload: { emoji: '👍' } }] }, cookie);
   const mid = (await (await sync(app, { ops: [] }, cookie)).json()) as SyncResponse;
   assert.equal(mid.announcements.length, 2);
@@ -267,7 +207,7 @@ test('announcements via admin API: create embeds reactions; update missing → 4
   assert.equal(mid.announcements[0]!.contentMd, '1');
   assert.equal(mid.announcements[0]!.title, 'a');
 
-  // update a nonexistent id is a 404 (was: silent no-op op)
+  // updating a nonexistent id is a 404
   const missing = await app.request('http://localhost/admin/announcements/999', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
@@ -306,7 +246,7 @@ test('announcements via admin API: create embeds reactions; update missing → 4
 test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete cascades', async () => {
   const { app } = makeApp();
   const rootCookie = cookieFrom(await syncNew(app));
-  // announcement creation moved to the admin API (ann_create no longer an /sync op)
+  // announcement creation goes through the admin API (ann_create is not an /sync op)
   const poll = await app.request('http://localhost/admin/announcements', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: rootCookie },
@@ -354,7 +294,7 @@ test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete c
   ).json()) as SyncResponse;
   assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 1 }]);
 
-  // ann_delete cascades the votes rows too (via the admin API now)
+  // deletion cascades the votes rows too (it goes through the admin API)
   const del = await app.request('http://localhost/admin/announcements/1', {
     method: 'DELETE',
     headers: { Cookie: rootCookie },
@@ -394,8 +334,8 @@ test('upload without multipart → 400; no cookie → 401', async () => {
   assert.deepEqual(await noSecret.json(), { ok: false, error: 'tc_secret_missing' });
 });
 
-// /admin (the page) is no longer a Worker route — it rides the ASSETS SPA
-// fallback and the root boundary is frontend-only. Only /admin/migrate stays
+// /admin (the page) is not a Worker route — it falls through to the ASSETS SPA
+// fallback and the root boundary is frontend-only. Only /admin/migrate is
 // server-gated (custom 404 for non-root).
 test('non-root migrate is custom 404', async () => {
   const { app } = makeApp();

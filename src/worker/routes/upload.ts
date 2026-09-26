@@ -1,11 +1,12 @@
-// POST /upload — streaming proxy to the image host (spec: "image-host upload proxy").
-// Two host origins share one backend; each request picks one at random.
+// POST /upload — authenticated streaming proxy to the image host: checks the
+// session cookie, signs a TC token for the upstream, and pipes the multipart
+// body through unchanged.
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../env.ts';
 import { resolveUser } from '../identity.ts';
 
-const HOST_UPLOAD_URLS = ['https://tc.0147258.xyz/upload', 'https://tc.qdqqd.com/upload'];
+const HOST_UPLOAD_URL = 'https://tc.0147258.xyz/upload';
 
 const b64u = (buf: ArrayBuffer | Uint8Array): string => {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -54,10 +55,7 @@ export function uploadHandler(env: AppEnv) {
 
     let upstream: Response;
     try {
-      upstream = await fetch(
-        HOST_UPLOAD_URLS[Math.floor(Math.random() * HOST_UPLOAD_URLS.length)],
-        init,
-      );
+      upstream = await fetch(HOST_UPLOAD_URL, init);
     } catch {
       return c.json({ ok: false, error: 'image_host_unreachable' }, 502);
     }

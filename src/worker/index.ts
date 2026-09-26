@@ -1,6 +1,6 @@
-// Infoto Worker entry — phase 1 backend.
-// Route order: /sync -> /upload -> /l/:id36 -> /admin/migrate (+ /admin/* 404)
-// -> ASSETS static fallback (/admin page itself rides the SPA fallback).
+// Infoto Worker entry.
+// Route order: /sync -> /upload -> /l/:id36 -> /admin/{migrate,announcements,feedback}
+// (+ /admin/* 404) -> ASSETS static fallback (the /admin page uses the SPA fallback).
 
 import { createApp } from './app.ts';
 import { d1Db } from './db-d1.ts';

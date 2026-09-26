@@ -1,9 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { createApp } from '../app.ts';
-import { openLocalDb, type LocalDb } from '../../local/d1-shim.ts';
+import type { LocalDb } from '../../d1-shim.ts';
+import type { TestApp } from '../../testSupport.ts';
+import { cookieFrom, makeApp, stubSiteverify, sync } from '../../testSupport.ts';
 import {
   MIGRATE_TABLES,
   parseSqlStatements,
@@ -11,61 +10,36 @@ import {
   setRenameBatchOk,
 } from './migrate.ts';
 
-const schema = readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'schema.sql'), 'utf8');
+stubSiteverify();
 
-// Siteverify stub — identity creation always verifies (contract: no allow-branch).
-const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
-const origFetch = globalThis.fetch;
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-  const url =
-    typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
-  if (url === VERIFY_URL) return new Response(JSON.stringify({ success: true }), { status: 200 });
-  return origFetch(input as never, init);
-}) as typeof fetch;
-
-function make() {
-  const db = openLocalDb(':memory:');
-  db.exec(schema);
-  const app = createApp({ db, turnstileSecret: 'test-secret' });
-  return { db, app };
-}
-
-async function rootCookie(app: ReturnType<typeof createApp>): Promise<string> {
-  const res = await app.request('http://localhost/sync', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      turnstileToken: 'ok',
-      ops: [
-        {
-          type: 'upload',
-          payload: { sha256: 'aa', url: 'https://h/a.webp', width: 1, height: 1, size: 2, type: 0 },
-        },
-      ],
-    }),
+async function rootCookie(app: TestApp): Promise<string> {
+  const res = await sync(app, {
+    turnstileToken: 'ok',
+    ops: [
+      {
+        type: 'upload',
+        payload: { sha256: 'aa', url: 'https://h/a.webp', width: 1, height: 1, size: 2, type: 0 },
+      },
+    ],
   });
-  const m = (res.headers.get('set-cookie') ?? '').match(/uuid=([^;]+)/);
-  assert.ok(m);
-  const cookie = `uuid=${m[1]}`;
-  // announcements are written through the dedicated admin API now
-  // (ann_create is no longer an /sync op); react/vote still ride /sync
+  const cookie = cookieFrom(res);
   const created = await app.request('http://localhost/admin/announcements', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({ title: 't', contentMd: `md\\slash --- ; /* c */ it's` }),
   });
   assert.equal(created.status, 200);
-  await app.request('http://localhost/sync', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({
+  await sync(
+    app,
+    {
       ops: [
         { type: 'react', target: 1, payload: { emoji: '🔥' } },
         { type: 'vote', target: 1, payload: { option: 1 } },
         { type: 'fb_create', payload: { contentMd: 'fb' } },
       ],
-    }),
-  });
+    },
+    cookie,
+  );
   return cookie;
 }
 
@@ -104,7 +78,7 @@ test('parseSqlStatements is quote-aware: ; -- /* and quotes inside literals surv
 
 test('export → import round-trip restores rows', async () => {
   setRenameBatchOk(null);
-  const { db, app } = make();
+  const { db, app } = makeApp();
   const cookie = await rootCookie(app);
   const before = await counts(db);
   assert.equal(before.users, 1);
@@ -155,7 +129,7 @@ test('export → import round-trip restores rows', async () => {
 
 test('bad INSERT returns exact statement and leaves all tables intact', async () => {
   setRenameBatchOk(null);
-  const { db, app } = make();
+  const { db, app } = makeApp();
   const cookie = await rootCookie(app);
   const before = await counts(db);
   const dump = await (
@@ -183,7 +157,7 @@ test('bad INSERT returns exact statement and leaves all tables intact', async ()
 });
 
 test('restoreOldTables only swaps tables that have _old copies', async () => {
-  const { db } = make();
+  const { db } = makeApp();
   await db.prepare("INSERT INTO users (id, uuid, created_at) VALUES (0, 'u', 1)").run();
   await db
     .prepare(
@@ -212,7 +186,7 @@ test('restoreOldTables only swaps tables that have _old copies', async () => {
 
 test('sequential rename path still round-trips', async () => {
   setRenameBatchOk(false);
-  const { db, app } = make();
+  const { db, app } = makeApp();
   const cookie = await rootCookie(app);
   const dump = await (
     await app.request('http://localhost/admin/migrate', { headers: { Cookie: cookie } })
@@ -229,7 +203,7 @@ test('sequential rename path still round-trips', async () => {
 });
 
 test('empty import is 400; oversize is 413', async () => {
-  const { app } = make();
+  const { app } = makeApp();
   const cookie = await rootCookie(app);
   const empty = await app.request('http://localhost/admin/migrate', {
     method: 'POST',

@@ -39,9 +39,13 @@ CREATE TABLE IF NOT EXISTS votes (
   option INTEGER NOT NULL,
   PRIMARY KEY (ann_id, user_id)
 );
+-- sort: manual (root-only) display order, lowest first. Unique by construction —
+-- an insert takes MIN(sort) - 1 and a reorder renumbers the whole list 0…n-1 — so
+-- the snapshot orders by sort alone with no tiebreak fallback.
 CREATE TABLE IF NOT EXISTS feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   content_md TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  sort INTEGER NOT NULL
 );

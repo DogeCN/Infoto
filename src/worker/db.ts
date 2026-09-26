@@ -1,5 +1,5 @@
 // Db abstraction: one interface, two implementations —
-// D1 (Worker, see db-d1.ts) and node:sqlite shim (local, src/local/d1-shim.ts).
+// D1 (Worker, see db-d1.ts) and node:sqlite shim (local, src/d1-shim.ts).
 // D1-shaped API: prepare(sql).bind(...).all() / .first() / .run(), plus batch().
 
 export interface DbRows<T> {

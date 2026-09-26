@@ -3,7 +3,7 @@
 // Loaded via createRequire: vite's SSR strips `node:`, so static import breaks under vitest.
 
 import { createRequire } from 'node:module';
-import type { Db, DbPrepared, DbRunResult } from '../worker/db.ts';
+import type { Db, DbPrepared, DbRunResult } from './worker/db.ts';
 
 const nodeRequire = createRequire(import.meta.url);
 const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');

@@ -1,6 +1,8 @@
-// Custom error pages (spec: "error pages") — dark background #0a0e1a with a large cyan
-// #22d3ee status code in glitch style (red/cyan double-layer offset). Per the "no-glow
-// discipline" the only allowed effect is the displaced double-text glitch.
+import { copy } from '../shared/copy.ts';
+
+// Error pages — dark background #0a0e1a with a large cyan #22d3ee status code in glitch
+// style (red/cyan double-layer offset). The only effect used is the displaced
+// double-text glitch; nothing glows.
 
 function page(code: number, title: string, message: string): Response {
   const html = `<!doctype html>
@@ -94,7 +96,7 @@ function page(code: number, title: string, message: string): Response {
 		<div class="code-wrap"><div class="code">${code}</div></div>
 		<div class="title">${title}</div>
 		<div class="msg">${message}</div>
-		<a class="home" href="/">返回首页</a>
+		<a class="home" href="/">${copy.errorPage.backHome}</a>
 	</div>
 </body>
 </html>`;
@@ -104,7 +106,8 @@ function page(code: number, title: string, message: string): Response {
   });
 }
 
-export const notFoundPage = (): Response => page(404, 'Not Found', '页面不存在或已被移除');
+export const notFoundPage = (): Response =>
+  page(404, copy.errorPage.notFoundTitle, copy.errorPage.workerNotFoundMessage);
 
 export const serverErrorPage = (): Response =>
-  page(500, 'Server Error', '服务端开了个小差，稍后再试');
+  page(500, copy.errorPage.serverErrorTitle, copy.errorPage.workerServerError);

@@ -1,4 +1,4 @@
-// Cloudflare Turnstile verification. No allow-branch (contract): an unconfigured secret
+// Cloudflare Turnstile verification. There is no allow-branch: an unconfigured secret
 // must fail closed — deployments inject either the real secret (production) or the
 // official always-pass test secret (test deployment / local).
 
@@ -10,7 +10,7 @@ export async function verifyTurnstile(
   remoteIp?: string,
 ): Promise<boolean> {
   if (!secret) {
-    console.warn('[turnstile] secret 未配置，校验失败');
+    console.warn('[turnstile] secret is not configured; verification fails closed');
     return false;
   }
   if (!token) return false;

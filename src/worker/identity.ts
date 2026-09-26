@@ -1,12 +1,12 @@
-// Identity & Cookie (spec: "Identity & Cookie").
+// Identity & cookie handling.
 // Cookie carries the uuid only; numeric short ids are public, uuids never are.
 // ID=0 (the very first visitor) is the root user with all admin powers.
 
 import type { Db } from './db.ts';
 
-export const COOKIE_NAME = 'uuid';
+const COOKIE_NAME = 'uuid';
 /** ~10 years — effectively permanent, refreshed (sliding) on every /sync. */
-export const COOKIE_MAX_AGE = 315360000;
+const COOKIE_MAX_AGE = 315360000;
 export const ROOT_ID = 0;
 
 export interface UserRow {
@@ -15,7 +15,7 @@ export interface UserRow {
   created_at: number;
 }
 
-export function parseCookies(header: string | undefined): Record<string, string> {
+function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
   for (const part of header.split(';')) {
@@ -23,7 +23,12 @@ export function parseCookies(header: string | undefined): Record<string, string>
     if (eq <= 0) continue;
     const k = part.slice(0, eq).trim();
     const v = part.slice(eq + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    if (!k) continue;
+    try {
+      out[k] = decodeURIComponent(v);
+    } catch {
+      // A malformed escape is not an identity — skip it instead of 500ing the request.
+    }
   }
   return out;
 }
@@ -45,7 +50,7 @@ export function sessionCookie(uuid: string, request: Request): string {
   return parts.join('; ');
 }
 
-export async function findUserByUuid(db: Db, uuid: string | undefined): Promise<UserRow | null> {
+async function findUserByUuid(db: Db, uuid: string | undefined): Promise<UserRow | null> {
   if (!uuid) return null;
   return db
     .prepare('SELECT id, uuid, created_at FROM users WHERE uuid = ?')
@@ -64,15 +69,22 @@ export async function resolveUser(
 
 /** Create a new identity: id = COALESCE(MAX(id), -1) + 1 (first visitor gets 0). */
 export async function createUser(db: Db): Promise<UserRow> {
-  const next = await db
-    .prepare('SELECT COALESCE(MAX(id), -1) + 1 AS id FROM users')
-    .first<{ id: number }>('id');
-  const id = typeof next === 'number' ? next : 0;
-  const uuid = crypto.randomUUID();
-  const created_at = Date.now();
-  await db
-    .prepare('INSERT INTO users (id, uuid, created_at) VALUES (?, ?, ?)')
-    .bind(id, uuid, created_at)
-    .run();
-  return { id, uuid, created_at };
+  for (let attempt = 0; ; attempt++) {
+    const next = await db
+      .prepare('SELECT COALESCE(MAX(id), -1) + 1 AS id FROM users')
+      .first<number>('id');
+    const id = typeof next === 'number' ? next : 0;
+    const uuid = crypto.randomUUID();
+    const created_at = Date.now();
+    try {
+      await db
+        .prepare('INSERT INTO users (id, uuid, created_at) VALUES (?, ?, ?)')
+        .bind(id, uuid, created_at)
+        .run();
+      return { id, uuid, created_at };
+    } catch (e) {
+      // Two first-time requests can pick the same id; the loser recomputes and retries.
+      if (attempt >= 2) throw e;
+    }
+  }
 }

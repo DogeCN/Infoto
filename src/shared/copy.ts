@@ -1,0 +1,332 @@
+/**
+ * Centralised user-facing copy — the single source of every string a person reads.
+ * Values are byte-identical to the literals they were extracted from; fill the
+ * `{name}` placeholders with fmt().
+ */
+
+/** Replace `{name}` placeholders in `template` with the matching `vars` entry. */
+export function fmt(template: string, vars?: Record<string, string | number>): string {
+  if (!vars) return template;
+  return template.replace(/\{(\w+)\}/g, (placeholder, key: string) =>
+    key in vars ? String(vars[key]) : placeholder,
+  );
+}
+
+export const copy = {
+  sync: {
+    failed: '同步失败',
+    queuedRetry: '操作已排队，稍后自动重试',
+    dataMayBeStale: '数据可能不是最新，稍后会自动重试',
+    button: '同步',
+    pendingCount: '同步（{count} 条待发送）',
+  },
+
+  upload: {
+    unknownType: '无法识别 {fileName} 的文件类型',
+    acceptHint: '仅支持图片和视频文件',
+    duplicate: '{fileName} 与已有照片重复',
+    duplicateSkipped: '已跳过上传',
+    defaultFileName: '照片',
+    failed: '{fileName} 上传失败',
+    errors: {
+      timeout: '上传超时',
+      network: '网络错误',
+      unauthorized: '未授权，请先通过验证',
+      oversize: '产物超过 100MB，无法上传',
+      tooLarge: '文件过大',
+      httpFailed: '上传失败（HTTP {status}）',
+      failed: '上传失败',
+    },
+  },
+
+  transcode: {
+    errors: {
+      noSupportedVideoCodec: '不支持的编码（无可用 VP9/VP8 编码器）',
+      noVideoTrack: '未找到视频轨',
+      webpEncodeUnsupported: '当前环境不支持 WebP 编码',
+      conversionInvalid: '无法解析该媒体格式',
+      emptyOutput: '转码产出为空',
+      gifDecodeFailed: 'GIF 解码失败',
+      gifDimensionsUnknown: '无法确定 GIF 尺寸',
+      sourceUnavailable: '源文件丢失',
+      sourceMissing: '源文件已被清理',
+      canvas2dUnavailable: '无法创建画布',
+      unrecognizableFormat: '无法识别的媒体格式',
+      audioCodec: '不支持的音频编码',
+      encoderError: '编码器错误',
+      corrupt: '文件可能已损坏',
+      decodeFailed: '文件解码失败，可能已损坏',
+      outOfMemory: '内存不足',
+      unsupportedFileType: '不支持的文件类型',
+      summary: '转码失败：{detail}',
+      withCode: '转码失败（{error}）',
+      failed: '转码失败',
+    },
+  },
+
+  gallery: {
+    empty: '还没有照片',
+    emptyFiltered: '没有符合筛选的照片',
+    emptyHint: '点击右上角上传你的第一张照片',
+    emptyFilteredHint: '试试调整筛选条件',
+  },
+
+  topbar: {
+    settings: '设置',
+    announcements: '公告',
+    multiSelect: '多选',
+    upload: '上传',
+  },
+
+  sidebar: {
+    settingsTitle: '设置',
+    announcementsTitle: '公告',
+    resizeAria: '调整侧栏宽度',
+    resizeTitle: '拖动调整宽度',
+    close: '关闭',
+  },
+
+  settings: {
+    typeImage: '图片',
+    typeAnimated: '动图',
+    typeVideo: '视频',
+    keepOneType: '至少保留一个类型',
+    filterSection: '筛选',
+    resetFilters: '重置筛选',
+    hint: '上传照片后可按数值筛选',
+    ownedByMe: '我上传的',
+    likedByMe: '我喜欢的',
+    dislikedByMe: '我不喜欢的',
+    reportedByMe: '我请求删除的',
+    layoutSection: '布局',
+    resetLayout: '重置布局',
+    dirVertical: '纵向',
+    dirHorizontal: '横向',
+    strategyEqualWidth: '等宽',
+    strategyEqualHeight: '等高',
+    rangeMin: '范围下限',
+    rangeMax: '范围上限',
+    sliderValue: '数值',
+  },
+
+  sort: {
+    ariaLabel: '排序方式',
+    latest: '最新',
+    hottest: '最热',
+    random: '随机',
+    oldest: '最旧',
+    coldest: '最冷',
+  },
+
+  multiSelect: {
+    selectAll: '全选',
+    deselectAll: '取消全选',
+    download: '下载',
+    unmark: '取消标记',
+    delete: '删除',
+  },
+
+  photoCard: {
+    dismiss: '移除此项',
+    retry: '重试上传',
+  },
+
+  uploadPanel: {
+    queued: '排队中',
+    transcoding: '转码中',
+    hashing: '校验中',
+    uploading: '上传中',
+    uploadTitle: '上传进度',
+    transcodeTitle: '转码进度',
+    duplicate: '重复',
+    cancel: '取消',
+    cancelFile: '取消 {fileName}',
+    fileProgress: '{fileName} 进度',
+  },
+
+  lightbox: {
+    liked: '已标记喜欢',
+    unliked: '已取消喜欢',
+    disliked: '已标记不喜欢',
+    undisliked: '已取消不喜欢',
+    reported: '已请求删除',
+    reportCancelled: '已取消请求删除',
+    downloadStarted: '开始下载',
+    copyFailed: '复制失败',
+    linkCopied: '链接已复制',
+    originalUrlCopied: '原图地址已复制',
+    like: '喜欢',
+    unlike: '取消喜欢',
+    dislike: '不喜欢',
+    undislike: '取消不喜欢',
+    report: '请求删除',
+    cancelReport: '取消请求删除',
+    cancelDelete: '取消删除',
+    more: '更多',
+    close: '关闭',
+    mute: '静音',
+    unmute: '取消静音',
+    prev: '上一张',
+    next: '下一张',
+    copyOriginal: '复制原图',
+    copyLink: '复制链接',
+    share: '分享',
+    googleLens: '谷歌搜图',
+    download: '下载',
+    delete: '删除',
+    loadFailedStatus: '图片加载失败 ({status})',
+    loadFailed: '图片加载失败',
+  },
+
+  announcements: {
+    empty: '暂无公告',
+    previewEmpty: '暂无内容',
+    feedbackPlaceholder: '写下你的建议',
+    resizeHandle: '拖动调整高度',
+    editToggle: '编辑',
+    previewToggle: '预览',
+    send: '发送',
+  },
+
+  editor: {
+    defaultUploadName: '图片',
+    imageUploadFailed: '图片上传失败，请重试',
+    uploading: '上传中',
+    retry: '重试',
+    previewAria: '实时预览',
+    previewEmpty: '预览',
+    tools: {
+      bold: '粗体',
+      italic: '斜体',
+      strikethrough: '删除线',
+      quote: '引用',
+      code: '代码块',
+      list: '列表',
+      link: '链接',
+      image: '图片',
+      vote: '投票',
+    },
+  },
+
+  admin: {
+    sectionLabel: '管理页分区',
+    newAnnouncement: '新增公告',
+    tabs: {
+      announcements: '公告',
+      feedback: '建议',
+    },
+    fail: {
+      backendTimeout: '后端无响应，请稍后重试',
+      network: '请检查网络连接后重试',
+    },
+    announcement: {
+      publishFailed: '公告发布失败',
+      saveFailed: '公告保存失败',
+      deleteFailed: '公告删除失败',
+      deleteRollback: '已恢复，请重试',
+      reorderFailed: '公告排序保存失败',
+      reorderRollback: '已恢复原顺序',
+      empty: '暂无公告',
+      listLabel: '公告列表',
+      edit: '编辑',
+      editAria: '编辑公告',
+      delete: '删除',
+      deleteAria: '删除公告',
+    },
+    feedback: {
+      deleteFailed: '建议删除失败',
+      reorderFailed: '建议排序保存失败',
+      empty: '暂无建议',
+      noMatches: '没有匹配的建议',
+      listLabel: '建议列表',
+      totalCount: '共 {count} 条',
+      searchPlaceholder: '搜索',
+      searchAria: '搜索建议',
+      delete: '删除',
+      deleteAria: '删除建议',
+      idLabel: 'ID',
+    },
+    editor: {
+      titlePlaceholder: '标题',
+      cancel: '取消',
+      uploading: '上传中',
+      save: '保存',
+    },
+  },
+
+  migrate: {
+    importFailed: '导入失败',
+    importComplete: '导入完成',
+    importRetry: '导入失败，请重试',
+    importSynced: '数据已导入并同步',
+    importSyncFailed: '数据已导入，但同步失败，请稍后重试',
+    httpErrorWithDetail: '服务器返回 HTTP {status}：{detail}',
+    httpError: '服务器返回 HTTP {status}',
+    exportComplete: '导出完成',
+    exportFailed: '导出失败',
+    tryAgainLater: '请稍后重试',
+    exportSql: '导出 SQL',
+    exporting: '导出中',
+    importSql: '导入 SQL',
+    importing: '导入中',
+    importingFile: '正在导入 {importName}',
+    progressLabel: 'SQL 导入进度',
+    onlySqlFiles: '仅支持 .sql 文件',
+    fileTooLarge: '文件不能超过 50 MiB',
+    readFileFailed: '读取文件失败，请重试',
+    cannotCreateRequest: '无法创建上传请求',
+    uploadFailedCheckNetwork: '上传失败，请检查网络',
+    uploadCancelled: '上传已取消',
+    uploadTimeout: '上传超时，请重试',
+    invalidResponse: '服务器响应格式无效',
+    noErrorDetail: '服务器未返回错误详情',
+    serverFailure: '导入失败：{details}',
+    serverFailureNoDetail: '导入失败：服务器未返回错误详情',
+    errors: {
+      payloadTooLarge: 'payload too large',
+      badBody: 'bad body',
+      emptyBody: 'empty body',
+      noValidSql: 'no valid sql',
+      importFailed: 'import failed',
+    },
+  },
+
+  vote: {
+    count: '{count} 票',
+  },
+
+  reactions: {
+    add: '添加反应',
+  },
+
+  time: {
+    justNow: '刚刚',
+    minutesAgo: '{n} 分钟前',
+    hoursAgo: '{n} 小时前',
+    daysAgo: '{n} 天前',
+    monthsAgo: '{n} 个月前',
+    yearsAgo: '{n} 年前',
+    monthDay: '{month}月{day}日 {clock}',
+    yearMonthDay: '{year}年{monthDay}',
+  },
+
+  errorPage: {
+    errorCodeAria: '错误代码 {code}',
+    pageHeading: 'PAGE NOT FOUND',
+    notFoundMessage: '您访问的页面不存在',
+    backHome: '返回首页',
+    notFoundTitle: 'Not Found',
+    serverErrorTitle: 'Server Error',
+    workerNotFoundMessage: '页面不存在或已被移除',
+    workerServerError: '服务端开了个小差，稍后再试',
+  },
+
+  api: {
+    announcementCreateFailed: 'announcement create failed: HTTP {status}',
+    announcementUpdateFailed: 'announcement update failed: HTTP {status}',
+    announcementDeleteFailed: 'announcement delete failed: HTTP {status}',
+    announcementReorderFailed: 'announcement reorder failed: HTTP {status}',
+    feedbackDeleteFailed: 'feedback delete failed: HTTP {status}',
+    feedbackReorderFailed: 'feedback reorder failed: HTTP {status}',
+  },
+} as const;
