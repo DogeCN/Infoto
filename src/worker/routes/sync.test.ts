@@ -109,7 +109,7 @@ test('upload, sha collision silent, missing fields silent, created_at/uploader i
   assert.equal(json.photos[0]!.id, 1);
 });
 
-test('unupload is discarded; like from same batch still applies', async () => {
+test('unknown op is discarded; a hash-addressed like from the same batch applies', async () => {
   const { app } = makeApp();
   const cookie = cookieFrom(await syncNew(app));
   const res = await sync(
@@ -120,8 +120,10 @@ test('unupload is discarded; like from same batch still applies', async () => {
           type: 'upload',
           payload: { sha256: 'h', url: 'https://h', width: 1, height: 1, size: 1, type: 0 },
         },
-        { type: 'unupload' as unknown as 'like', target: 1 },
-        { type: 'like', target: 1 },
+        { type: 'unupload' as unknown as 'like', targetSha: 'h' },
+        // Photo ops address the photo by its sha256 — the stable unique index. A numeric
+        // id is only the external /l/{id36} link, and an in-flight upload has none yet.
+        { type: 'like', targetSha: 'h' },
       ],
     },
     cookie,
@@ -129,6 +131,72 @@ test('unupload is discarded; like from same batch still applies', async () => {
   const json = (await res.json()) as SyncResponse;
   assert.equal(json.photos.length, 1);
   assert.deepEqual(json.photos[0]!.likes, [0]);
+});
+
+test('photo ops are addressed by sha256; a wrong id target is inert', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const res = await sync(
+    app,
+    {
+      ops: [
+        {
+          type: 'upload',
+          payload: { sha256: 'zz', url: 'https://z', width: 2, height: 2, size: 2, type: 0 },
+        },
+        // The numeric id is only the external /l/{id36} link index: a photo op must not
+        // resolve through it, so this is inert even though the row's id happens to be 1.
+        { type: 'like', target: 1 },
+        { type: 'like', targetSha: 'zz' },
+      ],
+    },
+    cookie,
+  );
+  const json = (await res.json()) as SyncResponse;
+  assert.equal(json.photos.length, 1);
+  // One mark only: the id-addressed op never applied.
+  assert.deepEqual(json.photos[0]!.likes, [0]);
+});
+
+test('a mark queued while the photo was still uploading applies once the row exists', async () => {
+  // The op arrives in the SAME batch, after the upload op that creates the row — the
+  // order /sync replays in is the whole contract.
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const res = await sync(
+    app,
+    {
+      ops: [
+        {
+          type: 'upload',
+          payload: { sha256: 'q', url: 'https://q', width: 1, height: 1, size: 1, type: 0 },
+        },
+        { type: 'report', targetSha: 'q' },
+        { type: 'delete', targetSha: 'q' },
+      ],
+    },
+    cookie,
+  );
+  const json = (await res.json()) as SyncResponse;
+  // delete after report: the row is gone, so nothing is left to report on.
+  assert.deepEqual(json.photos, []);
+});
+
+test('a hash-addressed op for an unknown sha is skipped (never creates an orphan)', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const res = await sync(
+    app,
+    {
+      ops: [
+        { type: 'like', targetSha: 'never-existed' },
+        { type: 'delete', targetSha: 'never-existed' },
+      ],
+    },
+    cookie,
+  );
+  const json = (await res.json()) as SyncResponse;
+  assert.deepEqual(json.photos, []);
 });
 
 test('non-root announcement create → 403; like in same batch works; feedback hidden', async () => {
@@ -161,8 +229,9 @@ test('non-root announcement create → 403; like in same batch works; feedback h
     app,
     {
       ops: [
-        { type: 'delete', target: 1 },
-        { type: 'like', target: 1 },
+        // A guest is not root: the delete is refused, the like still lands.
+        { type: 'delete', targetSha: 'p' },
+        { type: 'like', targetSha: 'p' },
         { type: 'fb_create', payload: { contentMd: 'hello' } },
       ],
     },

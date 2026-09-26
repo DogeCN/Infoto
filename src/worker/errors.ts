@@ -6,7 +6,7 @@ import { copy } from '../shared/copy.ts';
 
 function page(code: number, title: string, message: string): Response {
   const html = `<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

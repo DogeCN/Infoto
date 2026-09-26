@@ -119,8 +119,15 @@ export type OpPayload =
 /** One op-log entry, applied by /sync strictly in array order. */
 export interface Op {
   type: OpType;
-  /** Photo / feedback id the op applies to (null for `upload` / `fb_create`). */
+  /**
+   * Announcement / feedback numeric id (vote, react). PHOTO ops never use a numeric id:
+   * an id is only the external `/l/{id36}` link index, while sha256 is the stable unique
+   * index of a photo. An in-flight upload has no id yet, and hash resolution works for
+   * every photo regardless of when the op was written.
+   */
   target?: number | null;
+  /** Photo ops: the target photo's sha256. */
+  targetSha?: string;
   payload?: OpPayload | null;
 }
 

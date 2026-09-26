@@ -1,7 +1,9 @@
 /**
- * Centralised user-facing copy — the single source of every string a person reads.
- * Values are byte-identical to the literals they were extracted from; fill the
- * `{name}` placeholders with fmt().
+ * Centralised user-facing copy. The app ships two locales — `en` (source/default)
+ * and `zh` (translation) — and selects one at load time from `navigator.languages`,
+ * falling back to `en` where the browser language list is unavailable (Worker, Node
+ * tests). Callers stay locale-agnostic: they read `copy.<group>.<key>` and fill any
+ * `{name}` placeholder with `fmt()`.
  */
 
 /** Replace `{name}` placeholders in `template` with the matching `vars` entry. */
@@ -12,7 +14,317 @@ export function fmt(template: string, vars?: Record<string, string | number>): s
   );
 }
 
-export const copy = {
+// ---- English (source / default) ------------------------------------------------
+export const en = {
+  sync: {
+    failed: 'Sync failed',
+    queuedRetry: 'Change queued — retrying automatically',
+    dataMayBeStale: 'Data may be out of date — retrying automatically',
+    button: 'Sync',
+    pendingCount: 'Sync ({count} pending)',
+  },
+
+  upload: {
+    unknownType: "Can't detect the file type of {fileName}",
+    acceptHint: 'Only image and video files are supported',
+    duplicate: '{fileName} already exists',
+    defaultFileName: 'Photo',
+    failed: 'Failed to upload {fileName}',
+    errors: {
+      timeout: 'Upload timed out',
+      network: 'Network error',
+      unauthorized: 'Unauthorized — please verify first',
+      oversize: 'Output exceeds 100MB and cannot be uploaded',
+      tooLarge: 'File too large',
+      httpFailed: 'Upload failed (HTTP {status})',
+      failed: 'Upload failed',
+    },
+  },
+
+  transcode: {
+    errors: {
+      noSupportedVideoCodec: 'Unsupported codec (no VP9/VP8 encoder available)',
+      noVideoTrack: 'No video track found',
+      webpEncodeUnsupported: 'WebP encoding is not supported here',
+      conversionInvalid: 'Cannot parse this media format',
+      emptyOutput: 'Transcoding produced no output',
+      gifDecodeFailed: 'GIF decoding failed',
+      gifDimensionsUnknown: 'Cannot determine GIF dimensions',
+      sourceUnavailable: 'Source file is missing',
+      sourceMissing: 'Source file has been cleared',
+      canvas2dUnavailable: 'Cannot create a canvas',
+      unrecognizableFormat: 'Unrecognizable media format',
+      audioCodec: 'Unsupported audio codec',
+      encoderError: 'Encoder error',
+      corrupt: 'The file may be corrupted',
+      decodeFailed: 'Failed to decode the file — it may be corrupted',
+      outOfMemory: 'Out of memory',
+      unsupportedFileType: 'Unsupported file type',
+      summary: 'Transcode failed: {detail}',
+      withCode: 'Transcode failed ({error})',
+      failed: 'Transcode failed',
+    },
+  },
+
+  gallery: {
+    empty: 'No photos yet',
+    emptyFiltered: 'No photos match the filters',
+    emptyHint: 'Tap the upload button to add your first photo',
+    emptyFilteredHint: 'Try adjusting the filters',
+  },
+
+  topbar: {
+    settings: 'Settings',
+    announcements: 'Announcements',
+    multiSelect: 'Select',
+    upload: 'Upload',
+  },
+
+  sidebar: {
+    settingsTitle: 'Settings',
+    announcementsTitle: 'Announcements',
+    resizeAria: 'Resize sidebar width',
+    resizeTitle: 'Drag to resize width',
+    close: 'Close',
+  },
+
+  settings: {
+    typeImage: 'Images',
+    typeAnimated: 'Animations',
+    typeVideo: 'Videos',
+    keepOneType: 'Keep at least one type',
+    filterSection: 'Filters',
+    resetFilters: 'Reset filters',
+    hint: 'Filter by value after uploading photos',
+    ownedByMe: 'Uploaded by me',
+    likedByMe: 'Liked by me',
+    dislikedByMe: 'Disliked by me',
+    reportedByMe: 'Reported by me',
+    layoutSection: 'Layout',
+    resetLayout: 'Reset layout',
+    dirVertical: 'Vertical',
+    dirHorizontal: 'Horizontal',
+    strategyEqualWidth: 'Equal width',
+    strategyEqualHeight: 'Equal height',
+    rangeMin: 'Range minimum',
+    rangeMax: 'Range maximum',
+    sliderValue: 'Value',
+  },
+
+  sort: {
+    ariaLabel: 'Sort order',
+    latest: 'Latest',
+    hottest: 'Hottest',
+    random: 'Random',
+    oldest: 'Oldest',
+    coldest: 'Coldest',
+  },
+
+  multiSelect: {
+    selectAll: 'Select all',
+    deselectAll: 'Clear selection',
+    download: 'Download',
+    unmark: 'Unmark',
+    delete: 'Delete',
+  },
+
+  photoCard: {
+    dismiss: 'Remove',
+    retry: 'Retry upload',
+  },
+
+  uploadPanel: {
+    transcodeTitle: 'Transcoding',
+    /** Remove one file from its panel row (cancels the job). */
+    remove: 'Remove',
+    removeFile: 'Remove {fileName}',
+    fileProgress: '{fileName} progress',
+  },
+
+  lightbox: {
+    liked: 'Liked',
+    unliked: 'Like removed',
+    disliked: 'Disliked',
+    undisliked: 'Dislike removed',
+    reported: 'Deletion requested',
+    reportCancelled: 'Deletion request cancelled',
+    downloadStarted: 'Download started',
+    copyFailed: 'Copy failed',
+    linkCopied: 'Link copied',
+    originalUrlCopied: 'Original URL copied',
+    like: 'Like',
+    unlike: 'Unlike',
+    dislike: 'Dislike',
+    undislike: 'Undislike',
+    report: 'Request deletion',
+    cancelReport: 'Cancel deletion request',
+    cancelDelete: 'Cancel deletion',
+    more: 'More',
+    close: 'Close',
+    mute: 'Mute',
+    unmute: 'Unmute',
+    prev: 'Previous',
+    next: 'Next',
+    copyOriginal: 'Copy original',
+    copyLink: 'Copy link',
+    share: 'Share',
+    googleLens: 'Search image',
+    download: 'Download',
+    delete: 'Delete',
+    loadFailedStatus: 'Failed to load image ({status})',
+    loadFailed: 'Failed to load image',
+  },
+
+  announcements: {
+    empty: 'No announcements',
+    previewEmpty: 'Nothing to preview',
+    feedbackPlaceholder: 'Write your suggestion',
+    resizeHandle: 'Drag to resize height',
+    editToggle: 'Edit',
+    previewToggle: 'Preview',
+    send: 'Send',
+  },
+
+  editor: {
+    imageUploadFailed: 'Image upload failed — please retry',
+    uploading: 'Uploading',
+    retry: 'Retry',
+    previewAria: 'Live preview',
+    previewEmpty: 'Preview',
+    tools: {
+      bold: 'Bold',
+      italic: 'Italic',
+      strikethrough: 'Strikethrough',
+      quote: 'Quote',
+      code: 'Code block',
+      list: 'List',
+      link: 'Link',
+      image: 'Image',
+      vote: 'Poll',
+    },
+  },
+
+  admin: {
+    sectionLabel: 'Admin sections',
+    newAnnouncement: 'New announcement',
+    tabs: {
+      announcements: 'Announcements',
+      feedback: 'Feedback',
+    },
+    fail: {
+      backendTimeout: 'Backend is not responding — please retry later',
+      network: 'Check your network connection and retry',
+    },
+    announcement: {
+      publishFailed: 'Failed to publish announcement',
+      saveFailed: 'Failed to save announcement',
+      deleteFailed: 'Failed to delete announcement',
+      deleteRollback: 'Restored — please retry',
+      reorderFailed: 'Failed to save announcement order',
+      reorderRollback: 'Original order restored',
+      empty: 'No announcements',
+      listLabel: 'Announcement list',
+      edit: 'Edit',
+      editAria: 'Edit announcement',
+      delete: 'Delete',
+      deleteAria: 'Delete announcement',
+    },
+    feedback: {
+      deleteFailed: 'Failed to delete feedback',
+      reorderFailed: 'Failed to save feedback order',
+      empty: 'No feedback',
+      noMatches: 'No matching feedback',
+      listLabel: 'Feedback list',
+      totalCount: '{count} total',
+      searchPlaceholder: 'Search',
+      searchAria: 'Search feedback',
+      delete: 'Delete',
+      deleteAria: 'Delete feedback',
+      idLabel: 'ID',
+    },
+    editor: {
+      titlePlaceholder: 'Title',
+      cancel: 'Cancel',
+      uploading: 'Uploading',
+      save: 'Save',
+    },
+  },
+
+  migrate: {
+    importFailed: 'Import failed',
+    importComplete: 'Import complete',
+    importRetry: 'Import failed — please retry',
+    importSynced: 'Data imported and synced',
+    importSyncFailed: 'Data imported, but sync failed — please retry later',
+    httpErrorWithDetail: 'Server returned HTTP {status}: {detail}',
+    httpError: 'Server returned HTTP {status}',
+    exportComplete: 'Export complete',
+    exportFailed: 'Export failed',
+    tryAgainLater: 'Please retry later',
+    exportSql: 'Export SQL',
+    exporting: 'Exporting',
+    importSql: 'Import SQL',
+    importing: 'Importing',
+    importingFile: 'Importing {importName}',
+    progressLabel: 'SQL import progress',
+    onlySqlFiles: 'Only .sql files are supported',
+    fileTooLarge: 'File cannot exceed 50 MiB',
+    readFileFailed: 'Failed to read the file — please retry',
+    cannotCreateRequest: 'Cannot create the upload request',
+    uploadFailedCheckNetwork: 'Upload failed — check your network',
+    uploadCancelled: 'Upload cancelled',
+    uploadTimeout: 'Upload timed out — please retry',
+    invalidResponse: 'Invalid server response format',
+    noErrorDetail: 'Server returned no error details',
+    serverFailure: 'Import failed: {details}',
+    serverFailureNoDetail: 'Import failed: server returned no error details',
+  },
+
+  vote: {
+    count: '{count} votes',
+  },
+
+  reactions: {
+    add: 'Add reaction',
+  },
+
+  time: {
+    justNow: 'Just now',
+    minutesAgo: '{n} minutes ago',
+    hoursAgo: '{n} hours ago',
+    daysAgo: '{n} days ago',
+    monthsAgo: '{n} months ago',
+    yearsAgo: '{n} years ago',
+    monthDay: '{month}/{day} {clock}',
+    yearMonthDay: '{year}/{monthDay}',
+  },
+
+  errorPage: {
+    pageHeading: 'PAGE NOT FOUND',
+    notFoundMessage: 'The page you visited does not exist',
+    backHome: 'Back to home',
+    notFoundTitle: 'Not Found',
+    serverErrorTitle: 'Server Error',
+    workerNotFoundMessage: 'The page does not exist or was removed',
+    workerServerError: 'The server hiccupped — please try again later',
+  },
+
+  api: {
+    announcementCreateFailed: 'announcement create failed: HTTP {status}',
+    announcementUpdateFailed: 'announcement update failed: HTTP {status}',
+    announcementDeleteFailed: 'announcement delete failed: HTTP {status}',
+    announcementReorderFailed: 'announcement reorder failed: HTTP {status}',
+    feedbackDeleteFailed: 'feedback delete failed: HTTP {status}',
+    feedbackReorderFailed: 'feedback reorder failed: HTTP {status}',
+  },
+};
+
+// `Copy` is derived from `en`, so `zh` must mirror its shape exactly (the compiler
+// rejects a missing or extra key), keeping both locales in lockstep.
+export type Copy = typeof en;
+
+// ---- Chinese (translation) ----------------------------------------------------
+const zh: Copy = {
   sync: {
     failed: '同步失败',
     queuedRetry: '操作已排队，稍后自动重试',
@@ -24,8 +336,7 @@ export const copy = {
   upload: {
     unknownType: '无法识别 {fileName} 的文件类型',
     acceptHint: '仅支持图片和视频文件',
-    duplicate: '{fileName} 与已有照片重复',
-    duplicateSkipped: '已跳过上传',
+    duplicate: '{fileName} 已存在',
     defaultFileName: '照片',
     failed: '{fileName} 上传失败',
     errors: {
@@ -132,15 +443,10 @@ export const copy = {
   },
 
   uploadPanel: {
-    queued: '排队中',
-    transcoding: '转码中',
-    hashing: '校验中',
-    uploading: '上传中',
-    uploadTitle: '上传进度',
     transcodeTitle: '转码进度',
-    duplicate: '重复',
-    cancel: '取消',
-    cancelFile: '取消 {fileName}',
+    /** Remove one file from its panel row (cancels the job). */
+    remove: '移除',
+    removeFile: '移除 {fileName}',
     fileProgress: '{fileName} 进度',
   },
 
@@ -189,7 +495,6 @@ export const copy = {
   },
 
   editor: {
-    defaultUploadName: '图片',
     imageUploadFailed: '图片上传失败，请重试',
     uploading: '上传中',
     retry: '重试',
@@ -282,13 +587,6 @@ export const copy = {
     noErrorDetail: '服务器未返回错误详情',
     serverFailure: '导入失败：{details}',
     serverFailureNoDetail: '导入失败：服务器未返回错误详情',
-    errors: {
-      payloadTooLarge: 'payload too large',
-      badBody: 'bad body',
-      emptyBody: 'empty body',
-      noValidSql: 'no valid sql',
-      importFailed: 'import failed',
-    },
   },
 
   vote: {
@@ -311,7 +609,6 @@ export const copy = {
   },
 
   errorPage: {
-    errorCodeAria: '错误代码 {code}',
     pageHeading: 'PAGE NOT FOUND',
     notFoundMessage: '您访问的页面不存在',
     backHome: '返回首页',
@@ -329,4 +626,24 @@ export const copy = {
     feedbackDeleteFailed: 'feedback delete failed: HTTP {status}',
     feedbackReorderFailed: 'feedback reorder failed: HTTP {status}',
   },
-} as const;
+};
+
+const locales: Record<string, Copy> = { en, zh };
+
+/**
+ * Select the first supported locale from a browser language list, matching on the
+ * primary subtag ("zh-CN" → "zh"). Returns `en` when the list is absent or empty.
+ */
+export function pickLocale(langs?: readonly string[] | undefined): keyof typeof locales {
+  if (langs) {
+    for (const lang of langs) {
+      const primary = lang.toLowerCase().split('-')[0];
+      if (primary && primary in locales) return primary as keyof typeof locales;
+    }
+  }
+  return 'en';
+}
+
+/** Resolved copy for this environment; `en` in Workers and Node, browser locale in the page. */
+export const copy: Copy =
+  locales[pickLocale(typeof navigator !== 'undefined' ? navigator.languages : undefined)];

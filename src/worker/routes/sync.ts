@@ -72,6 +72,20 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 
 
 type MarkCol = 'likes' | 'dislikes' | 'reports';
 
+/**
+ * Resolve the photo an op targets. Photo ops are addressed by sha256 — the stable unique
+ * index of a photo — and never by the numeric id, which only serves the external
+ * `/l/{id36}` link. Hash resolution also covers a photo that is still uploading: its op is
+ * queued after the `upload` op that creates the row, so replaying the batch in order
+ * resolves it. Returns null when the hash hits no row; the caller then skips the op
+ * rather than creating an orphan.
+ */
+async function resolvePhotoId(db: Db, op: Op): Promise<number | null> {
+  if (!op.targetSha) return null;
+  const row = await db.prepare('SELECT id FROM photos WHERE sha256 = ?').bind(op.targetSha).first();
+  return row ? Number(row.id) : null;
+}
+
 async function toggleMark(
   db: Db,
   photoId: number | null,
@@ -121,20 +135,22 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
         return;
       }
       case 'like':
-        return toggleMark(db, op.target ?? null, user.id, 'likes', true);
+        return toggleMark(db, await resolvePhotoId(db, op), user.id, 'likes', true);
       case 'unlike':
-        return toggleMark(db, op.target ?? null, user.id, 'likes', false);
+        return toggleMark(db, await resolvePhotoId(db, op), user.id, 'likes', false);
       case 'dislike':
-        return toggleMark(db, op.target ?? null, user.id, 'dislikes', true);
+        return toggleMark(db, await resolvePhotoId(db, op), user.id, 'dislikes', true);
       case 'undislike':
-        return toggleMark(db, op.target ?? null, user.id, 'dislikes', false);
+        return toggleMark(db, await resolvePhotoId(db, op), user.id, 'dislikes', false);
       case 'report':
-        return toggleMark(db, op.target ?? null, user.id, 'reports', true);
+        return toggleMark(db, await resolvePhotoId(db, op), user.id, 'reports', true);
       case 'unreport':
-        return toggleMark(db, op.target ?? null, user.id, 'reports', false);
+        return toggleMark(db, await resolvePhotoId(db, op), user.id, 'reports', false);
       case 'delete': {
-        if (!isRoot || op.target == null) return;
-        await db.prepare('DELETE FROM photos WHERE id = ?').bind(op.target).run();
+        if (!isRoot) return;
+        const photoId = await resolvePhotoId(db, op);
+        if (photoId === null) return;
+        await db.prepare('DELETE FROM photos WHERE id = ?').bind(photoId).run();
         return;
       }
       case 'fb_create': {
