@@ -1,6 +1,7 @@
 // SharedWorker entry — transcode queue / image pool / video token pool / heartbeat leases.
 // Neither WebCodecs nor the Worker constructor exists in this global, so image transcoding runs on this thread by importing image.worker.ts as a module;
 // video jobs are only dispatched here — actual transcoding happens in the page's top-level DedicatedWorker.
+// Editor jobs skip every one of those pools: purpose='editor' uploads the picked file as-is (runEditorUpload).
 
 import type { MediaType } from '$shared/types';
 import {
@@ -8,14 +9,19 @@ import {
   imagePoolSize,
   isOversize,
   routeByMime,
+  uid,
   videoPoolSize,
 } from '$base/upload/pipeline';
 import { postUpload } from '../core/api/uploadClient';
 import { lookupSha } from '../core/oplog/cache';
-import { openOplogDb } from '../core/oplog/store';
+import {
+  deletePendingUpload,
+  openOplogDb,
+  putPendingUpload,
+  readPendingUploads,
+} from '../core/oplog/store';
 import { readArtifact, removeArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
-import { shouldDedupeArtifact } from './uploadPurpose';
 import {
   LEASE_TIMEOUT_MS,
   isPageToSw,
@@ -58,6 +64,8 @@ interface JobRec {
   editorResultAcked: boolean;
   /** Cancellation flag for image jobs. */
   cancelled: boolean;
+  /** Aborts the in-flight /upload when the job is cancelled mid-transfer. */
+  uploadAbort?: AbortController;
   /** First time the sweep observed this job in a terminal phase (prune clock). */
   terminalAt?: number;
   /** Token lease info (video/gif). */
@@ -85,10 +93,6 @@ const leases = new Map<string, Lease>();
  */
 let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
 
-function uid(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-}
-
 function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
   // Cancelled jobs (record already deleted from `jobs`) stay silent — otherwise
   // late progress/result notifications would resurrect the row they just dropped.
@@ -110,6 +114,13 @@ function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
     return;
   }
   broadcast(message);
+}
+
+/** Mark a job failed with `error` and notify its holders; centralises the repeated terminal-failure assignment. */
+function failJob(rec: JobRec, error: string): void {
+  rec.phase = 'failed';
+  rec.error = error;
+  notify(rec);
 }
 
 // ---- scheduling ----------------------------------------------------------------
@@ -141,9 +152,7 @@ function pumpVideoLeases(): void {
     const port = ownerPort(rec);
     if (!port) {
       // the owning page is gone: mark failed (the source Blob dies with it, no reassignment)
-      rec.phase = 'failed';
-      rec.error = 'source_unavailable';
-      notify(rec);
+      failJob(rec, 'source_unavailable');
       continue;
     }
     const leaseId = uid();
@@ -192,6 +201,7 @@ const EMPTY_BLOB = new Blob();
 /** Forget a job everywhere it is indexed (no broadcast: pages own their own rows). */
 function forgetJob(jobId: string): void {
   jobs.delete(jobId);
+  if (db) void deletePendingUpload(db, jobId).catch(() => undefined);
   owners.delete(jobId);
   const vi = videoQueue.indexOf(jobId);
   if (vi >= 0) videoQueue.splice(vi, 1);
@@ -203,14 +213,14 @@ function forgetJob(jobId: string): void {
 
 async function runImageJob(rec: JobRec): Promise<void> {
   rec.phase = 'transcoding';
-  notify(rec, { fraction: 0 });
+  // No fraction: image transcoding cannot measure itself mid-flight, so the row stays
+  // indeterminate instead of sitting at a fake 0%.
+  notify(rec);
   try {
     const r = await transcodeImage(rec.file);
     if (rec.cancelled) return;
     if (!r.ok) {
-      rec.phase = 'failed';
-      rec.error = r.error;
-      notify(rec);
+      failJob(rec, r.error);
       return;
     }
     rec.phase = 'hashing';
@@ -222,55 +232,84 @@ async function runImageJob(rec: JobRec): Promise<void> {
     rec.artifact = { ext: 'webp', size: bytes };
     await afterStage1(rec);
   } catch (e) {
-    rec.phase = 'failed';
-    rec.error = String((e as Error)?.message ?? e);
-    notify(rec);
+    failJob(rec, String((e as Error)?.message ?? e));
   }
 }
 
 // ---- stage 1 done: dedupe → stage 2 ------------------------------------------------
 
+/**
+ * Stage 1 done: dedupe, then stage 2. Only album jobs ever reach this point — the editor
+ * uploads the picked file as-is (see runEditorUpload) and never transcodes.
+ */
 async function afterStage1(rec: JobRec): Promise<void> {
-  // Existing photo hashes do not provide editor image URLs.
-  if (shouldDedupeArtifact(rec.purpose)) {
-    if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
-    if (db && rec.sha256) {
-      const hit = await lookupSha(db, 'album', rec.sha256).catch(() => undefined);
-      if (hit) {
-        rec.phase = 'duplicate';
-        notify(rec);
-        return;
-      }
+  if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
+  if (db && rec.sha256) {
+    const hit = await lookupSha(db, 'album', rec.sha256).catch(() => undefined);
+    if (hit) {
+      rec.phase = 'duplicate';
+      notify(rec);
+      return;
     }
   }
   rec.phase = 'uploading';
   notify(rec, { fraction: 0 });
+  // Remember the job: a reload kills this worker, but the artifact is on disk, so the
+  // upload can be resumed instead of silently losing a photo the user already uploaded.
+  if (db && rec.sha256 && rec.meta && rec.artifact) {
+    await putPendingUpload(db, {
+      jobId: rec.jobId,
+      fileName: rec.fileName,
+      sha256: rec.sha256,
+      meta: rec.meta,
+      artifactExt: rec.artifact.ext,
+    }).catch(() => undefined);
+  }
   await runUpload(rec);
 }
 
-/** Stage 2: 100MB pre-check + one /upload attempt, no auto-retry — a failure marks
- *  the file, the artifact stays in OPFS, and retryJob is manual-only. */
-async function runUpload(rec: JobRec): Promise<void> {
-  const ext = artifactExt(rec.meta!.type === 0 ? 'image' : 'webm');
-  const blob = await readArtifact(rec.jobId, ext);
+/**
+ * The editor leg: no transcode, no sha pass, no OPFS artifact — the picked file was
+ * cloned into this record on addJob and goes up as-is, so there is nothing to wait for
+ * but the transfer itself.
+ */
+async function runEditorUpload(rec: JobRec): Promise<void> {
+  rec.phase = 'uploading';
+  notify(rec, { fraction: 0 });
+  await runUpload(rec, rec.file);
+}
+
+/** Stage 2: 100MB pre-check + one /upload attempt, no auto-retry — a failure marks the
+ *  file and retryJob is manual-only. `source` = the blob to send; absent → the album
+ *  artifact is read back from OPFS (the editor passes the picked file it still holds). */
+async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
+  let blob: Blob | null;
+  let fileName: string | undefined;
+  if (source) {
+    blob = source;
+  } else {
+    const ext = artifactExt(rec.meta!.type === 0 ? 'image' : 'webm');
+    fileName = `m.${ext}`;
+    blob = await readArtifact(rec.jobId, ext);
+  }
   if (rec.cancelled) return;
   if (!blob) {
-    rec.phase = 'failed';
-    rec.error = 'source_unavailable';
-    notify(rec);
+    failJob(rec, 'source_unavailable');
     return;
   }
   // >100MB fails immediately; the artifact stays in OPFS (size limit)
   if (isOversize(blob.size)) {
-    rec.phase = 'failed';
-    rec.error = 'oversize';
-    notify(rec);
+    failJob(rec, 'oversize');
     return;
   }
+  rec.uploadAbort = new AbortController();
   const r = await postUpload(blob, {
     origin: self.location.origin,
+    fileName,
+    signal: rec.uploadAbort.signal,
     onProgress: (fraction) => notify(rec, { fraction }),
   });
+  rec.uploadAbort = undefined;
   // Cancelled mid-upload: discard the result — no URL, no op write, no notify
   // (a photo whose owner cancelled must never land in the album).
   if (rec.cancelled) return;
@@ -280,9 +319,7 @@ async function runUpload(rec: JobRec): Promise<void> {
     notify(rec);
     return;
   }
-  rec.phase = 'failed';
-  rec.error = r.error;
-  notify(rec);
+  failJob(rec, r.error);
 }
 
 // ---- video: page callbacks ---------------------------------------------------------
@@ -306,9 +343,7 @@ function onVideoResult(
       rec.artifact = { ext: 'webm', size: bytes };
       await afterStage1(rec);
     } catch (e) {
-      rec.phase = 'failed';
-      rec.error = String((e as Error)?.message ?? e);
-      notify(rec);
+      failJob(rec, String((e as Error)?.message ?? e));
     } finally {
       pumpVideoLeases();
     }
@@ -317,9 +352,7 @@ function onVideoResult(
 
 function onVideoFailed(rec: JobRec, error: string): void {
   if (rec.leaseId) leases.delete(rec.leaseId);
-  rec.phase = 'failed';
-  rec.error = error;
-  notify(rec);
+  failJob(rec, error);
   pumpVideoLeases();
 }
 
@@ -338,6 +371,11 @@ function onRetry(jobId: string): void {
   rec.opWritten = false;
   rec.editorResultAcked = false;
   rec.cancelled = false;
+  if (rec.purpose === 'editor') {
+    // The editor's only leg is the upload, and the picked file is still in the record.
+    void runEditorUpload(rec);
+    return;
+  }
   if (rec.artifact && rec.sha256) {
     // artifact already on disk: go straight to dedupe/upload
     rec.phase = 'uploading';
@@ -433,6 +471,49 @@ setInterval(() => {
 
 // ---- connection & message dispatch ---------------------------------------------------
 
+/**
+ * Rebuild jobs that were mid-upload when the worker died (a page reload tears it down
+ * whenever no other tab holds it). The artifact is still in OPFS, so the upload leg can
+ * simply be re-run: the card comes back and the photo still lands. Without this a reload
+ * silently dropped every photo that had been transcoded but not yet sent.
+ */
+let resumed = false;
+async function resumePendingUploads(): Promise<void> {
+  if (resumed) return;
+  resumed = true;
+  if (!db) db = await openOplogDb().catch(() => null);
+  if (!db) return;
+  const records = await readPendingUploads(db).catch(() => []);
+  for (const r of records) {
+    if (jobs.has(r.jobId)) continue;
+    // The artifact is the whole reason a resume is possible; without it the record is
+    // stale (cancelled, or the artifact was reclaimed) and must not linger.
+    const blob = await readArtifact(r.jobId, r.artifactExt);
+    if (!blob) {
+      void deletePendingUpload(db, r.jobId).catch(() => undefined);
+      continue;
+    }
+    const rec: JobRec = {
+      jobId: r.jobId,
+      purpose: 'album',
+      fileName: r.fileName,
+      mime: '',
+      file: EMPTY_BLOB,
+      engine: 'image',
+      phase: 'uploading',
+      artifact: { ext: r.artifactExt, size: r.meta.size },
+      sha256: r.sha256,
+      meta: r.meta,
+      opWritten: false,
+      editorResultAcked: false,
+      cancelled: false,
+    };
+    jobs.set(r.jobId, rec);
+    notify(rec, { fraction: 0 });
+    void runUpload(rec);
+  }
+}
+
 onconnect = (e: MessageEvent) => {
   const port = e.ports[0]!;
   ports.add(port);
@@ -445,6 +526,9 @@ onconnect = (e: MessageEvent) => {
     handleMessage(port, m);
   };
   port.onmessageerror = () => undefined;
+  // Resume before replaying: jobs rebuilt from disk must be in `jobs` so the replay
+  // below hands the fresh page its cards.
+  void resumePendingUploads();
   // Album jobs replay for refresh recovery; editor results stay with the original owner
   // and never cross a page-reload boundary. Terminal album states are skipped: /sync
   // already delivers `done` photos and a duplicate never landed at all.
@@ -498,7 +582,9 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
         mime: m.mime,
         file: m.file,
         engine: route.engine,
-        phase: route.engine === 'image' ? 'queued' : 'lease-wait',
+        // The editor waits for nothing but the transfer: it never joins the image queue
+        // nor the video token pool.
+        phase: m.purpose === 'editor' || route.engine === 'image' ? 'queued' : 'lease-wait',
         opWritten: false,
         editorResultAcked: false,
         cancelled: false,
@@ -506,6 +592,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       jobs.set(m.jobId, rec);
       owners.set(m.jobId, portIds.get(port)!);
       notify(rec);
+      if (m.purpose === 'editor') {
+        // No transcode leg for the editor — the picked file is uploaded as-is.
+        void runEditorUpload(rec);
+        return;
+      }
       if (route.engine === 'image') {
         imageQueue.push(m.jobId);
         pumpImage();
@@ -519,8 +610,18 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       const rec = jobs.get(m.jobId);
       if (!rec) return;
       rec.cancelled = true;
+      // Cancelling must reach whatever leg is still running: stop an in-flight /upload
+      // (its result would be discarded anyway — the bytes are what costs) and hand the
+      // video token back so the owning page kills its encoder instead of finishing a job
+      // nobody will see.
+      rec.uploadAbort?.abort();
+      const owner = ownerPort(rec);
+      const leaseId = rec.leaseId;
       forgetJob(m.jobId);
-      if (rec.leaseId) leases.delete(rec.leaseId);
+      if (leaseId) {
+        leases.delete(leaseId);
+        owner?.postMessage({ t: 'leaseRevoked', leaseId, jobId: m.jobId });
+      }
       // Cancel is the one path that may drop the artifact: the job will never be
       // retried, so nothing else will ever read it again.
       if (rec.artifact) void removeArtifact(m.jobId, rec.artifact.ext);

@@ -58,6 +58,20 @@ class AppState {
 
   private tempIdMap = new Map<number, number>();
   private pendingReorder: { ids: number[]; previousIds: number[] } | null = null;
+
+  /** Optimistic marks on photos whose row does not exist server-side yet, keyed by sha256
+   *  (the same address photo ops use). Merged into the pending cards so they highlight. */
+  pendingMarks = $state<Map<string, { likes: number[]; dislikes: number[]; reports: number[] }>>(
+    new Map(),
+  );
+
+  /** Shas whose `upload` op is already in the op log — a pending card in this set is only
+   *  waiting for /sync, so a delete can be queued behind it instead of cancelling. */
+  queuedUploadShas = $state<Set<string>>(new Set());
+
+  /** Ops aimed at a still-uploading photo, keyed by sha256. /sync replays a batch in array
+   *  order, so these may only be queued AFTER the `upload` op that creates the row. */
+  private deferredPhotoOps = new Map<string, Op[]>();
   private engine: SyncEngine | null = null;
 
   /** Bind engine state; repeated calls with the same engine are ignored. */
@@ -104,43 +118,127 @@ class AppState {
 
   // Photos
 
+  /**
+   * Queue one op for a photo, deferring it when the row does not exist yet. A photo op is
+   * addressed by sha256; when only the pending card knows the hash (its upload has not
+   * written its op yet) the op waits in `deferredPhotoOps` and is flushed by
+   * `photoOpQueued` right after the upload op — /sync replays a batch in array order, so
+   * the row must exist before the op that targets it.
+   */
+  private submitPhotoOp(sha256: string, op: Op): void {
+    if (!sha256) return;
+    if (this.queuedUploadShas.has(sha256)) {
+      void this.submit({ ...op, targetSha: sha256 });
+      return;
+    }
+    const queue = this.deferredPhotoOps.get(sha256);
+    if (queue) queue.push({ ...op, targetSha: sha256 });
+    else this.deferredPhotoOps.set(sha256, [{ ...op, targetSha: sha256 }]);
+  }
+
+  /** The upload op for `sha256` just entered the log: release everything waiting on it. */
+  photoOpQueued(sha256: string): void {
+    if (!sha256) return;
+    this.queuedUploadShas = new Set(this.queuedUploadShas).add(sha256);
+    const queue = this.deferredPhotoOps.get(sha256);
+    if (!queue) return;
+    this.deferredPhotoOps.delete(sha256);
+    for (const op of queue) void this.submit(op);
+  }
+
+  /** A pending card is gone for good (cancelled / failed / dismissed): drop its state. */
+  forgetPendingPhoto(sha256: string): void {
+    if (!sha256) return;
+    this.deferredPhotoOps.delete(sha256);
+    if (!this.queuedUploadShas.has(sha256)) return;
+    const next = new Set(this.queuedUploadShas);
+    next.delete(sha256);
+    this.queuedUploadShas = next;
+    if (!this.pendingMarks.has(sha256)) return;
+    const marks = new Map(this.pendingMarks);
+    marks.delete(sha256);
+    this.pendingMarks = marks;
+  }
+
   /** Optimistic root delete without confirmation. */
   private removePhotos(ids: number[]): void {
     this.photos = ops.applyDelete(this.photos, ids);
   }
 
-  setMark(photoId: number, kind: ops.MarkKind, add: boolean): void {
-    if (this.selfId < 0) return;
-    this.photos = ops.applyMark(this.photos, photoId, kind, this.selfId, add);
-    void this.submit({ type: ops.markOpType(kind, add), target: photoId });
+  /** Marks of a pending card, merged into its render model. */
+  pendingMarksFor(sha256: string): { likes: number[]; dislikes: number[]; reports: number[] } {
+    return this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
+  }
+
+  private static readonly MARK_FIELD = {
+    like: 'likes',
+    dislike: 'dislikes',
+    report: 'reports',
+  } as const;
+
+  /** Apply one mark locally (pending card or snapshot row) and queue its op. */
+  setMarkBySha(sha256: string, kind: ops.MarkKind, add: boolean): void {
+    if (this.selfId < 0 || !sha256) return;
+    const row = this.photos.find((p) => p.sha256 === sha256);
+    if (row) {
+      this.photos = ops.applyMark(this.photos, row.id, kind, this.selfId, add);
+    } else {
+      const field = AppState.MARK_FIELD[kind];
+      const cur = this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
+      const marks = new Map(this.pendingMarks);
+      marks.set(sha256, { ...cur, [field]: ops.toggleId(cur[field], this.selfId, add) });
+      this.pendingMarks = marks;
+    }
+    this.submitPhotoOp(sha256, { type: ops.markOpType(kind, add) });
   }
 
   /** Toggle one mark; likes and dislikes remain mutually exclusive. */
-  toggleMark(photoId: number, kind: ops.MarkKind): void {
-    const p = this.photos.find((x) => x.id === photoId);
-    if (!p) return;
-    const field = kind === 'like' ? 'likes' : kind === 'dislike' ? 'dislikes' : 'reports';
-    const has = p[field].includes(this.selfId);
+  toggleMark(sha256: string, kind: ops.MarkKind): void {
+    const p = this.photos.find((x) => x.sha256 === sha256);
+    const field = AppState.MARK_FIELD[kind];
+    const has = p
+      ? p[field].includes(this.selfId)
+      : (this.pendingMarks.get(sha256)?.[field] ?? []).includes(this.selfId);
     if (!has && kind !== 'report') {
       // One photo can carry either like or dislike, never both.
       const other = kind === 'like' ? 'dislikes' : 'likes';
       const otherKind: ops.MarkKind = kind === 'like' ? 'dislike' : 'like';
-      if (p[other].includes(this.selfId)) this.setMark(photoId, otherKind, false);
+      const hasOther = p
+        ? p[other].includes(this.selfId)
+        : (this.pendingMarks.get(sha256)?.[other] ?? []).includes(this.selfId);
+      if (hasOther) this.setMarkBySha(sha256, otherKind, false);
     }
-    this.setMark(photoId, kind, !has);
+    this.setMarkBySha(sha256, kind, !has);
   }
 
-  setMarkMany(ids: number[], kind: ops.MarkKind, add: boolean): void {
+  setMarkMany(shas: string[], kind: ops.MarkKind, add: boolean): void {
     if (this.selfId < 0) return;
-    this.photos = ops.applyMarkMany(this.photos, ids, kind, this.selfId, add);
-    for (const id of ids) void this.submit({ type: ops.markOpType(kind, add), target: id });
+    const real = shas.filter((sha) => this.photos.some((p) => p.sha256 === sha));
+    const pending = shas.filter((sha) => !real.includes(sha));
+    if (real.length > 0) {
+      const ids = real
+        .map((sha) => this.photos.find((p) => p.sha256 === sha)?.id)
+        .filter((id): id is number => id !== undefined);
+      this.photos = ops.applyMarkMany(this.photos, ids, kind, this.selfId, add);
+    }
+    for (const sha of pending) {
+      const field = AppState.MARK_FIELD[kind];
+      const cur = this.pendingMarks.get(sha) ?? { likes: [], dislikes: [], reports: [] };
+      const marks = new Map(this.pendingMarks);
+      marks.set(sha, { ...cur, [field]: ops.toggleId(cur[field], this.selfId, add) });
+      this.pendingMarks = marks;
+    }
+    for (const sha of shas) this.submitPhotoOp(sha, { type: ops.markOpType(kind, add) });
   }
 
-  /** Optimistic root delete for multi-selection. */
-  deletePhotos(ids: number[]): void {
+  /** Optimistic root delete for multi-selection (sha-addressed, pending cards included). */
+  deletePhotos(shas: string[]): void {
     if (this.selfId !== 0) return;
-    this.removePhotos(ids);
-    for (const id of ids) void this.submit({ type: 'delete', target: id });
+    const ids = shas
+      .filter((sha) => this.photos.some((p) => p.sha256 === sha))
+      .map((sha) => this.photos.find((p) => p.sha256 === sha)!.id);
+    if (ids.length > 0) this.removePhotos(ids);
+    for (const sha of shas) this.submitPhotoOp(sha, { type: 'delete' });
   }
 
   // Announcements

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UploadPipeline, type PipelineTaskSnapshot } from '../../src/transcode/pipeline';
 
-// Editor image uploads ride the same SharedWorker pipeline as the waterfall. These
-// tests pin that the page side surfaces those stages instead of swallowing them,
-// and that a failure is translated against the leg it happened on.
+// Editor image uploads ride the same SharedWorker queue and transport as the waterfall,
+// but skip its transcode leg entirely: the picked file goes up as-is. These tests pin
+// that the page side surfaces that upload leg, that a failure is worded as an upload
+// failure, and that a cancel settles the pending promise as an abort.
 
 class FakePort {
   sent: Array<Record<string, unknown>> = [];
@@ -64,19 +65,18 @@ describe('editor upload progress', () => {
     expect(port.sent.some((m) => m['t'] === 'addJob')).toBe(true);
   });
 
-  it('forwards the shared transcode → hash → upload stages with fractions', () => {
+  it('forwards the upload leg with fractions', () => {
     const { pipeline, port } = setup();
     const rows: PipelineTaskSnapshot[] = [];
     pipeline.onEditorTask((t) => rows.push(t));
     void pipeline.uploadEditorImage(png());
     const jobId = jobIdOf(port);
 
-    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'transcoding', fraction: 0 });
-    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'hashing' });
     status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.42 });
+    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.8 });
 
-    expect(rows.map((r) => r.phase)).toEqual(['queued', 'transcoding', 'hashing', 'uploading']);
-    expect(rows.at(-1)?.fraction).toBe(0.42);
+    expect(rows.map((r) => r.phase)).toEqual(['queued', 'uploading', 'uploading']);
+    expect(rows.at(-1)?.fraction).toBe(0.8);
   });
 
   it('resolves with the hosted URL and clears the row on done', async () => {
@@ -98,7 +98,7 @@ describe('editor upload progress', () => {
     expect(rows.at(-1)?.phase).toBe('done');
   });
 
-  it('labels a post-transcode failure as an upload error', async () => {
+  it('words every editor failure as an upload error', async () => {
     const { pipeline, port } = setup();
     const promise = pipeline.uploadEditorImage(png());
     const jobId = jobIdOf(port);
@@ -106,24 +106,22 @@ describe('editor upload progress', () => {
     status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.1 });
     status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'failed', error: 'timeout' });
 
-    await expect(promise).rejects.toThrow('上传超时');
+    await expect(promise).rejects.toThrow('Upload timed out');
   });
 
-  it('keeps a transcode-stage failure in transcode wording', async () => {
+  it('settles a pending upload as an abort when its job is removed', async () => {
     const { pipeline, port } = setup();
     const promise = pipeline.uploadEditorImage(png());
     const jobId = jobIdOf(port);
 
-    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'transcoding' });
-    status(port, {
-      t: 'jobStatus',
-      jobId,
-      purpose: 'editor',
-      phase: 'failed',
-      error: 'webp_encode_unsupported',
-    });
+    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.3 });
+    pipeline.cancel(jobId);
+    expect(port.sent.at(-1)).toMatchObject({ t: 'cancelJob', jobId });
 
-    await expect(promise).rejects.toThrow('转码失败：当前环境不支持 WebP 编码');
+    status(port, { t: 'jobRemoved', jobId });
+
+    // AbortError, not a failure: the owner stays quiet instead of showing an error.
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('ignores editor progress for jobs enqueued by another page', () => {
@@ -136,7 +134,8 @@ describe('editor upload progress', () => {
       t: 'jobStatus',
       jobId: 'someone-elses-job',
       purpose: 'editor',
-      phase: 'transcoding',
+      phase: 'uploading',
+      fraction: 0.5,
     });
 
     expect(rows).toHaveLength(1); // only the local 'queued' row
@@ -150,7 +149,7 @@ describe('editor upload progress', () => {
     // First attempt fails on the upload leg → waiter consumed.
     status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.1 });
     status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'failed', error: 'timeout' });
-    await expect(first).rejects.toThrow('上传超时');
+    await expect(first).rejects.toThrow('Upload timed out');
     expect(port.sent.some((m) => m['t'] === 'editorResultAck')).toBe(true);
 
     // Retry: a fresh waiter is registered and retryJob is sent.

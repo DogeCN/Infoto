@@ -168,6 +168,12 @@
     allPhotos.map((p) => ({ id: p.id, w: p.width || 1, h: p.height || 1 })),
   );
   let photoMap = $derived(new Map(allPhotos.map((p) => [p.id, p])));
+  /**
+   * What the Lightbox browses: everything the waterfall lays out except failed uploads.
+   * Filtering the list (rather than guarding the arrows) means arrow/edge navigation
+   * skips them and the counter reads correctly.
+   */
+  let lightboxPhotos = $derived(allPhotos.filter((p) => !isFailedUpload(p.id)));
 
   // Recompute layout when dependencies change, debounced to one computation per 16 ms frame
   // (abort-restart per event is a freeze root cause); state writes land in a rAF. layoutKey is
@@ -264,22 +270,27 @@
     scroll.x = scrollLeftPos;
   }
 
-  // Optimistic upload entries carry negative temp ids: they must never enter
-  // multi-select — deleting/marking them would send ops pointing at non-existent
-  // photos to the server.
-  const isOptimistic = (id: number) => id < 0;
+  // Optimistic upload entries carry negative temp ids. They open in the Lightbox and join
+  // multi-select like any other card: every write is addressed by sha256, which a pending
+  // card already knows, and an op on a still-uploading photo is queued behind its upload
+  // op — so nothing points at a row that does not exist.
+  /**
+   * A card whose upload failed is not a photo yet: there is nothing to preview and
+   * nothing to act on, so it neither opens the Lightbox nor joins multi-select. It
+   * becomes a normal card again once a retry succeeds or the user removes it.
+   */
+  const isFailedUpload = (id: number) => overlays.get(id)?.failed === true;
 
   function handlePhotoClick(photo: Photo) {
     if (multiMode) {
       toggleSelect(photo.id);
       return;
     }
-    // Pending upload entries don't open the preview (they become visible after /sync settles)
-    if (isOptimistic(photo.id) || overlays.has(photo.id)) return;
-    // The index must be resolved against the array the Lightbox renders (`photos`), not the
-    // laid-out one (`allPhotos`): an index over pending + photos points one slot off per
-    // optimistic entry and can land past the end of the preview list.
-    const idx = photos.findIndex((p) => p.id === photo.id);
+    if (isFailedUpload(photo.id)) return;
+    // The index must be resolved against the array the Lightbox renders, which is the
+    // resolved against the preview list, not the laid-out one: failed uploads are laid
+    // out but are not photos to look at.
+    const idx = lightboxPhotos.findIndex((p) => p.id === photo.id);
     if (idx < 0) return;
     lightboxIndex = idx;
     lightboxOpen = true;
@@ -288,17 +299,17 @@
   // The preview list can shrink underneath an open Lightbox (/sync drops a
   // duplicate, a photo gets deleted): clamp instead of leaving a dead index.
   $effect(() => {
-    if (photos.length === 0) {
+    if (lightboxPhotos.length === 0) {
       if (lightboxOpen) lightboxOpen = false;
       lightboxIndex = 0;
       return;
     }
-    if (lightboxIndex > photos.length - 1) lightboxIndex = photos.length - 1;
+    if (lightboxIndex > lightboxPhotos.length - 1) lightboxIndex = lightboxPhotos.length - 1;
     if (lightboxIndex < 0) lightboxIndex = 0;
   });
 
   function handleLongPress(photo: Photo) {
-    if (isOptimistic(photo.id)) return;
+    if (isFailedUpload(photo.id)) return;
     if (!multiMode) {
       multiMode = true;
       onMultiModeChange?.(true);
@@ -308,7 +319,7 @@
   }
 
   function toggleSelect(id: number) {
-    if (isOptimistic(id)) return;
+    if (isFailedUpload(id)) return;
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -320,7 +331,7 @@
   }
 
   function selectAll() {
-    selected = new Set(allPhotos.filter((p) => !isOptimistic(p.id)).map((p) => p.id));
+    selected = new Set(allPhotos.filter((p) => !isFailedUpload(p.id)).map((p) => p.id));
   }
 
   function deselectAll() {
@@ -328,31 +339,55 @@
     selected = new Set();
   }
 
-  // Marquee: pointerdown on the scroll container (starting on a card marquee-selects too)
+  /**
+   * Marquee: pointerdown on the scroll container (starting on a card marquee-selects too).
+   *
+   * Touch gets an intent gate. The container scrolls along the canvas' natural axis, so a
+   * swipe along THAT axis is a scroll and must never draw a selection box: selecting a
+   * screenful and then swiping on to the next one would otherwise marquee every draggable
+   * moment. Until the axis is known nothing is armed, and once the gesture clearly points
+   * along the scroll axis the marquee is dropped (the browser's own pan takes over anyway
+   * and cancels the pointer). A mouse has no scroll-drag conflict, so it arms immediately
+   * and keeps a free-direction marquee.
+   *
+   * Dragging past the container's edge scrolls it (the list keeps re-selecting under the
+   * pointer's screen position, so one gesture can reach the whole album).
+   */
   function handleMarqueeDown(e: PointerEvent) {
     if (!multiMode) return;
 
     const scrollEl = containerEl;
     if (!scrollEl) return;
 
-    // The marquee rectangle always uses canvas coordinates (the boxes' space), decoupled from viewport/container offsets
-    const rect = scrollEl.getBoundingClientRect();
+    // The marquee rectangle always uses canvas coordinates (the boxes' space), decoupled from viewport/container offsets.
+    // Scroll offsets are read off the element, never off the reactive mirrors: the edge
+    // auto-scroll below changes them and the mirrors only catch up on the next scroll event.
     const toCanvas = (cx: number, cy: number) =>
       dir === 'v'
-        ? { x: cx - rect.left - padX, y: cy - rect.top + scrollTop - padTop }
+        ? {
+            x: cx - scrollEl.getBoundingClientRect().left - padX,
+            y: cy - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop - padTop,
+          }
         : {
-            x: cx - rect.left + scrollLeftPos - padX,
-            y: cy - rect.top - padTop,
+            x: cx - scrollEl.getBoundingClientRect().left + scrollEl.scrollLeft - padX,
+            y: cy - scrollEl.getBoundingClientRect().top - padTop,
           };
     const start = toCanvas(e.clientX, e.clientY);
+    const origin = { x: e.clientX, y: e.clientY };
+    const pointer = { x: e.clientX, y: e.clientY };
+    const scrollAxis: 'x' | 'y' = dir === 'v' ? 'y' : 'x';
+    /** Pointer travel before the axis is read (below it the gesture is still ambiguous). */
+    const GATE_PX = 8;
+    /** Distance from the container edge at which the drag starts scrolling it. */
+    const EDGE_PX = 48;
+    let armed = e.pointerType === 'mouse';
+    let raf = 0;
     marqueeBase = new Set(selected);
     marqueeMoved = false;
 
-    marqueeActive = true;
-    marqueeRect = { ...start, w: 0, h: 0 };
-
-    const onMove = (ev: PointerEvent) => {
-      const cur = toCanvas(ev.clientX, ev.clientY);
+    /** Recompute the rectangle from the pointer's SCREEN position (canvas coords move as we scroll). */
+    const paint = () => {
+      const cur = toCanvas(pointer.x, pointer.y);
       marqueeRect = {
         x: Math.min(start.x, cur.x),
         y: Math.min(start.y, cur.y),
@@ -364,20 +399,71 @@
       // Marquee hits join the selection in real time: base on the snapshot, avoiding writes to an effect's own dependency (a cycle)
       const next = new Set(marqueeBase);
       for (const id of marqueeHits(boxes, marqueeRect)) {
-        if (!isOptimistic(id)) next.add(id);
+        if (!isFailedUpload(id)) next.add(id);
       }
       selected = next;
     };
 
-    const onUp = () => {
+    /** Keep scrolling while the pointer rests in an edge zone, re-selecting each frame. */
+    const step = () => {
+      const r = scrollEl.getBoundingClientRect();
+      const speed = (penetration: number) => Math.round(Math.min(22, 4 + penetration / 3));
+      let dx = 0;
+      let dy = 0;
+      if (dir === 'v') {
+        if (pointer.y < r.top + EDGE_PX) dy = -speed(r.top + EDGE_PX - pointer.y);
+        else if (pointer.y > r.bottom - EDGE_PX) dy = speed(pointer.y - (r.bottom - EDGE_PX));
+      } else {
+        if (pointer.x < r.left + EDGE_PX) dx = -speed(r.left + EDGE_PX - pointer.x);
+        else if (pointer.x > r.right - EDGE_PX) dx = speed(pointer.x - (r.right - EDGE_PX));
+      }
+      if (dx !== 0 || dy !== 0) {
+        scrollEl.scrollBy({ left: dx, top: dy });
+        paint();
+      }
+      raf = requestAnimationFrame(step);
+    };
+
+    const finish = () => {
+      cancelAnimationFrame(raf);
+      raf = 0;
       marqueeActive = false;
       marqueeRect = { x: 0, y: 0, w: 0, h: 0 };
       window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
     };
 
+    const onMove = (ev: PointerEvent) => {
+      pointer.x = ev.clientX;
+      pointer.y = ev.clientY;
+      if (!armed) {
+        const dx = Math.abs(ev.clientX - origin.x);
+        const dy = Math.abs(ev.clientY - origin.y);
+        if (Math.max(dx, dy) < GATE_PX) return;
+        // Dominant axis decides: along the scroll axis → this is a scroll, not a selection.
+        if (scrollAxis === 'y' ? dy >= dx : dx >= dy) {
+          finish();
+          return;
+        }
+        armed = true;
+        marqueeActive = true;
+        marqueeRect = { ...start, w: 0, h: 0 };
+      }
+      paint();
+    };
+
+    if (armed) {
+      marqueeActive = true;
+      marqueeRect = { ...start, w: 0, h: 0 };
+      raf = requestAnimationFrame(step);
+    } else {
+      marqueeActive = false;
+    }
+
     window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
   }
 
   /** Suppress the card click right after a marquee gesture (stopped in the capture phase to avoid accidental selection). */
@@ -429,7 +515,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={containerEl}
-    class="relative h-full w-full overflow-auto touch-none"
+    class="relative h-full w-full overflow-auto {dir === 'v' ? 'touch-pan-y' : 'touch-pan-x'}"
     onscroll={handleScroll}
     onclickcapture={suppressCardClick}
     ondragstart={(e) => e.preventDefault()}
@@ -514,8 +600,10 @@
 
 <Lightbox
   bind:open={lightboxOpen}
-  {photos}
-  currentIndex={photos.length > 0 ? Math.min(Math.max(lightboxIndex, 0), photos.length - 1) : 0}
+  photos={lightboxPhotos}
+  currentIndex={lightboxPhotos.length > 0
+    ? Math.min(Math.max(lightboxIndex, 0), lightboxPhotos.length - 1)
+    : 0}
   {selfId}
   onClose={() => (lightboxOpen = false)}
   onNavigate={handleLightboxNavigate}

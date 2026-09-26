@@ -7,9 +7,12 @@ import type { Op } from '$shared/types';
 export const OPLOG_SYNC_THRESHOLD = 256;
 
 const DB_NAME = 'infoto';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = 'oplog';
 const CACHE_STORE = 'metaCache';
+/** Survivable upload jobs: enough metadata to resume an upload after a page reload
+ *  (the artifact itself is in OPFS). */
+const RESUME_STORE = 'pendingUploads';
 
 export type OpLogListener = (count: number) => void;
 
@@ -24,6 +27,9 @@ export function openOplogDb(factory: IDBFactory = indexedDB): Promise<IDBDatabas
       }
       if (!db.objectStoreNames.contains(CACHE_STORE)) {
         db.createObjectStore(CACHE_STORE);
+      }
+      if (!db.objectStoreNames.contains(RESUME_STORE)) {
+        db.createObjectStore(RESUME_STORE, { keyPath: 'jobId' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -82,5 +88,46 @@ export async function clearOps(db: IDBDatabase): Promise<void> {
     tx.objectStore(STORE).clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('oplog clear failed'));
+  });
+}
+
+// ---- resumable uploads ---------------------------------------------------------
+// A page reload kills the SharedWorker and with it every in-flight job. The artifact is
+// already on disk (OPFS), so the job itself is recoverable — only its metadata is not.
+// Storing that metadata here lets the worker rebuild the job and finish the upload, so a
+// reload no longer silently drops a photo that was already transcoded.
+
+export interface PendingUploadRecord {
+  jobId: string;
+  fileName: string;
+  sha256: string;
+  meta: { width: number; height: number; size: number; type: 0 | 1 | 2 };
+  artifactExt: 'webp' | 'webm';
+}
+
+export async function putPendingUpload(db: IDBDatabase, rec: PendingUploadRecord): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(RESUME_STORE, 'readwrite');
+    tx.objectStore(RESUME_STORE).put(rec);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('pending upload write failed'));
+  });
+}
+
+export async function deletePendingUpload(db: IDBDatabase, jobId: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(RESUME_STORE, 'readwrite');
+    tx.objectStore(RESUME_STORE).delete(jobId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('pending upload delete failed'));
+  });
+}
+
+export async function readPendingUploads(db: IDBDatabase): Promise<PendingUploadRecord[]> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(RESUME_STORE, 'readonly');
+    const req = tx.objectStore(RESUME_STORE).getAll();
+    req.onsuccess = () => resolve((req.result ?? []) as PendingUploadRecord[]);
+    req.onerror = () => reject(req.error ?? new Error('pending upload read failed'));
   });
 }

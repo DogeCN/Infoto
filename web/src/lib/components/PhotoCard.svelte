@@ -22,8 +22,10 @@
     y?: number;
     width: number;
     height: number;
-    /** Upload curtain overlay: fraction = progress (reveal ratio), failed = full cover + retry. */
-    overlay?: { fraction?: number; failed?: boolean; error?: string };
+    /** Upload curtain overlay: fraction = progress (reveal ratio), failed = full cover + retry.
+     *  `preview` marks media that is only a local stand-in, so a source the browser cannot
+     *  decode falls back to the skeleton instead of the broken-photo placeholder. */
+    overlay?: { fraction?: number; failed?: boolean; error?: string; preview?: boolean };
     selected?: boolean;
     multiMode?: boolean;
     onClick?: () => void;
@@ -71,6 +73,8 @@
   // type=1 (animated image without audio track) and type=2 (video with sound) are both
   // video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);
+  /** Largest fraction the upload curtain may open to while the job is still running. */
+  const CURTAIN_MAX_OPEN = 0.9;
 
   let longPressTimer: ReturnType<typeof setTimeout> | undefined;
   let didLongPress = false;
@@ -110,6 +114,17 @@
       .catch(() => {
         if (!failController?.signal.aborted) failStatus = '0';
       });
+  }
+
+  /**
+   * A local preview can be a source this browser cannot decode (HEIC, an exotic video
+   * codec) — that is not a broken photo, so it degrades to the skeleton and waits for
+   * the real URL instead of showing the glitch fallback.
+   */
+  function handleMediaError(): void {
+    if (overlay?.preview) return;
+    loadFailed = true;
+    probeFailStatus(photo.url);
   }
 
   function handleClick() {
@@ -158,10 +173,7 @@
         autoplay
         playsinline
         onloadeddata={() => (loadedUrl = photo.url)}
-        onerror={() => {
-          loadFailed = true;
-          probeFailStatus(photo.url);
-        }}
+        onerror={handleMediaError}
       ></video>
     {:else}
       <img
@@ -174,10 +186,7 @@
         loading="lazy"
         draggable="false"
         onload={() => (loadedUrl = photo.url)}
-        onerror={() => {
-          loadFailed = true;
-          probeFailStatus(photo.url);
-        }}
+        onerror={handleMediaError}
       />
     {/if}
   {:else}
@@ -187,10 +196,13 @@
   <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry / dismiss -->
   {#if overlay}
     {#if overlay.failed}
+      <!-- Curtain back down to full cover. Both controls are the bare glyph: no plate,
+           no ring, no hover fill — the stroke colour is the only feedback channel, so a
+           hover cannot introduce a surface the resting state does not have. -->
       <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
         <button
           type="button"
-          class="absolute top-2 right-2 flex size-8 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/25 hover:text-white"
+          class="absolute top-2 right-2 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
           title={copy.photoCard.dismiss}
           aria-label={copy.photoCard.dismiss}
           onclick={(e) => {
@@ -200,9 +212,11 @@
         >
           <X class="size-4" />
         </button>
+        <!-- Retry is the primary action on a failed card: a 56px target with a 28px
+             glyph, so it is comfortable on touch and clearly the way out. -->
         <button
           type="button"
-          class="flex size-11 items-center justify-center rounded-full bg-white/10 text-white/85 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary hover:text-primary-foreground"
+          class="flex size-14 items-center justify-center rounded-full text-primary/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-primary"
           title={copy.photoCard.retry}
           aria-label={copy.photoCard.retry}
           onclick={(e) => {
@@ -210,14 +224,36 @@
             onRetryUpload?.();
           }}
         >
-          <RotateCcw class="size-5" />
+          <RotateCcw class="size-7" />
         </button>
       </div>
     {:else}
+      <!-- The curtain: the media is uncovered from the bottom as the leg progresses. Its
+           remove button rides on top of it — a cancel must be available mid-flight, not
+           only once the job has already failed.
+
+           The last sliver never opens while the job is still running: XHR reports the
+           request body as fully sent almost immediately (it measures the socket buffer,
+           not the host's response), so on a fast local link the fraction jumps straight
+           to 1 and an uncapped curtain would vanish at once — a card under upload looked
+           like a bare photo with a stray X. The veil now survives until 'done' removes
+           the overlay. -->
       <div
-        class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70"
-        style="height: {Math.max(0, 1 - (overlay.fraction ?? 0)) * 100}%"
+        class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70 transition-[height] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
+        style="height: {Math.max(0, 1 - Math.min(overlay.fraction ?? 0, CURTAIN_MAX_OPEN)) * 100}%"
       ></div>
+      <button
+        type="button"
+        class="absolute top-2 right-2 z-30 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
+        title={copy.photoCard.dismiss}
+        aria-label={copy.photoCard.dismiss}
+        onclick={(e) => {
+          e.stopPropagation();
+          onDismissUpload?.();
+        }}
+      >
+        <X class="size-4" />
+      </button>
     {/if}
   {/if}
 

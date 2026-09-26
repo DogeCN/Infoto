@@ -28,6 +28,11 @@ export interface UploadCallIo {
   timeoutMs?: number;
   /** Upload progress 0…1 (XHR upload.onprogress; fetch cannot observe it). */
   onProgress?: (fraction: number) => void;
+  /** External cancel (a job removed from the panel): aborts the attempt at once. */
+  signal?: AbortSignal;
+  /** Multipart file name override — the album already knows its artifact extension;
+   *  without it the name is derived from the blob's own MIME (editor source files). */
+  fileName?: string;
   /** Injected XHR transport (tests); defaults to the real XMLHttpRequest. */
   xhrFactory?: () => XMLHttpRequest;
 }
@@ -54,10 +59,33 @@ function parseTcResponse(text: string, status: number): UploadResult {
   return { ok: true, url: data };
 }
 
-function buildForm(blob: Blob): FormData {
-  const ext = blob.type === 'image/webp' ? 'webp' : 'webm';
+/** Multipart file name for one Blob, derived from its own MIME. The album names its
+ *  artifacts explicitly (it knows the extension); this covers the editor, which uploads
+ *  the picked file as-is — the host serves what the name says it is. */
+function extFor(blob: Blob): string {
+  const mime = (blob.type || '').toLowerCase().split(';')[0]!.trim();
+  const known: Record<string, string> = {
+    'image/webp': 'webp',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/avif': 'avif',
+    'image/heic': 'heic',
+    'video/webm': 'webm',
+    'video/mp4': 'mp4',
+    'video/quicktime': 'mov',
+    'video/x-matroska': 'mkv',
+    'video/x-msvideo': 'avi',
+  };
+  const hit = known[mime];
+  if (hit) return hit;
+  const subtype = mime.split('/')[1] ?? '';
+  return /^[a-z0-9]+$/.test(subtype) ? subtype : 'bin';
+}
+
+function buildForm(blob: Blob, fileName?: string): FormData {
   const fd = new FormData();
-  fd.append('file', blob, `m.${ext}`);
+  fd.append('file', blob, fileName ?? `m.${extFor(blob)}`);
   return fd;
 }
 
@@ -71,20 +99,25 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
   if (io.fetchFn) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const forward = () => ctrl.abort();
+    io.signal?.addEventListener('abort', forward, { once: true });
     try {
       const res = await io.fetchFn(`${origin}/upload`, {
         method: 'POST',
-        body: buildForm(blob),
+        body: buildForm(blob, io.fileName),
         signal: ctrl.signal,
         credentials: 'include',
       });
       return parseTcResponse(await res.text(), res.status);
     } catch (e) {
-      // both abort timeouts and network failures count as one failed attempt
+      // abort (watchdog or an external cancel) and network failures all count as one
+      // failed attempt; the pipeline discards the result of a cancelled job anyway
+      if (io.signal?.aborted) return { ok: false, error: 'aborted', detail: 'cancelled' };
       const aborted = e instanceof DOMException && e.name === 'AbortError';
       return { ok: false, error: aborted ? 'timeout' : 'network_error', detail: String(e) };
     } finally {
       clearTimeout(t);
+      io.signal?.removeEventListener('abort', forward);
     }
   }
 
@@ -97,11 +130,19 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     // instead: it fails only after `timeoutMs` with no progress; progress re-arms it.
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
+    // The watchdog aborts the same XHR the caller can cancel, so onabort must know which
+    // one fired: an external cancel is 'aborted', a silent stall is 'timeout'.
+    let cancelled = false;
     const settle = (result: UploadResult): void => {
       if (settled) return;
       settled = true;
       if (watchdog !== undefined) clearTimeout(watchdog);
+      io.signal?.removeEventListener('abort', cancel);
       resolve(result);
+    };
+    const cancel = (): void => {
+      cancelled = true;
+      xhr.abort();
     };
     const arm = (): void => {
       if (watchdog !== undefined) clearTimeout(watchdog);
@@ -110,6 +151,11 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
         settle({ ok: false, error: 'timeout', detail: 'no progress before deadline' });
       }, timeoutMs);
     };
+    if (io.signal?.aborted) {
+      settle({ ok: false, error: 'aborted', detail: 'cancelled' });
+      return;
+    }
+    io.signal?.addEventListener('abort', cancel, { once: true });
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && e.total > 0) {
         io.onProgress?.(Math.max(0, Math.min(1, e.loaded / e.total)));
@@ -118,12 +164,15 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     };
     xhr.onload = () => settle(parseTcResponse(xhr.responseText, xhr.status));
     xhr.onerror = () => settle({ ok: false, error: 'network_error', detail: 'xhr error' });
-    // Abort only ever comes from the watchdog above (nothing else cancels it).
     xhr.onabort = () =>
-      settle({ ok: false, error: 'timeout', detail: 'no progress before deadline' });
+      settle(
+        cancelled
+          ? { ok: false, error: 'aborted', detail: 'cancelled' }
+          : { ok: false, error: 'timeout', detail: 'no progress before deadline' },
+      );
     arm();
     try {
-      xhr.send(buildForm(blob));
+      xhr.send(buildForm(blob, io.fileName));
     } catch (e) {
       // a throw here must settle the promise or it stays pending forever, wedging the
       // SharedWorker's image pool (its running counter never comes back down)

@@ -44,14 +44,14 @@
          context and climbs past the parent's sticky frame (this really did clip through). -->
     <button
       type="button"
-      class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-200 {isChosen
+      class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-[var(--duration-exit)] {isChosen
         ? 'border-primary/50 bg-primary/5'
         : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'}"
       onclick={() => handle(idx)}
     >
       <!-- Fill bar: low-opacity primary, expands with the vote share -->
       <span
-        class="vote-fill absolute inset-y-0 left-0 bg-primary/10 transition-[width] duration-500 ease-out"
+        class="vote-fill absolute inset-y-0 left-0 bg-primary/10 transition-[width] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
         style="width: {pct.toFixed(1)}%"
       ></span>
       <span class="vote-meta relative z-10 flex items-center justify-between gap-2">

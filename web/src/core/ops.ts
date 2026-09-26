@@ -61,6 +61,16 @@ export function applyDelete(photos: Photo[], ids: number[]): Photo[] {
   return photos.filter((p) => !set.has(p.id));
 }
 
+/**
+ * The photo an op targets, as it exists in `photos`. Photo ops are addressed by sha256 —
+ * the stable unique index — so this resolves a mark written while its photo was still
+ * uploading as soon as the row lands. Returns null when the photo is not in the list.
+ */
+export function resolveOpPhoto(photos: Photo[], op: Op): Photo | null {
+  if (!op.targetSha) return null;
+  return photos.find((p) => p.sha256 === op.targetSha) ?? null;
+}
+
 /** Re-fold ops still queued in the local oplog onto a fresh server snapshot: a snapshot
  * computed before they reached the server must not revert optimistic state (the reducers
  * are idempotent). `upload`/`fb_create` rows are managed outside this fold; feedback is snapshot-authoritative. */
@@ -73,6 +83,7 @@ export function reapplyQueued(
   let p = photos;
   let a = announcements;
   for (const op of queued) {
+    const photo = resolveOpPhoto(p, op);
     switch (op.type) {
       case 'like':
       case 'unlike':
@@ -80,18 +91,18 @@ export function reapplyQueued(
       case 'undislike':
       case 'report':
       case 'unreport': {
-        if (op.target == null) break;
+        if (!photo) break;
         const kind: MarkKind =
           op.type === 'like' || op.type === 'unlike'
             ? 'like'
             : op.type === 'dislike' || op.type === 'undislike'
               ? 'dislike'
               : 'report';
-        p = applyMark(p, op.target, kind, selfId, !op.type.startsWith('un'));
+        p = applyMark(p, photo.id, kind, selfId, !op.type.startsWith('un'));
         break;
       }
       case 'delete':
-        if (op.target != null) p = applyDelete(p, [op.target]);
+        if (photo) p = applyDelete(p, [photo.id]);
         break;
       case 'vote':
         if (op.target != null)

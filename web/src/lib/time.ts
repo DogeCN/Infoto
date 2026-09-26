@@ -15,7 +15,7 @@ export function formatRelativeTime(timestamp: number, reference: number = Date.n
 }
 
 /** Absolute time with leading components dropped: same day → "HH:MM", same year →
- *  date + clock (Chinese month/day units), else with the year. Keys on calendar
+ *  date + clock (locale-formatted month/day), else with the year. Keys on calendar
  *  boundaries so yesterday keeps its date; `reference` defaults to now. */
 export function formatSmartAbsolute(timestamp: number, reference: number = Date.now()): string {
   const d = new Date(timestamp);

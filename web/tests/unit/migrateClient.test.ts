@@ -83,7 +83,7 @@ describe('migrateSql', () => {
     expect(result).toEqual({
       ok: false,
       kind: 'http',
-      message: '服务器返回 HTTP 503',
+      message: 'Server returned HTTP 503',
       status: 503,
     });
   });
@@ -120,7 +120,7 @@ describe('migrateSql', () => {
     expect(result).toEqual({
       ok: false,
       kind: 'malformed',
-      message: '服务器响应格式无效',
+      message: 'Invalid server response format',
       status: 200,
     });
   });

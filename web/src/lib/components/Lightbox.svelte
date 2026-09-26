@@ -529,7 +529,10 @@
   }
 
   /** Proxy URL for out-of-site sharing (host URLs never leave the Worker). */
-  let shareUrl = $derived(photo ? proxyUrl(origin, photo.id) : '');
+  /** An optimistic upload entry: it has no server id yet, so anything addressed by id
+   *  (the /l/ proxy link, the id36 file name) is unavailable until it lands. */
+  let isPending = $derived(photo ? photo.id < 0 : false);
+  let shareUrl = $derived(photo && !isPending ? proxyUrl(origin, photo.id) : '');
 
   /** Open transition: the element mounts inside `{#if open}` — mount without `.show`
    *  and add the class on the next frame, or the transition would not play. */
@@ -544,7 +547,7 @@
   });
 
   async function share() {
-    if (!photo) return;
+    if (!photo || !shareUrl) return;
     if (navigator.share) {
       try {
         await navigator.share({ url: shareUrl });
@@ -810,41 +813,46 @@
         <span class="text-sm">{copy.lightbox.copyOriginal}</span>
       </button>
 
-      <button
-        type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
-        onclick={() => {
-          void copyText(shareUrl, copy.lightbox.linkCopied);
-          showMenu = false;
-        }}
-      >
-        <Link2 class="size-6" />
-        <span class="text-sm">{copy.lightbox.copyLink}</span>
-      </button>
+      <!-- Everything addressed by the photo's server id (the /l/ link, the id36 file
+           name) waits until an optimistic upload lands; a pending card offers only what
+           works without an id. -->
+      {#if !isPending}
+        <button
+          type="button"
+          class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+          onclick={() => {
+            void copyText(shareUrl, copy.lightbox.linkCopied);
+            showMenu = false;
+          }}
+        >
+          <Link2 class="size-6" />
+          <span class="text-sm">{copy.lightbox.copyLink}</span>
+        </button>
 
-      <button
-        type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
-        onclick={share}
-      >
-        <Share2 class="size-6" />
-        <span class="text-sm">{copy.lightbox.share}</span>
-      </button>
+        <button
+          type="button"
+          class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+          onclick={share}
+        >
+          <Share2 class="size-6" />
+          <span class="text-sm">{copy.lightbox.share}</span>
+        </button>
 
-      <button
-        type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 text-primary transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/10"
-        onclick={() => {
-          window.open(
-            `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`,
-            '_blank',
-          );
-          showMenu = false;
-        }}
-      >
-        <Search class="size-6" />
-        <span class="text-sm">{copy.lightbox.googleLens}</span>
-      </button>
+        <button
+          type="button"
+          class="flex flex-col items-center gap-2 rounded-xl p-4 text-primary transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/10"
+          onclick={() => {
+            window.open(
+              `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`,
+              '_blank',
+            );
+            showMenu = false;
+          }}
+        >
+          <Search class="size-6" />
+          <span class="text-sm">{copy.lightbox.googleLens}</span>
+        </button>
+      {/if}
 
       <button
         type="button"
@@ -859,17 +867,19 @@
         >
       </button>
 
-      <button
-        type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 text-success transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-success/10"
-        onclick={() => {
-          onDownload?.(photo);
-          showMenu = false;
-        }}
-      >
-        <Download class="size-6" />
-        <span class="text-sm">{copy.lightbox.download}</span>
-      </button>
+      {#if !isPending}
+        <button
+          type="button"
+          class="flex flex-col items-center gap-2 rounded-xl p-4 text-success transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-success/10"
+          onclick={() => {
+            onDownload?.(photo);
+            showMenu = false;
+          }}
+        >
+          <Download class="size-6" />
+          <span class="text-sm">{copy.lightbox.download}</span>
+        </button>
+      {/if}
 
       {#if selfId === 0}
         <button

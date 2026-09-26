@@ -18,8 +18,8 @@
   import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';
   import VoteBlock from './VoteBlock.svelte';
-  import UploadProgressPanel, { type PanelTask } from './UploadProgressPanel.svelte';
   import { splitVote } from '../../core/vote';
+  import type { UploadRow } from '../../transcode/pipeline';
   import {
     insertImageAt,
     insertMarkdownBlock,
@@ -38,10 +38,8 @@
     onChange?: (v: string) => void;
     /** File name shown on the in-flight upload card (defaults to "image"). */
     uploadName?: string;
-    /** Live pipeline snapshot (queue/transcode/hash/upload) of that upload. */
-    uploadTask?: PanelTask | null;
-    /** Cancel the in-flight editor upload (the parent knows the job id). */
-    onCancelUpload?: () => void;
+    /** Live snapshot of that upload (its phase drives the failed-state retry link). */
+    uploadTask?: UploadRow | null;
     /** Retry a failed editor upload; the parent calls pipeline.retryEditorUpload(jobId). */
     onRetryUpload?: (jobId: string) => Promise<string>;
   }
@@ -53,7 +51,6 @@
     onChange,
     uploadName = '',
     uploadTask = null,
-    onCancelUpload,
     onRetryUpload,
   }: Props = $props();
 
@@ -61,35 +58,17 @@
   let imageUploading = $state(false);
   let imageError = $state('');
   let pendingImageCaret: number | null = null;
-  // True once a real pipeline snapshot arrived this upload — the synthetic 'queued'
-  // row only covers the window before it. Without this flag a terminal snapshot would
-  // fall through to the synthetic branch and flash a bogus "queued" row.
-  let sawLiveSnapshot = $state(false);
   // Captured from the failed snapshot so the retry button can call pipeline.retry(jobId).
   let failedJobId = $state<string | null>(null);
   $effect(() => {
-    if (uploadTask) sawLiveSnapshot = true;
     if (uploadTask?.phase === 'failed') failedJobId = uploadTask.jobId;
   });
 
-  /** Row shown by UploadProgressPanel (kind='upload'): the real pipeline snapshot when
-   *  live, else the synthetic row covering the window before the first one arrives. */
-  let uploadTasks = $derived.by(() => {
-    const m = new Map<string, PanelTask>();
-    if (!imageUploading) return m;
-    const live = uploadTask;
-    if (live && live.phase !== 'done' && live.phase !== 'failed') {
-      m.set(live.jobId, live);
-    } else if (!sawLiveSnapshot) {
-      m.set('editor-image', {
-        jobId: 'editor-image',
-        fileName: uploadName || copy.editor.defaultUploadName,
-        phase: 'queued',
-        fraction: null,
-      });
-    }
-    return m;
-  });
+  /** A deliberate cancel (the panel's remove button) rejects the pending upload too —
+   *  that is not a failure to report. */
+  function isCancelled(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'AbortError';
+  }
 
   function selection(): TextSelection {
     return {
@@ -134,7 +113,6 @@
     imageError = '';
     failedJobId = null;
     imageUploading = true;
-    sawLiveSnapshot = false;
     pendingImageCaret = selection().start;
     try {
       const url = await onPickImage();
@@ -145,6 +123,8 @@
         applyTransform(insertImageAt(value, caret, url, alt));
       }
     } catch (error) {
+      // A deliberate cancel is not a failure: no error line, no message under the editor.
+      if (isCancelled(error)) return;
       console.error('[editor] image upload failed', error);
       // The pipeline already translates engine error codes into localized copy.
       imageError =
@@ -185,7 +165,11 @@
       run: () => surround('[', '](https://)', copy.editor.tools.link),
     },
     { icon: ImagePlus, title: copy.editor.tools.image, run: () => void pickImage(), image: true },
-    { icon: Vote, title: copy.editor.tools.vote, run: () => insertBlock(':::vote 选项A | 选项B') },
+    {
+      icon: Vote,
+      title: copy.editor.tools.vote,
+      run: () => insertBlock(':::vote Option A | Option B'),
+    },
   ];
 
   let previewVote = $derived(splitVote(value));
@@ -223,16 +207,7 @@
         'ring-offset-background placeholder:text-muted-foreground',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
       )}></textarea>
-    {#if imageUploading}
-      <!-- Same floating spot as the home transcode progress card (fixed bottom-right); bottom-16 clears the editor's bottom cancel/save bar -->
-      <div class="fixed right-4 bottom-16 z-40 w-72">
-        <UploadProgressPanel
-          tasks={uploadTasks}
-          kind="upload"
-          onCancelTask={() => onCancelUpload?.()}
-        />
-      </div>
-    {:else if imageError}
+    {#if !imageUploading && imageError}
       <div class="flex items-center gap-2" aria-live="polite">
         <p class="text-xs text-destructive">{imageError}</p>
         {#if failedJobId && onRetryUpload}
@@ -245,7 +220,6 @@
               imageError = '';
               failedJobId = null;
               imageUploading = true;
-              sawLiveSnapshot = false;
               pendingImageCaret = selection().start;
               try {
                 const url = await onRetryUpload(id);
@@ -255,6 +229,7 @@
                   applyTransform(insertImageAt(value, caret, url, alt));
                 }
               } catch (error) {
+                if (isCancelled(error)) return;
                 console.error('[editor] image upload retry failed', error);
                 imageError =
                   error instanceof Error && error.message

@@ -2,10 +2,6 @@ import type { JobMeta, JobPurpose, JobStatusMessage } from './protocol';
 
 export type PipelineResultAction = 'observe' | 'resolve' | 'reject' | 'ignore';
 
-export function shouldDedupeArtifact(purpose: JobPurpose): boolean {
-  return purpose === 'album';
-}
-
 export function shouldWriteAlbumUploadOp(
   purpose: JobPurpose,
   phase: JobStatusMessage['phase'],

@@ -25,20 +25,26 @@ describe('pipeline pure functions', () => {
   });
 
   it('maps the codes that actually reach the upload leg (the proxy prefers body over status)', () => {
-    const onUpload = { sha256: 'abc' };
-    expect(translateTaskError('unauthorized', onUpload)).toBe('未授权，请先通过验证');
-    expect(translateTaskError('http_401', onUpload)).toBe('未授权，请先通过验证');
-    expect(translateTaskError('timeout', onUpload)).toBe('上传超时');
-    expect(translateTaskError('http_418', onUpload)).toBe('上传失败（HTTP 418）');
-    expect(translateTaskError('garbage_code', onUpload)).toBe('上传失败');
-    expect(translateTaskError('oversize', { oversize: true })).toBe('产物超过 100MB，无法上传');
+    const onUpload = { uploadLeg: true };
+    expect(translateTaskError('unauthorized', onUpload)).toBe('Unauthorized — please verify first');
+    expect(translateTaskError('http_401', onUpload)).toBe('Unauthorized — please verify first');
+    expect(translateTaskError('timeout', onUpload)).toBe('Upload timed out');
+    expect(translateTaskError('http_418', onUpload)).toBe('Upload failed (HTTP 418)');
+    expect(translateTaskError('garbage_code', onUpload)).toBe('Upload failed');
+    expect(translateTaskError('oversize', { oversize: true })).toBe(
+      'Output exceeds 100MB and cannot be uploaded',
+    );
   });
 
   it('keeps transcode failures distinguishable from upload failures', () => {
-    expect(translateTaskError('source_missing', {})).toBe('转码失败：源文件已被清理');
-    expect(translateTaskError('file is corrupt on disk', {})).toBe('转码失败：文件可能已损坏');
-    expect(translateTaskError('brand_new_code', {})).toBe('转码失败（brand_new_code）');
-    expect(translateTaskError(undefined, {})).toBe('转码失败');
+    expect(translateTaskError('source_missing', {})).toBe(
+      'Transcode failed: Source file has been cleared',
+    );
+    expect(translateTaskError('file is corrupt on disk', {})).toBe(
+      'Transcode failed: The file may be corrupted',
+    );
+    expect(translateTaskError('brand_new_code', {})).toBe('Transcode failed (brand_new_code)');
+    expect(translateTaskError(undefined, {})).toBe('Transcode failed');
   });
 
   it('image pool clamp(2,6,floor(cores*0.75)) with downlink cap', () => {

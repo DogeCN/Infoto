@@ -41,7 +41,9 @@
   );
   let allSelected = $derived(count === selectable.length && selectable.length > 0);
 
-  /** Whether any selected item carries the current user's mark (otherwise the unmark button is greyed out). */
+  /** Whether any selected item carries the current user's mark. Unmark is its own case:
+   *  it is pointless without a mark to undo, so it stays disabled until one exists —
+   *  unlike download/delete, which only need a non-empty selection. */
   let hasAnyMark = $derived(
     selectable.some(
       (p) =>
@@ -98,10 +100,12 @@
       {/if}
     </button>
 
+    <!-- Download/delete/unmark share one look (semantic colour always on, tinted plate on
+         hover). Their enablement differs on purpose: download and delete need a selection,
+         unmark needs a selection that actually carries a mark. -->
     <button
       type="button"
-      class="{btn} size-10 text-muted-foreground hover:text-foreground disabled:opacity-40"
-      class:text-warning={hasAnyMark}
+      class="{btn} size-10 text-warning hover:bg-warning/10 disabled:opacity-40"
       onclick={onUnmark}
       disabled={!hasAnyMark}
       title={copy.multiSelect.unmark}
@@ -112,7 +116,7 @@
     {#if selfId === 0}
       <button
         type="button"
-        class="{btn} size-10 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+        class="{btn} size-10 text-destructive hover:bg-destructive/10 disabled:opacity-40"
         onclick={onDelete}
         disabled={count === 0}
         title={copy.multiSelect.delete}

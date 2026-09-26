@@ -10,7 +10,7 @@
   import { TurnstileRequiredError } from '../../core/api/syncClient';
   import { createAppStore } from '../../state/appStore.svelte';
   import { UploadPipeline } from '../../transcode/pipeline';
-  import type { PanelTask } from '$lib/components/UploadProgressPanel.svelte';
+  import type { UploadRow } from '../../transcode/pipeline';
   import AdminMigrateMenu from './AdminMigrateMenu.svelte';
   import AnnouncementEditorDialog from './AnnouncementEditorDialog.svelte';
   import AnnouncementList from './AnnouncementList.svelte';
@@ -49,7 +49,7 @@
   let editingAnnouncement = $state<Announcement | null>(null);
   // Editor image uploads share the SharedWorker pipeline with the waterfall
   // (transcode → hash → upload); this row carries their live stage.
-  let editorUploadTask = $state<PanelTask | null>(null);
+  let editorUploadTask = $state<UploadRow | null>(null);
   /** Job id of the in-flight editor upload (null when idle/terminal). */
   let editorJobId: string | null = null;
 
@@ -222,7 +222,8 @@
     {/if}
 
     <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->
-    <Toaster position="bottom-left" theme="dark" richColors {toastOptions} />
+    <!-- expand: see App.svelte — a swipe-out otherwise leaves the stack stuck open. -->
+    <Toaster position="bottom-left" theme="dark" richColors expand {toastOptions} />
   </div>
 {:else if store.selfId >= 1}
   <!-- Known non-root (confirmed by cache or /sync): show the 404 page -->

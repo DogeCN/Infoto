@@ -176,42 +176,45 @@ test('parseGifLsdSize: rejects non-GIF data, short buffers, degenerate sizes', (
 
 // ---- error summary translation (revalidation fix #4) ---------------------------
 
-test('translateTaskError: known transcode codes map to Chinese summaries', () => {
+test('translateTaskError: known transcode codes map to localized summaries', () => {
   assert.equal(
     translateTaskError('no_supported_video_codec', {}),
-    '转码失败：不支持的编码（无可用 VP9/VP8 编码器）',
+    'Transcode failed: Unsupported codec (no VP9/VP8 encoder available)',
   );
-  assert.equal(translateTaskError('no_video_track', {}), '转码失败：未找到视频轨');
-  assert.equal(translateTaskError('empty_output', {}), '转码失败：转码产出为空');
+  assert.equal(translateTaskError('no_video_track', {}), 'Transcode failed: No video track found');
+  assert.equal(
+    translateTaskError('empty_output', {}),
+    'Transcode failed: Transcoding produced no output',
+  );
 });
 
 test('translateTaskError: raw English engine messages are matched by pattern', () => {
   assert.equal(
     translateTaskError('Input has an unsupported or unrecognizable format.', {}),
-    '转码失败：无法识别的媒体格式',
+    'Transcode failed: Unrecognizable media format',
   );
   assert.equal(
     translateTaskError('Failed to decode frame', {}),
-    '转码失败：文件解码失败，可能已损坏',
+    'Transcode failed: Failed to decode the file — it may be corrupted',
   );
 });
 
-test('translateTaskError: unknown errors fall back to 「转码失败」 + detail', () => {
-  assert.equal(translateTaskError('weird_thing', {}), '转码失败（weird_thing）');
-  assert.equal(translateTaskError(undefined, {}), '转码失败');
+test('translateTaskError: unknown errors fall back to "Transcode failed" + detail', () => {
+  assert.equal(translateTaskError('weird_thing', {}), 'Transcode failed (weird_thing)');
+  assert.equal(translateTaskError(undefined, {}), 'Transcode failed');
 });
 
 test('translateTaskError: oversize wins over everything', () => {
   assert.equal(
-    translateTaskError('oversize', { oversize: true, sha256: 'abc' }),
-    '产物超过 100MB，无法上传',
+    translateTaskError('oversize', { oversize: true, uploadLeg: true }),
+    'Output exceeds 100MB and cannot be uploaded',
   );
 });
 
-test('translateTaskError: sha256 present → the failure is on the upload leg', () => {
-  assert.equal(translateTaskError('timeout', { sha256: 'abc' }), '上传超时');
-  assert.equal(translateTaskError('http_500', { sha256: 'abc' }), '上传失败（HTTP 500）');
-  assert.equal(translateTaskError('whatever', { sha256: 'abc' }), '上传失败');
+test('translateTaskError: uploadLeg set → the failure is on the upload leg', () => {
+  assert.equal(translateTaskError('timeout', { uploadLeg: true }), 'Upload timed out');
+  assert.equal(translateTaskError('http_500', { uploadLeg: true }), 'Upload failed (HTTP 500)');
+  assert.equal(translateTaskError('whatever', { uploadLeg: true }), 'Upload failed');
 });
 
 // ---- op construction ----------------------------------------------------------------------

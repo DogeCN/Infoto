@@ -168,4 +168,64 @@ describe('postUpload (XHR path)', () => {
       detail: 'no progress before deadline',
     });
   });
+
+  it('settles as aborted — not as a timeout — when the caller cancels mid-flight', async () => {
+    const xhr = new FakeXhr();
+    const ctrl = new AbortController();
+    const p = postUpload(blob, {
+      origin: ORIGIN,
+      timeoutMs: 60_000,
+      signal: ctrl.signal,
+      xhrFactory: () => xhr as unknown as XMLHttpRequest,
+    });
+    xhr.progress(1, 10);
+    ctrl.abort();
+    expect(xhr.aborted).toBe(true);
+    expect(await p).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
+  });
+
+  it('does not even start when the signal is already aborted', async () => {
+    const xhr = new FakeXhr();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const p = postUpload(blob, {
+      origin: ORIGIN,
+      signal: ctrl.signal,
+      xhrFactory: () => xhr as unknown as XMLHttpRequest,
+    });
+    expect(await p).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
+    expect(xhr.sentBody).toBeNull();
+  });
+
+  it('names the multipart part after the source MIME, or the caller’s explicit name', async () => {
+    // Transcode output (the album's usual case): the MIME carries the extension.
+    const xhr = new FakeXhr();
+    const p = call(xhr);
+    xhr.finish(200, JSON.stringify({ data: 'https://cdn.test/a.webp' }));
+    await p;
+    expect(((xhr.sentBody as FormData).get('file') as File).name).toBe('m.webp');
+
+    // Editor source files go up as-is: a PNG must not be named m.webm.
+    const xhr2 = new FakeXhr();
+    const p2 = postUpload(new Blob(['x'], { type: 'image/png' }), {
+      origin: ORIGIN,
+      timeoutMs: 1_000,
+      xhrFactory: () => xhr2 as unknown as XMLHttpRequest,
+    });
+    xhr2.finish(200, JSON.stringify({ data: 'https://cdn.test/a.png' }));
+    await p2;
+    expect(((xhr2.sentBody as FormData).get('file') as File).name).toBe('m.png');
+
+    // The album overrides it with the artifact extension it already computed.
+    const xhr3 = new FakeXhr();
+    const p3 = postUpload(new Blob(['x']), {
+      origin: ORIGIN,
+      timeoutMs: 1_000,
+      fileName: 'm.webm',
+      xhrFactory: () => xhr3 as unknown as XMLHttpRequest,
+    });
+    xhr3.finish(200, JSON.stringify({ data: 'https://cdn.test/a.webm' }));
+    await p3;
+    expect(((xhr3.sentBody as FormData).get('file') as File).name).toBe('m.webm');
+  });
 });

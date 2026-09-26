@@ -118,8 +118,9 @@ export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: num
 
 export interface TaskErrorContext {
   oversize?: boolean;
-  /** Present once stage 1 finished — the failure then happened on upload. */
-  sha256?: string;
+  /** The media was already produced, so the failure happened on the upload leg. Also set
+   *  by the editor, whose only leg is the upload (it never transcodes). */
+  uploadLeg?: boolean;
 }
 
 const UPLOAD_ERROR_TEXT: Record<string, string> = {
@@ -167,8 +168,8 @@ const TRANSCODE_ERROR_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
 export function translateTaskError(error: string | undefined, ctx: TaskErrorContext): string {
   if (ctx.oversize) return copy.upload.errors.oversize;
   const e = error ?? '';
-  if (ctx.sha256) {
-    // Stage 1 already succeeded → the failure is on the upload leg.
+  if (ctx.uploadLeg) {
+    // The media is in hand → the failure is on the upload leg.
     if (UPLOAD_ERROR_TEXT[e]) return UPLOAD_ERROR_TEXT[e]!;
     if (e.startsWith('http_')) return fmt(copy.upload.errors.httpFailed, { status: e.slice(5) });
     return copy.upload.errors.failed;

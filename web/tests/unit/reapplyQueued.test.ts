@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { reapplyQueued } from '../../src/core/ops';
 import type { Announcement, Op, Photo } from '$shared/types';
 
-const photo = (id: number, likes: number[] = []): Photo => ({
+/** `sha` defaults to the id-derived hash, so an op can be written as `{ type, targetSha: 'sha-1' }`. */
+const photo = (id: number, likes: number[] = [], sha = `sha-${id}`): Photo => ({
   id,
   uploader: 0,
-  sha256: `sha-${id}`,
+  sha256: sha,
   url: `https://cdn.test/${id}.webp`,
   width: 100,
   height: 100,
@@ -31,9 +32,24 @@ describe('reapplyQueued', () => {
   it('re-folds a queued unlike onto a stale snapshot (optimistic state survives)', () => {
     // Server snapshot computed BEFORE the unlike reached the server: still liked.
     const stale = [photo(1, [7])];
-    const queued: Op[] = [{ type: 'unlike', target: 1 }];
+    // Photo ops address the photo by sha256, never by its numeric id.
+    const queued: Op[] = [{ type: 'unlike', targetSha: 'sha-1' }];
     const out = reapplyQueued(stale, [], queued, 7);
     expect(out.photos[0]!.likes).toEqual([]);
+  });
+
+  it('folds an op written while the photo was still uploading once the row lands', () => {
+    // The op was queued during the upload (no id existed yet, so it carries the hash).
+    // /sync brings the row in; the queued op must fold onto it rather than be dropped.
+    const queued: Op[] = [{ type: 'like', targetSha: 'sha-9' }];
+    const out = reapplyQueued([photo(9, [], 'sha-9')], [], queued, 7);
+    expect(out.photos[0]!.likes).toEqual([7]);
+  });
+
+  it('drops a hash-addressed op whose photo is not in the snapshot (no orphan)', () => {
+    const photos = [photo(1)];
+    const out = reapplyQueued(photos, [], [{ type: 'delete', targetSha: 'sha-missing' }], 7);
+    expect(out.photos).toBe(photos);
   });
 
   it('re-folds queued like, dislike exclusion, delete, vote, react', () => {
@@ -41,9 +57,9 @@ describe('reapplyQueued', () => {
       [photo(1), photo(2, [7])],
       [ann(10)],
       [
-        { type: 'like', target: 1 },
-        { type: 'dislike', target: 2 }, // must clear the like (mutual exclusion is toggleMark's job; reducer just applies)
-        { type: 'delete', target: 1 },
+        { type: 'like', targetSha: 'sha-1' },
+        { type: 'dislike', targetSha: 'sha-2' }, // must clear the like (mutual exclusion is toggleMark's job; reducer just applies)
+        { type: 'delete', targetSha: 'sha-1' },
         { type: 'vote', target: 10, payload: { option: 1 } },
         { type: 'react', target: 10, payload: { emoji: '👍' } },
       ],

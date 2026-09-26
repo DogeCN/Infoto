@@ -3,7 +3,7 @@
   import type { SortKey } from '$lib/components/SortTabs.svelte';
   import OverlaySidebar from '$lib/components/OverlaySidebar.svelte';
   import WaterfallLayout from '$lib/components/WaterfallLayout.svelte';
-  import UploadProgressPanel from '$lib/components/UploadProgressPanel.svelte';
+  import UploadPanel from '$lib/components/UploadPanel.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import AnnouncementSidebar from '$lib/components/AnnouncementSidebar.svelte';
   import { tick } from 'svelte';
@@ -22,6 +22,7 @@
   import { downloadOne, downloadZip } from './core/download';
   import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from './transcode/pipeline';
   import { translateTaskError } from '$base/upload/pipeline';
+  import { readArtifact } from './transcode/opfs';
   import type { Photo } from '$shared/types';
   import { copy, fmt } from '$shared/copy';
   import type { FilterSettings, LayoutSettings, Settings } from './settings';
@@ -39,8 +40,6 @@
 
   // Store first: the engine writes the full /sync snapshot straight into it
   const store = createAppStore();
-  /** Debounce handle for the post-upload /sync (see the pipeline's onUploadOp). */
-  let uploadSyncTimer: ReturnType<typeof setTimeout> | undefined;
   const engine = getEngine({
     onSyncResponse: (r, context) => store.applySync(r, context),
     onError: (phase, e) => {
@@ -55,21 +54,24 @@
 
   const pipeline = new UploadPipeline({
     onEvent: (line) => console.log('[upload]', line),
-    // Once the artifact URL becomes an upload op it is queued on the sync engine
-    // (pending count and the 256-op threshold belong to the engine)
+    // The finished upload becomes an op on the sync engine (pending count and the 256-op
+    // threshold belong to it). No sync is kicked off here on purpose: an upload must not
+    // pull a snapshot, so the op leaves with the pagehide flush, the threshold, or the
+    // top bar's manual sync — same as every other op.
     onUploadOp: (op) => {
       void engine.addOp(op);
-      // Without this a finished upload waits for the next tab switch / manual
-      // sync / 256-op threshold. Coalesced: a 20-file batch schedules one sync,
-      // not twenty.
-      if (uploadSyncTimer !== undefined) clearTimeout(uploadSyncTimer);
-      uploadSyncTimer = setTimeout(() => {
-        uploadSyncTimer = undefined;
-        void engine.sync();
-      }, 1_200);
+      // Anything the user did to that card while it was still uploading (marks, delete)
+      // is queued behind its upload op, so it can now go out.
+      const sha = op.payload && 'sha256' in op.payload ? String(op.payload.sha256) : '';
+      store.photoOpQueued(sha);
     },
-    // cancelJob echo (broadcast): drop the row/card in this tab too
-    onJobRemoved: (jobId) => dropTask(jobId),
+    // cancelJob echo (broadcast): drop the row/card in this tab too. A cancel resolves the
+    // job as far as the batch counter is concerned — otherwise the header would freeze at
+    // (total-1)/total with nothing left on screen.
+    onJobRemoved: (jobId) => {
+      if (uploadTasks.has(jobId)) countResolved(jobId);
+      dropTask(jobId);
+    },
     // Files outside the accept surface (often empty MIME on Windows) — visible notice
     onRejected: (fileName) =>
       toast.error(fmt(copy.upload.unknownType, { fileName }), {
@@ -82,6 +84,58 @@
   /** Source dimensions probed at enqueue — failed transcodes keep the real aspect ratio. */
   let probedSizeByJob = $state<Map<string, { width: number; height: number }>>(new Map());
 
+  /**
+   * Panel header counter ({done}/{total}). `total` is every accepted file of the current
+   * pick batch, `done` the ones the panel is finished with (transcoded / failed /
+   * cancelled) — counted once each. It cannot come from the live row list, because a row
+   * leaves the panel long before its job ends: the numerator would rise and fall with the
+   * list instead of describing the batch.
+   */
+  let batchTotal = $state(0);
+  let batchDone = $state(0);
+  const countedJobs = new Set<string>();
+  /** Count a job as resolved exactly once (terminal state, or a cancel). */
+  function countResolved(jobId: string): void {
+    if (countedJobs.has(jobId)) return;
+    countedJobs.add(jobId);
+    batchDone += 1;
+  }
+
+  /** Rows the panel shows: the transcode leg only. Past it the card owns the progress
+   *  (hashing is a deliberate silent gap, then the curtain carries the upload leg). */
+  const PANEL_STAGES = new Set(['queued', 'lease-wait', 'transcoding']);
+  let panelRows = $derived(
+    Array.from(uploadTasks.values()).filter((t) => PANEL_STAGES.has(t.phase)),
+  );
+
+  /**
+   * Preview behind the curtain until the host URL exists. It is the TRANSCODED artifact
+   * read back from OPFS, not the picked file: the artifact is what will actually land
+   * (so it always decodes, HEIC and exotic codecs included), it is written before the
+   * card ever appears, and it survives a page reload — where the picked File is gone and
+   * the artifact is still on disk. Reactive: the read is async, so the card repaints when
+   * it lands. Revoked as soon as the task leaves.
+   */
+  let previewUrls = $state<Map<string, string>>(new Map());
+
+  /** Object URL for the OPFS artifact, once per job (no-op while the read is in flight). */
+  const previewReads = new Set<string>();
+  async function ensureArtifactPreview(jobId: string, type: number): Promise<void> {
+    if (previewUrls.has(jobId) || previewReads.has(jobId)) return;
+    previewReads.add(jobId);
+    try {
+      const blob = await readArtifact(jobId, type === 0 ? 'webp' : 'webm');
+      // The job may have landed or been cancelled while the handle was opening
+      if (blob && uploadTasks.has(jobId) && !previewUrls.has(jobId)) {
+        previewUrls.set(jobId, URL.createObjectURL(blob));
+      }
+    } catch {
+      /* an unreadable artifact just leaves the skeleton */
+    } finally {
+      previewReads.delete(jobId);
+    }
+  }
+
   /** Drop a task and its optimistic-card mapping (idempotent; used by cancel + cleanup). */
   function dropTask(jobId: string) {
     const id = tempIdByJob.get(jobId);
@@ -91,6 +145,13 @@
     }
     probedSizeByJob.delete(jobId);
     tempCreatedAt.delete(jobId);
+    const sha = uploadTasks.get(jobId)?.sha256;
+    if (sha) store.forgetPendingPhoto(sha);
+    const preview = previewUrls.get(jobId);
+    if (preview) {
+      URL.revokeObjectURL(preview);
+      previewUrls.delete(jobId);
+    }
     const next = new Map(uploadTasks);
     next.delete(jobId);
     uploadTasks = next;
@@ -100,6 +161,9 @@
   // bursts the main thread with concurrent image decodes.
   let probeChain = Promise.resolve();
   function queueSizeProbe(jobId: string, file: File) {
+    // Called once per ACCEPTED file (rejected MIME types never get here), so it is the
+    // honest denominator for the panel header counter.
+    batchTotal += 1;
     probeChain = probeChain
       .then(async () => {
         const size = await probeSourceSize(file);
@@ -130,6 +194,9 @@
     // cleanup $effect is still scheduled.
     const landedShas = new Set(store.photos.map((p) => p.sha256));
     for (const t of uploadTasks.values()) {
+      // Hashing stays invisible — its row has already left the panel and the card has
+      // not appeared yet, so dedupe is a silent gap by design. The card enters with
+      // the upload leg and its curtain carries that progress.
       if (!['uploading', 'done', 'failed'].includes(t.phase)) continue;
       if ((t.phase === 'done' || t.phase === 'duplicate') && t.sha256 && landedShas.has(t.sha256))
         continue;
@@ -147,40 +214,49 @@
         size: 0,
         type: 0 as const,
       };
+      const sha = t.sha256 ?? '';
+      // Marks the user already gave this card while it was uploading; they render like
+      // real ones and the ops behind them are queued right after the upload op.
+      const marks = sha ? store.pendingMarksFor(sha) : { likes: [], dislikes: [], reports: [] };
       out.push({
         id,
-        sha256: t.sha256 ?? '',
-        url: t.url ?? '',
+        sha256: sha,
+        url: t.url ?? previewUrls.get(t.jobId) ?? '',
         uploader: store.selfId,
         width: meta.width,
         height: meta.height,
         size: meta.size,
         createdAt: tempCreatedAt.get(t.jobId) ?? Date.now(),
         type: meta.type,
-        likes: [],
-        dislikes: [],
-        reports: [],
+        likes: marks.likes,
+        dislikes: marks.dislikes,
+        reports: marks.reports,
       });
     }
     return out;
   });
 
   let uploadOverlays = $derived.by(() => {
-    const m = new Map<number, { fraction?: number; failed?: boolean; error?: string }>();
+    const m = new Map<
+      number,
+      { fraction?: number; failed?: boolean; error?: string; preview?: boolean }
+    >();
     for (const t of uploadTasks.values()) {
       const id = tempIdByJob.get(t.jobId);
       if (id === undefined) continue;
       if (t.phase === 'uploading') {
-        if (t.meta) m.set(id, { fraction: t.fraction ?? 0 });
+        // Once the host URL exists the curtain shows the real thing, not the local preview.
+        if (t.meta) m.set(id, { fraction: t.fraction ?? 0, preview: !t.url });
       } else if (t.phase === 'failed') {
         // Transcode failure (no meta) still gets a failure mask — retry must not
         // depend on a successful transcode. The translated reason rides along so
         // the card can say WHY instead of a bare "upload failed".
         m.set(id, {
           failed: true,
+          preview: !t.url,
           error: translateTaskError(t.error, {
             oversize: t.error === 'oversize',
-            sha256: t.sha256 || undefined,
+            uploadLeg: !!t.sha256,
           }),
         });
       }
@@ -204,7 +280,11 @@
 
   function handleRetryUpload(photo: Photo) {
     const jobId = jobByTempId.get(photo.id);
-    if (jobId) pipeline.retry(jobId);
+    if (!jobId) return;
+    // A retry is a fresh attempt: allow its failure to toast again, otherwise the
+    // dedupe set would swallow it and the second failure would look like nothing happened.
+    toastedFailures.delete(jobId);
+    pipeline.retry(jobId);
   }
 
   /** Dismiss a failed card: cancel on the SW (stops refresh replay) + drop locally. */
@@ -213,11 +293,6 @@
     if (!jobId) return;
     pipeline.cancel(jobId);
     dropTask(jobId);
-  }
-
-  /** Cancel a queued/lease-wait job from the progress panel. */
-  function handleCancelTask(jobId: string) {
-    pipeline.cancel(jobId);
   }
 
   let leftOpen = $state(false);
@@ -303,6 +378,15 @@
   // that the `initialized` write triggers.)
   $effect(() =>
     pipeline.onTask((t) => {
+      // Header counter: a job is resolved the moment it stops being one of the panel's
+      // rows (transcoded, dead, or cancelled). The counter therefore reaches total exactly
+      // when the list empties — an upload still in flight is the card's business, not the
+      // panel's, and counting it here is what used to leave an empty panel at "12/18".
+      if (!PANEL_STAGES.has(t.phase)) countResolved(t.jobId);
+      // Card preview comes from the transcoded artifact, not the picked File.
+      if (t.meta && (t.phase === 'uploading' || t.phase === 'failed')) {
+        void ensureArtifactPreview(t.jobId, t.meta.type);
+      }
       // Done/duplicate echo whose photo already landed must not resurrect an
       // optimistic card, but an existing row still drops — otherwise it freezes at
       // its last stage (the cleanup effect below only scans done/duplicate).
@@ -317,9 +401,7 @@
       // Duplicate against a sha not (yet) in the store: brief panel row, toast, and
       // the cleanup effect drops it — no silent nothing, no lingering row.
       if (t.phase === 'duplicate' && t.fileName) {
-        toast.info(fmt(copy.upload.duplicate, { fileName: t.fileName }), {
-          description: copy.upload.duplicateSkipped,
-        });
+        toast.info(fmt(copy.upload.duplicate, { fileName: t.fileName }));
       }
       // Album upload failure: surface a toast so the user notices even if the
       // failure card scrolled out of view. Editor failures have inline UI.
@@ -328,7 +410,7 @@
         toast.error(
           fmt(copy.upload.failed, { fileName: t.fileName || copy.upload.defaultFileName }),
           {
-            description: translateTaskError(t.error, { sha256: t.sha256 }),
+            description: translateTaskError(t.error, { uploadLeg: !!t.sha256 }),
           },
         );
       }
@@ -344,31 +426,46 @@
     }),
   );
 
-  // Photo mark / delete: the store does the local optimistic update + submits the op
+  // ---- Photo mark / delete ----
+  // Addressed by sha256, never by the numeric id: an in-flight upload has no id yet, and
+  // the hash is the photo's stable unique index (the id only serves the /l/{id36} link).
+  // The store applies the optimistic update and queues the op (deferring it behind the
+  // upload op when the row does not exist yet), so these handlers just forward the hash.
+  const shaOf = (photo: Photo): string => photo.sha256;
+  /** Ids in a selection → the photos' hashes, resolved against both lists. */
+  function shasOf(ids: number[]): string[] {
+    const all = [...pendingPhotos, ...visiblePhotos];
+    const out: string[] = [];
+    for (const id of ids) {
+      const sha = all.find((p) => p.id === id)?.sha256;
+      if (sha) out.push(sha);
+    }
+    return out;
+  }
   function handleLike(photo: Photo) {
-    store.toggleMark(photo.id, 'like');
+    store.toggleMark(shaOf(photo), 'like');
   }
   function handleDislike(photo: Photo) {
-    store.toggleMark(photo.id, 'dislike');
+    store.toggleMark(shaOf(photo), 'dislike');
   }
   function handleRequestDelete(photo: Photo) {
-    store.toggleMark(photo.id, 'report');
+    store.toggleMark(shaOf(photo), 'report');
   }
   function handleDelete(photo: Photo) {
-    store.deletePhotos([photo.id]);
+    store.deletePhotos([shaOf(photo)]);
   }
   function handleDeleteSelected(ids: number[]) {
-    const real = ids.filter((id) => id >= 0);
-    if (real.length === 0) return;
-    store.deletePhotos(real);
+    const shas = shasOf(ids);
+    if (shas.length === 0) return;
+    store.deletePhotos(shas);
   }
   /** Bulk unmark: undo like / dislike / request-delete (unmarked items are idempotent no-ops). */
   function handleUnmarkSelected(ids: number[]) {
-    const real = ids.filter((id) => id >= 0);
-    if (real.length === 0) return;
-    store.setMarkMany(real, 'like', false);
-    store.setMarkMany(real, 'dislike', false);
-    store.setMarkMany(real, 'report', false);
+    const shas = shasOf(ids);
+    if (shas.length === 0) return;
+    store.setMarkMany(shas, 'like', false);
+    store.setMarkMany(shas, 'dislike', false);
+    store.setMarkMany(shas, 'report', false);
   }
   /** Downloads go through core/download: single files as {id36}.{ext}, multiple
    *  files packed into download.zip, numbered in current visible order. */
@@ -481,10 +578,24 @@
   }
   function handleFileChange(e: Event) {
     const input = e.target as HTMLInputElement;
-    if (input.files && input.files.length > 0) {
-      pipeline.addFiles(input.files, queueSizeProbe);
-      input.value = '';
+    const files = input.files;
+    if (!files || files.length === 0) return;
+    // A pick while nothing is in flight starts a fresh batch — the counter describes one
+    // batch, not the session.
+    const inFlight = Array.from(uploadTasks.values()).some(
+      (t) => t.phase !== 'done' && t.phase !== 'duplicate' && t.phase !== 'failed',
+    );
+    if (!inFlight) {
+      batchTotal = 0;
+      batchDone = 0;
+      countedJobs.clear();
     }
+    pipeline.addFiles(files, queueSizeProbe);
+    input.value = '';
+  }
+  /** Panel row remove button: cancel anywhere in the flow (queue, token wait, transcode). */
+  function handleRemoveUpload(jobId: string) {
+    pipeline.cancel(jobId);
   }
   function handleSync() {
     void engine.sync();
@@ -633,18 +744,27 @@
     />
   </OverlaySidebar>
 
-  <!-- Upload progress -->
-  <div class="fixed bottom-4 right-4 z-30 w-72">
-    <UploadProgressPanel tasks={uploadTasks} onCancelTask={handleCancelTask} />
-  </div>
+  <!-- Upload progress: the transcode leg only (the card curtain carries the rest). -->
+  <UploadPanel
+    tasks={panelRows}
+    progress={{ done: batchDone, total: batchTotal }}
+    onRemove={handleRemoveUpload}
+    hidden={multiMode}
+  />
 
   <!-- Toast notifications: bottom-left (keeps image subjects clear); color, radius, and font all use site tokens -->
   <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->
+  <!-- expand: the stack is always fully open. Sonner's hover-driven expansion is a trap
+       here — swiping a toast away ends the gesture outside the list, so its internal
+       `interacting` flag is never cleared and the survivors stay stuck expanded.
+       The bottom offset clears the multi-select bar (bottom-0, ~65px tall): at 1rem the
+       toasts sat on top of it and swallowed clicks on select-all. -->
   <Toaster
     position="bottom-left"
     theme="dark"
     richColors
-    offset={{ bottom: '1rem', left: '1rem' }}
+    expand
+    offset={{ bottom: '4.5rem', left: '1rem' }}
     {toastOptions}
   />
 </div>

@@ -2,11 +2,17 @@
 // DedicatedWorker via token lease) → dedupe → upload → write op-log. Progress is broadcast via BroadcastChannel, and the SW re-sends job state on reconnect,
 // so a refresh never loses tasks.
 
-import { buildUploadOp, routeByMime, translateTaskError } from '$base/upload/pipeline';
+import { buildUploadOp, routeByMime, translateTaskError, uid } from '$base/upload/pipeline';
 import { copy } from '$shared/copy';
 import { openOplogDb, appendOp } from '../core/oplog/store';
 import { LeaseClient } from './lease';
-import { isSwToPage, type JobMeta, type JobPurpose, type SwToPageMessage } from './protocol';
+import {
+  isSwToPage,
+  type JobMeta,
+  type JobPurpose,
+  type JobStatusMessage,
+  type SwToPageMessage,
+} from './protocol';
 import { pipelineResultAction, shouldWriteAlbumUploadOp } from './uploadPurpose';
 import type { Op, UploadPayload } from '$shared/types';
 // ?sharedworker puts the SW through Vite's bundler (a bare new URL('./sw.ts',
@@ -25,6 +31,15 @@ export interface PipelineTaskSnapshot {
   meta?: JobMeta;
   /** Stage-1 artifact hash (drives optimistic-entry cleanup after /sync). */
   sha256?: string;
+}
+
+/** The slice of a task snapshot the progress UI needs — the panel's row, and the shape
+ *  the editor keeps for its in-flight upload (retry needs the job id). */
+export interface UploadRow {
+  jobId: string;
+  fileName: string;
+  phase: string;
+  fraction?: number | null;
 }
 
 export interface PipelineIo {
@@ -67,8 +82,6 @@ export class UploadPipeline {
   private editorListeners = new Set<(t: PipelineTaskSnapshot) => void>();
   /** Latest non-terminal editor snapshot (editor uploads keep only one in flight, so no map is needed). */
   private editorSnapshot: PipelineTaskSnapshot | null = null;
-  /** Last non-terminal phase per editor job — decides upload-leg vs transcode-leg errors. */
-  private readonly editorPhase = new Map<string, string>();
   private snapshots = new Map<string, PipelineTaskSnapshot>();
   private io: PipelineIo;
   private db: IDBDatabase | null = null;
@@ -115,9 +128,23 @@ export class UploadPipeline {
   private emitEditor(t: PipelineTaskSnapshot): void {
     const terminal = t.phase === 'done' || t.phase === 'failed';
     this.editorSnapshot = terminal ? null : t;
-    if (terminal) this.editorPhase.delete(t.jobId);
-    else this.editorPhase.set(t.jobId, t.phase);
     for (const l of this.editorListeners) l(t);
+  }
+
+  /** Build a progress snapshot from a SharedWorker status message, falling back to a
+   *  previously-recorded file name (the cross-tab echo may omit it) or the job id. */
+  private snapshotFrom(m: JobStatusMessage): PipelineTaskSnapshot {
+    return {
+      jobId: m.jobId,
+      fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
+      purpose: m.purpose,
+      phase: m.phase,
+      fraction: m.fraction,
+      url: m.url,
+      error: m.error,
+      meta: m.meta,
+      sha256: m.sha256,
+    };
   }
 
   private log(line: string): void {
@@ -136,9 +163,15 @@ export class UploadPipeline {
       ? new SharedWorker(this.io.swUrl, { type: 'module' })
       : new SharedWorkerCtor();
     this.lease = new LeaseClient(this.sw.port, {
-      onGranted: (m) => this.startVideoWorker(m.jobId, m.file, m.mime, routeEngine(m.mime)),
+      onGranted: (m) =>
+        this.startVideoWorker(
+          m.jobId,
+          m.file,
+          m.mime,
+          routeByMime(m.mime)?.engine === 'gif' ? 'gif' : 'video',
+        ),
       onRevoked: (m) => {
-        this.log(`token revoked (no heartbeat for 15s); job ${m.jobId} re-enqueued`);
+        this.log(`lease revoked for job ${m.jobId} (heartbeat lost, or the job was cancelled)`);
         this.terminateVideoWorker(m.jobId);
       },
     });
@@ -173,17 +206,7 @@ export class UploadPipeline {
         return;
       }
       if (m.t !== 'jobStatus' || m.purpose !== 'album') return;
-      this.emit({
-        jobId: m.jobId,
-        fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
-        purpose: m.purpose,
-        phase: m.phase,
-        fraction: m.fraction,
-        url: m.url,
-        error: m.error,
-        meta: m.meta,
-        sha256: m.sha256,
-      });
+      this.emit(this.snapshotFrom(m));
     });
   }
 
@@ -195,10 +218,11 @@ export class UploadPipeline {
       const waiter = this.editorWaiters.get(m.jobId);
       if (waiter) {
         this.editorWaiters.delete(m.jobId);
-        waiter.reject(new Error(copy.migrate.uploadCancelled));
+        // AbortError, not a plain Error: the owner treats it as "cancelled on purpose"
+        // and stays quiet instead of flashing a failure under the editor.
+        waiter.reject(new DOMException(copy.migrate.uploadCancelled, 'AbortError'));
       }
       if (this.editorSnapshot?.jobId === m.jobId) this.editorSnapshot = null;
-      this.editorPhase.delete(m.jobId);
       this.snapshots.delete(m.jobId);
       this.io.onJobRemoved?.(m.jobId);
       return;
@@ -210,20 +234,16 @@ export class UploadPipeline {
       if (!waiter) return;
       this.editorWaiters.delete(m.jobId);
       this.sw?.port.postMessage({ t: 'editorResultAck', jobId: m.jobId });
-      // Read the leg before emitEditor clears it: a failure after 'uploading'
-      // is an upload error, not a transcode one.
-      const uploadLeg = this.editorPhase.get(m.jobId) === 'uploading';
       // Terminal editor states are private to the owner page (never broadcast),
       // so clear the progress row here.
       this.emitEditor({ ...this.editorSnapshotOr(m.jobId), phase: m.phase });
       if (action === 'resolve' && m.url) waiter.resolve(m.url);
       else
+        // The editor never transcodes, so its only leg is the upload: every failure
+        // that reaches here is an upload failure.
         waiter.reject(
           new Error(
-            translateTaskError(m.error, {
-              oversize: m.error === 'oversize',
-              sha256: uploadLeg ? (m.sha256 ?? '-') : undefined,
-            }),
+            translateTaskError(m.error, { oversize: m.error === 'oversize', uploadLeg: true }),
           ),
         );
       return;
@@ -232,46 +252,24 @@ export class UploadPipeline {
       // Progress is broadcast to every port; only the page that enqueued the
       // job (it holds the waiter) owns the row.
       if (!this.editorWaiters.has(m.jobId)) return;
-      // Same pipeline as album uploads — surface transcode/hash/upload progress.
-      this.emitEditor({
-        jobId: m.jobId,
-        fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
-        purpose: 'editor',
-        phase: m.phase,
-        fraction: m.fraction,
-        url: m.url,
-        meta: m.meta,
-        sha256: m.sha256,
-      });
+      // Same queue and transport as album uploads, minus the transcode leg: this is the
+      // editor's upload progress.
+      this.emitEditor(this.snapshotFrom(m));
       return;
     }
     // Capture before emit stores the URL in the snapshot.
     const alreadyWritten = !!this.pendingAlbumOps.has(m.jobId);
     if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
-    this.emit({
-      jobId: m.jobId,
-      fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
-      purpose: m.purpose,
-      phase: m.phase,
-      fraction: m.fraction,
-      url: m.url,
-      error: m.error,
-      meta: m.meta,
-      sha256: m.sha256,
-    });
+    this.emit(this.snapshotFrom(m));
     if (shouldWriteAlbumUploadOp(m.purpose, m.phase, m.url, m.meta, alreadyWritten)) {
       this.pendingAlbumOps.add(m.jobId);
       void this.writeUploadOp(m.jobId, m.url!, m.meta!)
         .catch((error) => {
           this.pendingAlbumOps.delete(m.jobId);
           this.emit({
-            jobId: m.jobId,
-            fileName: this.snapshots.get(m.jobId)?.fileName ?? m.fileName ?? m.jobId,
-            purpose: m.purpose,
+            ...this.snapshotFrom(m),
             phase: 'failed',
             error: error instanceof Error ? error.message : 'oplog_write_failed',
-            meta: m.meta,
-            sha256: m.sha256,
           });
         })
         .finally(() => {
@@ -311,13 +309,13 @@ export class UploadPipeline {
 
   uploadEditorImage(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
-      // Same accept surface as the waterfall (image/*,video/*): the editor
-      // rides the identical pipeline, and GIF / video both come out as VP9 WebM.
+      // Same accept surface as the waterfall (image/*,video/*) and the same queue, but
+      // the editor leg has no transcode: the picked file is uploaded as it is.
       if (!routeByMime(file.type)) {
         reject(new Error(copy.transcode.errors.unsupportedFileType));
         return;
       }
-      const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const jobId = uid();
       // Show the row immediately: the SW's own 'queued' echo is one hop away.
       this.emitEditor({ jobId, fileName: file.name, purpose: 'editor', phase: 'queued' });
       try {
@@ -355,7 +353,7 @@ export class UploadPipeline {
         this.io.onRejected?.(file.name);
         continue;
       }
-      const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const jobId = uid();
       this.emit({ jobId, fileName: file.name, purpose: 'album', phase: 'queued' });
       onQueued?.(jobId, file);
       this.sw!.port.postMessage({
@@ -454,11 +452,6 @@ export class UploadPipeline {
     };
     w.postMessage({ t: 'videoJob', jobId, file, mime, engine });
   }
-}
-
-function routeEngine(mime: string): 'video' | 'gif' {
-  const r = routeByMime(mime);
-  return r?.engine === 'gif' ? 'gif' : 'video';
 }
 
 /**

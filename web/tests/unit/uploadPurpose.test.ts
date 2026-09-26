@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  pipelineResultAction,
-  shouldDedupeArtifact,
-  shouldWriteAlbumUploadOp,
-} from '../../src/transcode/uploadPurpose';
+import { pipelineResultAction, shouldWriteAlbumUploadOp } from '../../src/transcode/uploadPurpose';
 
 const meta = { width: 1, height: 1, size: 1, type: 0 as const };
 
@@ -16,11 +12,6 @@ function status(
 }
 
 describe('upload purpose routing', () => {
-  it('dedupes only album artifacts', () => {
-    expect(shouldDedupeArtifact('album')).toBe(true);
-    expect(shouldDedupeArtifact('editor')).toBe(false);
-  });
-
   it('writes upload ops only once for completed album jobs', () => {
     expect(shouldWriteAlbumUploadOp('album', 'done', 'https://x', meta, false)).toBe(true);
     expect(shouldWriteAlbumUploadOp('album', 'done', 'https://x', meta, true)).toBe(false);

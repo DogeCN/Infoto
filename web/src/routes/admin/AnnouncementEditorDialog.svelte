@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
-  import type { PanelTask } from '$lib/components/UploadProgressPanel.svelte';
+  import type { UploadRow } from '../../transcode/pipeline';
   import { copy } from '$shared/copy';
 
   interface Props {
@@ -14,9 +14,9 @@
     onPickImage: (file: File) => Promise<string>;
     onSave: (title: string, contentMd: string) => void;
     onCancel: () => void;
-    /** Live upload-pipeline row (queue/transcode/hash/upload) to show in the editor. */
-    uploadTask?: PanelTask | null;
-    /** Cancel the in-flight editor image upload. */
+    /** Live snapshot of the in-flight editor image upload. */
+    uploadTask?: UploadRow | null;
+    /** Abort the in-flight editor image upload (the editor stays open). */
     onCancelUpload?: () => void;
     /** Retry a failed editor image upload; returns the hosted URL. */
     onRetryUpload?: (jobId: string) => Promise<string>;
@@ -106,7 +106,9 @@
     try {
       return await onPickImage(file);
     } catch (error) {
-      console.error('[admin] editor image upload failed', error);
+      // A cancel is not a failure: the editor handles AbortError silently.
+      const cancelled = error instanceof DOMException && error.name === 'AbortError';
+      if (!cancelled) console.error('[admin] editor image upload failed', error);
       throw error;
     } finally {
       uploadBusy = false;
@@ -116,10 +118,22 @@
     }
   }
 
+  /**
+   * Cancel means "abort the transfer" while one is running — the draft must survive, so
+   * the dialog stays open. With nothing in flight it is the plain "close the editor".
+   */
+  function handleCancel(): void {
+    if (uploadBusy) {
+      onCancelUpload?.();
+      return;
+    }
+    onCancel();
+  }
+
   function onKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
       event.stopPropagation();
-      onCancel();
+      handleCancel();
     }
   }
 
@@ -164,7 +178,6 @@
             onPickImage={pickImage}
             {uploadName}
             {uploadTask}
-            {onCancelUpload}
             {onRetryUpload}
           />
         </div>
@@ -175,7 +188,7 @@
       <button
         type="button"
         class="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:bg-secondary/80"
-        onclick={onCancel}
+        onclick={handleCancel}
       >
         {copy.admin.editor.cancel}
       </button>
