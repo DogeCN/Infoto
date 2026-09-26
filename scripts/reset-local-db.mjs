@@ -4,8 +4,8 @@
 
 import { rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { applyLocalSchema } from './lib/apply-local-schema.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const targets = [
@@ -20,14 +20,9 @@ for (const t of targets) {
   }
 }
 
-const r = spawnSync(
-  'npx',
-  ['wrangler', 'd1', 'execute', 'infoto-dev', '--local', '--file=schema.sql'],
-  {
-    cwd: root,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  },
-);
-if (r.status !== 0) process.exit(r.status ?? 1);
+const r = applyLocalSchema();
+if (!r.ok) {
+  console.error('failed to apply schema.sql after reset:\n' + r.detail);
+  process.exit(1);
+}
 console.log('local D1 reset + schema applied');

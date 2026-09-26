@@ -11,10 +11,11 @@
     "node": ">=22.6.0"
   },
   "scripts": {
-    "dev": "concurrently -n api,web -c cyan,magenta \"npm run db:local && npm run dev:worker\" \"npm run dev -w infoto-web\"",
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm run db:local && npm run dev:worker\" \"npm run wait:worker && npm run dev -w infoto-web\"",
     "dev:worker": "node --use-system-ca node_modules/wrangler/bin/wrangler.js dev --port 8787",
+    "wait:worker": "node scripts/wait-for-worker.mjs",
     "build": "npm run build -w infoto-web",
-    "db:local": "wrangler d1 execute infoto-dev --local --file=schema.sql",
+    "db:local": "node scripts/db-local.mjs",
     "db:reset": "node scripts/reset-local-db.mjs",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
     "test": "vitest run && npm test -w infoto-web",

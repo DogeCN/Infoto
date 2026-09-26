@@ -16,7 +16,7 @@
 ```
 src/worker/        Worker 入口与 API（Hono 路由、D1 实现、身份/同步/上传）
 src/d1-shim.ts     本地开发适配（D1 的 node:sqlite shim，勿在 Worker 里引用）
-schema.sql         D1 建表脚本（db:local 本地灌入，部署流程幂等应用）
+schema.sql         D1 建表脚本（db:local 本地懒灌，部署流程幂等应用）
 web/src/
   base/            通用层：lib/（布局、媒体、工具）+ upload/（上传管线）
   core/            业务逻辑：api/（sync/upload client）、oplog、身份、markdown —— 纯 TS，可测
@@ -38,18 +38,18 @@ dist/              vite 构建产物（不入库，wrangler [assets] 托管）
 
 在仓库根目录执行：
 
-| 命令                 | 作用                                                       |
-| -------------------- | ---------------------------------------------------------- |
-| `npm ci`             | 安装全部依赖（worker + web，一次安装）                     |
-| `npm run dev`        | 本地开发：D1 本地灌库 + Worker (:8787) + Vite (:5173) 并行 |
-| `npm run build`      | 构建 SPA → `dist/`                                         |
-| `npm test`           | 全部单测（根 vitest + web vitest）                         |
-| `npm run lint`       | ESLint + Prettier 检查（CI 门禁）                          |
-| `npm run lint:fix`   | 自动修复并格式化                                           |
-| `npm run ts-check`   | 类型门禁：tsc × 3 + `svelte-check --fail-on-warnings`      |
-| `npm run db:local`   | 向本地 D1 灌 `schema.sql`                                  |
-| `npm run db:reset`   | 重置本地 D1 数据                                           |
-| `npm run gen-schema` | 从 schema.sql 生成 D1 DDL                                  |
+| 命令                 | 作用                                                           |
+| -------------------- | -------------------------------------------------------------- |
+| `npm ci`             | 安装全部依赖（worker + web，一次安装）                         |
+| `npm run dev`        | 本地开发：D1 本地灌库 + Worker (:8787) + Vite (:5173) 并行     |
+| `npm run build`      | 构建 SPA → `dist/`                                             |
+| `npm test`           | 全部单测（根 vitest + web vitest）                             |
+| `npm run lint`       | ESLint + Prettier 检查（CI 门禁）                              |
+| `npm run lint:fix`   | 自动修复并格式化                                               |
+| `npm run ts-check`   | 类型门禁：tsc × 3 + `svelte-check --fail-on-warnings`          |
+| `npm run db:local`   | 向本地 D1 灌 `schema.sql`（表已存在则跳过，加 `--force` 强制） |
+| `npm run db:reset`   | 重置本地 D1 数据                                               |
+| `npm run gen-schema` | 从 schema.sql 生成 D1 DDL                                      |
 
 web 子包专用：`npm run e2e -w infoto-web`（Playwright，本地手动；需 `msedge`/`chromium` 浏览器）、`npm run test:watch -w infoto-web`。
 

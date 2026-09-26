@@ -11,6 +11,8 @@ export default tseslint.config(
       '**/node_modules/**',
       '.wrangler/**',
       '**/test-results/**',
+      // Playwright / Vite run-time temp scripts (regenerated per run; not source).
+      '**/.tmp-*',
       'web/playwright-report/**',
       'web/public/**',
       // generated + ambient declarations
@@ -30,6 +32,14 @@ export default tseslint.config(
     // svelte components & runes modules: type-aware parsing for <script lang="ts">
     files: ['**/*.svelte', '**/*.svelte.ts'],
     languageOptions: { parserOptions: { parser: tseslint.parser } },
+  },
+  {
+    // TypeScript already reports undefined identifiers, and `no-undef` cannot see
+    // DOM/TS types (ParentNode, HTMLImageElement, …) in Svelte scripts — it only
+    // produces false positives there. tseslint's eslint-recommended override covers
+    // *.ts but not *.svelte, so the rule is switched off for Svelte explicitly.
+    files: ['**/*.svelte', '**/*.svelte.ts'],
+    rules: { 'no-undef': 'off' },
   },
   {
     rules: {
