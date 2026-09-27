@@ -1,11 +1,10 @@
 import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import type { SyncCallResult, SyncClientIo } from '../../src/core/api/syncClient';
 import { clearOps, openOplogDb, readOps } from '../../src/core/oplog';
-import type { EngineIo } from '../../src/core/engine';
-import { KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/engine';
+import { type EngineIo, KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/engine';
 
 const op = (target: number): Op => ({
   type: 'react',
@@ -77,7 +76,7 @@ afterEach(() => {
 });
 
 describe('SyncEngine awaitable sync', () => {
-  it('coalesces callers and flushes an op appended during an in-flight request', async () => {
+  it('coalesces callers and retains concurrent edits for the next sync', async () => {
     const first = deferred<SyncCallResult>();
     const second = deferred<SyncCallResult>();
     const requests: SyncRequest[] = [];
@@ -93,9 +92,7 @@ describe('SyncEngine awaitable sync', () => {
     await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(1));
     expect(coalesced).toBe(active);
 
-    const version = await engine.addOp(op(-1));
-    const firstFlush = engine.flushThrough(version);
-    const secondFlush = engine.flushThrough(version);
+    await engine.addOp(op(-1));
     first.resolve(
       result(
         snapshot([
@@ -111,6 +108,9 @@ describe('SyncEngine awaitable sync', () => {
         ]),
       ),
     );
+    await expect(active).resolves.toMatchObject({ ok: true });
+    expect((await readOps(db)).map((entry) => entry.op)).toEqual([op(-1)]);
+    const nextSync = engine.sync();
     await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(2));
 
     expect(requests[0]!.ops).toHaveLength(1);
@@ -132,20 +132,27 @@ describe('SyncEngine awaitable sync', () => {
     );
 
     await expect(active).resolves.toMatchObject({ ok: true });
-    await expect(firstFlush).resolves.toMatchObject({ ok: true });
-    await expect(secondFlush).resolves.toMatchObject({ ok: true });
+    await expect(nextSync).resolves.toMatchObject({ ok: true });
   });
 
-  it('keeps the op queued when its sync attempt fails', async () => {
-    const engine = new SyncEngine({
-      db,
-      postSyncFn: vi.fn().mockRejectedValue(new Error('offline')),
-    });
+  it('retains failed operations without timers and retries only on the next manual request', async () => {
+    const postSyncFn = vi.fn().mockRejectedValue(new Error('offline'));
+    const engine = new SyncEngine({ db, postSyncFn });
     await engine.addOp({ type: 'like', target: 2 });
-    const flushed = await engine.flushThrough(1);
-
-    expect(flushed.ok).toBe(false);
-    expect((await readOps(db)).map((entry) => entry.op)).toEqual([{ type: 'like', target: 2 }]);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      expect((await engine.sync()).ok).toBe(false);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(postSyncFn).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect((await readOps(db)).map((entry) => entry.op)).toEqual([{ type: 'like', target: 2 }]);
+      postSyncFn.mockResolvedValue(result(snapshot()));
+      expect((await engine.sync()).ok).toBe(true);
+      expect(postSyncFn).toHaveBeenCalledTimes(2);
+      expect(await readOps(db)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports confirmation only through the ops the request actually carried', async () => {
@@ -157,9 +164,7 @@ describe('SyncEngine awaitable sync', () => {
     const second = await engine.addOp(op(-2));
     expect(second).toBeGreaterThan(first);
 
-    // confirmedThroughVersion is the last sent op's log key — not an in-memory
-    // counter, which would also claim ops excluded from this request (the
-    // in-flight pagehide prefix, or ops appended by another tab sharing the oplog).
+    // Confirm only the highest operation key carried by the request.
     await expect(engine.sync()).resolves.toEqual({
       ok: true,
       confirmedThroughVersion: second,
@@ -232,8 +237,7 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
     expect(fetchFn.mock.calls[0]![1]).toMatchObject({ keepalive: true });
 
-    // The oplog is durable, so a tab switch pushes nothing: pagehide, the next page
-    // load (init), the 256-op threshold and the manual button cover every flush.
+    // Tab visibility changes do not send durable operations.
     documentStub.visibilityState = 'hidden';
     documentStub.dispatch('visibilitychange');
     await pagehideReadDone();
@@ -438,5 +442,61 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     await e.sync();
     expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: false });
     expect(await readOps(db)).toHaveLength(0);
+  });
+});
+
+describe('SyncEngine batch limits', () => {
+  it('keeps a large backlog local until tab initialization drains bounded batches', async () => {
+    const { MAX_SYNC_OPS } = await import('$shared/types');
+    const postSyncFn = vi.fn().mockResolvedValue(result(snapshot()));
+    const onSyncResponse = vi.fn();
+    const engine = new SyncEngine({ db, postSyncFn, onSyncResponse });
+    for (let i = 0; i < MAX_SYNC_OPS + 3; i++) await engine.addOp(op(i));
+    expect(postSyncFn).not.toHaveBeenCalled();
+    expect(engine.state.pending).toBe(503);
+    await engine.init();
+    expect((await engine.sync()).ok).toBe(true);
+    expect(postSyncFn.mock.calls.map(([body]) => body.ops.length)).toEqual([MAX_SYNC_OPS, 3]);
+    expect(onSyncResponse.mock.calls[0][1].queuedOps).toEqual([op(500), op(501), op(502)]);
+    expect(await readOps(db)).toHaveLength(0);
+  });
+
+  it('keeps the unconfirmed suffix when a later batch fails', async () => {
+    const { appendOp } = await import('../../src/core/oplog');
+    for (let i = 0; i < 501; i++) await appendOp(db, op(i));
+    const entries = await readOps(db);
+    const postSyncFn = vi
+      .fn()
+      .mockResolvedValueOnce(result(snapshot()))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(result(snapshot()));
+    const engine = new SyncEngine({ db, postSyncFn });
+    expect(await engine.sync()).toMatchObject({
+      ok: false,
+      confirmedThroughVersion: entries[499].key,
+    });
+    expect((await readOps(db)).map((entry) => entry.op)).toEqual([op(500)]);
+    await engine.sync();
+    expect(await readOps(db)).toHaveLength(0);
+  });
+
+  it('limits pagehide batches by count as well as bytes', async () => {
+    const { keepalivePrefix } = await import('../../src/core/engine');
+    expect(keepalivePrefix(Array.from({ length: 600 }, (_, i) => op(i)))?.ops).toHaveLength(500);
+  });
+
+  it('reports storage failures and releases the syncing state', async () => {
+    const onError = vi.fn();
+    const engine = new SyncEngine({ db, onError });
+    db.close();
+    vi.useFakeTimers();
+    try {
+      expect((await engine.sync()).ok).toBe(false);
+      expect(engine.state.syncing).toBe(false);
+      expect(onError).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 });

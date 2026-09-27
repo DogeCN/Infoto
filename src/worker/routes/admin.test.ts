@@ -3,8 +3,15 @@
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import type { TestApp } from '../../testing/app.ts';
-import { cookieFrom, makeApp, postOps, snap, stubSiteverify, syncNew } from '../../testing/app.ts';
+import {
+  type TestApp,
+  cookieFrom,
+  makeApp,
+  postOps,
+  snap,
+  stubSiteverify,
+  syncNew,
+} from '../../testing/app.ts';
 
 stubSiteverify();
 
@@ -200,4 +207,31 @@ test('feedback delete removes the row from the snapshot', async () => {
   assert.equal(before.feedback.length, 1);
   assert.equal((await fbDelete(app, root, before.feedback[0]!.id)).status, 200);
   assert.equal((await snap(app, root)).feedback.length, 0);
+});
+
+test('partial reorder preserves the current order of omitted rows', async () => {
+  const { app } = makeApp();
+  const { root } = await twoIdentities(app);
+  for (const title of ['a', 'b', 'c', 'd']) await annCreate(app, root, title, title);
+  await annReorder(app, root, [4, 3, 2, 1]);
+  await annReorder(app, root, [2, Number.MAX_SAFE_INTEGER + 1, 2]);
+  assert.deepEqual(
+    (await snap(app, root)).announcements.map((a) => a.id),
+    [2, 4, 3, 1],
+  );
+  assert.equal((await annReorder(app, root, [Number.MAX_SAFE_INTEGER + 1])).status, 400);
+
+  await postOps(
+    app,
+    root,
+    ['a', 'b', 'c'].map((contentMd) => ({
+      type: 'fb_create',
+      payload: { contentMd },
+    })),
+  );
+  await fbReorder(app, root, [2]);
+  assert.deepEqual(
+    (await snap(app, root)).feedback.map((f) => f.id),
+    [2, 3, 1],
+  );
 });

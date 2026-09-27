@@ -1,18 +1,13 @@
-// Sync triggers: site open (init) / pagehide dump / op-log at 256 entries / manual.
-// Ops are durable in IndexedDB, so a flush that never happens is only late — the next
-// page load resends it. Hiding the tab deliberately does NOT trigger a sync.
+// Sync on initialization, pagehide, or explicit request. Unsent operations persist in IndexedDB.
 
-import type { Op, SyncRequest, SyncResponse } from '$shared/types';
+import { MAX_SYNC_OPS, type Op, type SyncRequest, type SyncResponse } from '$shared/types';
 import { postSync } from './api/syncClient';
-import { rebuildCache } from './oplog';
-import { OPLOG_SYNC_THRESHOLD, appendOp, countOps, openOplogDb, readOps } from './oplog';
+import { rebuildCache, appendOp, countOps, openOplogDb, readOps } from './oplog';
 
 /** Browser hard limit for a keepalive request body. */
 export const KEEPALIVE_BODY_LIMIT = 65_536;
 
-/** Longest op prefix whose serialized SyncRequest fits the keepalive byte budget,
- * measured exactly with TextEncoder over the serialized JSON (wrapper and commas
- * included). Null only when the first op alone busts it (giant fb_create body) — the caller warns and keeps it. */
+/** Longest operation prefix within the UTF-8 keepalive byte budget and server operation limit. Returns null if the first operation exceeds the budget. */
 export function keepalivePrefix(
   ops: Op[],
   budget: number = KEEPALIVE_BODY_LIMIT,
@@ -22,7 +17,7 @@ export function keepalivePrefix(
   let bytes = wrapper;
   const picked: Op[] = [];
   const parts: string[] = [];
-  for (const op of ops) {
+  for (const op of ops.slice(0, MAX_SYNC_OPS)) {
     const s = JSON.stringify(op);
     const n = enc.encode(s).length + (picked.length > 0 ? 1 : 0); // comma
     if (bytes + n > budget) {
@@ -47,9 +42,7 @@ export interface EngineIo {
 
 export interface SyncSnapshotContext {
   attempt: number;
-  /** Ops still queued in the oplog when this snapshot landed (appended after the
-   * request was read, or carried by a concurrent pagehide flush). The sink must fold
-   * them back on top or the optimistic state reverts until the next sync. */
+  /** Unconfirmed operations to reapply over the server snapshot. */
   queuedOps: Op[];
 }
 
@@ -76,11 +69,7 @@ export class SyncEngine {
   private attempt = 0;
   private activeSync: Promise<SyncAttemptResult> | null = null;
   private inFlightKeys = new Set<IDBValidKey>();
-  private criticalFlush: { throughVersion: number; promise: Promise<SyncAttemptResult> } | null =
-    null;
   private pagehideInstalled = false;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  private retryAttempt = 0;
   readonly state: EngineState = { syncing: false, pending: 0 };
 
   constructor(io: EngineIo = {}) {
@@ -113,15 +102,12 @@ export class SyncEngine {
     void this.sync();
   }
 
-  /** Append one op and resolve with its version handle — the oplog record's
-   * autoincrement key (monotonic, persisted, never reused; see appendOp). Callers
-   * pass it to flushThrough to await server confirmation. */
+  /** Persist an operation and return its monotonic oplog key. */
   async addOp(op: Op): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
     const key = await appendOp(this.db, op);
     this.pending = await countOps(this.db);
     this.emit();
-    if (this.pending >= OPLOG_SYNC_THRESHOLD) void this.sync();
     return Number(key);
   }
 
@@ -129,9 +115,7 @@ export class SyncEngine {
     return `${window.location.origin}/sync`;
   }
 
-  /** Pagehide dump: keepalive fetch, fire-and-forget, 64KB prefix rule. Ops already
-   * carried by an in-flight request are skipped — with no client op id the server
-   * cannot dedupe a replay — so they go out next session. `runSync` mirrors the filter. */
+  /** Send a bounded keepalive prefix on pagehide, excluding operations owned by another in-flight request. */
   private flushOnPagehide(): void {
     if (!this.db || this.pending === 0) return;
     const db = this.db;
@@ -191,59 +175,49 @@ export class SyncEngine {
     response: SyncResponse,
     context: SyncSnapshotContext,
   ): Promise<void> {
-    // The sink may throw (a malformed snapshot); the ops are already cleared, so the
-    // failure must surface as a sync failure rather than an unhandled rejection.
-    try {
-      this.io.onSyncResponse?.(response, context);
-    } catch (e) {
-      console.error('[sync] snapshot apply failed', e);
-    }
+    this.io.onSyncResponse?.(response, context);
     await rebuildCache(db, response.photos).catch((error) => {
       console.warn('[sync] SHA cache rebuild failed', error);
     });
   }
 
   private async runSync(attempt: number): Promise<SyncAttemptResult> {
-    if (!this.db) this.db = await openOplogDb();
-    const db = this.db;
-    const entries = await readOps(db);
-    // Mirror of the pagehide filter: one op belongs to exactly one request at
-    // a time — the server has no client op id to deduplicate a replay on.
-    const available = entries.filter((entry) => !this.inFlightKeys.has(entry.key));
-    // Confirmation must cover exactly the ops this request carries: an op excluded
-    // because it is still in flight (pagehide keepalive) or not yet appended when the
-    // snapshot was read must not be claimed, or flushThrough would report phantom success.
-    const maxVersion =
-      available.length > 0 ? available.reduce((m, entry) => Math.max(m, Number(entry.key)), 0) : 0;
-    for (const entry of available) this.inFlightKeys.add(entry.key);
+    let available: Awaited<ReturnType<typeof readOps>> = [];
+    let confirmedThroughVersion = 0;
     this.syncing = true;
     this.emit();
     try {
-      const request: SyncRequest = { ops: available.map((entry) => entry.op) };
-      const { response } = await (this.io.postSyncFn ?? postSync)(request, {
-        keepalive: this.keepaliveEligible(request.ops),
-      });
-      await clearKeys(
-        db,
-        available.map((entry) => entry.key),
-      );
-      this.pending = await countOps(db);
-      // Ops appended after this request's op read (or owned by a concurrent pagehide
-      // flush) are not in the snapshot — hand them along so the sink can re-fold them.
-      const queuedOps = (await readOps(db))
-        .filter((entry) => !this.inFlightKeys.has(entry.key))
-        .map((entry) => entry.op);
-      await this.applySnapshot(db, response, { attempt, queuedOps });
-      this.retryAttempt = 0;
-      return { ok: true, confirmedThroughVersion: maxVersion };
+      if (!this.db) this.db = await openOplogDb();
+      const db = this.db;
+      available = (await readOps(db)).filter((entry) => !this.inFlightKeys.has(entry.key));
+      for (const entry of available) this.inFlightKeys.add(entry.key);
+      // Reserve the captured queue; later operations stay queued for the next sync.
+      for (let offset = 0; offset < Math.max(1, available.length); offset += MAX_SYNC_OPS) {
+        const batch = available.slice(offset, offset + MAX_SYNC_OPS);
+        const request: SyncRequest = { ops: batch.map((entry) => entry.op) };
+        const { response } = await (this.io.postSyncFn ?? postSync)(request, {
+          keepalive: this.keepaliveEligible(request.ops),
+        });
+        await clearKeys(
+          db,
+          batch.map((entry) => entry.key),
+        );
+        for (const entry of batch) {
+          this.inFlightKeys.delete(entry.key);
+          confirmedThroughVersion = Math.max(confirmedThroughVersion, Number(entry.key));
+        }
+        this.pending = await countOps(db);
+        const queuedOps = (await readOps(db)).map((entry) => entry.op);
+        await this.applySnapshot(db, response, { attempt, queuedOps });
+      }
+      return { ok: true, confirmedThroughVersion };
     } catch (error) {
       try {
         this.io.onError?.('submit', error);
       } catch {
-        // Error reporting must not change sync completion semantics.
+        // Error reporting does not affect request completion.
       }
-      this.scheduleRetry();
-      return { ok: false, error, confirmedThroughVersion: 0 };
+      return { ok: false, error, confirmedThroughVersion };
     } finally {
       for (const entry of available) this.inFlightKeys.delete(entry.key);
       this.syncing = false;
@@ -260,25 +234,7 @@ export class SyncEngine {
     return fit !== null && fit.ops.length === ops.length;
   }
 
-  private scheduleRetry(): void {
-    const delays = [5_000, 15_000, 30_000, 60_000];
-    const delay = delays[Math.min(this.retryAttempt, delays.length - 1)];
-    this.retryAttempt++;
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      void this.sync();
-    }, delay);
-  }
-
-  private clearRetryTimer(): void {
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
-  }
-
   private beginSync(): Promise<SyncAttemptResult> {
-    this.clearRetryTimer();
     const promise = this.runSync(++this.attempt);
     this.activeSync = promise;
     const clear = () => {
@@ -288,89 +244,16 @@ export class SyncEngine {
     return promise;
   }
 
-  /** Awaitable manual, threshold, and site-open sync with request coalescing. */
+  /** Awaitable manual and site-open sync with request coalescing. */
   sync(): Promise<SyncAttemptResult> {
     return this.activeSync ?? this.beginSync();
   }
 
-  /** Wait for an active attempt, then flush the requested op version if needed. */
-  flushThrough(version: number): Promise<SyncAttemptResult> {
-    const FLUSH_TIMEOUT_MS = 30_000;
-    const run = (): Promise<SyncAttemptResult> => {
-      if (this.criticalFlush) {
-        this.criticalFlush.throughVersion = Math.max(this.criticalFlush.throughVersion, version);
-        const pending = this.criticalFlush;
-        return pending.promise.then((result) => {
-          if (result.confirmedThroughVersion >= version) {
-            return { ok: true, confirmedThroughVersion: result.confirmedThroughVersion };
-          }
-          return result;
-        });
-      }
-
-      const record: NonNullable<SyncEngine['criticalFlush']> = {
-        throughVersion: version,
-        promise: Promise.resolve({
-          ok: false,
-          error: new Error('uninitialized'),
-          confirmedThroughVersion: 0,
-        }),
-      };
-      const first = this.activeSync;
-      record.promise = (first ? first.then((result) => result) : this.beginSync()).then(
-        async (prior) => {
-          if (prior.ok && prior.confirmedThroughVersion >= record.throughVersion) return prior;
-          const next = await this.beginSync();
-          if (next.ok) {
-            return {
-              ok: true,
-              confirmedThroughVersion: Math.max(
-                prior.confirmedThroughVersion,
-                next.confirmedThroughVersion,
-              ),
-            };
-          }
-          return {
-            ok: false,
-            error: next.error,
-            confirmedThroughVersion: prior.confirmedThroughVersion,
-          };
-        },
-      );
-      this.criticalFlush = record;
-      void record.promise.then(() => {
-        if (this.criticalFlush === record) this.criticalFlush = null;
-      });
-      return record.promise.then((result) => {
-        if (result.confirmedThroughVersion >= version) {
-          return { ok: true, confirmedThroughVersion: result.confirmedThroughVersion };
-        }
-        return result;
-      });
-    };
-    return new Promise<SyncAttemptResult>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('flushThrough timed out')), FLUSH_TIMEOUT_MS);
-      run().then(
-        (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      );
-    });
-  }
-
-  /** Register the pagehide dump — the only global trigger. Hiding the tab is not
-   * one: the oplog is durable, so anything the dump misses is resent by the next
-   * page load (init) or the manual sync button; a tab switch must not cost a request. */
+  /** Install the pagehide flush. Visibility changes do not trigger synchronization. */
   install(windowObj: Window = window): void {
     if (this.pagehideInstalled) return;
     this.pagehideInstalled = true;
     windowObj.addEventListener('pagehide', () => {
-      this.clearRetryTimer();
       this.flushOnPagehide();
     });
   }

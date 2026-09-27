@@ -61,17 +61,13 @@ export function applyDelete(photos: Photo[], ids: number[]): Photo[] {
   return photos.filter((p) => !set.has(p.id));
 }
 
-/** The photo an op targets, as it exists in `photos`. Photo ops are addressed by sha256 —
- * the stable unique index — so this resolves a mark written while its photo was still
- * uploading as soon as the row lands. Returns null when the photo is not in the list. */
+/** Resolve a photo operation by SHA-256, returning null until the photo exists locally. */
 function resolveOpPhoto(photos: Photo[], op: Op): Photo | null {
   if (!op.targetSha) return null;
   return photos.find((p) => p.sha256 === op.targetSha) ?? null;
 }
 
-/** Re-fold ops still queued in the local oplog onto a fresh server snapshot: a snapshot
- * computed before they reached the server must not revert optimistic state (the reducers
- * are idempotent). `upload`/`fb_create` rows are managed outside this fold; feedback is snapshot-authoritative. */
+/** Reapply queued marks, reactions, votes, and deletions over a snapshot. Upload and feedback rows are managed separately. */
 export function reapplyQueued(
   photos: Photo[],
   announcements: Announcement[],
@@ -174,9 +170,7 @@ export function applyAnnDelete(anns: Announcement[], id: number): Announcement[]
   return anns.filter((a) => a.id !== id);
 }
 
-/** Reorder `list` to follow `orderedIds` and renumber `sort` to 0…n-1 (the server
- * assigns the same numbers). Ids not mentioned keep their relative order at the
- * end, so a reorder from a filtered/dragged subset never drops rows. */
+/** Order submitted IDs first, preserve omitted rows, and renumber sort values consecutively. */
 export function applyReorder<T extends { id: number; sort: number }>(
   list: readonly T[],
   orderedIds: readonly number[],
@@ -212,7 +206,7 @@ export function moveReorderToIndex(draft: ReorderDraft, slot: number): ReorderDr
   const from = draft.orderedIds.indexOf(draft.dragId);
   if (from < 0) return draft;
   const clamped = Math.max(0, Math.min(slot, draft.orderedIds.length));
-  // already there (or would land right back where it was)
+  // The item is already at the target position.
   if (clamped === from || clamped === from + 1) return draft;
   const orderedIds = [...draft.orderedIds];
   const [id] = orderedIds.splice(from, 1);

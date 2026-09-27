@@ -3,7 +3,7 @@
   // reactions, only the add button shows.
   import { SmilePlus } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
-  import { cn } from '$lib/utils';
+  import { cn } from '$base/lib/ui';
   import { reactionCounts } from '../../core/reactions';
   import type { Announcement } from '$shared/types';
   import ReactionPicker from './ReactionPicker.svelte';
@@ -46,6 +46,7 @@
 
   <Tooltip text={copy.reactions.add}>
     <button
+      aria-label={copy.reactions.add}
       type="button"
       class="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       onclick={() => (pickerOpen = !pickerOpen)}

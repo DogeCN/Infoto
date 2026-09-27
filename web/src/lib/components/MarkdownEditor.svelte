@@ -14,13 +14,12 @@
     Vote,
   } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
-  import { cn } from '$lib/utils';
+  import { cn } from '$base/lib/ui';
   import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';
   import VoteBlock from './VoteBlock.svelte';
-  import { splitVote } from '../../core/vote';
-  import type { UploadRow } from '../../transcode/pipeline';
   import {
+    splitVote,
     insertImageAt,
     insertMarkdownBlock,
     mapOffsetThroughEdit,
@@ -28,7 +27,8 @@
     wrapSelection,
     type TextSelection,
     type TextTransform,
-  } from './markdownTransforms';
+  } from '../../core/markdown';
+  import type { UploadRow } from '../../transcode/pipeline';
 
   interface Props {
     value: string;

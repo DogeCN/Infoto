@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { overlay } from '$base/lib/overlay';
   import type { Snippet } from 'svelte';
   import { fade, fly } from 'svelte/transition';
-  import { cn } from '$lib/utils';
+  import { cn } from '$base/lib/ui';
 
   interface Props {
     open: boolean;
@@ -19,28 +20,43 @@
     children,
   }: Props = $props();
 
-  function handleBackdropClick(e: MouseEvent) {
-    if (e.target === e.currentTarget) {
-      onClose?.();
-    }
+  let activeOverlay: ReturnType<typeof overlay> | undefined;
+  function mountOverlay(node: HTMLElement) {
+    const action = overlay(node, { onClose: close });
+    activeOverlay = action;
+    return {
+      destroy() {
+        action.destroy();
+        if (activeOverlay === action) activeOverlay = undefined;
+      },
+    };
   }
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      onClose?.();
-    }
+  // Release focus before the outgoing transition pauses its subtree effects.
+  $effect(() => {
+    const enabled = open;
+    activeOverlay?.update({ enabled, onClose: close });
+  });
+
+  function close() {
+    open = false;
+    onClose?.();
+  }
+
+  function handleBackdropClick(event: MouseEvent) {
+    if (event.target === event.currentTarget) close();
   }
 </script>
 
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_interactive_supports_focus -->
   <div
     class={cn('fixed inset-0 z-70 bg-black/50 md:backdrop-blur-sm', className)}
     transition:fade={{ duration: 180 }}
     onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
+    tabindex="-1"
+    use:mountOverlay
     role="dialog"
     aria-modal="true"
     aria-label={title}

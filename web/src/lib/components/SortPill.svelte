@@ -1,11 +1,5 @@
 <script lang="ts">
-  // Sort pill at the density the top bar chose.
-  //
-  // Only the visible variant is in the flow. The other width is `shown ± labelDelta`,
-  // measured from a normal-flow clone (`width: max-content`). A hidden absolute twin
-  // reports the containing block, not content width, and a second in-flow variant
-  // changes the slot width when density flips, which feeds the measurement back into
-  // the decision.
+  // Render the selected density and measure the label-width delta in an independent normal-flow clone.
   import type { SortKey } from './SortTabs.svelte';
   import SortTabs from './SortTabs.svelte';
 
@@ -33,14 +27,7 @@
   }: Props = $props();
 
   let shownEl: HTMLElement | undefined = $state(undefined);
-  /**
-   * How much wider the labelled variant is than the icon-only one, in px.
-   *
-   * Measured from a clone laid out in normal flow (`width: max-content`), because that
-   * is the only way to get a content width that does not depend on how the node is
-   * hidden. It depends on the label text, so it is refreshed when the text can have
-   * changed (a locale switch) and never as a side effect of a density change.
-   */
+  /** Measured width difference between labelled and icon-only variants, refreshed on label changes. */
   let labelDelta = $state(0);
 
   /** Dependency key for label text. The delta itself is read from the DOM. */

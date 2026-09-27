@@ -38,7 +38,7 @@ export function prefixSelectedLines(
   prefix: string,
 ): TextTransform {
   const range = normalizeSelection(value, selection);
-  const start = value.lastIndexOf('\n', Math.max(0, range.start - 1)) + 1;
+  const start = range.start === 0 ? 0 : value.lastIndexOf('\n', range.start - 1) + 1;
   const selected = value.slice(start, range.end);
   const prefixed = selected
     .split('\n')
@@ -112,4 +112,84 @@ export function mapOffsetThroughEdit(offset: number, before: string, after: stri
     return Math.max(0, Math.min(after.length, offset + after.length - before.length));
   }
   return prefix;
+}
+
+// Identify animated Markdown media by its WebM path extension.
+
+/** True when the URL points at a WebM artifact (GIF → VP9, or real video). */
+export function isAnimatedArtifact(url: string | null | undefined): boolean {
+  if (!url) return false;
+  let path: string;
+  try {
+    // Base makes relative/protocol-relative URLs resolvable; query and hash
+    // never carry the extension.
+    path = new URL(url, 'https://infoto.invalid/').pathname;
+  } catch {
+    return false;
+  }
+  return path.toLowerCase().endsWith('.webm');
+}
+
+/** Replace sanitized WebM images with video elements, preserving vetted source URLs and alt labels. */
+export function upgradeAnimatedMedia(root: ParentNode): void {
+  for (const img of Array.from(root.querySelectorAll('img'))) {
+    const src = img.getAttribute('src');
+    if (!isAnimatedArtifact(src)) continue;
+    const video = document.createElement('video');
+    video.src = src ?? '';
+    video.autoplay = true;
+    video.loop = true;
+    // Muted autoplay is the only autoplay browsers allow — matches the GIF
+    // semantics most announcements want. Click unmutes real video.
+    video.muted = true;
+    video.playsInline = true;
+    video.className = 'markdown-video';
+    const alt = img.getAttribute('alt');
+    if (alt) video.setAttribute('aria-label', alt);
+    video.addEventListener('click', () => {
+      video.muted = !video.muted;
+      // Unmuting a playing element can pause it in some browsers.
+      void video.play().catch(() => undefined);
+    });
+    img.replaceWith(video);
+  }
+}
+
+// `:::vote` parsing — a pure, DOM-free helper. Only the first `:::vote` block is
+// used: the data model keeps a single per-user vote per announcement, so an
+// announcement has at most one vote.
+
+/** Vote options with surrounding Markdown for inline placement. */
+export interface SplitVote {
+  options: string[];
+  /** Markdown preceding the vote directive. */
+  before: string;
+  /** Markdown after the `:::vote` line. Later `:::vote` lines stay here as plain text. */
+  after: string;
+}
+
+function extractVoteLine(contentMd: string): { options: string[]; index: number } {
+  const lines = contentMd.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].trim().match(/^:::vote\s*(.*)$/);
+    if (!m) continue;
+    const options: string[] = [];
+    for (const part of m[1].split('|')) {
+      const s = part.trim();
+      if (s) options.push(s);
+    }
+    return { options, index: i };
+  }
+  return { options: [], index: -1 };
+}
+
+export function splitVote(contentMd: string): SplitVote {
+  const { options, index } = extractVoteLine(contentMd);
+  if (index < 0) return { options: [], before: contentMd, after: '' };
+  const lines = contentMd.split(/\r?\n/);
+  return {
+    options,
+    before: lines.slice(0, index).join('\n'),
+    after: lines.slice(index + 1).join('\n'),
+  };
 }

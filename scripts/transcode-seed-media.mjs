@@ -1,16 +1,5 @@
 #!/usr/bin/env node
-// Transcode the raw seed media into the exact formats the browser upload pipeline
-// produces, so the seeding step uploads WebP (still) / WebM (animated + video):
-//   - type 0 (still image)      → WebP   (libwebp, q 95)
-//   - type 1 (animated GIF)     → WebM   (libvpx-vp9, no audio)
-//   - type 2 (video w/ audio)   → WebM   (libvpx-vp9 + libopus)
-//
-// Output goes to scripts/seed-media/transcoded/<base>.(webp|webm). The seed script
-// then uploads these artifacts. Re-run with --force to redo everything.
-//
-// Why ffmpeg instead of driving the real WebCodecs/SharedWorker pipeline here: the
-// pipeline runs only inside a browser (WebCodecs + OPFS + SharedWorker), so a headless
-// run would be far flakier for 20+ files. ffmpeg reproduces the same normalized formats.
+// Transcode seed media with ffmpeg: stills to WebP, animations to silent WebM, and videos to WebM with Opus. Outputs go to seed-media/transcoded; --force overwrites them.
 
 import { mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';

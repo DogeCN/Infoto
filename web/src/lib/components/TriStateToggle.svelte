@@ -1,7 +1,7 @@
 <script lang="ts">
   // Tri-state icon toggle: off -> only (primary cyan) -> exclude (amber) -> off.
   import type { Component } from 'svelte';
-  import { cn } from '$lib/utils';
+  import { cn } from '$base/lib/ui';
   import Tooltip from './Tooltip.svelte';
   import type { TriState } from '../../settings';
 
@@ -23,6 +23,7 @@
 
 <Tooltip text={label} side="bottom">
   <button
+    aria-label={label}
     type="button"
     class={cn(
       'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-all duration-200 active:scale-95',

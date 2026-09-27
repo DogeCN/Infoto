@@ -1,8 +1,12 @@
 // Token lease client: heartbeat every 5s while held; every page-side release path is
 // enumerated here — complete / fail / worker onerror / pagehide.
 
-import type { LeaseGrantedMessage, LeaseRevokedMessage, SwToPageMessage } from './protocol';
-import { LEASE_HEARTBEAT_MS } from './protocol';
+import {
+  type LeaseGrantedMessage,
+  type LeaseRevokedMessage,
+  type SwToPageMessage,
+  LEASE_HEARTBEAT_MS,
+} from './protocol';
 
 export interface LeasePort {
   postMessage: (m: unknown) => void;

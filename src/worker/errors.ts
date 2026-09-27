@@ -16,12 +16,7 @@ const escapeHtml = (value: string): string =>
     (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
   );
 
-/**
- * The table and tag these pages render in. One isolate serves every visitor, so the
- * locale is resolved per request from `Accept-Language` rather than read from the
- * module-level `copy` (which the Worker never mutates). Unknown tags fall back to
- * English.
- */
+/** Resolve each request's locale from Accept-Language, defaulting to English. */
 function localeFor(request: Request | undefined): { code: LocaleCode; copy: Copy } {
   const code = pickLocale(acceptLanguages(request?.headers.get('Accept-Language')));
   return { code, copy: locales[code] };

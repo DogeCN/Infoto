@@ -22,9 +22,7 @@ export const UPLOAD_TIMEOUT_MS = 45_000;
 
 // ---- file type routing (single exit point) ----------------------------------
 
-// The hidden file input accepts `image/*,video/*`; routing below must cover exactly
-// that surface — never a single-MIME bifurcation: image/gif and video/* → WebM pipeline,
-// any other image/* → WebP pipeline, anything else → explicit rejection (unknown MIME).
+// Route GIF and video to WebM, other images to WebP, and reject unsupported MIME types.
 
 /** Which transcoding engine a file goes through. */
 export type TranscodeEngine = 'image' | 'video' | 'gif';
@@ -118,13 +116,11 @@ export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: num
 
 export interface TaskErrorContext {
   oversize?: boolean;
-  /** The media was already produced, so the failure happened on the upload leg. Also set
-   *  by the editor, whose only leg is the upload (it never transcodes). */
+  /** The failure occurred during upload, including direct editor uploads. */
   uploadLeg?: boolean;
 }
 
-// Keyed by the engine's error code; the text is read through `pick` at call time
-// because the user can switch language after this module was loaded.
+// Resolve error messages from the active locale at call time.
 const UPLOAD_ERROR_TEXT: Record<string, (c: Copy) => string> = {
   timeout: (c) => c.upload.errors.timeout,
   network_error: (c) => c.upload.errors.network,

@@ -1,8 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
-// E2E: real Chromium against the Vite dev server, every API call proxied to the
-// local Worker (`wrangler dev`, port 8787) on its local D1. Serial because all
-// tests share that one local D1.
+// Browser regressions use Vite and the local Worker; UI tests mock album responses.
+// Run serially because integration tests share local D1.
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 120_000,
@@ -11,9 +10,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://localhost:5173',
     browserName: 'chromium',
-    // 本机（Windows）未下载 Playwright 的 chromium 构建，直接用系统 Edge；
-    // 其他平台（如 CI Linux）回退到 Playwright 自带的 chromium。
-    // PW_CHANNEL 可显式覆盖（如 CI 上指定 chrome）。
+    // Use PW_CHANNEL when supplied, system Edge on Windows, or bundled Chromium elsewhere.
     channel: process.env['PW_CHANNEL'] || (process.platform === 'win32' ? 'msedge' : undefined),
     viewport: { width: 1280, height: 800 },
   },

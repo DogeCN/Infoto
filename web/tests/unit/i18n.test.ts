@@ -20,50 +20,67 @@ function fakeStorage(initial: Record<string, string> = {}) {
 beforeEach(() => setLocale('en-US'));
 
 describe('i18n', () => {
-  it('detects, switches, and persists a shipped locale without mutating the tables', () => {
-    expect(detectLocale(fakeStorage({ 'infoto-locale': 'zh-CN' }))).toBe('zh-CN');
-    expect(detectLocale(fakeStorage({ 'infoto-locale': 'fr-FR' }))).not.toBe('fr-FR');
-    expect(() =>
-      detectLocale({
-        getItem() {
-          throw new Error('denied');
-        },
-      }),
-    ).not.toThrow();
+  it('detects, lists, validates, and persists locales without mutating copy tables', async () => {
+    // Detects, switches, and persists a shipped locale without mutating the tables.
+    {
+      expect(detectLocale(fakeStorage({ 'infoto-locale': 'zh-CN' }))).toBe('zh-CN');
+      expect(detectLocale(fakeStorage({ 'infoto-locale': 'fr-FR' }))).not.toBe('fr-FR');
+      expect(() =>
+        detectLocale({
+          getItem() {
+            throw new Error('denied');
+          },
+        }),
+      ).not.toThrow();
 
-    const before = JSON.stringify(locales);
-    setLocale('zh-CN');
-    expect(getLocale()).toBe('zh-CN');
-    expect(copy.settings.language).toBe('语言');
-    expect(activeLocale()).toBe('zh-CN');
-    expect(moduleCopy.settings.language).toBe('语言');
-    setLocale('en-US');
-    expect(copy.settings.language).toBe('Language');
-    setLocale('zh-CN');
-    expect(JSON.stringify(locales)).toBe(before);
-    expect(locales['en-US'].settings.language).toBe('Language');
-    expect(locales['zh-CN'].settings.language).toBe('语言');
+      const before = JSON.stringify(locales);
+      setLocale('zh-CN');
+      expect(getLocale()).toBe('zh-CN');
+      expect(copy.settings.language).toBe('语言');
+      expect(activeLocale()).toBe('zh-CN');
+      expect(moduleCopy.settings.language).toBe('语言');
+      setLocale('en-US');
+      expect(copy.settings.language).toBe('Language');
+      setLocale('zh-CN');
+      expect(JSON.stringify(locales)).toBe(before);
+      expect(locales['en-US'].settings.language).toBe('Language');
+      expect(locales['zh-CN'].settings.language).toBe('语言');
 
-    const store = fakeStorage();
-    setLocale('zh-CN', store);
-    expect(store.map.get('infoto-locale')).toBe('zh-CN');
-    setLocale('fr-FR' as never);
-    expect(getLocale()).toBe('zh-CN');
-    expect(() =>
-      setLocale('en-US', {
-        setItem() {
-          throw new Error('denied');
-        },
-      }),
-    ).not.toThrow();
-    expect(getLocale()).toBe('en-US');
-  });
+      const store = fakeStorage();
+      setLocale('zh-CN', store);
+      expect(store.map.get('infoto-locale')).toBe('zh-CN');
+      setLocale('fr-FR' as never);
+      expect(getLocale()).toBe('zh-CN');
+      expect(() =>
+        setLocale('en-US', {
+          setItem() {
+            throw new Error('denied');
+          },
+        }),
+      ).not.toThrow();
+      expect(getLocale()).toBe('en-US');
+    }
 
-  it('lists every shipped locale in its own language', () => {
-    expect(LOCALE_OPTIONS.map((o) => o.code).sort()).toEqual(Object.keys(locales).sort());
-    for (const option of LOCALE_OPTIONS) {
-      expect(option.label.length).toBeGreaterThan(0);
-      expect(option.label).not.toBe(option.code);
+    // Lists every shipped locale in its own language.
+    {
+      expect(LOCALE_OPTIONS.map((o) => o.code).sort()).toEqual(Object.keys(locales).sort());
+      for (const option of LOCALE_OPTIONS) {
+        expect(option.label.length).toBeGreaterThan(0);
+        expect(option.label).not.toBe(option.code);
+      }
+    }
+
+    // Rejects inherited object keys as locale names.
+    {
+      const { pickLocale, setActiveLocale } = await import('$shared/copy');
+      for (const key of ['constructor', '__proto__', 'toString']) {
+        expect(pickLocale([key])).toBe('en-US');
+        expect(detectLocale(fakeStorage({ 'infoto-locale': key }))).toBe('en-US');
+        setLocale(key as never);
+        setActiveLocale(key as never);
+        expect(getLocale()).toBe('en-US');
+        expect(activeLocale()).toBe('en-US');
+      }
     }
   });
 });

@@ -1,6 +1,4 @@
-// Page ⇄ SharedWorker message protocol — the single source of truth for both sides.
-// Four message families: request (page→SW) / response (SW→page) / progress / lease. Note: Blob is not
-// Transferable — always structured-clone across workers, never put a Blob in a transfer list.
+// Page and SharedWorker messages for jobs, progress, and leases. Blobs use structured cloning rather than transfer lists.
 
 import type { MediaType } from '$shared/types';
 
@@ -151,7 +149,7 @@ export interface LeaseGrantedMessage {
   fileName: string;
 }
 
-/** Forced token revocation (15s without heartbeat): the page's in-flight job was re-enqueued. */
+/** Lease revocation notification after missed heartbeats. */
 export interface LeaseRevokedMessage {
   t: 'leaseRevoked';
   leaseId: string;
@@ -203,4 +201,26 @@ export function isSwToPage(m: unknown): m is SwToPageMessage {
   const message = m as { t?: string; purpose?: string };
   if (!SW_TYPES.has(message.t ?? '')) return false;
   return message.t !== 'jobStatus' || JOB_PURPOSES.has(message.purpose as JobPurpose);
+}
+
+export type PipelineResultAction = 'observe' | 'resolve' | 'reject' | 'ignore';
+
+export function shouldWriteAlbumUploadOp(
+  purpose: JobPurpose,
+  phase: JobStatusMessage['phase'],
+  url: string | undefined,
+  meta: JobMeta | undefined,
+  alreadyWritten: boolean,
+): boolean {
+  return purpose === 'album' && phase === 'done' && !!url && !!meta && !alreadyWritten;
+}
+
+export function pipelineResultAction(
+  message: Extract<JobStatusMessage, { t: 'jobStatus' }>,
+  hasEditorWaiter: boolean,
+): PipelineResultAction {
+  if (message.purpose !== 'editor') return 'observe';
+  if (message.phase !== 'done' && message.phase !== 'failed') return 'observe';
+  if (!hasEditorWaiter) return 'ignore';
+  return message.phase === 'done' && !!message.url ? 'resolve' : 'reject';
 }

@@ -1,13 +1,4 @@
-// Top-bar fit resolution. Pure: no DOM.
-//
-// Density comes from measured content widths, not a viewport breakpoint:
-//
-//   full     — labels + all eight controls, one screen
-//   compact  — icon-only pill + all eight controls, one screen
-//   paged    — icon-only pill, two sliding screens (the arrow is enabled)
-//
-// `full` is the unmeasured default. It is the roomiest layout, so the first frame
-// does not flash the pager arrow on a bar that never needs it.
+// Resolve top-bar density from measured content widths, defaulting to full density until measurements arrive.
 
 export type BarMode = 'full' | 'compact' | 'paged';
 
@@ -24,22 +15,11 @@ export const BAR_HEIGHT_MAX = 64;
 /** Fixed inline padding, both sides. */
 export const BAR_PAD = 12;
 
-/**
- * Width range over which the height ramps from compact to expanded.
- *
- * Travel is 8 CSS px over 1120px of width, about one CSS pixel per 140px. The result
- * is not rounded: a CSS pixel maps to `dpr` device pixels, so the fraction is visible
- * on high-density screens. A dpr-1 rasteriser drops it and keeps the same 8 steps.
- */
+/** Width interval for the continuous eight-pixel height ramp. */
 const RAMP_LO = 480;
 const RAMP_HI = 1600;
 
-/**
- * Normalised ramp position for a bar width, clamped to [0, 1].
- *
- * Below `RAMP_LO` the bar is at its compact height; above `RAMP_HI` at its expanded one.
- * Anything in between interpolates linearly, so no single pixel of width produces a step.
- */
+/** Normalized width ramp, clamped to the compact and expanded bounds. */
 export function ramp(barWidth: number): number {
   if (!Number.isFinite(barWidth)) return 1;
   const t = (barWidth - RAMP_LO) / (RAMP_HI - RAMP_LO);
@@ -66,22 +46,10 @@ export interface BarRequirements {
  */
 export const BAR_HYSTERESIS_PX = 24;
 
-/**
- * Slack a mode must have before it is used. A layout that fits exactly has its
- * flex spacer at 0 and sits one sub-pixel from overflow. This floor is smaller than
- * the hysteresis band, so it cannot hide a real step between modes.
- */
+/** Minimum spare width for a fitting layout, below the hysteresis threshold. */
 export const BAR_MIN_SLACK_PX = 12;
 
-/**
- * Densest layout that fits `available` px. Leaves `current` only when that mode's
- * comfort zone has been left.
- *
- * Tightening applies as soon as the current mode no longer fits with
- * `BAR_MIN_SLACK_PX` to spare. Loosening waits until the roomier mode fits with
- * `BAR_HYSTERESIS_PX` to spare. The stay-put test must not ask whether the current,
- * already denser mode still fits — it always does, so the bar would never climb back.
- */
+/** Select the roomiest fitting density. Tightening uses minimum slack; loosening requires additional hysteresis. */
 export function resolveBarMode(
   available: number,
   req: BarRequirements,

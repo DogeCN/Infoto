@@ -1,19 +1,4 @@
-// Shared manifest for the local-DB seeding workflow.
-//
-// `name` is the on-disk filename of the *raw* download under scripts/seed-media/.
-// `type` is the photos.type code the upload pipeline would assign:
-//   0 = still image → transcoded to WebP
-//   1 = animated image (GIF) → transcoded to WebM (no audio)
-//   2 = video with audio      → transcoded to WebM (with audio)
-// The transcode step (`scripts/transcode-seed-media.mjs`) reads this list, converts
-// each raw file to the pipeline's output format, and writes it to
-// scripts/seed-media/transcoded/<base>.(webp|webm). The seed script then uploads
-// those transcoded artifacts instead of the raw bytes.
-//
-// `w`/`h` are only the requested download dimensions (picsum / placehold are exact);
-// the final dimensions inserted into the DB come from ffprobe on the transcoded file.
-// `uploader` is which seeded identity uploads the file (root / A / B / C).
-// `urls` are candidate download sources; the first that returns bytes wins.
+// Seed media manifest. Sources are tried in order; type selects WebP or WebM transcoding. Final dimensions come from ffprobe, and uploader selects the seeded identity.
 
 export const MEDIA = [
   // --- images (type 0) --------------------------------------------------------

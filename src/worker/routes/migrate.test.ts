@@ -1,8 +1,15 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import type { LocalDb } from '../../testing/localDb.ts';
-import type { TestApp } from '../../testing/app.ts';
-import { cookieFrom, makeApp, stubSiteverify, sync, syncNew } from '../../testing/app.ts';
+import {
+  type TestApp,
+  cookieFrom,
+  makeApp,
+  stubSiteverify,
+  sync,
+  syncNew,
+} from '../../testing/app.ts';
+
 import { MIGRATE_TABLES, parseSqlStatements, restoreOldTables } from './migrate.ts';
 
 stubSiteverify();

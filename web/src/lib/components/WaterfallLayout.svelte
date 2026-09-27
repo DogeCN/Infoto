@@ -81,10 +81,7 @@
   /** Top spacing (accommodates the floating top bar; content can scroll under it for immersion). */
   let padTop = $derived(Math.max(48, Math.min(80, Math.round(containerW * 0.08))));
 
-  // Zoom (desktop Ctrl+wheel / mobile pinch, 50%–200%). Applied as a uniform scale
-  // over the whole grid, so zooming out also widens the gap proportionally and the
-  // cells keep their proportions — a zoom that only shrank the band would eat the
-  // gap and change the column count on the way down.
+  // Uniform grid zoom preserves cell geometry and gap proportions.
   let zoom = $state(1);
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 2;
@@ -140,13 +137,7 @@
   // Layout state
   let boxes = $state<LayoutBox[]>([]);
   let totalH = $state(0);
-  /**
-   * Longest box on the main axis, recomputed with the boxes. The virtualizer uses it
-   * as a conservative search bound; it has to be the real maximum because a masonry
-   * cell can be far taller than the band (a tall portrait) or far wider than one
-   * column (a wide panorama), and under-estimating it would make the binary search
-   * skip boxes that are actually on screen.
-   */
+  /** Maximum box length along the scroll axis, used as the virtualizer search bound. */
   let maxExtent = $state(0);
   let totalW = $state(0);
   let order = $state<number[]>([]);
@@ -162,7 +153,7 @@
   let marqueeRect = $state<Rect>({ x: 0, y: 0, w: 0, h: 0 });
   /** Selection snapshot taken when the marquee starts: onMove recomputes snapshot ∪ hits, avoiding loops from incremental writes. */
   let marqueeBase = new Set<number>();
-  /** Whether the marquee rectangle was actually dragged (used to suppress card clicks). */
+  /** Whether marquee dragging suppresses the following card click. */
   let marqueeMoved = false;
 
   // Lightbox state
@@ -183,11 +174,7 @@
   let photoMap = $derived(new Map(allPhotos.map((p) => [p.id, p])));
 
   const layoutKeyCache = new WeakMap<Photo[], string>();
-  /**
-   * What the Lightbox browses: everything the waterfall lays out except failed uploads.
-   * Filtering the list (rather than guarding the arrows) means arrow/edge navigation
-   * skips them and the counter reads correctly.
-   */
+  /** Lightbox navigation includes laid-out photos except failed uploads. */
   let lightboxPhotos = $derived(allPhotos.filter((p) => !isFailedUpload(p.id)));
 
   // Recompute layout when dependencies change, debounced to one run per frame.
@@ -204,8 +191,7 @@
     // tighter row.
     const g = Math.max(0, Math.round(gap * zoom));
     if (w <= 0 || items.length === 0) {
-      // Empty set: drop whatever was still scheduled so a stale run cannot
-      // repaint boxes for items that are gone.
+      // Cancel pending layout work when the list becomes empty.
       if (layoutTimer !== undefined) {
         clearTimeout(layoutTimer);
         layoutTimer = undefined;
@@ -229,9 +215,9 @@
     const key = `${w}|${d}|${s}|${b}|${g}|${itemsKey}`;
     if (key === layoutKey) return;
     layoutKey = key;
-    // Cancel previous debounce timer
+    // Cancel the pending debounce timer.
     if (layoutTimer !== undefined) clearTimeout(layoutTimer);
-    // Abort previous computation
+    // Abort in-flight layout computation.
     currentAbort?.abort();
     layoutTimer = setTimeout(() => {
       layoutTimer = undefined;
@@ -261,9 +247,7 @@
         }
       });
     }, 16);
-    // Deliberately no per-run cleanup: it would clear the debounce armed by the previous run,
-    // and the unchanged-key early return never re-arms it — a progress tick would then cancel a
-    // pending layout forever. Re-arming happens on every key change; teardown runs in onDestroy.
+    // Rearm layout work on key changes; teardown is handled by onDestroy.
   });
 
   onDestroy(() => {
@@ -293,15 +277,8 @@
     scroll.x = scrollLeftPos;
   }
 
-  // Optimistic upload entries carry negative temp ids. They open in the Lightbox and join
-  // multi-select like any other card: every write is addressed by sha256, which a pending
-  // card already knows, and an op on a still-uploading photo is queued behind its upload
-  // op — so nothing points at a row that does not exist.
-  /**
-   * A card whose upload failed is not a photo yet: there is nothing to preview and
-   * nothing to act on, so it neither opens the Lightbox nor joins multi-select. It
-   * becomes a normal card again once a retry succeeds or the user removes it.
-   */
+  // Optimistic cards use SHA-256 operations, queued behind their upload operation.
+  /** Failed upload cards are excluded from preview and selection. */
   const isFailedUpload = (id: number) => overlays.get(id)?.failed === true;
 
   function handlePhotoClick(photo: Photo) {
@@ -362,29 +339,14 @@
     selected = new Set();
   }
 
-  /**
-   * Marquee: pointerdown on the scroll container (starting on a card marquee-selects too).
-   *
-   * Touch gets an intent gate. The container scrolls along the canvas' natural axis, so a
-   * swipe along THAT axis is a scroll and must never draw a selection box: selecting a
-   * screenful and then swiping on to the next one would otherwise marquee every draggable
-   * moment. Until the axis is known nothing is armed, and once the gesture clearly points
-   * along the scroll axis the marquee is dropped (the browser's own pan takes over anyway
-   * and cancels the pointer). A mouse has no scroll-drag conflict, so it arms immediately
-   * and keeps a free-direction marquee.
-   *
-   * Dragging past the container's edge scrolls it (the list keeps re-selecting under the
-   * pointer's screen position, so one gesture can reach the whole album).
-   */
+  /** Marquee selection uses canvas coordinates and edge auto-scroll. Touch gestures along the scroll axis retain native scrolling. */
   function handleMarqueeDown(e: PointerEvent) {
     if (!multiMode) return;
 
     const scrollEl = containerEl;
     if (!scrollEl) return;
 
-    // The marquee rectangle always uses canvas coordinates (the boxes' space), decoupled from viewport/container offsets.
-    // Scroll offsets are read off the element, never off the reactive mirrors: the edge
-    // auto-scroll below changes them and the mirrors only catch up on the next scroll event.
+    // Read live scroll offsets when mapping pointer coordinates onto the canvas.
     const toCanvas = (cx: number, cy: number) =>
       dir === 'v'
         ? {

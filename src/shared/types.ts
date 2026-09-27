@@ -1,6 +1,9 @@
 // Infoto shared contract types — used by both runtimes (Worker / local Node)
 // and the frontend.
 
+/** Maximum operations accepted by one sync request. */
+export const MAX_SYNC_OPS = 500;
+
 /** Media kind encoded in photos.type. */
 export const MEDIA_TYPE = {
   /** Still image (WebP). */
@@ -119,12 +122,7 @@ export type OpPayload =
 /** One op-log entry, applied by /sync strictly in array order. */
 export interface Op {
   type: OpType;
-  /**
-   * Announcement / feedback numeric id (vote, react). PHOTO ops never use a numeric id:
-   * an id is only the external `/l/{id36}` link index, while sha256 is the stable unique
-   * index of a photo. An in-flight upload has no id yet, and hash resolution works for
-   * every photo regardless of when the op was written.
-   */
+  /** Announcement ID for votes and reactions. Photo operations use targetSha instead. */
   target?: number | null;
   /** Photo ops: the target photo's sha256. */
   targetSha?: string;

@@ -46,7 +46,7 @@
 - **HMR leaves stale modules** after repeated edits to one file — symptoms are "not defined" errors for symbols that _are_ defined. `page.goto(url + '?t=' + Date.now())` forces a full reload and is the reliable fix; `touch` is not enough.
 - **Browser width probes need a real settle.** The `ResizeObserver + rAF` chain needs ~200ms; sampling at 8ms reads the previous frame's value and looks exactly like a jump. I mis-diagnosed "468–482 still flapping" as a real bug because of this — it was a sampling artifact.
 - After changes, run `npm run lint` (includes `prettier --check`, catches unformatted files).
-- Data: `npm run db:reset` wipes local D1. **Seeding restored (09-27)**: `npm run seed:media` downloads samples into `scripts/seed-media/` (gitignored, one-time); `npm run db:seed` pushes them through the **transcode pipeline** (still→WebP, animated/video→WebM) via `/upload`, then writes photos/announcements/feedback and pins the **root user uuid to all-zeros** (`00000000-0000-0000-0000-000000000000`) for deterministic testing (other users keep random uuids). Reseed: `npm run db:reset && npm run db:seed`. Inspect the local D1 with `node:sqlite` (walk `.wrangler/state/v3/d1/…`) or `npx wrangler d1 execute infoto-dev --local --command "SELECT id, uuid FROM users ORDER BY id LIMIT 3"`.
+- Local seed: prepare ignored `scripts/seed-media/`, start the local Worker, then `npm run db:seed` with `TC_SECRET` in ignored `.dev.vars`. Root UUID is fixed to all zeros by the seeder; other identities are preserved. Populated content tables are rejected. `--local-media` explicitly inserts relative fixture URLs served read-only by `INFOTO_SEED_MEDIA=1 npm run dev`; do not import these exports into production. No identity-selector endpoint is provided. `FFPROBE_BIN` can specify ffprobe; `SEED_BASE` is loopback-only. The seeder never starts or kills a Worker.
 
 ---
 
@@ -102,7 +102,7 @@
 ## Unit Suite Shape (2026-09-27)
 
 - Keep the unit suite under 100 cases. Merge related assertions into one case instead of adding a fine-grained test per branch.
-- Do not shorten product delays to make a test fast. The sync 429 backoff stays `[1000, 2000, 4000, 8000]`; the test advances fake timers.
+- Sync failures, including HTTP 429, do not schedule retries. Tests use fake timers to verify that queued operations remain local until a permitted trigger.
 
 ---
 
@@ -121,7 +121,7 @@
 - **No invented percentages without real granularity** → use indeterminate (shimmer). Image transcoding = decode / drawImage / convertToBlob three one-shot calls, no intermediate granularity (once added 0.4/0.6 fake milestones, caught by user and reverted).
 - **Weights only appear when "combining multiple legs into one 0→1"**. Each leg is a **same-dimension single ratio** (frames/frames, seconds/seconds, bytes/bytes) — naturally objective, no need to explain weights. Whenever you want to combine two legs into one, first answer where the weights come from.
 - **Hashing + disk write is one tee loop** (`opfs.ts#storeArtifact` feeds `hash.ts#teeToHash`, same `for(;;)`), advances together, inseparable. **It is also not a continuation of transcoding**: `transcodeImage` returns a complete Blob, hashing consumes the product **after** transcoding ends, during which `bytes` is always 0. **Do not report transcoding progress from this loop** — the user made this exact inference and it is wrong.
-- **hashing leg reports a real fraction** (the "deliberate silent gap" design was dropped 2026-09-27): `teeToHash(source, write, onBytes?)` → `storeArtifact(…, onBytes)` → SW `notifyBytes(rec, total, written)`. Numerator and denominator are **both bytes** (`blob.size` known up front, no second measuring pass). Both `runImageJob` and `onVideoResult` wired. `App.svelte#PANEL_STAGES` gained `'hashing'`; `pendingPhotos` unchanged (card still only at `uploading`).
+- **hashing leg reports a real fraction** (the "deliberate silent gap" design was dropped 2026-09-27): `teeToHash(source, write, onBytes?)` → `storeArtifact(…, onBytes)` → SW `notifyBytes(rec, total, written)`. Numerator and denominator are **both bytes** (`blob.size` known up front, no second measuring pass). Both `runImageJob` and `onVideoResult` wired. `state/uploadStore.svelte.ts#PANEL_STAGES` gained `'hashing'`; `pendingPhotos` unchanged (card still only at `uploading`).
 - Phase breakdown: `queued`/`lease-wait`/image `transcoding` → shimmer; video transcoding start also shimmer (worker startup + demux + codec detection has no reportable quantity); video/GIF transcoding → mediabunny `onProgress` / GIF `(i+1)/frameCount`; `hashing` → `written/total` bytes; `uploading` → XHR `upload.onprogress` (its leading `fraction: 0` is kept — an honest starting point, unlike the transcode leg's fake one).
 - `notifyBytes` three details: `total <= 0` **does not send fraction**; loop **does not report 1** (residue makes next leg start full); only sends when `phase === 'hashing'` (late OPFS callbacks must not pollute another leg).
 - ⚠️ **Video progress must filter 0**: `mediabunny`'s first tick is "started, nothing finished", and GIF's first is `1/frameCount` (never 0), so dropping `fraction === 0` is safe and is what keeps the transcode row sweeping instead of pinned at 0%.
@@ -171,7 +171,7 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - Collapse **forbids `max-h-0`** (gives child elements zero-width content box, progress bar disappears): use `grid-rows-[1fr]↔[0fr]` or `out:collapse` (`grid-template-rows: tfr`). After last row leaves, shell stays ~280ms more before unmounting.
 - **Card insertion timing**: hashing does not insert card (still uploading to insert), but hashing progress is carried by **panel row** (`PANEL_STAGES` includes `'hashing'`) — row is row, card is card, not contradictory. Duplicate only shows Toast.
 - Card overlay's "actual media" relies on local object URL (`previewUrlByJob`, revoke on dropTask), `overlay.preview` lets PhotoCard degrade undecodable preview to skeleton.
-- **No auto-sync after upload** (user decision): only `engine.addOp(op)`, relies on pagehide / accumulate 256 / manual sync to send. Cost is new photos stay as optimistic cards until next sync.
+- **No auto-sync after upload** (user decision): only `engine.addOp(op)`, relies on page open / pagehide / manual sync to send. Cost is new photos stay as optimistic cards until next sync.
 - **Toasts always `expand`**: sonner's hover-expand is a pitfall here (left-swipe close with pointer outside list, `interacting` mark unclear → remaining notifications never expand).
 - **Toast 避让底边是实测高度，不是常量**。`UploadPanel` 通过 `onHeight?(px)` 上报内层卡片的 `ResizeObserver` 高度，`App.svelte` 的 `toastOffsetBottom` 按 `multiMode → 80px` / `窄屏 + panelRows>0 → 16px + 实测高度` / 否则 `16px` 取值。三个坑：① effect 必须依赖 `hidden`（translate 不改 `offsetHeight`，从 hidden 回来高度会卡在 0）；② App 侧回调必须是模块级 `const`（内联箭头每次渲染换新引用，会把子组件的 RO 拆了重建）；③ 单位用 px 不用 rem（实测值过根字号换算会插入误差）。桌面端浮层在右下、toast 在左下，互不冲突，所以只在窄屏避让。
 - **触发 toast 的可靠零副作用路径**：`page.setInputFiles('input[type=file]', '非媒体文件')` → accept 校验拒绝并 toast，不写库。sonner 的 Toaster DOM 只在有 toast 时存在，空闲页面读不到 offset。
@@ -180,11 +180,11 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 
 ## /sync & Op Layer
 
-- **Four trigger points**: page open (`engine.init()`) / `pagehide` dump / oplog accumulates **256** / homepage topbar manual sync. `addOp` itself does not trigger. **`visibilitychange` trigger has been deleted per user decision** (oplog is naturally persistent, late send does not lose data, any new page will supplement). `engine.install()` only registers pagehide.
+- **Three sync trigger categories**: explicit user request / page open (`engine.init()`) / `pagehide` flush. Adding operations, queue size, visibility changes, periodic timers, network recovery, and HTTP 429 never trigger synchronization. Failed/unconfirmed operations remain in IndexedDB until the next permitted trigger. User-initiated SQL import refresh remains part of that explicit manual operation; admin mutation endpoints are independent writes, not background oplog sync.
 - **Photo ops always use sha256 addressing** (user mandate: id is only index for external link `/l/{id36}`, in-site requests never use id). `Op.targetSha` for all photo ops; `target` only serves announcement vote/react. Therefore **optimistic cards can enter Lightbox and multi-select**; uploading write ops first go into `deferredPhotoOps`, wait for `photoOpQueued(sha)` to release — **ops must come after upload op** (/sync replays in array order), this is the premise of the whole mechanism.
 - **Announcements and feedback writes go through independent admin API, not /sync oplog**. Announcements: `POST/PUT/DELETE /admin/announcements`, `POST /admin/announcements/reorder` (root-only). Feedback: create still goes through `/sync`'s `fb_create` (each visitor sends with own identity, not privileged), delete/sort go through `DELETE /admin/feedback/{id}` + `POST /admin/feedback/reorder`. Reads still go through /sync snapshot.
   - **New write endpoints must sync three places**: worker routes + `app.ts` mount + **`web/vite.config.ts` proxy whitelist** (missing it falls back to SPA returning HTML — this was the cause of "save failed" back then).
-  - Unified through `web/src/core/api/adminClient.ts` (`adminWrite()` + 15s timeout), do not write timeout logic separately.
+  - Shared JSON transport lives in `web/src/core/api/request.ts` (15s deadline through response-body consumption); sync and admin clients reuse it. Uploads retain their separate idle-progress watchdog.
   - **Failure feedback only goes through `toast.error` + rollback**, "saving/saving failed" badges have been completely removed.
   - Sorting never blocked by temporary id: new creation takes effect locally immediately (tempId), if still tempId during sorting, suspend and wait for real id then supplement.
   - feedback `sort INTEGER NOT NULL` (no DEFAULT), uniqueness guaranteed by construction (insert `MIN(sort)-1` to top, renumber `0…n-1` during sorting), snapshot single `ORDER BY sort ASC`.
@@ -243,7 +243,7 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - `/?e2e=1` and `/harness` panel deleted. Gate copy anchor "通过验证后即可浏览" is still visible during `done` fade-out (opacity-0), hidden after idle unmount.
 - **SharedWorker-issued requests (/upload etc.) cannot be intercepted by `page.route`, nor seen by `page.on('request')`** — network assertions involving upload must switch signals: pipeline console logs (like `duplicate: sha256 cache hit`), panel row appear/disappear, server snapshot (`context.request.post('/sync')`).
 - **duplicate task's "duplicate" row lives less than one frame** (dedup effect immediately removes), DOM assertion inevitably flaky.
-- Mock data: `page.route` intercept `/api/photos`, or directly POST /sync with upload ops (use fake domain for url then route returns SVG data). Local Turnstile dummy token `XXXX.DUMMY.TOKEN.XXXX` can create identity.
+- Mock data: `page.route` intercept `/sync`, or directly POST /sync with upload ops (use fake domain for url then route returns SVG data). Local Turnstile dummy token `XXXX.DUMMY.TOKEN.XXXX` can create identity.
 
 ---
 
@@ -268,3 +268,17 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 ## "Looks like fallback but actually required, do not delete"
 
 `photos.likes/dislikes/reports` `DEFAULT '[]'` (upload INSERT does not list these columns) · `CREATE TABLE IF NOT EXISTS` (deploy idempotent) · `env.assets?` (worker unit tests without assets) · `migrate.ts` `restoreOldTables` (import failure rollback) · oplog DB_VERSION+contains guard · transcode VP8/GIF media fallback · `sync.ts` `idList`/`rec()` malformed input defense · `OverlaySidebar`/`readCachedSelfId` preference first-frame defaults.
+
+## Shared Lifecycle and Refactoring Boundaries (2026-09-27)
+
+- ADR 0007 defines the upload-store and shared-overlay boundaries. Create `createUploadStore` within a component so teardown runs; use `SvelteMap` for asynchronously populated preview/probe data consumed by derived UI.
+- Await oplog persistence before acknowledging an upload to the SharedWorker. A rejected local write leaves the artifact resumable; upload completion does not add a new automatic sync trigger.
+- Sync captures and drains the queued snapshot in batches of at most `MAX_SYNC_OPS` (500), deleting only confirmed keys. Operations appended during a request stay queued for the next sync; partial failures retain the unconfirmed tail.
+- Sidebar, ActionSheet, and Lightbox share `base/lib/overlay.ts`. Only the top layer handles keyboard focus/Escape; scroll unlock happens when the stack empties. Hidden mounted panels are inert. Icon buttons have explicit accessible names; tooltips only describe them.
+- `src/shared/media.ts` owns base-36 media IDs and file extensions for both runtimes. `core/markdown.ts`, `base/lib/format.ts`, `base/lib/slider.ts`, and `transcode/protocol.ts` hold their respective consolidated helpers.
+- Media proxy validation checks HTTPS, credentials, local hostnames/private literals, and each redirect; output MIME comes from stored media type with nosniff and sandbox CSP. This does not resolve DNS names or prevent DNS rebinding; stronger isolation requires an upstream allowlist or infrastructure enforcement.
+- Vite binds all interfaces with a `.e2b.app` host suffix allowlist and a strict port. Do not disable host validation globally. UI browser regressions are in `web/tests/e2e/ui.spec.ts`; they mock sync/media and do not prove production challenge or upstream-upload behavior.
+
+- Svelte outgoing transitions pause effects inside the leaving subtree before action destruction. ActionSheet releases its shared overlay from a component-scope effect, reading `open` before optional action access, so a closing menu cannot swallow Escape intended for the underlying Lightbox.
+- Card keyboard handlers handle only events targeted at the card itself; nested buttons keep native keyboard activation. Collapsed announcement bodies are inert so clipped vote/reaction controls do not enter the focus order.
+- The user requires the deterministic all-zero root UUID for local seed authentication, with no administrator/visitor selector page. Seeded browser tests establish normal server cookies through `/sync`; no development login route or production authentication change is needed.

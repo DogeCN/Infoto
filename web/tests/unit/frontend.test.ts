@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Announcement, Feedback, Photo } from '$shared/types';
 import * as ops from '../../src/core/ops';
-import { splitVote } from '../../src/core/vote';
+import { splitVote } from '../../src/core/markdown';
 import { reactionCounts } from '../../src/core/reactions';
 import {
   applyFilters,
@@ -11,7 +11,7 @@ import {
   metricOf,
   metricRange,
 } from '../../src/settings';
-import { mapRangeValue, normalizeRangeValue } from '../../src/lib/components/rangeScale';
+import { mapRangeValue, normalizeRangeValue } from '../../src/base/lib/slider';
 
 const photo = (over: Partial<Photo> & { id: number }): Photo => ({
   sha256: `h${over.id}`,

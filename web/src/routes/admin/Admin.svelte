@@ -6,12 +6,12 @@
   import { Toaster, toast } from 'svelte-sonner';
   import ErrorPage from '$lib/components/ErrorPage.svelte';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
-  import { toastOptions } from '$lib/toastOptions';
+  import { toastOptions } from '$base/lib/ui';
   import { getEngine } from '../../core/engine';
   import { TurnstileRequiredError } from '../../core/api/syncClient';
   import { createAppStore } from '../../state/appStore.svelte';
-  import { UploadPipeline } from '../../transcode/pipeline';
-  import type { UploadRow } from '../../transcode/pipeline';
+  import { UploadPipeline, type UploadRow } from '../../transcode/pipeline';
+
   import AdminMigrateMenu from './AdminMigrateMenu.svelte';
   import AnnouncementEditorDialog from './AnnouncementEditorDialog.svelte';
   import AnnouncementList from './AnnouncementList.svelte';
@@ -66,7 +66,10 @@
     engine.init().catch(console.error);
   });
 
-  onDestroy(() => pipeline.stop());
+  onDestroy(() => {
+    pipeline.stop();
+    store.dispose();
+  });
 
   $effect(() =>
     pipeline.onEditorTask((task) => {
@@ -85,9 +88,7 @@
 
   const isRoot = $derived(store.selfId === 0);
 
-  // Identity gate: selfId === -1 means "unknown", NOT "anonymous" — on a cold
-  // visit /sync is still in flight, so redirect home only once identity is
-  // CONFIRMED absent (401 or grace period). replace() so Back skips /admin.
+  // Wait for identity resolution before redirecting non-root visitors; replace the admin history entry.
   let identityRejected = false;
   $effect(() => {
     if (store.selfId !== -1) return;
@@ -121,9 +122,7 @@
   }
 
   function closeAnnouncementEditor() {
-    // Closing mid-upload orphans it (the URL would never be inserted) — cancel
-    // so the SW stops the leg and the artifact work isn't wasted; the jobRemoved
-    // echo clears the pipeline's editor snapshot, so reopening shows no stale row.
+    // Cancel unfinished editor uploads when closing the editor.
     if (editorJobId) {
       pipeline.cancel(editorJobId);
       editorJobId = null;
@@ -212,18 +211,20 @@
     </main>
 
     {#if editorOpen}
-      <AnnouncementEditorDialog
-        announcement={editingAnnouncement}
-        onPickImage={(file) => pipeline.uploadEditorImage(file)}
-        onSave={saveAnnouncement}
-        onCancel={closeAnnouncementEditor}
-        uploadTask={editorUploadTask}
-        onCancelUpload={() => {
-          const id = editorUploadTask?.jobId;
-          if (id) pipeline.cancel(id);
-        }}
-        onRetryUpload={(jobId) => pipeline.retryEditorUpload(jobId)}
-      />
+      {#key editingAnnouncement?.id ?? 'new'}
+        <AnnouncementEditorDialog
+          announcement={editingAnnouncement}
+          onPickImage={(file) => pipeline.uploadEditorImage(file)}
+          onSave={saveAnnouncement}
+          onCancel={closeAnnouncementEditor}
+          uploadTask={editorUploadTask}
+          onCancelUpload={() => {
+            const id = editorUploadTask?.jobId;
+            if (id) pipeline.cancel(id);
+          }}
+          onRetryUpload={(jobId) => pipeline.retryEditorUpload(jobId)}
+        />
+      {/key}
     {/if}
 
     <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->

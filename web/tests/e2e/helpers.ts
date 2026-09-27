@@ -1,8 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 
-// Verification-gate helpers for the real first-entry UI: prepareGate delays the
-// first /sync and flags mounts, expectGate asserts it, passGate waits for unmount
-// (the always-pass secret self-solves too fast for toBeVisible).
+// Delay the first sync to observe verification mounting, then wait for disposal.
 
 declare global {
   interface Window {

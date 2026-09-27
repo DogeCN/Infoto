@@ -9,9 +9,7 @@ test.describe('identity & op semantics (local Worker)', () => {
     page,
     context,
   }) => {
-    // first /sync without a cookie must return 401 turnstile_required + siteKey
-    // (proxied through). Probe before opening the page so the automated
-    // always-pass verification can never race ahead and land a cookie first.
+    // Verify that a sessionless sync returns the verification requirement and site key.
     const probe = await context.request.post('/sync', { data: { ops: [] } });
     const body = (await probe.json().catch(() => ({}))) as {
       error?: string;
@@ -23,9 +21,7 @@ test.describe('identity & op semantics (local Worker)', () => {
 
     await prepareGate(page);
     await page.goto('/');
-    // the gate renders inside the main area (the bare Turnstile widget, no extra copy) — the app
-    // shell (top bar) stays visible instead of a full-screen overlay. prepareGate delays the first
-    // /sync, stretching the gate's brief mount window so expectGate can observe it.
+    // Assert that verification mounts inside the gallery while the navigation remains visible.
     await expectGate(page);
     await expect(page.locator('header')).toBeVisible();
     await expect(page.locator('[data-verify]')).toBeHidden({ timeout: 30_000 });

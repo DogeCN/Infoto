@@ -1,16 +1,5 @@
 <script lang="ts">
-  // Top bar. Density comes from measured content widths (see topbarFit.ts), not a
-  // viewport breakpoint:
-  //
-  //   full    — sort labels + all eight controls, one screen
-  //   compact — icon-only sort pill + all eight controls, one screen
-  //   paged   — icon-only pill, two sliding screens with the pager arrow
-  //
-  // Labels drop first; the arrow appears only when one screen still does not fit.
-  // Pill widths come from SortPill (live variant plus a label delta). The two
-  // fixed-size groups are measured from an always-mounted probe outside the header.
-  // The arrow width is a constant. Fixed full width + frosted glass, not sticky
-  // (iOS Safari breaks backdrop-filter on sticky).
+  // Fixed top bar with measured full, compact, and two-page densities. Labels collapse before pagination activates.
   import { Settings, Megaphone, CheckSquare, UploadCloud, Funnel } from '@lucide/svelte';
   import SortPill from './SortPill.svelte';
   import SyncButton from './SyncButton.svelte';
@@ -64,12 +53,7 @@
   // Roomiest layout until the first measurement. Guessing low would flash the arrow.
   let mode = $state<BarMode>('full');
 
-  /**
-   * The bar's own width, mirrored into reactive state by the ResizeObserver below.
-   * Everything derived (height, padding, and the fit requirement) reads this rather
-   * than measuring the DOM, because a DOM measurement read inside `$derived` is
-   * evaluated once and never invalidated.
-   */
+  /** Observed bar width driving reactive geometry and density. */
   let barW = $state(0);
 
   // Paged only — one value, not two booleans: there is no third screen, so an integer
@@ -80,9 +64,7 @@
   }
   const paged = $derived(mode === 'paged');
 
-  // Height ramps with bar width; padding is the constant BAR_PAD. `barW` is reactive
-  // state written by the ResizeObserver — a DOM read inside `$derived` does not update.
-  // Height is not rounded so high-dpr screens can use the fractional steps.
+  // Interpolate bar height from its measured width without rounding fractional pixels.
   const barH = $derived(barHeight(barW));
   const rowStyle = $derived(`padding-left:${BAR_PAD}px;padding-right:${BAR_PAD}px`);
 
@@ -145,13 +127,10 @@
     // page. `bar` is 0 only before the header is laid out.
     if (!bar || !labelledPillW || !iconPillW || !leftExtraW || !rightBtnsW || !rowEl) return;
 
-    // Same constant the row is rendered with, so the requirement matches the screen.
+    // Use the rendered row gap when calculating the required width.
     const padX = BAR_PAD;
     const gap = parseFloat(getComputedStyle(rowEl).columnGap) || 0;
-    // One screen has four items (pill, left group, spacer, right group) → 3 intervals.
-    // Each paged screen also has three (pill, left, spacer, arrow | arrow, right group)
-    // → 2 intervals. These are structural, so they are written down rather than counted,
-    // and the markup keeps them in step (see the two `{#if}` arms).
+    // Spacing intervals: three in full mode and two on each paged screen.
     const SINGLE_GAPS = 3;
     const PAGED_GAPS = 2;
 
@@ -181,9 +160,7 @@
   $effect(() => {
     if (!headerEl) return;
     let raf = 0;
-    // The width is mirrored into `barW` here because that is what makes the geometry
-    // reactive — and `barW` must be set on *every* observed size, not only when the
-    // derived density changes, or the bar keeps whatever height it first computed.
+    // Update reactive width on every observed size change.
     const schedule = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
@@ -194,9 +171,7 @@
     };
     const ro = new ResizeObserver(schedule);
     ro.observe(headerEl);
-    // Only the bar itself: every measured width is either a fixed-size group (from the
-    // probe) or the pill (reported in-flow by SortPill), so no live node is observed and
-    // nothing can feed the decision back into itself.
+    // Observe the bar independently of its density-dependent contents.
     window.addEventListener('resize', schedule);
     // One late pass: a web-font swap can shift the label widths after first paint.
     const t = setTimeout(schedule, 250);
@@ -209,11 +184,7 @@
     };
   });
 
-  // ---- markup, defined once ----------------------------------------------------
-  // The two control groups are snippets rather than duplicated markup so that the
-  // width-measuring probe below renders *exactly* the same controls as the live bar. A
-  // hand-copied probe would silently drift from the real thing and report a width for a
-  // control that no longer exists.
+  // Shared control snippets keep measurement probes identical to visible controls.
 </script>
 
 {#snippet settingsBtn()}
@@ -277,11 +248,7 @@
   </div>
 {/snippet}
 
-<!-- Width probe for the two fixed-size groups. Outside the header: inside it, a flex
-     child steals space, and a positioned element becomes the containing block for the
-     paged `w-[200%]` track. `w-max` forces a content width. `opacity-0` (not
-     `visibility: hidden`, which a descendant can override) plus `inert` keeps it out of
-     paint and the tab order. `height: 0` adds no layout height. -->
+<!-- Inert, zero-height content-width probe outside the header's flex layout. -->
 <div
   bind:this={groupProbeEl}
   class="pointer-events-none flex w-max items-center gap-1 opacity-0"
@@ -303,9 +270,7 @@
   style="height: {barH}px"
 >
   {#if paged}
-    <!-- Two screens on one sliding track: the arrow genuinely travels across the bar
-         instead of two sets cross-fading. `w-[200%]` with each screen at half of it
-         means a −50% shift lands exactly on screen 2 at any bar width. -->
+    <!-- Two half-width screens on a double-width sliding track. -->
     <div
       class="flex h-full w-[200%] transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] {screen ===
       1

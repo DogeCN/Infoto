@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-// Block until the Worker accepts TCP connections on host:port — wrangler prints
-// "Ready on http://127.0.0.1:8787" once it is serving. `npm run dev` uses this to
-// hold Vite back, instead of proxying /sync into a closed port (ECONNREFUSED storm).
+// Wait for the local Worker to accept TCP connections before starting the frontend.
 import net from 'node:net';
 
 const [host = '127.0.0.1', port = '8787', timeout = '60000'] = process.argv.slice(2);

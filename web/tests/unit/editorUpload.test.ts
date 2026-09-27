@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UploadPipeline, type PipelineTaskSnapshot } from '../../src/transcode/pipeline';
 
-// Editor image uploads ride the same SharedWorker queue and transport as the waterfall,
-// but skip its transcode leg entirely: the picked file goes up as-is. These tests pin
-// that the page side surfaces that upload leg, that a failure is worded as an upload
-// failure, and that a cancel settles the pending promise as an abort.
+// Verify direct editor upload progress, failure classification, and cancellation.
 
 class FakePort {
   sent: Array<Record<string, unknown>> = [];
