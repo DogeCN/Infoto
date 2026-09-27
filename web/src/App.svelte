@@ -651,9 +651,8 @@
     }
   }
 
-  // Previous filters reference: on layout-only changes settings.filters keeps the
-  // same spread reference and must not recompute visiblePhotos → waterfall reflow
-  // (one root cause of the freeze)
+  // Skip visiblePhotos when only layout changed. settings.filters keeps the same
+  // reference, and recomputing it reflows the waterfall.
   let _prevFilterRef: import('./settings').FilterSettings | undefined;
   function handleSettingsChange(s: Settings) {
     layout = {

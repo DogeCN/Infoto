@@ -271,9 +271,7 @@
     </div>
   {/if}
 
-  <!-- Mark badges: pills overlaid on the image, each hidden entirely when its count is zero.
-       Color language: the user's own mark = solid cyan (fill-current on the icon); everyone else's
-       marks = outline cyan at reduced opacity (plain white read as monotone). -->
+  <!-- Mark badges, hidden when the count is zero. The viewer's own mark is filled; others use the same hue at lower opacity. -->
   <div class="absolute bottom-2 left-2 z-10 flex items-center gap-1.5">
     {#if photo.likes.length > 0}
       <button

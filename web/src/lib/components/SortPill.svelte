@@ -1,22 +1,11 @@
 <script lang="ts">
-  // The sort pill, in whichever density the top bar chose.
+  // Sort pill at the density the top bar chose.
   //
-  // ⚠️ Why the hidden variant is NOT also rendered here — this is the third attempt at
-  // this measurement, and the first two were wrong in ways only a real browser exposed:
-  //
-  //  1. `invisible absolute` (out of flow but laid out) reports a width constrained by
-  //     its containing block, not its content. Measured: the labelled variant read
-  //     215px that way against a true 258px, because `absolute` shrink-to-fit resolves
-  //     against the shrink-0 parent's box. Every threshold built on it was ~42px out.
-  //  2. Keeping both wrappers inside a `relative shrink-0` parent made the *same* slot
-  //     change width when the mode flipped (257 → 215), so the measurement fed back
-  //     into the very decision that changed it — a feedback loop that made the bar flap
-  //     between `full` and `compact` around 470px however the thresholds were tuned.
-  //
-  // The lesson: a hidden element's box is not its content width, and measuring one is
-  // not a neutral read — it can couple to the decision it feeds. So exactly one variant
-  // is rendered and measured live; the other is derived from a label delta measured in
-  // normal flow, once, and only when the label text can have changed.
+  // Only the visible variant is in the flow. The other width is `shown ± labelDelta`,
+  // measured from a normal-flow clone (`width: max-content`). A hidden absolute twin
+  // reports the containing block, not content width, and a second in-flow variant
+  // changes the slot width when density flips, which feeds the measurement back into
+  // the decision.
   import type { SortKey } from './SortTabs.svelte';
   import SortTabs from './SortTabs.svelte';
 
@@ -54,10 +43,8 @@
    */
   let labelDelta = $state(0);
 
-  /** Label text in sort order — the only thing the delta depends on. */
+  /** Dependency key for label text. The delta itself is read from the DOM. */
   function labelsKey(sortKey: SortKey, dirs: Partial<Record<SortKey, boolean>>): string {
-    // readLabel is not exported; the rendered label is the button's text, so read it
-    // from the DOM when the delta is measured instead of re-deriving it here.
     return `${sortKey}:${JSON.stringify(dirs)}`;
   }
 
@@ -93,9 +80,8 @@
     if (delta !== labelDelta) labelDelta = delta;
   }
 
-  // Re-measure the delta when the label text can have changed, NOT when showLabels
-  // flips: flipping the mode is a consequence of the measurement, and letting it
-  // re-trigger the measurement is the feedback loop that made the bar flap.
+  // Refresh the delta when label text can change, not when showLabels flips.
+  // A density change is a consequence of the measurement and must not re-trigger it.
   $effect(() => {
     void labelsKey(sortKey, dirs);
     void document.documentElement.lang;

@@ -8,7 +8,6 @@
     type ScrollDir,
     type FillStrategy,
   } from '$base/lib/layout';
-  import { DEFAULT_BAND, defaultBand } from '$base/lib/band';
   import { marqueeHits, type Rect } from '$base/lib/marquee';
   import type { Photo } from '$shared/types';
   import PhotoCard from './PhotoCard.svelte';
@@ -181,14 +180,7 @@
     allPhotos.map((p) => ({ id: p.id, w: p.width || 1, h: p.height || 1 })),
   );
 
-  const photoMapCache = new WeakMap<Photo[], Map<number, Photo>>();
-  let photoMap = $derived.by(() => {
-    const cached = photoMapCache.get(allPhotos);
-    if (cached) return cached;
-    const map = new Map(allPhotos.map((p) => [p.id, p]));
-    photoMapCache.set(allPhotos, map);
-    return map;
-  });
+  let photoMap = $derived(new Map(allPhotos.map((p) => [p.id, p])));
 
   const layoutKeyCache = new WeakMap<Photo[], string>();
   /**
@@ -198,9 +190,8 @@
    */
   let lightboxPhotos = $derived(allPhotos.filter((p) => !isFailedUpload(p.id)));
 
-  // Recompute layout when dependencies change, debounced to one computation per 16 ms frame
-  // (abort-restart per event is a freeze root cause); state writes land in a rAF. layoutKey is
-  // the last run's content key: churn that changes no geometry must not reschedule anything.
+  // Recompute layout when dependencies change, debounced to one run per frame.
+  // State writes land in a rAF. layoutKey skips a reschedule when geometry is unchanged.
   let layoutKey = '';
 
   $effect(() => {
@@ -227,14 +218,9 @@
       layoutReady = false;
       return;
     }
-    // The engine derives row/column count from the target pixel band and measured cross size.
+    // Column count comes from the persisted pixel band and the measured cross size.
     const cross = (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX);
-    // The default band is derived from the available width on mobile (half the canvas) so the
-    // gallery opens as a natural two-column grid; on desktop it stays at the fixed DEFAULT_BAND.
-    // Once the user customizes the band it is used directly. The settings panel mirrors this via
-    // the same `defaultBand` helper, so the slider reads the value actually rendered.
-    const effectiveBand = band === DEFAULT_BAND ? defaultBand(containerW) : band;
-    const b = Math.max(1, Math.round(effectiveBand * zoom));
+    const b = Math.max(1, Math.round(band * zoom));
     let itemsKey = layoutKeyCache.get(allPhotos);
     if (!itemsKey) {
       itemsKey = items.map((i) => `${i.id}:${i.w}:${i.h}`).join(',');

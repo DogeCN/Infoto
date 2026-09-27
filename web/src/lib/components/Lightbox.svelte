@@ -452,21 +452,12 @@
     if (wrapEl) applyWrap();
   });
 
-  // Preload the two neighbours so switching feels instant, wrapping around the ends.
-  // Two things this effect deliberately does NOT do:
-  //   • it never cancels a warm-up. `photos` is a brand-new array on every /sync, so a
-  //     cleanup would abort downloads that are already in flight and start them over;
-  //     `img.src = ''` can also fire a stray request to the document URL.
-  //   • it does not warm while the viewer is closed. The Lightbox stays mounted, so
-  //     without the `open` guard every page load would fetch neighbours for a viewer
-  //     nobody opened.
-  //
-  // Only still images are warmed here. Videos are NOT: a throwaway <video> would spin
-  // up a real decoder, and a ranged GET of the head buys nothing — measured against our
-  // CDN, the whole 25MB arrives in ~0.9s, so trimming it to a 2MB slice saves less than
-  // the warm-up itself costs, and the <video> does not reuse the partial response
-  // anyway. Videos are handled where it actually pays: see `preload="auto"` on the
-  // media element, which starts buffering before the user reaches it.
+  // Preload the two neighbour stills, wrapping around the ends.
+  // Do not cancel an in-flight warm-up: `photos` is a new array on every sync, and
+  // clearing `img.src` can request the document URL. Do not warm while closed: the
+  // viewer stays mounted. Videos are not warmed here; the media element uses
+  // `preload="auto"`, because a throwaway <video> starts a decoder and does not reuse
+  // a partial response.
   $effect(() => {
     if (!open) return;
     const len = photos.length;
@@ -664,11 +655,8 @@
           <!-- type=1 (silent WebM) and type=2 (video with audio) both use video. The box
                comes entirely from .lb-media's CSS (see there for why the width/height
                attributes must stay off).
-               `preload="auto"` buffers the whole file as soon as the element exists:
-               without it the browser applies its own heuristic and often settles for
-               `metadata`, which leaves the decoder starved exactly when the user
-               switches. Our CDN delivers 25MB in well under a second, so fetching it
-               eagerly is far cheaper than the stall it prevents. -->
+               `preload="auto"` buffers the file as soon as the element exists. The
+               browser's own heuristic often stops at metadata and stalls the switch. -->
           <video
             src={photo.url}
             class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
