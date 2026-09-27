@@ -18,7 +18,7 @@ import {
   videoPoolSize,
   VP9_QUANTIZER,
   WEBP_QUALITY,
-} from './pipeline.ts';
+} from '../../src/base/upload/pipeline.ts';
 
 // ---- tuning constants -----------------------------------------------------------
 

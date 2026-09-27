@@ -1,6 +1,6 @@
 <script lang="ts">
   import GlitchText from './GlitchText.svelte';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
 
   interface Props {
     code?: number;

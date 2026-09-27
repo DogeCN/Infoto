@@ -3,7 +3,7 @@
 // APIs here: every function is runnable under Node for unit assertions.
 
 import type { Op, UploadPayload } from '$shared/types';
-import { copy, fmt } from '$shared/copy';
+import { copy, fmt, type Copy } from '$shared/copy';
 
 // ---- constants -------------------------------------------------------------
 
@@ -123,63 +123,67 @@ export interface TaskErrorContext {
   uploadLeg?: boolean;
 }
 
-const UPLOAD_ERROR_TEXT: Record<string, string> = {
-  timeout: copy.upload.errors.timeout,
-  network_error: copy.upload.errors.network,
+// Keyed by the engine's error code; the text is read through `pick` at call time
+// because the user can switch language after this module was loaded.
+const UPLOAD_ERROR_TEXT: Record<string, (c: Copy) => string> = {
+  timeout: (c) => c.upload.errors.timeout,
+  network_error: (c) => c.upload.errors.network,
   // The proxy answers 401 with a JSON body whose `error` field the client prefers
   // over the status code, so the code reaching here is `unauthorized` — map both.
-  unauthorized: copy.upload.errors.unauthorized,
-  http_401: copy.upload.errors.unauthorized,
-  oversize: copy.upload.errors.oversize,
-  http_413: copy.upload.errors.tooLarge,
+  unauthorized: (c) => c.upload.errors.unauthorized,
+  http_401: (c) => c.upload.errors.unauthorized,
+  oversize: (c) => c.upload.errors.oversize,
+  http_413: (c) => c.upload.errors.tooLarge,
 };
 
-const TRANSCODE_ERROR_TEXT: Record<string, string> = {
-  no_supported_video_codec: copy.transcode.errors.noSupportedVideoCodec,
-  no_video_track: copy.transcode.errors.noVideoTrack,
-  webp_encode_unsupported: copy.transcode.errors.webpEncodeUnsupported,
-  conversion_invalid: copy.transcode.errors.conversionInvalid,
-  empty_output: copy.transcode.errors.emptyOutput,
-  gif_decode_failed: copy.transcode.errors.gifDecodeFailed,
-  gif_dimensions_unknown: copy.transcode.errors.gifDimensionsUnknown,
-  source_unavailable: copy.transcode.errors.sourceUnavailable,
-  source_missing: copy.transcode.errors.sourceMissing,
-  canvas_2d_unavailable: copy.transcode.errors.canvas2dUnavailable,
+const TRANSCODE_ERROR_TEXT: Record<string, (c: Copy) => string> = {
+  no_supported_video_codec: (c) => c.transcode.errors.noSupportedVideoCodec,
+  no_video_track: (c) => c.transcode.errors.noVideoTrack,
+  webp_encode_unsupported: (c) => c.transcode.errors.webpEncodeUnsupported,
+  conversion_invalid: (c) => c.transcode.errors.conversionInvalid,
+  empty_output: (c) => c.transcode.errors.emptyOutput,
+  gif_decode_failed: (c) => c.transcode.errors.gifDecodeFailed,
+  gif_dimensions_unknown: (c) => c.transcode.errors.gifDimensionsUnknown,
+  source_unavailable: (c) => c.transcode.errors.sourceUnavailable,
+  source_missing: (c) => c.transcode.errors.sourceMissing,
+  canvas_2d_unavailable: (c) => c.transcode.errors.canvas2dUnavailable,
 };
 
 /** Raw engine/browser messages (mediabunny, WebCodecs, OPFS…) arrive in English —
  *  match the common shapes before falling back to the generic "transcode failed"
  *  + detail summary. */
-const TRANSCODE_ERROR_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+const TRANSCODE_ERROR_PATTERNS: ReadonlyArray<readonly [RegExp, (c: Copy) => string]> = [
   [
     /unrecognizable format|unsupported or unrecognizable/i,
-    copy.transcode.errors.unrecognizableFormat,
+    (c) => c.transcode.errors.unrecognizableFormat,
   ],
-  [/no (primary )?video track/i, copy.transcode.errors.noVideoTrack],
-  [/no.*audio.*encoder|audio.*not supported/i, copy.transcode.errors.audioCodec],
-  [/encoder(?!.*supported).*error|encoding error/i, copy.transcode.errors.encoderError],
-  [/corrupt|invalid (data|frame)|malformed/i, copy.transcode.errors.corrupt],
-  [/decode|decoder/i, copy.transcode.errors.decodeFailed],
-  [/not enough memory|out of memory/i, copy.transcode.errors.outOfMemory],
+  [/no (primary )?video track/i, (c) => c.transcode.errors.noVideoTrack],
+  [/no.*audio.*encoder|audio.*not supported/i, (c) => c.transcode.errors.audioCodec],
+  [/encoder(?!.*supported).*error|encoding error/i, (c) => c.transcode.errors.encoderError],
+  [/corrupt|invalid (data|frame)|malformed/i, (c) => c.transcode.errors.corrupt],
+  [/decode|decoder/i, (c) => c.transcode.errors.decodeFailed],
+  [/not enough memory|out of memory/i, (c) => c.transcode.errors.outOfMemory],
 ];
 
-/** Fully-Chinese, user-facing summary of one task failure. Unknown transcode
+/** User-facing summary of one task failure, in the active language. Unknown transcode
  *  errors fall back to "transcode failed" with the raw detail appended. */
 export function translateTaskError(error: string | undefined, ctx: TaskErrorContext): string {
-  if (ctx.oversize) return copy.upload.errors.oversize;
+  const c = copy;
+  if (ctx.oversize) return c.upload.errors.oversize;
   const e = error ?? '';
   if (ctx.uploadLeg) {
     // The media is in hand → the failure is on the upload leg.
-    if (UPLOAD_ERROR_TEXT[e]) return UPLOAD_ERROR_TEXT[e]!;
-    if (e.startsWith('http_')) return fmt(copy.upload.errors.httpFailed, { status: e.slice(5) });
-    return copy.upload.errors.failed;
+    const upload = UPLOAD_ERROR_TEXT[e];
+    if (upload) return upload(c);
+    if (e.startsWith('http_')) return fmt(c.upload.errors.httpFailed, { status: e.slice(5) });
+    return c.upload.errors.failed;
   }
   const mapped = TRANSCODE_ERROR_TEXT[e];
-  if (mapped) return fmt(copy.transcode.errors.summary, { detail: mapped });
+  if (mapped) return fmt(c.transcode.errors.summary, { detail: mapped(c) });
   for (const [re, text] of TRANSCODE_ERROR_PATTERNS) {
-    if (re.test(e)) return fmt(copy.transcode.errors.summary, { detail: text });
+    if (re.test(e)) return fmt(c.transcode.errors.summary, { detail: text(c) });
   }
-  return e ? fmt(copy.transcode.errors.withCode, { error: e }) : copy.transcode.errors.failed;
+  return e ? fmt(c.transcode.errors.withCode, { error: e }) : c.transcode.errors.failed;
 }
 
 // ---- op construction -------------------------------------------------------------

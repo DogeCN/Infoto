@@ -2,7 +2,12 @@
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { computeLayout, orderByMain, windowIndices, type LayoutItem } from './layout.ts';
+import {
+  computeLayout,
+  orderByMain,
+  windowIndices,
+  type LayoutItem,
+} from '../../src/base/lib/layout.ts';
 
 const items = (specs: [number, number][]): LayoutItem[] =>
   specs.map(([w, h], i) => ({ id: i + 1, w, h }));

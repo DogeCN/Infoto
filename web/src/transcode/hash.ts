@@ -11,10 +11,17 @@ export interface TeeResult {
 
 /**
  * Consume `source`, writing each chunk to the OPFS sink and the hasher; write and hash failures both propagate (the caller marks the job failed).
+ *
+ * `onBytes` fires after each chunk is written and hashed. Hashing and the OPFS write
+ * are one loop, not two stages — the hasher cannot finish before the sink does, and
+ * splitting them would report a fraction for a leg that does not exist. So the honest
+ * denominator is the source Blob's own size, and `onBytes(bytes)` is the single real
+ * measurement this pipeline offers.
  */
 export async function teeToHash(
   source: ReadableStream<Uint8Array>,
   write: (chunk: Uint8Array) => Promise<void>,
+  onBytes?: (bytes: number) => void,
 ): Promise<TeeResult> {
   const hasher = await createSHA256();
   hasher.init();
@@ -28,6 +35,7 @@ export async function teeToHash(
       await write(value);
       hasher.update(value);
       bytes += value.byteLength;
+      onBytes?.(bytes);
     }
   } finally {
     reader.releaseLock();
@@ -39,6 +47,7 @@ export async function teeToHash(
 export async function hashBlob(
   blob: Blob,
   write?: (chunk: Uint8Array) => Promise<void>,
+  onBytes?: (bytes: number) => void,
 ): Promise<TeeResult> {
-  return teeToHash(blob.stream() as ReadableStream<Uint8Array>, write ?? (async () => {}));
+  return teeToHash(blob.stream() as ReadableStream<Uint8Array>, write ?? (async () => {}), onBytes);
 }

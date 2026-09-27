@@ -1,4 +1,10 @@
-import { copy } from '../shared/copy.ts';
+import {
+  acceptLanguages,
+  locales,
+  pickLocale,
+  type Copy,
+  type LocaleCode,
+} from '../shared/copy.ts';
 
 // Error pages: a large cyan status code with a red/cyan double-layer glitch offset on a
 // dark background. The displaced double text is the only effect.
@@ -9,9 +15,26 @@ const escapeHtml = (value: string): string =>
     (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
   );
 
-function page(code: number, title: string, message: string): Response {
+/**
+ * The table and tag these pages render in. One isolate serves every visitor, so the
+ * locale is resolved per request from `Accept-Language` rather than read from the
+ * module-level `copy` (which the Worker never mutates). Unknown tags fall back to
+ * English.
+ */
+function localeFor(request: Request | undefined): { code: LocaleCode; copy: Copy } {
+  const code = pickLocale(acceptLanguages(request?.headers.get('Accept-Language')));
+  return { code, copy: locales[code] };
+}
+
+function page(
+  code: number,
+  title: string,
+  message: string,
+  lang: LocaleCode,
+  back: string,
+): Response {
   const html = `<!doctype html>
-<html lang="en">
+<html lang="${lang}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -101,7 +124,7 @@ function page(code: number, title: string, message: string): Response {
 		<div class="code-wrap"><div class="code">${code}</div></div>
 		<div class="title">${escapeHtml(title)}</div>
 		<div class="msg">${escapeHtml(message)}</div>
-		<a class="home" href="/">${copy.errorPage.backHome}</a>
+		<a class="home" href="/">${escapeHtml(back)}</a>
 	</div>
 </body>
 </html>`;
@@ -110,6 +133,7 @@ function page(code: number, title: string, message: string): Response {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
+      'Content-Language': lang,
       'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy':
         "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.cn; font-src https://fonts.gstatic.com;",
@@ -117,8 +141,24 @@ function page(code: number, title: string, message: string): Response {
   });
 }
 
-export const notFoundPage = (): Response =>
-  page(404, copy.errorPage.notFoundTitle, copy.errorPage.workerNotFoundMessage);
+export const notFoundPage = (request?: Request): Response => {
+  const { code, copy } = localeFor(request);
+  return page(
+    404,
+    copy.errorPage.notFoundTitle,
+    copy.errorPage.workerNotFoundMessage,
+    code,
+    copy.errorPage.backHome,
+  );
+};
 
-export const serverErrorPage = (): Response =>
-  page(500, copy.errorPage.serverErrorTitle, copy.errorPage.workerServerError);
+export const serverErrorPage = (request?: Request): Response => {
+  const { code, copy } = localeFor(request);
+  return page(
+    500,
+    copy.errorPage.serverErrorTitle,
+    copy.errorPage.workerServerError,
+    code,
+    copy.errorPage.backHome,
+  );
+};

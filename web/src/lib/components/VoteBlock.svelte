@@ -3,7 +3,8 @@
   // Semantics: click an option to vote; click the chosen one again to retract (option
   // null, backend-supported); click another to change the vote.
   import type { Vote } from '$shared/types';
-  import { copy, fmt } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { fmt, plural } from '$shared/copy';
 
   interface Props {
     options: string[];
@@ -63,7 +64,7 @@
         <span class="inline-flex items-baseline gap-1.5 tabular-nums">
           <span class="font-mono text-xs text-primary">{pct.toFixed(0)}%</span>
           <span class="font-mono text-[11px] text-muted-foreground/70">
-            {fmt(copy.vote.count, { count })}
+            {fmt(plural(count, copy.vote.count), { count })}
           </span>
         </span>
       </span>

@@ -13,7 +13,7 @@
     ImagePlus,
     Vote,
   } from '@lucide/svelte';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
   import { cn } from '$lib/utils';
   import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';

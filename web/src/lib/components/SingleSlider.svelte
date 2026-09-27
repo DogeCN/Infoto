@@ -7,7 +7,7 @@
   import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
   import { cn } from '$lib/utils';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
 
   interface Props {
     min: number;

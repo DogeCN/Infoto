@@ -2,7 +2,7 @@
   // GitHub-style reaction count buttons plus an add-reaction button. With no
   // reactions, only the add button shows.
   import { SmilePlus } from '@lucide/svelte';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
   import { cn } from '$lib/utils';
   import { reactionCounts } from '../../core/reactions';
   import type { Announcement } from '$shared/types';

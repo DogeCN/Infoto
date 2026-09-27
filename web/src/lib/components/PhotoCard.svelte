@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import type { Photo } from '$shared/types';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
   import {
     ThumbsUp,
     ThumbsDown,

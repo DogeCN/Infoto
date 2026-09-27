@@ -51,23 +51,23 @@ export function isStorableMediaUrl(url: string): boolean {
 export function mediaHandler(env: AppEnv) {
   return async (c: Context): Promise<Response> => {
     const id36 = c.req.param('id36') ?? '';
-    if (!/^[0-9a-z]+$/.test(id36)) return notFoundPage();
+    if (!/^[0-9a-z]+$/.test(id36)) return notFoundPage(c.req.raw);
     const id = parseInt(id36, 36);
-    if (!Number.isSafeInteger(id)) return notFoundPage();
+    if (!Number.isSafeInteger(id)) return notFoundPage(c.req.raw);
 
     const row = await env.db.prepare('SELECT url, type FROM photos WHERE id = ?').bind(id).first<{
       url: string;
       type: number;
     }>();
-    if (!row) return notFoundPage();
+    if (!row) return notFoundPage(c.req.raw);
 
     let upstream: Response;
     try {
       upstream = await fetch(row.url);
     } catch {
-      return serverErrorPage();
+      return serverErrorPage(c.req.raw);
     }
-    if (!upstream.ok || !upstream.body) return notFoundPage();
+    if (!upstream.ok || !upstream.body) return notFoundPage(c.req.raw);
 
     const headers: Record<string, string> = {
       'Content-Type':

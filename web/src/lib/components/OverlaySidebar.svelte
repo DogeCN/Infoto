@@ -3,7 +3,7 @@
   // width, so the waterfall doesn't relayout on open/close. Desktop drags the inner edge
   // to resize (persisted to localStorage); mobile (< 768px) is full-width with no dragging.
   import type { Snippet } from 'svelte';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
   import { X } from '@lucide/svelte';
 
   let {

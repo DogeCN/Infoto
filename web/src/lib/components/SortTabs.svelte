@@ -1,11 +1,13 @@
 <script lang="ts">
   // Three-segment sort selector: newest / hottest / random, icon and text diff with
-  // state, label hidden when narrow with a native title for the name. SegmentedControl
-  // provides the visuals; this component owns the domain logic (per-item direction, random reshuffle).
+  // state. Whether the labels show is decided by the top bar from measured widths and
+  // passed down — this component never guesses it from a viewport breakpoint.
+  // SegmentedControl provides the visuals; this component owns the domain logic
+  // (per-item direction, random reshuffle).
   import { Clock4, Clock10, Flame, Snowflake, Shuffle } from '@lucide/svelte';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import type { SegmentedItem } from '$lib/components/SegmentedControl.svelte';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
 
   export type SortKey = 'latest' | 'hottest' | 'random';
 
@@ -17,15 +19,15 @@
     dirs?: Partial<Record<SortKey, boolean>>;
     onChange?: (key: SortKey) => void;
     onReshuffle?: () => void;
+    /** Icon-only: the top bar hides the labels when the pill is actually squeezed. */
+    hideLabel?: boolean;
   }
 
-  let { sortKey = 'latest', dirs = {}, onChange, onReshuffle }: Props = $props();
+  let { sortKey = 'latest', dirs = {}, onChange, onReshuffle, hideLabel = false }: Props = $props();
 
-  const SORTS: Array<{ key: SortKey; label: string }> = [
-    { key: 'latest', label: copy.sort.latest },
-    { key: 'hottest', label: copy.sort.hottest },
-    { key: 'random', label: copy.sort.random },
-  ];
+  // Keys only — the labels come from `labelFor`, which reads `copy` per item so a
+  // language switch re-renders them.
+  const SORTS: ReadonlyArray<SortKey> = ['latest', 'hottest', 'random'];
 
   function iconFor(key: SortKey, asc: boolean) {
     // Newest = clock hand at 4 o'clock, oldest = hand at 10 o'clock (opposite direction).
@@ -42,9 +44,9 @@
 
   // Labels/icons diff with dirs, fed to the generic pill.
   const items = $derived<ReadonlyArray<SegmentedItem<SortKey>>>(
-    SORTS.map((s) => {
-      const asc = dirs[s.key] ?? false;
-      return { value: s.key, label: labelFor(s.key, asc), icon: iconFor(s.key, asc) };
+    SORTS.map((key) => {
+      const asc = dirs[key] ?? false;
+      return { value: key, label: labelFor(key, asc), icon: iconFor(key, asc) };
     }),
   );
 </script>
@@ -52,7 +54,7 @@
 <SegmentedControl
   {items}
   value={sortKey}
-  responsiveHideLabel
+  {hideLabel}
   ariaLabel={copy.sort.ariaLabel}
   onChange={(k) => onChange?.(k)}
   onReselect={(k) => {

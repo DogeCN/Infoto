@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Feedback } from '$shared/types';
   import { MessageSquare, Trash2 } from '@lucide/svelte';
-  import { copy, fmt } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { fmt } from '$shared/copy';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import MarkdownView from '$lib/components/MarkdownView.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';

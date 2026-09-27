@@ -396,7 +396,7 @@
       // Header counter: a job is resolved the moment it stops being one of the panel's
       // rows (transcoded, dead, or cancelled). The counter therefore reaches total exactly
       // when the list empties — an upload still in flight is the card's business, not the
-      // panel's, and counting it here is what used to leave an empty panel at "12/18".
+      // panel's, so counting it here would leave the panel header above the real total.
       if (!PANEL_STAGES.has(t.phase)) countResolved(t.jobId);
       // Card preview comes from the transcoded artifact, not the picked File.
       if (t.meta && (t.phase === 'uploading' || t.phase === 'failed')) {

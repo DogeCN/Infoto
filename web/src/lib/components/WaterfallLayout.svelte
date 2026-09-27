@@ -9,6 +9,7 @@
     type FillStrategy,
   } from '$base/lib/layout';
   import { marqueeHits, type Rect } from '$base/lib/marquee';
+  import { bandForCols } from '$base/lib/band';
   import type { Photo } from '$shared/types';
   import PhotoCard from './PhotoCard.svelte';
   import Lightbox from './Lightbox.svelte';
@@ -26,7 +27,8 @@
     onDismissUpload?: (photo: Photo) => void;
     dir?: ScrollDir;
     strategy?: FillStrategy;
-    band?: number;
+    /** Target column count; the pixel band is derived from the measured cross size. */
+    cols?: number;
     gap?: number;
     bufferScreens?: number;
     selfId?: number;
@@ -54,7 +56,7 @@
     onDismissUpload,
     dir = 'v',
     strategy = 'sequential',
-    band = 320,
+    cols = 2,
     gap = 8,
     bufferScreens = 2,
     selfId = -1,
@@ -80,7 +82,10 @@
   /** Top spacing (accommodates the floating top bar; content can scroll under it for immersion). */
   let padTop = $state(80);
 
-  // Zoom (desktop Ctrl+wheel / mobile pinch, 50%–200%), applied to the target band width
+  // Zoom (desktop Ctrl+wheel / mobile pinch, 50%–200%). Applied as a uniform scale
+  // over the whole grid, so zooming out also widens the gap proportionally and the
+  // cells keep their proportions — a zoom that only shrank the band would eat the
+  // gap and change the column count on the way down.
   let zoom = $state(1);
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 2;
@@ -136,6 +141,14 @@
   // Layout state
   let boxes = $state<LayoutBox[]>([]);
   let totalH = $state(0);
+  /**
+   * Longest box on the main axis, recomputed with the boxes. The virtualizer uses it
+   * as a conservative search bound; it has to be the real maximum because a masonry
+   * cell can be far taller than the band (a tall portrait) or far wider than one
+   * column (a wide panorama), and under-estimating it would make the binary search
+   * skip boxes that are actually on screen.
+   */
+  let maxExtent = $state(0);
   let totalW = $state(0);
   let order = $state<number[]>([]);
   let layoutReady = $state(false);
@@ -185,9 +198,11 @@
     const w = containerW;
     const d = dir;
     const s = strategy;
-    // Zoom applies to the target band width (50%–200%)
-    const b = Math.round(band * zoom);
-    const g = gap;
+    const c = cols;
+    // Zoom is a uniform scale: the gap scales with the cells, so a 50% view is
+    // genuinely the whole layout at half size rather than the same cells in a
+    // tighter row.
+    const g = Math.max(0, Math.round(gap * zoom));
     if (w <= 0 || items.length === 0) {
       // Empty set: drop whatever was still scheduled so a stale run cannot
       // repaint boxes for items that are gone.
@@ -203,6 +218,11 @@
       layoutReady = false;
       return;
     }
+    // The engine packs rows/columns from a pixel band, so the requested column
+    // count is converted here — once the cross size is known — rather than being
+    // persisted as a viewport-independent pixel value.
+    const cross = (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX);
+    const b = Math.max(1, Math.round(bandForCols(cross, g, c) * zoom));
     const key = `${w}|${d}|${s}|${b}|${g}|${items.map((i) => `${i.id}:${i.w}:${i.h}`).join(',')}`;
     if (key === layoutKey) return;
     layoutKey = key;
@@ -218,7 +238,7 @@
         dir: d,
         strategy: s,
         // Static cross-axis whitespace in horizontal mode: top padTop (for the floating top bar) + bottom padX
-        cross: (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX),
+        cross,
         band: b,
         gap: g,
       };
@@ -230,6 +250,7 @@
               boxes = result.boxes;
               totalH = result.totalH;
               totalW = result.totalW;
+              maxExtent = result.boxes.reduce((m, bx) => Math.max(m, d === 'v' ? bx.h : bx.w), 0);
               order = sorted;
               layoutReady = true;
             }
@@ -253,7 +274,6 @@
     const viewportSize = dir === 'v' ? viewportH : containerW;
     const scrollPos = dir === 'v' ? scrollTop : scrollLeftPos;
     const buffer = viewportSize * bufferScreens;
-    const maxExtent = band + gap;
     const from = scrollPos - buffer;
     const to = scrollPos + viewportSize + buffer;
     const indices = windowIndices(boxes, order, dir, from, to, maxExtent);

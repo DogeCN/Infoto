@@ -1,7 +1,8 @@
 <script lang="ts">
   import { Download, Upload } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
-  import { copy, fmt } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { fmt } from '$shared/copy';
   import Progress from '$lib/components/Progress.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';
   import { migrateSql } from '../../core/api/migrateClient';

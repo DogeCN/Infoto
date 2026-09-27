@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Announcement } from '$shared/types';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
   import { splitVote } from '../../core/vote';
   import MarkdownView from './MarkdownView.svelte';

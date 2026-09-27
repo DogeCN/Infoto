@@ -17,8 +17,10 @@
     onChange?: (value: T) => void;
     /** Fired when the already-active item is clicked again (e.g. "random" reshuffle). */
     onReselect?: (value: T) => void;
-    /** Hide the label on narrow screens (icon only); the native title supplies the name. */
-    responsiveHideLabel?: boolean;
+    /** Hide the label and show the icon alone. The caller owns this decision (the top
+     *  bar derives it from measured widths — a viewport breakpoint here would hide labels
+     *  when the pill had room). The native `title` still supplies the name. */
+    hideLabel?: boolean;
     size?: 'sm' | 'md';
     ariaLabel?: string;
   }
@@ -28,7 +30,7 @@
     value,
     onChange,
     onReselect,
-    responsiveHideLabel = false,
+    hideLabel = false,
     size = 'md',
     ariaLabel,
   }: Props<T> = $props();
@@ -103,14 +105,15 @@
       class={cn(
         'relative z-10 inline-flex items-center rounded-full py-1.5 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
         size === 'md' ? 'px-3.5' : 'px-3',
-        responsiveHideLabel ? 'gap-1.5' : 'gap-2',
+        hideLabel ? 'gap-1.5' : 'gap-2',
         active ? 'text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
       )}
       title={item.label}
+      aria-label={hideLabel ? item.label : undefined}
       onclick={() => pick(item.value)}
     >
       {#if Icon}<Icon class="size-4" />{/if}
-      <span class={cn(responsiveHideLabel && 'hidden sm:inline')}>{item.label}</span>
+      {#if !hideLabel}<span>{item.label}</span>{/if}
     </button>
   {/each}
 </div>

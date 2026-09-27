@@ -18,7 +18,8 @@
   // follows the finger 1:1 and only the release decides, past the midpoint being "open".
   import { onDestroy } from 'svelte';
   import { Clapperboard, X } from '@lucide/svelte';
-  import { copy, fmt } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { fmt } from '$shared/copy';
   import type { UploadRow } from '../../transcode/pipeline';
 
   interface Props {
@@ -35,7 +36,8 @@
 
   let { tasks, progress, onRemove, hidden = false }: Props = $props();
 
-  const title = copy.uploadPanel.transcodeTitle;
+  // `$derived`, not a snapshot: the heading follows a language switch.
+  const title = $derived(copy.uploadPanel.transcodeTitle);
 
   /** Matches the row's exit transition, so the shell outlives the last collapse. */
   const ROW_EXIT_MS = 280;

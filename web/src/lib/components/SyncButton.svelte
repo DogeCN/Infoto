@@ -4,7 +4,8 @@
   // mid-rotation. A manual sync with zero pending ops enters the spin state as well.
   import { RefreshCw } from '@lucide/svelte';
   import Tooltip from './Tooltip.svelte';
-  import { copy, fmt } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { fmt } from '$shared/copy';
 
   interface Props {
     pendingCount?: number;

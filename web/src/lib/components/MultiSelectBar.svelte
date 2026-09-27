@@ -4,7 +4,7 @@
   // Exit only via the top-bar icon.
   import { CheckSquare, Square, Download, Trash2, Undo2 } from '@lucide/svelte';
   import type { Photo } from '$shared/types';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
   import { humanSize } from '$base/lib/format';
 
   interface Props {

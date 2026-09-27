@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Announcement } from '$shared/types';
   import { Megaphone, Pencil, Trash2 } from '@lucide/svelte';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';

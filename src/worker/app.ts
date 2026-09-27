@@ -35,22 +35,22 @@ export function createApp(env: AppEnv): Hono {
   app.post('/admin/migrate', migrateImportHandler(env));
   app.route('/admin', adminApp(env));
   // /admin (the management page) is a front-end route: the SPA fallback serves it.
-  app.all('/admin/*', () => notFoundPage());
+  app.all('/admin/*', (c) => notFoundPage(c.req.raw));
   app.get('*', async (c) => {
     if (env.assets) {
       const res = await env.assets(c.req.raw);
       if (res.status !== 404) return res;
     }
-    return notFoundPage();
+    return notFoundPage(c.req.raw);
   });
 
-  app.notFound(() => notFoundPage());
+  app.notFound((c) => notFoundPage(c.req.raw));
   app.onError((err, c) => {
     console.error('[infoto]', err);
     if (JSON_ROUTE.test(new URL(c.req.url).pathname)) {
       return c.json({ ok: false, error: 'internal' }, 500);
     }
-    return serverErrorPage();
+    return serverErrorPage(c.req.raw);
   });
 
   return app;

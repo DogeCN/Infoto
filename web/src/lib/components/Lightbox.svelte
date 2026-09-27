@@ -3,7 +3,8 @@
   // Gestures via direct DOM transforms: swipe left/right = like/dislike (auto-advance), down = download, up = action sheet;
   // hints fade/scale with the drag and spring back below the threshold; double-click/pinch/Ctrl+wheel zoom, drag pans; no click paging.
   import { MEDIA_TYPE, type Photo } from '$shared/types';
-  import { copy, fmt } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { fmt } from '$shared/copy';
   import {
     X,
     ChevronLeft,

@@ -2,7 +2,7 @@
   import { onDestroy, tick } from 'svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
   import type { UploadRow } from '../../transcode/pipeline';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
 
   interface Props {
     announcement: {

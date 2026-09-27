@@ -18,9 +18,12 @@
     HardDrive,
     LayoutGrid,
     Funnel,
+    Globe,
+    ChevronDown,
   } from '@lucide/svelte';
   import { cn } from '$lib/utils';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
+  import { MAX_COLS, MIN_COLS } from '$base/lib/band';
   import type { Component } from 'svelte';
   import type { MediaType, Photo } from '$shared/types';
   import {
@@ -41,7 +44,8 @@
   import SingleSlider from './SingleSlider.svelte';
   import Tooltip from './Tooltip.svelte';
   import { toast } from 'svelte-sonner';
-  import { copy } from '$shared/copy';
+  import { copy, getLocale, LOCALE_OPTIONS, setLocale } from '$lib/i18n.svelte';
+  import type { LocaleCode } from '$shared/copy';
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
@@ -182,8 +186,8 @@
   function setStrategy(s: FillStrategy) {
     settings = { ...settings, layout: { ...settings.layout, strategy: s } };
   }
-  function setBand(v: number) {
-    settings = { ...settings, layout: { ...settings.layout, band: v } };
+  function setCols(v: number) {
+    settings = { ...settings, layout: { ...settings.layout, cols: v } };
   }
   function setGap(v: number) {
     settings = { ...settings, layout: { ...settings.layout, gap: v } };
@@ -406,16 +410,16 @@
         </button>
       </div>
 
-      <!-- Band and gap: single-thumb sliders -->
+      <!-- Column count and gap: single-thumb sliders -->
       <SingleSlider
-        min={200}
-        max={800}
-        step={10}
-        value={settings.layout.band}
-        defaultValue={LAYOUT_DEFAULTS.band}
+        min={MIN_COLS}
+        max={MAX_COLS}
+        step={1}
+        value={settings.layout.cols}
+        defaultValue={LAYOUT_DEFAULTS.cols}
         icon={Ruler}
-        format={(v) => `${v}px`}
-        onChange={setBand}
+        format={(v) => `${v}`}
+        onChange={setCols}
       />
       <SingleSlider
         min={0}
@@ -427,6 +431,30 @@
         format={(v) => `${v}px`}
         onChange={setGap}
       />
+
+      <!-- Language: not a layout knob, but it belongs with the other app-wide
+           preferences. Switching re-renders the whole panel in place. -->
+      <div class="flex items-center gap-3 pt-0.5">
+        <Tooltip text={copy.settings.language} side="bottom">
+          <Globe class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </Tooltip>
+        <div class="relative flex-1">
+          <select
+            value={getLocale()}
+            aria-label={copy.settings.language}
+            onchange={(e) => setLocale(e.currentTarget.value as LocaleCode)}
+            class="h-9 w-full appearance-none rounded-md border border-input bg-background pl-3 pr-8 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {#each LOCALE_OPTIONS as option (option.code)}
+              <option value={option.code}>{option.label}</option>
+            {/each}
+          </select>
+          <ChevronDown
+            class="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+        </div>
+      </div>
     </div>
   </section>
 </div>
