@@ -35,6 +35,7 @@
 
 - **NEVER `Stop-Process -Name node` / `taskkill /IM node`**: Kills the agent's own shell bridge, causing all subsequent Bash/PowerShell tools to fail with `command expected string / undefined`. To clear a port: `Get-NetTCPConnection -LocalPort <p>` → `Stop-Process -Id <pid>`.
 - Start dev: `npm run dev` at repo root = Worker(8787) + Web(5173) + `db:local` (idempotent, does not clear data). **Never `nohup npm run dev:worker &`** (creates competing workerd processes fighting for :8787).
+- Dev proxy `cookieDomainRewrite` is empty, so the session cookie stays host-only. Rewriting it to `Domain=localhost` drops the cookie on any non-localhost dev host.
 - **Never start `npm run dev` on top of a previous instance.** A stray vite still bound to 5173 makes the new one fall back to 5174, and _both_ proxy the single Worker on 8787 — the doubled cold-start traffic triggers workerd "runtime crashed unexpectedly" restarts. It self-heals, but is noisy and avoidable. Always free 8787 / 5173 / 5174 (`Get-NetTCPConnection -LocalPort <p>` → `Stop-Process -Id <pid>`) before starting dev.
 - wrangler reports Ready but curl hangs = zombie workerd on port; kill `workerd.exe` and restart. localhost unreachable → try `127.0.0.1` (local Vite only listens on IPv6 `[::1]:5173`).
 - After renaming a module export, vite may serve stale transform → `touch` the file to invalidate watcher cache.
@@ -54,6 +55,17 @@
 - Identity cookie `uuid` is set by Worker as **HttpOnly** → frontend `document.cookie` cannot read it. **Never** use "cookie exists" to determine authentication; whether authenticated can only be answered by the server → always probe `/sync` first.
 - Turnstile widget must `turnstile.remove(widgetId)` before removing DOM, otherwise orphaned widget keeps polling and errors. After token returns, **do not** remove immediately (iframe handshake not complete, postMessage goes to removed window); delay ~800ms, hide overlay during this time.
 - In dev, site key is injected by vite from root `.dev.vars` as `VITE_TURNSTILE_SITE_KEY` (fallback only when 401 body missing).
+- Cloudflare's published always-pass secret `1x0000000000000000000000000000000AA` accepts any non-empty token and does not call siteverify. A missing secret, an empty token, and every other secret still fail closed. Do not treat that short-circuit as a bypass for the production secret.
+
+---
+
+## Web Fonts (2026-09-27)
+
+- Do not use `fonts.googleapis.cn`. It is unstable and is not a source.
+- Race two stylesheets; the first successful load is applied and the other `<link>` is removed. Official: `fonts.googleapis.com` / `fonts.gstatic.com`. USTC mirror: `fonts.proxy.ustclug.org` / `fonts-gstatic.proxy.ustclug.org` (USTCLUG reverse proxy; `mirrors.ustc.edu.cn` does not currently list these hosts in its reverse-proxy table).
+- One helper, `src/shared/fonts.ts`. Vite injects it at `<!-- font-race -->` in `web/index.html`. The Worker error page inlines the same helper. Families and weights stay as they were (`display=swap`).
+- Error-page CSP must name both CSS hosts and both file hosts. The race script is static — never interpolate the request into it.
+- If both hosts fail, `system-ui` / `-apple-system` / `sans-serif` remain the fallback. Do not vendor Noto Sans SC to paper over a dead host.
 
 ---
 
@@ -84,6 +96,13 @@
 - ⚠️ **Adding `relative` to the gesture wrapper changes the skeleton's containing block.** Re-derive the anchor: with the media loaded the wrapper is centred by the outer flex box (wrapper centre == media centre == viewport centre); before load the wrapper is a 0×0 flex item sitting at the container centre, and `50% of 0 = 0`, so the two coincide. **Any time a `relative` is added inside a gesture layer, re-check every sibling that positions off `left/top: 50%`.**
 - **`preload="auto"` on the `<video>`, no manual pre-fetch.** Without it the browser applies its own heuristic and often settles for `metadata`, leaving the decoder starved exactly when the user switches. Measured against our CDN the whole 25MB arrives in **~0.9s (29MB/s)**, so buffering eagerly is far cheaper than the stall. Rejected: `link[rel=preload] as=video` (downloads the _entire_ resource) and a ranged GET of the first 2MB (saves less than the warm-up itself costs, and the `<video>` does not reuse the partial response). Still images **are** warmed with `new Image()`.
 - **Counter-scaled overlays must share the wrapper's transition.** A control that rides inside the transform wrapper counter-scales about its corner via `--inv = 1/scale` set in `applyWrap`; because the custom property applies instantly while the wrapper's `scale` animates, the transition string must be written to **both** elements or the control snaps to its final size on frame 1 (reads as a brief shrink, then a pop). `transform-origin: bottom right` keeps the corner pinned.
+
+---
+
+## Unit Suite Shape (2026-09-27)
+
+- Keep the unit suite under 100 cases. Merge related assertions into one case instead of adding a fine-grained test per branch.
+- Do not shorten product delays to make a test fast. The sync 429 backoff stays `[1000, 2000, 4000, 8000]`; the test advances fake timers.
 
 ---
 
@@ -130,8 +149,10 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 
 ## Waterfall: Target Band Width Drives Density (2026-09-27)
 
-- Persist `layout.band` as a CSS-pixel target width (default 260; slider 200–800, step 10). The existing layout engine derives the effective row/column count from the measured cross size and this target width.
-- This restores the earlier direct-width control at the user's request. The column-count model had replaced it because a fixed 260px band yielded one column on a 320px phone, and the 200px slider minimum could not provide a compact multi-column view. The restored model deliberately accepts that narrow-screen consequence in exchange for directly controlling card scale.
+- Persist `layout.band` as a CSS-pixel target width (default 260; slider 100–800, step 10). The existing layout engine derives the effective row/column count from the measured cross size and this target width. The floor is 100, not 200, so the same slider can reach a compact phone layout; there is still no viewport-specific default.
+- `loadSettings` clamps a stored band to 100–800 and gap to 0–32. A value outside the slider is not a second default.
+- At band 100 a card is about 97px wide, and a panorama can be ~30px tall. Mark badges, the error label, and the volume control shrink below 140px wide or 64px tall. A failed video has no mute button — there is no media to mute.
+- Direct pixel width stays the control. A viewport-specific default is still rejected. The slider floor is 100px so a phone can choose a compact multi-column view; the untouched default remains 260px, which can still be one column on a narrow screen.
 - **Zoom is a uniform scale**: `gap * zoom` and `band * zoom` together. Scaling only the band doubles the gap's share and changes density on the way down.
 - The virtualiser's `maxExtent` must be the **real maximum box length** — a tall portrait is far higher than the band and a panorama far wider than one column; under-estimating makes the binary search skip on-screen boxes.
 - **Shape changes bump `SETTINGS_VERSION` and drop the blob whole**. v2 column-count settings are discarded instead of being interpreted as pixel widths; no per-field migration — project red line.

@@ -1,7 +1,7 @@
 // Shared settings and filter logic for the panel and main page.
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
-import { DEFAULT_BAND } from '$base/lib/band';
+import { DEFAULT_BAND, MAX_BAND, MIN_BAND } from '$base/lib/band';
 import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
 /** Ownership filter states: off, include-only, or exclude-only. */
@@ -130,9 +130,15 @@ export function loadSettings(storage: Pick<Storage, 'getItem'> = localStorage): 
     if (parsed.v !== SETTINGS_VERSION || !parsed.filters || !parsed.layout) {
       return defaultSettings();
     }
+    const band = Number(parsed.layout.band);
+    const gap = Number(parsed.layout.gap);
     return {
       filters: { ...parsed.filters, types: new Set(parsed.filters.types) },
-      layout: parsed.layout,
+      layout: {
+        ...parsed.layout,
+        band: Number.isFinite(band) ? Math.min(MAX_BAND, Math.max(MIN_BAND, band)) : DEFAULT_BAND,
+        gap: Number.isFinite(gap) ? Math.min(32, Math.max(0, gap)) : 12,
+      },
     };
   } catch {
     return defaultSettings();

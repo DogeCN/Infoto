@@ -60,6 +60,13 @@
   let isLiked = $derived(photo.likes.includes(selfId));
   let isDisliked = $derived(photo.dislikes.includes(selfId));
   let isReported = $derived(photo.reports.includes(selfId));
+  /** Column or row is too small for the resting badge and volume sizes. */
+  let tight = $derived(width < 140 || height < 64);
+  const badgeCls = $derived(
+    tight
+      ? 'flex items-center gap-0.5 rounded-full bg-black/55 px-1 py-px text-[10px] font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75'
+      : 'flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75',
+  );
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
@@ -154,7 +161,10 @@
        whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
     <div class="flex h-full w-full items-center justify-center bg-card [container-type:size]">
-      <GlitchText text={failStatus} size="clamp(1.25rem, 22cqmin, 3.5rem)" />
+      <GlitchText
+        text={failStatus}
+        size={width < 140 ? 'clamp(0.65rem, 14cqmin, 0.85rem)' : 'clamp(1.25rem, 22cqmin, 3.5rem)'}
+      />
     </div>
   {:else if photo.url}
     {#if loadedUrl !== photo.url}
@@ -258,31 +268,41 @@
 
   <!-- Selection checkbox (top-right) -->
   {#if multiMode}
-    <div class="absolute top-2 right-2 z-10">
+    <div class="absolute z-10 {tight ? 'top-1 right-1' : 'top-2 right-2'}">
       <div
-        class="flex items-center justify-center size-6 rounded-full transition-all duration-[var(--duration-enter)] ease-[var(--ease-enter)] {selected
+        class="flex items-center justify-center rounded-full transition-all duration-[var(--duration-enter)] ease-[var(--ease-enter)] {tight
+          ? 'size-4'
+          : 'size-6'} {selected
           ? 'bg-primary text-primary-foreground'
           : 'bg-black/50 text-white/80 backdrop-blur-sm border border-white/20 hover:bg-black/70'}"
       >
         {#if selected}
-          <Check class="size-4" />
+          <Check class={tight ? 'size-2.5' : 'size-4'} />
         {/if}
       </div>
     </div>
   {/if}
 
   <!-- Mark badges, hidden when the count is zero. The viewer's own mark is filled; others use the same hue at lower opacity. -->
-  <div class="absolute bottom-2 left-2 z-10 flex items-center gap-1.5">
+  <div
+    class="absolute z-10 flex flex-wrap items-center {tight
+      ? 'bottom-1 left-1 max-w-[calc(100%-0.35rem)] gap-1'
+      : 'bottom-2 left-2 max-w-[calc(100%-0.5rem)] gap-1.5'}"
+  >
     {#if photo.likes.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
+        class={badgeCls}
         onclick={(e) => {
           e.stopPropagation();
           onLike?.();
         }}
       >
-        <ThumbsUp class="size-3 {isLiked ? 'fill-current text-[#f43f5e]' : 'text-[#f43f5e]/60'}" />
+        <ThumbsUp
+          class="{tight ? 'size-2.5' : 'size-3'} {isLiked
+            ? 'fill-current text-[#f43f5e]'
+            : 'text-[#f43f5e]/60'}"
+        />
         <span class="tabular-nums">{photo.likes.length}</span>
       </button>
     {/if}
@@ -290,14 +310,16 @@
     {#if photo.dislikes.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
+        class={badgeCls}
         onclick={(e) => {
           e.stopPropagation();
           onDislike?.();
         }}
       >
         <ThumbsDown
-          class="size-3 {isDisliked ? 'fill-current text-[#3b82f6]' : 'text-[#3b82f6]/60'}"
+          class="{tight ? 'size-2.5' : 'size-3'} {isDisliked
+            ? 'fill-current text-[#3b82f6]'
+            : 'text-[#3b82f6]/60'}"
         />
         <span class="tabular-nums">{photo.dislikes.length}</span>
       </button>
@@ -306,35 +328,41 @@
     {#if photo.reports.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
+        class={badgeCls}
         onclick={(e) => {
           e.stopPropagation();
           onRequestDelete?.();
         }}
       >
-        <Flag class="size-3 {isReported ? 'fill-current text-amber-400' : 'text-amber-400/60'}" />
+        <Flag
+          class="{tight ? 'size-2.5' : 'size-3'} {isReported
+            ? 'fill-current text-amber-400'
+            : 'text-amber-400/60'}"
+        />
         <span class="tabular-nums">{photo.reports.length}</span>
       </button>
     {/if}
   </div>
 
-  <!-- Volume button (type=2 video with sound) -->
-  {#if photo.type === 2}
+  <!-- Volume button (type=2 video with sound). A failed card has no media to mute. -->
+  {#if photo.type === 2 && !loadFailed}
     <button
       type="button"
-      class="absolute bottom-2 right-2 z-10 flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {volumeMuted
+      class="absolute z-10 flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {tight
+        ? 'bottom-1 right-1'
+        : 'bottom-2 right-2'} {volumeMuted
         ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
         : 'border-[#22d3ee]/50 bg-[#22d3ee]/20 text-[#22d3ee]'}"
-      style="width: 1.9rem; height: 1.9rem"
+      style="width: {tight ? '1.25rem' : '1.9rem'}; height: {tight ? '1.25rem' : '1.9rem'}"
       onclick={(e) => {
         e.stopPropagation();
         volumeMuted = !volumeMuted;
       }}
     >
       {#if volumeMuted}
-        <VolumeX class="size-4 text-amber-500" />
+        <VolumeX class="{tight ? 'size-3' : 'size-4'} text-amber-500" />
       {:else}
-        <Volume2 class="size-4" />
+        <Volume2 class={tight ? 'size-3' : 'size-4'} />
       {/if}
     </button>
   {/if}

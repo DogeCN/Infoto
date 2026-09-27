@@ -1,8 +1,9 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
+import { injectFontRace } from '../src/shared/fonts.ts';
 
 // Single-origin SPA: every backend call goes to {origin} (the Worker sends no CORS headers). In dev the
 // proxy forwards API paths to the local Worker started by `wrangler dev` at the repo root (`npm run
@@ -12,7 +13,7 @@ const backend = 'http://localhost:8787';
 const proxy = (extra: Record<string, unknown> = {}) => ({
   target: backend,
   changeOrigin: true,
-  cookieDomainRewrite: 'localhost',
+  cookieDomainRewrite: '',
   ...extra,
 });
 
@@ -24,8 +25,17 @@ const alias = {
   $lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
 };
 
+function fontRacePlugin(): Plugin {
+  return {
+    name: 'font-race',
+    transformIndexHtml(html) {
+      return injectFontRace(html);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [tailwindcss(), svelte()],
+  plugins: [fontRacePlugin(), tailwindcss(), svelte()],
   resolve: { alias },
   // Pre-bundle at server start: discovering these deps mid-session (first page
   // that loads the video worker) re-optimizes deps and full-reloads the page —

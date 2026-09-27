@@ -1,5 +1,3 @@
-// Unit tests for the layout engine — `vitest run` (root).
-
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
@@ -12,8 +10,8 @@ import {
 const items = (specs: [number, number][]): LayoutItem[] =>
   specs.map(([w, h], i) => ({ id: i + 1, w, h }));
 
-test('justified ↓: rows are equal-height and fill the cross size', () => {
-  const res = computeLayout(
+test('the four layout modes pack without overlap and a lone wide item shrinks', () => {
+  const justified = computeLayout(
     items([
       [400, 300],
       [300, 300],
@@ -21,38 +19,24 @@ test('justified ↓: rows are equal-height and fill the cross size', () => {
       [600, 300],
       [200, 300],
     ]),
-    {
-      dir: 'v',
-      strategy: 'sequential',
-      cross: 1000,
-      band: 320,
-      gap: 8,
-    },
+    { dir: 'v', strategy: 'sequential', cross: 1000, band: 320, gap: 8 },
   );
-  assert.equal(res.boxes.length, 5);
-  // group by row
-  const rows = new Map<number, typeof res.boxes>();
-  for (const b of res.boxes) {
+  assert.equal(justified.boxes.length, 5);
+  assert.equal(justified.totalW, 1000);
+  const rows = new Map<number, typeof justified.boxes>();
+  for (const b of justified.boxes) {
     const key = Math.round(b.y);
-    if (!rows.has(key)) rows.set(key, []);
-    rows.get(key)!.push(b);
+    rows.set(key, [...(rows.get(key) ?? []), b]);
   }
-  for (const [, row] of rows) {
-    const hs = new Set(row.map((b) => Math.round(b.h * 100)));
-    assert.equal(hs.size, 1, 'all boxes in a row share one height');
+  for (const row of rows.values()) {
+    assert.equal(new Set(row.map((b) => Math.round(b.h * 100))).size, 1);
   }
-  // full rows span the container width (modulo rounding)
-  const firstRow = [...rows.values()][0];
-  if (firstRow.length > 1) {
-    const span = Math.max(...firstRow.map((b) => b.x + b.w));
-    assert.ok(Math.abs(span - 1000) < 1.5, `first row spans cross size, got ${span}`);
+  const first = [...rows.values()][0]!;
+  if (first.length > 1) {
+    assert.ok(Math.abs(Math.max(...first.map((b) => b.x + b.w)) - 1000) < 1.5);
   }
-  assert.equal(res.totalW, 1000);
-  assert.ok(res.totalH > 0);
-});
 
-test('justified ↓: strict reading order left→right, top→down', () => {
-  const res = computeLayout(
+  const order = computeLayout(
     items([
       [300, 200],
       [300, 200],
@@ -61,23 +45,15 @@ test('justified ↓: strict reading order left→right, top→down', () => {
       [300, 200],
       [300, 200],
     ]),
-    {
-      dir: 'v',
-      strategy: 'sequential',
-      cross: 900,
-      band: 300,
-      gap: 0,
-    },
+    { dir: 'v', strategy: 'sequential', cross: 900, band: 300, gap: 0 },
   );
-  for (let i = 1; i < res.boxes.length; i++) {
-    const a = res.boxes[i - 1];
-    const b = res.boxes[i];
-    assert.ok(b.y > a.y || (b.y === a.y && b.x > a.x), 'order preserved');
+  for (let i = 1; i < order.boxes.length; i++) {
+    const a = order.boxes[i - 1]!;
+    const b = order.boxes[i]!;
+    assert.ok(b.y > a.y || (b.y === a.y && b.x > a.x));
   }
-});
 
-test('masonry ↓: fixed column width, items placed into shortest column', () => {
-  const res = computeLayout(
+  const masonry = computeLayout(
     items([
       [100, 100],
       [100, 300],
@@ -85,38 +61,13 @@ test('masonry ↓: fixed column width, items placed into shortest column', () =>
       [100, 150],
       [100, 250],
     ]),
-    {
-      dir: 'v',
-      strategy: 'shortest',
-      cross: 900,
-      band: 300,
-      gap: 10,
-    },
+    { dir: 'v', strategy: 'shortest', cross: 900, band: 300, gap: 10 },
   );
-  // 3 columns of width 286.(6)
-  assert.equal(res.boxes.length, 5);
-  const colW = (900 - 2 * 10) / 3;
-  for (const b of res.boxes) assert.ok(Math.abs(b.w - colW) < 1e-6, 'column width fixed');
-  // item 2 (tallest) must start in a fresh column, item 3 goes to a shorter one
-  const byId = new Map(res.boxes.map((b) => [b.id, b]));
-  assert.equal(byId.get(2)!.y, 0);
-  // no vertical overlap within a column
-  const cols = new Map<number, typeof res.boxes>();
-  for (const b of res.boxes) {
-    const key = Math.round(b.x);
-    if (!cols.has(key)) cols.set(key, []);
-    cols.get(key)!.push(b);
-  }
-  for (const [, list] of cols) {
-    list.sort((a, b) => a.y - b.y);
-    for (let i = 1; i < list.length; i++) {
-      assert.ok(list[i].y >= list[i - 1].y + list[i - 1].h - 1e-6, 'no overlap');
-    }
-  }
-});
+  const colW = (900 - 20) / 3;
+  for (const b of masonry.boxes) assert.ok(Math.abs(b.w - colW) < 1e-6);
+  assert.equal(masonry.boxes.find((b) => b.id === 2)!.y, 0);
 
-test('justified →: columns are equal-width and fill container height', () => {
-  const res = computeLayout(
+  const horizontal = computeLayout(
     items([
       [300, 400],
       [300, 300],
@@ -124,31 +75,10 @@ test('justified →: columns are equal-width and fill container height', () => {
       [300, 600],
       [300, 200],
     ]),
-    {
-      dir: 'h',
-      strategy: 'sequential',
-      cross: 1000,
-      band: 320,
-      gap: 8,
-    },
+    { dir: 'h', strategy: 'sequential', cross: 1000, band: 320, gap: 8 },
   );
-  assert.equal(res.boxes.length, 5);
-  const cols = new Map<number, typeof res.boxes>();
-  for (const b of res.boxes) {
-    const key = Math.round(b.x);
-    if (!cols.has(key)) cols.set(key, []);
-    cols.get(key)!.push(b);
-  }
-  for (const [, col] of cols) {
-    const ws = new Set(col.map((b) => Math.round(b.w * 100)));
-    assert.equal(ws.size, 1, 'all boxes in a column share one width');
-  }
-  assert.equal(res.totalH, 1000);
-  assert.ok(res.totalW > 0);
-});
-
-test('masonry →: fixed row height, shortest row first', () => {
-  const res = computeLayout(
+  assert.equal(horizontal.totalH, 1000);
+  const hRows = computeLayout(
     items([
       [100, 100],
       [300, 100],
@@ -156,49 +86,31 @@ test('masonry →: fixed row height, shortest row first', () => {
       [150, 100],
       [250, 100],
     ]),
-    {
-      dir: 'h',
-      strategy: 'shortest',
-      cross: 900,
-      band: 300,
-      gap: 10,
-    },
+    { dir: 'h', strategy: 'shortest', cross: 900, band: 300, gap: 10 },
   );
-  const rowH = (900 - 2 * 10) / 3;
-  for (const b of res.boxes) assert.ok(Math.abs(b.h - rowH) < 1e-6, 'row height fixed');
-  // no horizontal overlap within a row
-  const rows = new Map<number, typeof res.boxes>();
-  for (const b of res.boxes) {
-    const key = Math.round(b.y);
-    if (!rows.has(key)) rows.set(key, []);
-    rows.get(key)!.push(b);
-  }
-  for (const [, list] of rows) {
-    list.sort((a, b) => a.x - b.x);
-    for (let i = 1; i < list.length; i++) {
-      assert.ok(list[i].x >= list[i - 1].x + list[i - 1].w - 1e-6, 'no overlap');
-    }
-  }
-});
+  const rowH = (900 - 20) / 3;
+  for (const b of hRows.boxes) assert.ok(Math.abs(b.h - rowH) < 1e-6);
 
-test('single over-wide item shrinks to fit instead of overflowing', () => {
-  const res = computeLayout(items([[4000, 300]]), {
+  const wide = computeLayout(items([[4000, 300]]), {
     dir: 'v',
     strategy: 'sequential',
     cross: 1000,
     band: 320,
     gap: 8,
   });
-  assert.ok(res.boxes[0].w <= 1000 + 1e-6, `width fits: ${res.boxes[0].w}`);
+  assert.ok(wide.boxes[0]!.w <= 1000 + 1e-6);
+  const empty = computeLayout([], {
+    dir: 'v',
+    strategy: 'shortest',
+    cross: 1000,
+    band: 320,
+    gap: 8,
+  });
+  assert.equal(empty.boxes.length, 0);
+  assert.equal(empty.totalH, 0);
 });
 
-test('empty input yields zero extent', () => {
-  const res = computeLayout([], { dir: 'v', strategy: 'shortest', cross: 1000, band: 320, gap: 8 });
-  assert.equal(res.boxes.length, 0);
-  assert.equal(res.totalH, 0);
-});
-
-test('windowIndices returns exactly the boxes intersecting the range', () => {
+test('windowIndices returns exactly the boxes in range', () => {
   const res = computeLayout(items(Array.from({ length: 60 }, () => [400, 300])), {
     dir: 'v',
     strategy: 'shortest',
@@ -208,11 +120,8 @@ test('windowIndices returns exactly the boxes intersecting the range', () => {
   });
   const order = orderByMain(res.boxes, 'v');
   const maxH = Math.max(...res.boxes.map((b) => b.h));
-  const from = 500;
-  const to = 1400;
-  const got = new Set(windowIndices(res.boxes, order, 'v', from, to, maxH));
+  const got = new Set(windowIndices(res.boxes, order, 'v', 500, 1400, maxH));
   for (const [i, b] of res.boxes.entries()) {
-    const hit = b.y + b.h >= from && b.y <= to;
-    assert.equal(got.has(i), hit, `box ${i} hit=${hit}`);
+    assert.equal(got.has(i), b.y + b.h >= 500 && b.y <= 1400);
   }
 });

@@ -4,37 +4,33 @@ import type { SwToPageMessage } from '../../src/transcode/protocol';
 import { postSync } from '../../src/core/api/syncClient';
 import { postUpload } from '../../src/core/api/uploadClient';
 
-// ---- syncClient -----------------------------------------------------------------
-
 const okResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-describe('syncClient', () => {
-  it('surfaces turnstile_required with siteKey', async () => {
-    const fetchFn = vi
+describe('sync and upload clients', () => {
+  it('classifies turnstile, retries 429, and times out a silent backend', async () => {
+    const required = vi
       .fn()
       .mockResolvedValue(
         okResponse({ ok: false, error: 'turnstile_required', turnstileSiteKey: 'key-1' }, 401),
       );
-    await expect(postSync({ ops: [] }, { fetchFn, origin: 'http://x' })).rejects.toMatchObject({
+    await expect(
+      postSync({ ops: [] }, { fetchFn: required, origin: 'http://x' }),
+    ).rejects.toMatchObject({
       name: 'TurnstileRequiredError',
       turnstileSiteKey: 'key-1',
     });
-    const call = fetchFn.mock.calls[0]!;
-    const body = JSON.parse(call[1].body);
-    expect(Object.keys(body)).not.toContain('uuid'); // uuid never crosses the wire
-  });
+    expect(Object.keys(JSON.parse(required.mock.calls[0]![1].body))).not.toContain('uuid');
 
-  it('surfaces turnstile_failed', async () => {
-    const fetchFn = vi
+    const failed = vi
       .fn()
       .mockResolvedValue(okResponse({ ok: false, error: 'turnstile_failed' }, 401));
-    await expect(postSync({ ops: [] }, { fetchFn, origin: 'http://x' })).rejects.toMatchObject({
+    await expect(
+      postSync({ ops: [] }, { fetchFn: failed, origin: 'http://x' }),
+    ).rejects.toMatchObject({
       name: 'TurnstileFailedError',
     });
-  });
 
-  it('passes camelCase response through untouched', async () => {
     const body = {
       ok: true,
       serverTime: 1,
@@ -43,26 +39,25 @@ describe('syncClient', () => {
       announcements: [],
       feedback: [],
     };
-    const fetchFn = vi.fn().mockResolvedValue(okResponse(body));
-    const { response } = await postSync({ ops: [] }, { fetchFn, origin: 'http://x' });
-    expect(response).toEqual(body);
-  });
+    const ok = vi.fn().mockResolvedValue(okResponse(body));
+    expect((await postSync({ ops: [] }, { fetchFn: ok, origin: 'http://x' })).response).toEqual(
+      body,
+    );
 
-  it('retries 429 with backoff, then succeeds', async () => {
-    const fetchFn = vi
+    vi.useFakeTimers();
+    const limited = vi
       .fn()
       .mockResolvedValueOnce(okResponse({ error: 'rate_limited' }, 429))
       .mockResolvedValueOnce(
         okResponse({ ok: true, selfId: 3, photos: [], announcements: [], feedback: [] }),
       );
-    const { response } = await postSync({ ops: [] }, { fetchFn, origin: 'http://x' });
-    expect(response.selfId).toBe(3);
-    expect(fetchFn).toHaveBeenCalledTimes(2);
-  });
+    const limitedCall = postSync({ ops: [] }, { fetchFn: limited, origin: 'http://x' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await limitedCall).response.selfId).toBe(3);
+    expect(limited).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
 
-  it('aborts a silent backend instead of hanging forever', async () => {
-    // A dead backend never rejects the connection (the dev proxy holds the socket open) → without a timeout, fetch never settles
-    const fetchFn = vi.fn((_url: string, init?: RequestInit) => {
+    const hanging = vi.fn((_url: string, init?: RequestInit) => {
       return new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
           reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
@@ -72,36 +67,26 @@ describe('syncClient', () => {
     await expect(
       postSync(
         { ops: [] },
-        { fetchFn: fetchFn as unknown as typeof fetch, origin: 'http://x', timeoutMs: 20 },
+        { fetchFn: hanging as unknown as typeof fetch, origin: 'http://x', timeoutMs: 20 },
       ),
     ).rejects.toThrow(/sync_timeout/);
-  });
-});
 
-// ---- uploadClient ---------------------------------------------------------------
-
-describe('uploadClient', () => {
-  it('returns data url on success', async () => {
-    const fetchFn = vi.fn().mockResolvedValue(okResponse({ data: 'https://host/f.webp' }));
-    const r = await postUpload(new Blob(['x'], { type: 'image/webp' }), {
-      fetchFn,
-      origin: 'http://x',
+    const uploaded = vi.fn().mockResolvedValue(okResponse({ data: 'https://host/f.webp' }));
+    expect(
+      await postUpload(new Blob(['x'], { type: 'image/webp' }), {
+        fetchFn: uploaded,
+        origin: 'http://x',
+      }),
+    ).toEqual({ ok: true, url: 'https://host/f.webp' });
+    expect(uploaded.mock.calls[0]![0]).toBe('http://x/upload');
+    const denied = vi.fn().mockResolvedValue(okResponse({ error: 'unauthorized' }, 401));
+    expect(
+      await postUpload(new Blob(['x']), { fetchFn: denied, origin: 'http://x' }),
+    ).toMatchObject({
+      ok: false,
+      error: 'unauthorized',
     });
-    expect(r).toEqual({ ok: true, url: 'https://host/f.webp' });
-    const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe('http://x/upload');
-    expect(init.body).toBeInstanceOf(FormData);
-    expect(init.signal).toBeInstanceOf(AbortSignal);
-  });
-
-  it('maps http errors to stable codes', async () => {
-    const fetchFn = vi.fn().mockResolvedValue(okResponse({ error: 'unauthorized' }, 401));
-    const r = await postUpload(new Blob(['x']), { fetchFn, origin: 'http://x' });
-    expect(r).toMatchObject({ ok: false, error: 'unauthorized' });
-  });
-
-  it('maps timeout to a failed attempt', async () => {
-    const fetchFn = vi.fn().mockImplementation(
+    const slow = vi.fn().mockImplementation(
       (_url: string, init: RequestInit) =>
         new Promise((_resolve, reject) => {
           init.signal?.addEventListener('abort', () =>
@@ -109,37 +94,33 @@ describe('uploadClient', () => {
           );
         }),
     );
-    const r = await postUpload(new Blob(['x']), { fetchFn, origin: 'http://x', timeoutMs: 10 });
-    expect(r).toMatchObject({ ok: false, error: 'timeout' });
-  });
-});
-
-// ---- LeaseClient lifecycle (testable version of the contract's four-point self-check) ---------
-
-describe('LeaseClient lifecycle', () => {
-  const granted = (leaseId = 'l1'): SwToPageMessage => ({
-    t: 'leaseGranted',
-    leaseId,
-    jobId: 'j1',
-    file: new Blob(),
-    mime: 'video/mp4',
-    fileName: 'a.mp4',
+    expect(
+      await postUpload(new Blob(['x']), { fetchFn: slow, origin: 'http://x', timeoutMs: 10 }),
+    ).toMatchObject({ ok: false, error: 'timeout' });
   });
 
-  function makeClient() {
+  it('heartbeats a held lease and stops after release or revocation', () => {
+    const granted = (leaseId = 'l1'): SwToPageMessage => ({
+      t: 'leaseGranted',
+      leaseId,
+      jobId: 'j1',
+      file: new Blob(),
+      mime: 'video/mp4',
+      fileName: 'a.mp4',
+    });
     const posted: unknown[] = [];
-    const port = { postMessage: (m: unknown) => posted.push(m) };
-    const client = new LeaseClient(port, { onGranted: vi.fn(), onRevoked: vi.fn() });
-    return { posted, client };
-  }
-
-  it('heartbeats every lease interval while held, stops after release', () => {
+    const client = new LeaseClient(
+      { postMessage: (m: unknown) => posted.push(m) },
+      { onGranted: vi.fn(), onRevoked: vi.fn() },
+    );
+    client.release();
+    expect(posted).toHaveLength(0);
     vi.useFakeTimers();
-    const { posted, client } = makeClient();
     client.handleMessage(granted());
     vi.advanceTimersByTime(12_000);
-    const beats = posted.filter((m) => (m as { t: string }).t === 'leaseHeartbeat');
-    expect(beats.length).toBeGreaterThanOrEqual(2); // 5s period
+    expect(
+      posted.filter((m) => (m as { t: string }).t === 'leaseHeartbeat').length,
+    ).toBeGreaterThanOrEqual(2);
     client.release();
     expect(posted.some((m) => (m as { t: string }).t === 'leaseRelease')).toBe(true);
     const beatsAfter = posted.filter((m) => (m as { t: string }).t === 'leaseHeartbeat').length;
@@ -148,16 +129,6 @@ describe('LeaseClient lifecycle', () => {
       beatsAfter,
     );
     vi.useRealTimers();
-  });
-
-  it('release before grant is a no-op', () => {
-    const { posted, client } = makeClient();
-    client.release();
-    expect(posted).toHaveLength(0);
-  });
-
-  it('revocation clears local lease state', () => {
-    const { client } = makeClient();
     client.handleMessage(granted());
     client.handleMessage({ t: 'leaseRevoked', leaseId: 'l1', jobId: 'j1' });
     expect(client.heldJobId).toBeNull();

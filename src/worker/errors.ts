@@ -5,6 +5,7 @@ import {
   type Copy,
   type LocaleCode,
 } from '../shared/copy.ts';
+import { ERROR_FONT_QUERY, fontHeadBlock, fontPageCsp } from '../shared/fonts.ts';
 
 // Error pages: a large cyan status code with a red/cyan double-layer glitch offset on a
 // dark background. The displaced double text is the only effect.
@@ -39,8 +40,7 @@ function page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${code} · Infoto</title>
-<link rel="preconnect" href="https://fonts.googleapis.cn" crossorigin>
-<link href="https://fonts.googleapis.cn/css2?family=Space+Grotesk:wght@400;700&family=Inter:wght@400;600&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet">
+${fontHeadBlock(ERROR_FONT_QUERY)}
 <style>
 	:root { color-scheme: dark; }
 	* { margin: 0; padding: 0; box-sizing: border-box; }
@@ -135,8 +135,7 @@ function page(
       'Cache-Control': 'no-store',
       'Content-Language': lang,
       'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy':
-        "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.cn; font-src https://fonts.gstatic.com;",
+      'Content-Security-Policy': fontPageCsp(),
     },
   });
 }

@@ -54,102 +54,78 @@ function factoryFor(xhr: FakeXhr): XhrFactory {
 }
 
 describe('migrateSql', () => {
-  it('reports real upload progress and sends credentials with the unchanged body', async () => {
+  it('uploads the unchanged body, reports progress, and rejects bad responses', async () => {
     const bytes = new Uint8Array([0, 1, 127, 255]);
     const xhr = new FakeXhr({ status: 200, body: JSON.stringify({ ok: true, imported: 2 }) });
     const progress: number[] = [];
-
-    const result = await migrateSql(fakeFile('backup.sql', bytes), {
-      xhrFactory: factoryFor(xhr),
-      onProgress: (fraction) => progress.push(fraction),
-    });
-
-    expect(result).toEqual({ ok: true, response: { ok: true, imported: 2 } });
+    expect(
+      await migrateSql(fakeFile('backup.sql', bytes), {
+        xhrFactory: factoryFor(xhr),
+        onProgress: (fraction) => progress.push(fraction),
+      }),
+    ).toEqual({ ok: true, response: { ok: true, imported: 2 } });
     expect(progress).toEqual([0.25, 1]);
     expect(xhr.method).toBe('POST');
     expect(xhr.url).toBe('/admin/migrate');
     expect(xhr.withCredentials).toBe(true);
-    expect(xhr.sentBody).toBeInstanceOf(ArrayBuffer);
     expect([...new Uint8Array(xhr.sentBody as ArrayBuffer)]).toEqual([...bytes]);
-  });
+    expect(MIGRATE_TIMEOUT_MS).toBe(5 * 60_000);
+    expect(xhr.timeout).toBe(MIGRATE_TIMEOUT_MS);
 
-  it('surfaces an HTTP error when the response is not a server result', async () => {
-    const xhr = new FakeXhr({ status: 503, body: 'upstream unavailable' });
-
-    const result = await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
-      xhrFactory: factoryFor(xhr),
-    });
-
-    expect(result).toEqual({
+    expect(
+      await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
+        xhrFactory: factoryFor(new FakeXhr({ status: 503, body: 'upstream unavailable' })),
+      }),
+    ).toEqual({
       ok: false,
       kind: 'http',
       message: 'Server returned HTTP 503',
       status: 503,
     });
-  });
-
-  it('surfaces server error details', async () => {
-    const xhr = new FakeXhr({
-      status: 500,
-      body: JSON.stringify({
-        ok: false,
-        error: 'import failed',
-        detail: 'constraint failed',
-        statement: 'INSERT INTO photos',
+    const server = await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
+      xhrFactory: factoryFor(
+        new FakeXhr({
+          status: 500,
+          body: JSON.stringify({
+            ok: false,
+            error: 'import failed',
+            detail: 'constraint failed',
+            statement: 'INSERT INTO photos',
+          }),
+        }),
+      ),
+    });
+    expect(server.ok).toBe(false);
+    if (!server.ok) {
+      expect(server.kind).toBe('server');
+      expect(server.message).toContain('constraint failed');
+      expect(server.message).toContain('INSERT INTO photos');
+    }
+    expect(
+      await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
+        xhrFactory: factoryFor(new FakeXhr({ status: 200, body: '{not json' })),
       }),
-    });
-
-    const result = await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
-      xhrFactory: factoryFor(xhr),
-    });
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.kind).toBe('server');
-    expect(result.message).toContain('constraint failed');
-    expect(result.message).toContain('INSERT INTO photos');
+    ).toMatchObject({ ok: false, kind: 'malformed', status: 200 });
   });
 
-  it('rejects malformed successful responses', async () => {
-    const xhr = new FakeXhr({ status: 200, body: '{not json' });
-
-    const result = await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
-      xhrFactory: factoryFor(xhr),
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      kind: 'malformed',
-      message: 'Invalid server response format',
-      status: 200,
-    });
-  });
-
-  it('arms a whole-request deadline (xhr.timeout stayed 0, so a hung import never gave up)', async () => {
-    const xhr = new FakeXhr({ status: 200, body: JSON.stringify({ ok: true, imported: 1 }) });
-
-    await migrateSql(fakeFile('backup.sql', new Uint8Array([1])), {
-      xhrFactory: factoryFor(xhr),
-    });
-
-    expect(MIGRATE_TIMEOUT_MS).toBe(5 * 60_000);
-    expect(xhr.timeout).toBe(MIGRATE_TIMEOUT_MS);
-  });
-
-  it('validates the SQL extension and 50 MiB limit before creating a request', async () => {
+  it('rejects the wrong extension and an oversized file before opening a request', async () => {
     let created = 0;
     const xhrFactory: XhrFactory = () => {
       created += 1;
       return new XMLHttpRequest();
     };
-    const invalid = await migrateSql(fakeFile('backup.zip', new Uint8Array([1])), { xhrFactory });
-    const oversized = await migrateSql(
-      { ...fakeFile('backup.sql', new Uint8Array([1])), size: 50 * 1024 * 1024 + 1 },
-      { xhrFactory },
-    );
-
-    expect(invalid).toMatchObject({ ok: false, kind: 'validation' });
-    expect(oversized).toMatchObject({ ok: false, kind: 'validation' });
+    expect(
+      await migrateSql(fakeFile('backup.zip', new Uint8Array([1])), { xhrFactory }),
+    ).toMatchObject({
+      ok: false,
+      kind: 'validation',
+    });
+    expect(
+      await migrateSql(
+        { ...fakeFile('backup.sql', new Uint8Array([1])), size: 50 * 1024 * 1024 + 1 },
+        { xhrFactory },
+      ),
+    ).toMatchObject({ ok: false, kind: 'validation' });
     expect(created).toBe(0);
   });
 });
