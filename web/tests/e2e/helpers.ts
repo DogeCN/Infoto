@@ -45,7 +45,7 @@ export async function expectGate(page: Page): Promise<void> {
 
 export async function passGate(page: Page): Promise<void> {
   await prepareGate(page);
-  await page.goto('/');
+  await page.goto('/?t=' + Date.now());
   await expectGate(page);
   await expect(page.locator('[data-verify]')).toBeHidden({ timeout: 30_000 });
 }

@@ -100,6 +100,7 @@ export const enUS = {
     duplicate: '{fileName} already exists',
     defaultFileName: 'Photo',
     failed: 'Failed to upload {fileName}',
+    editorLost: 'Editor upload was interrupted and lost',
     errors: {
       timeout: 'Upload timed out',
       network: 'Network error',
@@ -172,7 +173,7 @@ export const enUS = {
     likedByMe: 'Liked by me',
     dislikedByMe: 'Disliked by me',
     reportedByMe: 'Reported by me',
-    layoutSection: 'Layout',
+    interfaceSection: 'Interface',
     resetLayout: 'Reset layout',
     language: 'Language',
     dirVertical: 'Vertical',
@@ -418,6 +419,7 @@ const zhCN: Copy = {
     duplicate: '{fileName} 已存在',
     defaultFileName: '照片',
     failed: '{fileName} 上传失败',
+    editorLost: '编辑器上传被中断，已丢失',
     errors: {
       timeout: '上传超时',
       network: '网络错误',
@@ -490,7 +492,7 @@ const zhCN: Copy = {
     likedByMe: '我喜欢的',
     dislikedByMe: '我不喜欢的',
     reportedByMe: '我请求删除的',
-    layoutSection: '布局',
+    interfaceSection: '界面',
     resetLayout: '重置布局',
     language: '语言',
     dirVertical: '纵向',

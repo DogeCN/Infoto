@@ -200,6 +200,9 @@ async function main() {
     // stills, WebM for animated/video. We upload those artifacts, so photos.url ends up
     // pointing at a WebP/WebM file the renderer decodes natively (no 200 fallback).
     const shas = [];
+    // name → image-host URL, so other seeded content can reference real uploads
+    // instead of inventing external links (everything visible must be on our host).
+    const uploadedUrls = {};
     for (const spec of MEDIA) {
       const ext = spec.type === 0 ? 'webp' : 'webm';
       const fname = `${baseOf(spec.name)}.${ext}`;
@@ -224,6 +227,7 @@ async function main() {
         };
         await syncOps(cookie, [{ type: 'upload', target: null, payload }]);
         shas.push(payload.sha256);
+        uploadedUrls[spec.name] = url;
         log(
           `photo ${fname} (${dims.w}x${dims.h}, type=${spec.type}, ${buf.length} bytes) → ${url}`,
         );
@@ -284,9 +288,13 @@ async function main() {
       return data.announcement.id;
     };
 
+    // The example image reuses the uploaded img-9 artifact, so the announcement never
+    // links off-host: every rendered asset comes from the image host like user uploads.
+    const ann1Image = uploadedUrls['img-9.jpg'];
     const ann1 = await mkAnn(
       '投票：下一期拍摄主题',
-      '## 下一期活动主题\n请选择你最感兴趣的方向，我们会根据结果安排。\n\n:::vote 城市夜景 | 自然风光\n\n投票后可在下方发表意见。\n\n![示例](https://picsum.photos/seed/infoto9/600/300)',
+      '## 下一期活动主题\n请选择你最感兴趣的方向，我们会根据结果安排。\n\n:::vote 城市夜景 | 自然风光\n\n投票后可在下方发表意见。' +
+        (ann1Image ? `\n\n![示例](${ann1Image})` : ''),
     );
     await syncOps(A.cookie, [{ type: 'vote', target: ann1, payload: { option: 0 } }]);
     await syncOps(B.cookie, [{ type: 'vote', target: ann1, payload: { option: 1 } }]);

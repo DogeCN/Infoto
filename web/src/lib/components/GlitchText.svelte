@@ -103,8 +103,8 @@
     z-index: 3;
     color: #22d3ee;
     text-shadow:
-      0 0 20px rgba(34, 211, 238, 0.6),
-      0 0 40px rgba(34, 211, 238, 0.3);
+      0 0 10px rgba(34, 211, 238, 0.65),
+      0 0 22px rgba(34, 211, 238, 0.35);
   }
 
   .layer-magenta {
@@ -192,38 +192,38 @@
   @keyframes jitter-magenta {
     0%,
     100% {
-      transform: translate(-4px, 0);
+      transform: translate(-2px, 0);
     }
     20% {
-      transform: translate(-12px, 2px) skewX(-5deg);
+      transform: translate(-6px, 1px) skewX(-3deg);
     }
     40% {
-      transform: translate(6px, -2px);
+      transform: translate(3px, -1px);
     }
     60% {
-      transform: translate(-10px, 2px) skewX(4deg);
+      transform: translate(-5px, 1px) skewX(2deg);
     }
     80% {
-      transform: translate(8px, 0);
+      transform: translate(4px, 0);
     }
   }
 
   @keyframes jitter-cyan {
     0%,
     100% {
-      transform: translate(4px, 0);
+      transform: translate(2px, 0);
     }
     20% {
-      transform: translate(12px, -2px) skewX(5deg);
+      transform: translate(6px, -1px) skewX(3deg);
     }
     40% {
-      transform: translate(-6px, 2px);
+      transform: translate(-3px, 1px);
     }
     60% {
-      transform: translate(10px, -2px) skewX(-4deg);
+      transform: translate(5px, -1px) skewX(-2deg);
     }
     80% {
-      transform: translate(-8px, 0);
+      transform: translate(-4px, 0);
     }
   }
 
@@ -236,62 +236,62 @@
 
   @keyframes burst-magenta {
     0% {
-      transform: translate(-4px, 0);
+      transform: translate(-2px, 0);
       clip-path: inset(0 0 0 0);
     }
     15% {
-      transform: translate(-40px, 0) skewX(-12deg);
+      transform: translate(-18px, 0) skewX(-6deg);
       clip-path: inset(10% 0 70% 0);
     }
     30% {
-      transform: translate(35px, 0) skewX(10deg);
+      transform: translate(16px, 0) skewX(5deg);
       clip-path: inset(60% 0 20% 0);
     }
     45% {
-      transform: translate(-32px, 0) skewX(-8deg);
+      transform: translate(-14px, 0) skewX(-4deg);
       clip-path: inset(30% 0 50% 0);
     }
     60% {
-      transform: translate(38px, 0) skewX(11deg);
+      transform: translate(17px, 0) skewX(6deg);
       clip-path: inset(75% 0 10% 0);
     }
     75% {
-      transform: translate(-20px, 0);
+      transform: translate(-9px, 0);
       clip-path: inset(45% 0 35% 0);
     }
     100% {
-      transform: translate(-4px, 0);
+      transform: translate(-2px, 0);
       clip-path: inset(0 0 0 0);
     }
   }
 
   @keyframes burst-cyan {
     0% {
-      transform: translate(4px, 0);
+      transform: translate(2px, 0);
       clip-path: inset(0 0 0 0);
     }
     15% {
-      transform: translate(40px, 0) skewX(12deg);
+      transform: translate(18px, 0) skewX(6deg);
       clip-path: inset(70% 0 15% 0);
     }
     30% {
-      transform: translate(-35px, 0) skewX(-10deg);
+      transform: translate(-16px, 0) skewX(-5deg);
       clip-path: inset(20% 0 60% 0);
     }
     45% {
-      transform: translate(32px, 0) skewX(8deg);
+      transform: translate(14px, 0) skewX(4deg);
       clip-path: inset(50% 0 30% 0);
     }
     60% {
-      transform: translate(-38px, 0) skewX(-11deg);
+      transform: translate(-17px, 0) skewX(-6deg);
       clip-path: inset(10% 0 75% 0);
     }
     75% {
-      transform: translate(20px, 0);
+      transform: translate(9px, 0);
       clip-path: inset(35% 0 45% 0);
     }
     100% {
-      transform: translate(4px, 0);
+      transform: translate(2px, 0);
       clip-path: inset(0 0 0 0);
     }
   }

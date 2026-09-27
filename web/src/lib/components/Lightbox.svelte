@@ -4,7 +4,6 @@
   // hints fade/scale with the drag and spring back below the threshold; double-click/pinch/Ctrl+wheel zoom, drag pans; no click paging.
   import { MEDIA_TYPE, type Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
-  import { fmt } from '$shared/copy';
   import {
     X,
     ChevronLeft,
@@ -70,14 +69,13 @@
   let volumeMuted = $state(true);
   // loadedUrl === photo.url means the current media finished decoding (drives skeleton + opacity).
   let loadedUrl = $state('');
-  // Media load failure: show a glitching status code + toast.
+  // Media load failure: show a glitching ERROR + toast.
   let loadFailed = $state(false);
-  let failStatus = $state('404');
-  let failController: AbortController | null = null;
+  let failStatus = $state('ERROR');
 
-  // Per-URL status cache so switching back to a known-failing photo is instant
-  // (no second HEAD round-trip). '0' = network/CORS failure, undefined = unknown.
-  const statusCache = new Map<string, string>();
+  // Track which failing URLs have already surfaced a toast, so revisiting a
+  // known-broken photo does not spam notifications.
+  const failToastSeen = new Set<string>();
 
   let photo = $derived(photos[currentIndex]);
   let isLiked = $derived(photo?.likes.includes(selfId) ?? false);
@@ -89,6 +87,8 @@
   //      DOM directly to stay in sync) ----------------------------------------
   let stageEl = $state<HTMLElement | undefined>(undefined);
   let wrapEl = $state<HTMLElement | undefined>(undefined);
+  /** The card-corner volume button, only present for type=2. */
+  let cornerEl = $state<HTMLElement | undefined>(undefined);
 
   let scale = 1;
   let zoomX = 0;
@@ -110,8 +110,19 @@
 
   function applyWrap(dx = 0, dy = 0, animate = false): void {
     if (!wrapEl) return;
-    wrapEl.style.transition = animate ? 'transform var(--duration-exit) var(--ease-exit)' : 'none';
+    const transition = animate ? 'transform var(--duration-exit) var(--ease-exit)' : 'none';
+    wrapEl.style.transition = transition;
     wrapEl.style.transform = `translate(${zoomX + dx}px, ${zoomY + dy}px) scale(${scale})`;
+    // Overlays riding inside the wrapper (the card's volume button) counter-scale so
+    // zooming the media does not inflate them. Set on the wrapper so the custom
+    // property inherits down; the CSS default (1) covers the pre-first-gesture paint.
+    // Tailwind's `scale-*` sets the separate `scale` property, so this `transform`
+    // does not fight the hover grow.
+    wrapEl.style.setProperty('--inv', String(1 / scale));
+    // `--inv` itself applies instantly, so on an animated zoom the button would jump
+    // to its counter-scaled size while the media is still growing — reading as a brief
+    // shrink then a pop. Mirroring the wrapper's transition puts both on one timeline.
+    if (cornerEl) cornerEl.style.transition = transition;
   }
 
   function resetZoom(animate = false): void {
@@ -432,81 +443,59 @@
     scale = 1;
     zoomX = 0;
     zoomY = 0;
-    // New photo: reset loaded/failure state so the skeleton shows until decode.
-    loadedUrl = '';
-    failController?.abort();
-    failController = null;
+    // New photo: reset failure state. `loadedUrl` is deliberately NOT cleared — a
+    // pre-warmed neighbour is already decoded, and blanking it would flash the
+    // skeleton over media that is sitting right there in cache. Each media element
+    // reports its own arrival, and a URL we are leaving simply stops matching.
     loadFailed = false;
-    failStatus = '404';
+    failStatus = 'ERROR';
     if (wrapEl) applyWrap();
   });
 
   // Preload the two neighbours so switching feels instant, wrapping around the ends.
-  // Only still images warm via `new Image()` — ANIMATED/VIDEO are real video and
-  // preloading those is expensive. Two things this effect deliberately does NOT do:
+  // Two things this effect deliberately does NOT do:
   //   • it never cancels a warm-up. `photos` is a brand-new array on every /sync, so a
   //     cleanup would abort downloads that are already in flight and start them over;
-  //     `img.src = ''` can also fire a stray request at the document URL.
+  //     `img.src = ''` can also fire a stray request to the document URL.
   //   • it does not warm while the viewer is closed. The Lightbox stays mounted, so
   //     without the `open` guard every page load would fetch neighbours for a viewer
   //     nobody opened.
+  //
+  // Only still images are warmed here. Videos are NOT: a throwaway <video> would spin
+  // up a real decoder, and a ranged GET of the head buys nothing — measured against our
+  // CDN, the whole 25MB arrives in ~0.9s, so trimming it to a 2MB slice saves less than
+  // the warm-up itself costs, and the <video> does not reuse the partial response
+  // anyway. Videos are handled where it actually pays: see `preload="auto"` on the
+  // media element, which starts buffering before the user reaches it.
   $effect(() => {
     if (!open) return;
     const len = photos.length;
     if (len < 2) return;
     const picks = [photos[(currentIndex - 1 + len) % len], photos[(currentIndex + 1) % len]];
-    // Holds this run's elements until the next run — the standard preload idiom relies
-    // on an unreferenced Image() still finishing, but keeping them is free insurance.
+    // Keeps this run's warm-up promises alive until the next run: the fetch is
+    // fire-and-forget, and the standard preload idiom relies on an unreferenced
+    // resource still finishing.
     const warm: HTMLImageElement[] = [];
     const seen = new Set<string>();
     for (const p of picks) {
-      if (!p || p.type !== MEDIA_TYPE.IMAGE) continue;
+      if (!p) continue;
       if (seen.has(p.url)) continue; // a two-photo set names the same neighbour twice
       seen.add(p.url);
-      const img = new Image();
-      img.src = p.url;
-      warm.push(img);
-      // Mirror the failure probe, so a neighbour that already 404s has its code cached
-      // before the user ever navigates to it.
-      if (!statusCache.has(p.url)) {
-        fetch(p.url, { method: 'HEAD', cache: 'force-cache' })
-          .then((res) => statusCache.set(p.url, res.ok ? 'ok' : String(res.status)))
-          .catch(() => statusCache.set(p.url, '0'));
+      if (p.type === MEDIA_TYPE.IMAGE) {
+        const img = new Image();
+        img.src = p.url;
+        warm.push(img);
       }
+      // Videos are deliberately skipped — see the note above.
     }
   });
 
-  // <img>/<video> onerror does not expose the HTTP status; send a HEAD probe
-  // to get the real code, show it in the glitch fallback, and surface a toast.
-  // Uses the per-URL cache so a repeated failure is instant.
-  function probeFailStatus(url: string) {
-    const cached = statusCache.get(url);
-    if (cached && cached !== 'ok') {
-      failStatus = cached;
-      toast.error(
-        cached === '0'
-          ? copy.lightbox.loadFailed
-          : fmt(copy.lightbox.loadFailedStatus, { status: cached }),
-      );
-      return;
-    }
-    failController?.abort();
-    failController = new AbortController();
-    const ctrl = failController;
-    fetch(url, { method: 'HEAD', cache: 'force-cache', signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        const s = String(res.status);
-        statusCache.set(url, s);
-        failStatus = s;
-        toast.error(fmt(copy.lightbox.loadFailedStatus, { status: res.status }));
-      })
-      .catch(() => {
-        if (ctrl.signal.aborted) return;
-        statusCache.set(url, '0');
-        failStatus = '0';
-        toast.error(copy.lightbox.loadFailed);
-      });
+  /** Surface a toast once per failing URL. The ERROR glitch is already shown by
+   * the media element's onerror handler. */
+  function toastLoadFailed(url: string) {
+    if (failToastSeen.has(url)) return;
+    failToastSeen.add(url);
+    toast.error(copy.lightbox.loadFailed);
   }
 
   // Lock page scrolling while open.
@@ -654,51 +643,90 @@
     <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
       <div
         bind:this={wrapEl}
-        class="flex max-w-full select-none items-center justify-center will-change-transform"
+        class="relative flex max-w-full select-none items-center justify-center will-change-transform"
       >
         <!-- Skeleton sized from the photo's metadata: native width/height (--w/--h)
              and aspect ratio (--ar) form the exact box the <img> renders into, so
              the skeleton caps at --w/--h, not just at the viewport budget. -->
         {#if loadedUrl !== photo.url}
           <div
-            class="lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
+            class="lb-box lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
             style="--w: {photo.width}px; --h: {photo.height}px; --ar: {photo.width /
               photo.height}; aspect-ratio: {photo.width} / {photo.height};"
             aria-hidden="true"
           >
             {#if loadFailed}
-              <GlitchText text={failStatus} size="clamp(4rem, 14vw, 9rem)" />
+              <GlitchText text={failStatus} size="clamp(1.5rem, 20cqmin, 4.5rem)" />
             {/if}
           </div>
         {/if}
         {#if photo.type !== 0}
-          <!-- type=1 (silent WebM) and type=2 (video with audio) both use video -->
+          <!-- type=1 (silent WebM) and type=2 (video with audio) both use video. The box
+               comes entirely from .lb-media's CSS (see there for why the width/height
+               attributes must stay off).
+               `preload="auto"` buffers the whole file as soon as the element exists:
+               without it the browser applies its own heuristic and often settles for
+               `metadata`, which leaves the decoder starved exactly when the user
+               switches. Our CDN delivers 25MB in well under a second, so fetching it
+               eagerly is far cheaper than the stall it prevents. -->
           <video
             src={photo.url}
-            class="lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
+            class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
+            style="--w: {photo.width}px; --ar: {photo.width} / {photo.height};"
             draggable="false"
             muted={volumeMuted}
             loop
             autoplay
             playsinline
+            preload="auto"
             onloadeddata={() => (loadedUrl = photo.url)}
             onerror={() => {
               loadFailed = true;
-              probeFailStatus(photo.url);
+              failStatus = 'ERROR';
+              toastLoadFailed(photo.url);
             }}
           ></video>
         {:else}
           <img
             src={photo.url}
             alt=""
-            class="lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
+            class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
+            style="--w: {photo.width}px; --ar: {photo.width} / {photo.height};"
             draggable="false"
             onload={() => (loadedUrl = photo.url)}
             onerror={() => {
               loadFailed = true;
-              probeFailStatus(photo.url);
+              failStatus = 'ERROR';
+              toastLoadFailed(photo.url);
             }}
           />
+        {/if}
+
+        <!-- Card-corner volume button, same place and treatment as the waterfall's
+             PhotoCard. Anchored to the wrapper (which shrink-wraps the media) and
+             counter-scaled about that corner, so it tracks the media box exactly and
+             keeps its size through the zoom. -->
+        {#if photo.type === 2}
+          <div class="lb-corner" bind:this={cornerEl}>
+            <Tooltip text={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute} side="left">
+              <button
+                type="button"
+                class="flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {volumeMuted
+                  ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
+                  : 'border-[#22d3ee]/50 bg-[#22d3ee]/20 text-[#22d3ee]'}"
+                style="width: 1.9rem; height: 1.9rem"
+                onpointerdown={(e) => e.stopPropagation()}
+                ondblclick={(e) => e.stopPropagation()}
+                onclick={() => (volumeMuted = !volumeMuted)}
+              >
+                {#if volumeMuted}
+                  <VolumeX class="size-4 text-amber-500" />
+                {:else}
+                  <Volume2 class="size-4" />
+                {/if}
+              </button>
+            </Tooltip>
+          </div>
         {/if}
       </div>
     </div>
@@ -738,25 +766,6 @@
           <Download class="size-6" />
         </div>
       {/if}
-    {/if}
-
-    <!-- Video volume button (type=2, 2.4rem in the lightbox) -->
-    {#if photo.type === 2}
-      <Tooltip text={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute} side="left">
-        <button
-          type="button"
-          class="absolute bottom-24 right-5 z-10 flex items-center justify-center rounded-full text-white/75 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 md:right-6"
-          style="width: 2.4rem; height: 2.4rem"
-          onpointerdown={(e) => e.stopPropagation()}
-          onclick={() => (volumeMuted = !volumeMuted)}
-        >
-          {#if volumeMuted}
-            <VolumeX class="size-5 text-amber-500" />
-          {:else}
-            <Volume2 class="size-5" />
-          {/if}
-        </button>
-      </Tooltip>
     {/if}
 
     <!-- Bottom bar info: dimensions/size bottom-left, prev/next bottom-right -->
@@ -907,13 +916,29 @@
   /* Media sizing: vertical space for the bars, horizontal margins on narrow screens (also the
      edge-gesture area); only max-h-screen + max-w-full degrades to native pixels. */
   .lb-media {
-    max-width: calc(100vw - 2.5rem);
+    /* Sized ENTIRELY in CSS, never via the width/height attributes: those are presentational
+       hints that set a concrete rendered width, which then only ever gets shrunk by
+       max-width and no longer tracks the aspect ratio. That clipped the rounded corners
+       and pushed the card-corner control off the visible media. Instead the box comes
+       from `.lb-box` below, which the skeleton shares — one formula, so the placeholder
+       and the revealed media occupy an identical box and nothing moves on arrival.
+       `--ar` alone reserves the space before decode, which is what stops a <video>
+       opening at the 300x150 CSS replaced-element default. */
     max-height: calc(100dvh - 8rem);
+    aspect-ratio: var(--ar, auto);
     border-radius: 14px;
     object-fit: contain;
     transition:
       opacity 0.3s ease,
       transform 0.3s ease;
+  }
+
+  /* The media's rendered box, derived from the photo's own metadata. Shared verbatim by
+     .lb-media and .lb-skeleton — the skeleton additionally centres itself on the wrapper
+     with percent + translate, because the wrapper is 0×0 until the media has a box. */
+  .lb-box {
+    width: min(var(--w), calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
+    max-width: calc(100vw - 2.5rem);
   }
 
   /* Skeleton placeholder sized from the photo's metadata while media decodes.
@@ -930,12 +955,13 @@
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    width: min(var(--w), calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
-    max-width: calc(100vw - 2.5rem);
     max-height: calc(100dvh - 8rem);
     display: flex;
     align-items: center;
     justify-content: center;
+    /* Establish a size container so the ERROR glitch can scale to the media box
+       via cqmin instead of a fixed font-size (which overflowed narrow media). */
+    container-type: size;
     background: linear-gradient(
       90deg,
       var(--color-card) 0%,
@@ -953,17 +979,33 @@
     animation: none;
   }
 
-  @media (min-width: 768px) {
-    .lb-skeleton {
-      width: min(var(--w), calc(100vw - 8rem), calc((100dvh - 9rem) * var(--ar, 1)));
-      max-width: calc(100vw - 8rem);
-      max-height: calc(100dvh - 9rem);
-    }
+  /* Card-corner control anchored to the media box. The wrapper is `relative` and
+     shrink-wraps the media, so `bottom/right: 0.5rem` is the media's own corner —
+     no duplicate of the skeleton's sizing maths, and it tracks every media size.
+     The wrapper scales for zoom, so the control counter-scales about that same
+     corner: `transform-origin: bottom right` keeps the anchor point pinned while
+     `scale(1/n)` keeps the pixel size constant. Tailwind's `scale-*` writes the
+     standalone `scale` property, so the hover grow composes with this. */
+  .lb-corner {
+    position: absolute;
+    right: 0.5rem;
+    bottom: 0.5rem;
+    z-index: 10;
+    line-height: 0;
+    transform: scale(var(--inv, 1));
+    transform-origin: bottom right;
   }
 
+  /* Wide viewports leave more breathing room around the bars, so the same formula runs
+     with the larger budget — once, for the box both the media and the skeleton use. */
   @media (min-width: 768px) {
-    .lb-media {
+    .lb-box {
+      width: min(var(--w), calc(100vw - 8rem), calc((100dvh - 9rem) * var(--ar, 1)));
       max-width: calc(100vw - 8rem);
+    }
+
+    .lb-skeleton,
+    .lb-media {
       max-height: calc(100dvh - 9rem);
     }
   }

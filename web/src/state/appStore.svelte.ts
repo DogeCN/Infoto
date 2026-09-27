@@ -34,6 +34,7 @@ function adminFailHint(error: unknown, timeoutId: string): string {
  * localStorage for a first-frame identity on /admin; every /sync response overwrites it,
  * so a stale cache self-corrects. The id is public (see identity.ts), never a secret. */
 const SELF_ID_KEY = 'infoto-self-id';
+const PENDING_MARKS_KEY = 'infoto-pending-marks';
 
 function readCachedSelfId(): number {
   try {
@@ -49,6 +50,35 @@ function readCachedSelfId(): number {
   return -1;
 }
 
+function readCachedPendingMarks(): Map<
+  string,
+  { likes: number[]; dislikes: number[]; reports: number[] }
+> {
+  try {
+    const raw = localStorage.getItem(PENDING_MARKS_KEY);
+    if (raw !== null) {
+      const parsed = JSON.parse(raw) as [
+        string,
+        { likes: number[]; dislikes: number[]; reports: number[] },
+      ][];
+      return new Map(parsed);
+    }
+  } catch {
+    /* noop */
+  }
+  return new Map();
+}
+
+function writePendingMarks(
+  marks: Map<string, { likes: number[]; dislikes: number[]; reports: number[] }>,
+): void {
+  try {
+    localStorage.setItem(PENDING_MARKS_KEY, JSON.stringify([...marks.entries()]));
+  } catch {
+    /* storage blocked */
+  }
+}
+
 class AppState {
   engineState = $state<EngineState>({ syncing: false, pending: 0 });
   selfId = $state<number>(readCachedSelfId());
@@ -62,17 +92,11 @@ class AppState {
 
   /** Optimistic marks on photos whose row does not exist server-side yet, keyed by sha256
    *  (the same address photo ops use). Merged into the pending cards so they highlight. */
-  pendingMarks = $state<Map<string, { likes: number[]; dislikes: number[]; reports: number[] }>>(
-    new Map(),
-  );
+  pendingMarks =
+    $state<Map<string, { likes: number[]; dislikes: number[]; reports: number[] }>>(
+      readCachedPendingMarks(),
+    );
 
-  /** Shas whose `upload` op is already in the op log — a pending card in this set is only
-   *  waiting for /sync, so a delete can be queued behind it instead of cancelling. */
-  queuedUploadShas = $state<Set<string>>(new Set());
-
-  /** Ops aimed at a still-uploading photo, keyed by sha256. /sync replays a batch in array
-   *  order, so these may only be queued AFTER the `upload` op that creates the row. */
-  private deferredPhotoOps = new Map<string, Op[]>();
   private engine: SyncEngine | null = null;
 
   /** Bind engine state; a repeated call with the same engine is ignored, and a new
@@ -130,46 +154,19 @@ class AppState {
 
   // Photos
 
-  /**
-   * Queue one op for a photo, deferring it when the row does not exist yet. A photo op is
-   * addressed by sha256; when only the pending card knows the hash (its upload has not
-   * written its op yet) the op waits in `deferredPhotoOps` and is flushed by
-   * `photoOpQueued` right after the upload op — /sync replays a batch in array order, so
-   * the row must exist before the op that targets it.
-   */
   private submitPhotoOp(sha256: string, op: Op): void {
     if (!sha256) return;
-    if (this.queuedUploadShas.has(sha256)) {
-      void this.submit({ ...op, targetSha: sha256 });
-      return;
-    }
-    const queue = this.deferredPhotoOps.get(sha256);
-    if (queue) queue.push({ ...op, targetSha: sha256 });
-    else this.deferredPhotoOps.set(sha256, [{ ...op, targetSha: sha256 }]);
-  }
-
-  /** The upload op for `sha256` just entered the log: release everything waiting on it. */
-  photoOpQueued(sha256: string): void {
-    if (!sha256) return;
-    this.queuedUploadShas = new Set(this.queuedUploadShas).add(sha256);
-    const queue = this.deferredPhotoOps.get(sha256);
-    if (!queue) return;
-    this.deferredPhotoOps.delete(sha256);
-    for (const op of queue) void this.submit(op);
+    void this.submit({ ...op, targetSha: sha256 });
   }
 
   /** A pending card is gone for good (cancelled / failed / dismissed): drop its state. */
   forgetPendingPhoto(sha256: string): void {
     if (!sha256) return;
-    this.deferredPhotoOps.delete(sha256);
-    if (!this.queuedUploadShas.has(sha256)) return;
-    const next = new Set(this.queuedUploadShas);
-    next.delete(sha256);
-    this.queuedUploadShas = next;
     if (!this.pendingMarks.has(sha256)) return;
     const marks = new Map(this.pendingMarks);
     marks.delete(sha256);
     this.pendingMarks = marks;
+    writePendingMarks(marks);
   }
 
   /** Optimistic root delete without confirmation. */
@@ -189,6 +186,7 @@ class AppState {
     const marks = new Map(this.pendingMarks);
     marks.set(sha256, { ...cur, [field]: ops.toggleId(cur[field], this.selfId, add) });
     this.pendingMarks = marks;
+    writePendingMarks(marks);
   }
 
   /** Apply one mark locally (pending card or snapshot row) and queue its op. */

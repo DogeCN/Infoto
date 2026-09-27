@@ -26,7 +26,7 @@ export interface LayoutOptions {
   strategy: FillStrategy;
   /** Cross-axis size: container width when dir='v', container height when dir='h'. */
   cross: number;
-  /** Target band thickness (row height / column width basis), 200–800. */
+  /** Target band thickness (row height / column width basis), 100–800. */
   band: number;
   /** Item gap, 0–32. */
   gap: number;

@@ -20,9 +20,27 @@ function saveBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+/** Fetch a photo's bytes, preferring the image-host direct link (browser cache is
+ * reused, so repeat downloads are free). Falls back to the same-origin `/l/{id36}`
+ * proxy when the direct link is blocked (CORS / network error) or returns a status
+ * the proxy may circumvent (e.g. Referer-based hotlink protection). */
+async function fetchPhoto(photo: Photo, fetchFn: typeof fetch): Promise<Response> {
+  try {
+    const res = await fetchFn(photo.url, { cache: 'force-cache' });
+    if (res.ok) return res;
+    const proxy = await fetchFn(`/l/${toId36(photo.id)}`, { cache: 'force-cache' });
+    if (proxy.ok) return proxy;
+    return res;
+  } catch {
+    const proxy = await fetchFn(`/l/${toId36(photo.id)}`, { cache: 'force-cache' });
+    if (proxy.ok) return proxy;
+    throw new Error('download blocked (direct link + /l/ proxy both failed)');
+  }
+}
+
 /** Single download: filename `{id36}.{ext}`. */
 export async function downloadOne(photo: Photo, fetchFn: typeof fetch = fetch): Promise<void> {
-  const res = await fetchFn(photo.url, { cache: 'force-cache' });
+  const res = await fetchPhoto(photo, fetchFn);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const blob = await res.blob();
   saveBlob(blob, `${toId36(photo.id)}.${extOfType(photo.type)}`);
@@ -43,7 +61,7 @@ export async function downloadZip(photos: Photo[], fetchFn: typeof fetch = fetch
 
   for (let i = 0; i < total; i++) {
     const photo = photos[i]!;
-    const res = await fetchFn(photo.url, { cache: 'force-cache' });
+    const res = await fetchPhoto(photo, fetchFn);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
     const name = padName(i, total, extOfType(photo.type));

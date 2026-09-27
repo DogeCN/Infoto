@@ -28,7 +28,7 @@
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
   import type { FilterSettings, LayoutSettings, Settings } from './settings';
-  import { applyFilters, defaultFilterSettings, defaultSettings } from './settings';
+  import { applyFilters, loadSettings } from './settings';
 
   /** Surface sync failures, deduped over 10s: while the backend is down every
    *  retry fails and would flood the toast. */
@@ -40,12 +40,16 @@
     toast.error(copy.sync.failed, { description: copy.sync.queuedRetry });
   }
 
-  // Store first: the engine writes the full /sync snapshot straight into it
+  let syncing = $state(true);
   const store = createAppStore();
   const engine = getEngine({
-    onSyncResponse: (r, context) => store.applySync(r, context),
+    onSyncResponse: (r, context) => {
+      store.applySync(r, context);
+      syncing = false;
+    },
     onError: (phase, e) => {
       console.error('[sync]', phase, e);
+      syncing = false;
       // Cookie lost/expired → return to the first-entry flow (ensureIdentity
       // handles Turnstile rendering)
       if (e instanceof TurnstileRequiredError) void bootstrapIdentity();
@@ -62,10 +66,6 @@
     // top bar's manual sync — same as every other op.
     onUploadOp: (op) => {
       void engine.addOp(op);
-      // Anything the user did to that card while it was still uploading (marks, delete)
-      // is queued behind its upload op, so it can now go out.
-      const sha = op.payload && 'sha256' in op.payload ? String(op.payload.sha256) : '';
-      store.photoOpQueued(sha);
     },
     // cancelJob echo (broadcast): drop the row/card in this tab too. A cancel resolves the
     // job as far as the batch counter is concerned — otherwise the header would freeze at
@@ -148,6 +148,8 @@
     }
     probedSizeByJob.delete(jobId);
     tempCreatedAt.delete(jobId);
+    writeTempCreatedAt(tempCreatedAt);
+    photoCache.delete(jobId);
     const sha = uploadTasks.get(jobId)?.sha256;
     if (sha) store.forgetPendingPhoto(sha);
     const preview = previewUrls.get(jobId);
@@ -170,7 +172,7 @@
     probeChain = probeChain
       .then(async () => {
         const size = await probeSourceSize(file);
-        // The job may have been cancelled/finished while probing
+        if (destroyed) return;
         if (size && uploadTasks.has(jobId)) probedSizeByJob.set(jobId, size);
       })
       .catch(() => undefined);
@@ -182,13 +184,49 @@
   let nextTempId = -1;
   const tempIdByJob = new Map<string, number>();
   const jobByTempId = new Map<number, string>();
+  const photoCache = new Map<string, Photo>();
+  const EMPTY_MARKS: { likes: number[]; dislikes: number[]; reports: number[] } = {
+    likes: [],
+    dislikes: [],
+    reports: [],
+  };
   // Guard against double-toasting the same failure within one session (e.g. a
   // redundant status echo). Replay across a page reload re-toasts intentionally:
   // a lingering failed upload deserves a fresh reminder.
   const toastedFailures = new Set<string>();
+  const toastedDuplicates = new Set<string>();
+  const TEMP_CREATED_KEY = 'infoto-temp-created';
+  const TEMP_CREATED_TTL_MS = 30 * 60 * 1000;
+
+  function readTempCreatedAt(): Map<string, number> {
+    try {
+      const raw = sessionStorage.getItem(TEMP_CREATED_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as [string, number][];
+        const now = Date.now();
+        const map = new Map<string, number>();
+        for (const [jobId, ts] of parsed) {
+          if (now - ts < TEMP_CREATED_TTL_MS) map.set(jobId, ts);
+        }
+        return map;
+      }
+    } catch {
+      /* noop */
+    }
+    return new Map();
+  }
+
+  function writeTempCreatedAt(map: Map<string, number>): void {
+    try {
+      sessionStorage.setItem(TEMP_CREATED_KEY, JSON.stringify([...map.entries()]));
+    } catch {
+      /* noop */
+    }
+  }
+
   // Fixed createdAt per optimistic card — using Date.now() inside the derived
   // would re-stamp every progress frame and thrash the "newest" sort.
-  const tempCreatedAt = new Map<string, number>();
+  const tempCreatedAt = new Map<string, number>(readTempCreatedAt());
 
   let pendingPhotos = $derived.by(() => {
     const out: Photo[] = [];
@@ -218,23 +256,44 @@
         type: 0 as const,
       };
       const sha = t.sha256 ?? '';
-      // Marks the user already gave this card while it was uploading; they render like
-      // real ones and the ops behind them are queued right after the upload op.
-      const marks = sha ? store.pendingMarksFor(sha) : { likes: [], dislikes: [], reports: [] };
-      out.push({
-        id,
-        sha256: sha,
-        url: t.url ?? previewUrls.get(t.jobId) ?? '',
-        uploader: store.selfId,
-        width: meta.width,
-        height: meta.height,
-        size: meta.size,
-        createdAt: tempCreatedAt.get(t.jobId) ?? Date.now(),
-        type: meta.type,
-        likes: marks.likes,
-        dislikes: marks.dislikes,
-        reports: marks.reports,
-      });
+      const marks = sha ? store.pendingMarksFor(sha) : EMPTY_MARKS;
+      const url = t.url ?? previewUrls.get(t.jobId) ?? '';
+      const createdAt = tempCreatedAt.get(t.jobId) ?? Date.now();
+      const cached = photoCache.get(t.jobId);
+      if (
+        cached &&
+        cached.id === id &&
+        cached.sha256 === sha &&
+        cached.url === url &&
+        cached.uploader === store.selfId &&
+        cached.width === meta.width &&
+        cached.height === meta.height &&
+        cached.size === meta.size &&
+        cached.type === meta.type &&
+        cached.createdAt === createdAt &&
+        cached.likes === marks.likes &&
+        cached.dislikes === marks.dislikes &&
+        cached.reports === marks.reports
+      ) {
+        out.push(cached);
+      } else {
+        const photo: Photo = {
+          id,
+          sha256: sha,
+          url,
+          uploader: store.selfId,
+          width: meta.width,
+          height: meta.height,
+          size: meta.size,
+          createdAt,
+          type: meta.type,
+          likes: marks.likes,
+          dislikes: marks.dislikes,
+          reports: marks.reports,
+        };
+        photoCache.set(t.jobId, photo);
+        out.push(photo);
+      }
     }
     return out;
   });
@@ -308,12 +367,52 @@
   let rightOpen = $state(false);
   let multiMode = $state(false);
   let initialized = $state(false);
+  /** Wide layout: the upload panel moves to the bottom-right, clear of bottom-left toasts. */
+  let wideLayout = $state(false);
+  $effect(() => {
+    const mq = window.matchMedia('(min-width: 768px)');
+    const apply = () => (wideLayout = mq.matches);
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  });
+
+  /**
+   * Live height of the upload overlay, published by `UploadPanel`. Its height tracks
+   * the row count, so a fixed clearance would be wrong at 1 row and at 6 — toasts are
+   * positioned against a number, not a guess. 0 while the panel is collapsed or hidden.
+   *
+   * The sink is a module-scope `const`, not an inline arrow: `UploadPanel` observes its
+   * `onHeight` prop, and a fresh function identity per render would tear down and rebuild
+   * its ResizeObserver on every parent update.
+   */
+  let uploadPanelHeight = $state(0);
+  const handleUploadPanelHeight = (px: number) => (uploadPanelHeight = px);
+
+  /**
+   * Toast bottom clearance: clear whatever currently owns the bottom edge, else hug it.
+   * Only the narrow layout needs the upload panel's height — from `md` up it moves to the
+   * bottom-right (`md:right-4 md:bottom-4`) and toasts live at bottom-left, so they are
+   * side by side and no clearance is owed.
+   *
+   * Pixels, not rem: the upload half is a measured value, and converting it through the
+   * root font size would put a unit conversion between the measurement and its use.
+   */
+  const TOAST_EDGE_GAP = 16;
+  const MULTI_SELECT_CLEARANCE = 80;
+  let toastOffsetBottom = $derived(
+    multiMode
+      ? MULTI_SELECT_CLEARANCE
+      : panelRows.length > 0 && !wideLayout
+        ? TOAST_EDGE_GAP + uploadPanelHeight
+        : TOAST_EDGE_GAP,
+  );
 
   // Layout settings (from SettingsPanel). Seeded from the same factory defaults the
   // panel persists against, so the first frame cannot disagree with a stored value.
-  let layout = $state<LayoutSettings>(defaultSettings().layout);
-  // Filter settings (from SettingsPanel; drives the waterfall filter)
-  let filters = $state<FilterSettings>(defaultFilterSettings());
+  const loadedSettings = loadSettings();
+  let layout = $state<LayoutSettings>(loadedSettings.layout);
+  let filters = $state<FilterSettings>(loadedSettings.filters);
   let filterCount = $state(0);
   let resetToken = $state(0);
 
@@ -366,6 +465,13 @@
       if (firstEntry && verifyState === 'loading') verifyState = 'done';
     } catch (e) {
       console.error('[identity] bootstrap failed', e);
+      // A failed Turnstile (script blocked, iframe intercepted, mount point
+      // missing, or its 15s timeout) is swallowed above, leaving verifyState
+      // stuck at 'loading' with no reset — the full-screen verify overlay then
+      // never disappears, i.e. a permanent "loading" state. Drop it back to idle
+      // and tear down any half-mounted widget so the gallery shows through.
+      if (verifyState === 'loading') verifyState = 'idle';
+      void disposeTurnstile();
     } finally {
       bootstrapping = false;
     }
@@ -373,6 +479,26 @@
 
   // `untrack` keeps the guard out of the effect's dependency set, so writing it does
   // not schedule the second run a plain `if (initialized) return` would.
+  const EDITOR_JOBS_KEY = 'infoto-editor-jobs';
+
+  function readEditorJobs(): Set<string> {
+    try {
+      const raw = sessionStorage.getItem(EDITOR_JOBS_KEY);
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch {
+      /* noop */
+    }
+    return new Set();
+  }
+
+  function writeEditorJobs(jobs: Set<string>): void {
+    try {
+      sessionStorage.setItem(EDITOR_JOBS_KEY, JSON.stringify([...jobs]));
+    } catch {
+      /* noop */
+    }
+  }
+
   $effect(() => {
     if (untrack(() => initialized)) return;
     initialized = true;
@@ -380,13 +506,25 @@
       await bootstrapIdentity();
       await engine.init().catch(console.error);
       engine.install();
+      pipeline.start();
+      const jobs = readEditorJobs();
+      if (jobs.size > 0) {
+        await new Promise((r) => setTimeout(r, 1000));
+        for (const jobId of jobs) {
+          if (!uploadTasks.has(jobId)) {
+            toast.error(copy.upload.editorLost);
+          }
+        }
+        sessionStorage.removeItem(EDITOR_JOBS_KEY);
+      }
     })();
-    pipeline.start();
   });
 
-  // A remount (route switch) must not leave a live SharedWorker port and a
-  // BroadcastChannel listener behind.
-  onDestroy(() => pipeline.stop());
+  let destroyed = false;
+  onDestroy(() => {
+    destroyed = true;
+    pipeline.stop();
+  });
 
   // Task sink lives in its own effect so its unsubscribe is honoured on teardown.
   // (Inside the guarded init effect above it would be torn down by the second run
@@ -410,12 +548,17 @@
         t.sha256 &&
         store.photos.some((p) => p.sha256 === t.sha256)
       ) {
+        if (t.phase === 'duplicate' && t.fileName && !toastedDuplicates.has(t.jobId)) {
+          toastedDuplicates.add(t.jobId);
+          toast.info(fmt(copy.upload.duplicate, { fileName: t.fileName }));
+        }
         if (uploadTasks.has(t.jobId)) dropTask(t.jobId);
         return;
       }
       // Duplicate against a sha not (yet) in the store: brief panel row, toast, and
       // the cleanup effect drops it — no silent nothing, no lingering row.
-      if (t.phase === 'duplicate' && t.fileName) {
+      if (t.phase === 'duplicate' && t.fileName && !toastedDuplicates.has(t.jobId)) {
+        toastedDuplicates.add(t.jobId);
         toast.info(fmt(copy.upload.duplicate, { fileName: t.fileName }));
       }
       // Album upload failure: surface a toast so the user notices even if the
@@ -436,6 +579,12 @@
         tempIdByJob.set(t.jobId, id);
         jobByTempId.set(id, t.jobId);
         tempCreatedAt.set(t.jobId, Date.now());
+        writeTempCreatedAt(tempCreatedAt);
+        if (t.purpose === 'editor') {
+          const jobs = readEditorJobs();
+          jobs.add(t.jobId);
+          writeEditorJobs(jobs);
+        }
       }
       uploadTasks = new Map(uploadTasks.set(t.jobId, t));
     }),
@@ -510,7 +659,7 @@
     layout = {
       dir: s.layout.dir,
       strategy: s.layout.strategy,
-      cols: s.layout.cols,
+      band: s.layout.band,
       gap: s.layout.gap,
     };
     // Update only when the filters object reference actually changes (layout-only
@@ -604,6 +753,8 @@
       batchTotal = 0;
       batchDone = 0;
       countedJobs.clear();
+      toastedFailures.clear();
+      toastedDuplicates.clear();
     }
     pipeline.addFiles(files, queueSizeProbe);
     input.value = '';
@@ -691,7 +842,12 @@
       <!-- Uploads must stay visible even on an empty album: the first upload of a
            new account would land in this branch with nowhere to render, and a
            failed first upload needs its retry card. -->
-      {#if visiblePhotos.length === 0 && pendingPhotos.length === 0}
+      {#if syncing && store.photos.length === 0}
+        <div class="flex flex-col items-center justify-center py-24">
+          <div class="size-12 animate-pulse rounded-full bg-muted"></div>
+          <p class="mt-4 text-sm text-muted-foreground">Loading…</p>
+        </div>
+      {:else if visiblePhotos.length === 0 && pendingPhotos.length === 0}
         <div
           class="flex flex-col items-center justify-center py-24 text-center"
           style="animation: fadeInUp var(--duration-enter) var(--ease-enter) both"
@@ -728,7 +884,7 @@
           selfId={store.selfId}
           dir={layout.dir}
           strategy={layout.strategy}
-          cols={layout.cols}
+          band={layout.band}
           gap={layout.gap}
           bind:multiMode
           onMultiModeChange={handleMultiModeChange}
@@ -764,6 +920,7 @@
     tasks={panelRows}
     progress={{ done: batchDone, total: batchTotal }}
     onRemove={handleRemoveUpload}
+    onHeight={handleUploadPanelHeight}
     hidden={multiMode}
   />
 
@@ -772,14 +929,20 @@
   <!-- expand: the stack is always fully open. Sonner's hover-driven expansion is a trap
        here — swiping a toast away ends the gesture outside the list, so its internal
        `interacting` flag is never cleared and the survivors stay stuck expanded.
-       The bottom offset clears the multi-select bar (bottom-0, ~65px tall): at 1rem the
-       toasts sat on top of it and swallowed clicks on select-all. -->
+       The bottom offset tracks whatever owns the bottom edge. Two elements do, and
+       they are mutually exclusive (the panel slides away in multi-select): the
+       multi-select bar (full-width, bottom-0, z-40) and the upload panel (full-width on
+       narrow screens, bottom-right above it on wide ones). Toasts sit at bottom-LEFT, so
+       on desktop the upload panel is beside them and needs no clearance — only a 1rem
+       gap from the edge. Clearance matters: at 1rem the toasts landed on the multi-select
+       bar and swallowed clicks on select-all. -->
   <Toaster
+    class="toast-stack"
     position="bottom-left"
     theme="dark"
     richColors
     expand
-    offset={{ bottom: '4.5rem', left: '1rem' }}
+    offset={{ bottom: toastOffsetBottom, left: '1rem' }}
     {toastOptions}
   />
 </div>

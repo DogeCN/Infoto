@@ -79,6 +79,8 @@ export class SyncEngine {
   private criticalFlush: { throughVersion: number; promise: Promise<SyncAttemptResult> } | null =
     null;
   private pagehideInstalled = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
   readonly state: EngineState = { syncing: false, pending: 0 };
 
   constructor(io: EngineIo = {}) {
@@ -232,6 +234,7 @@ export class SyncEngine {
         .filter((entry) => !this.inFlightKeys.has(entry.key))
         .map((entry) => entry.op);
       await this.applySnapshot(db, response, { attempt, queuedOps });
+      this.retryAttempt = 0;
       return { ok: true, confirmedThroughVersion: maxVersion };
     } catch (error) {
       try {
@@ -239,6 +242,7 @@ export class SyncEngine {
       } catch {
         // Error reporting must not change sync completion semantics.
       }
+      this.scheduleRetry();
       return { ok: false, error, confirmedThroughVersion: 0 };
     } finally {
       for (const entry of available) this.inFlightKeys.delete(entry.key);
@@ -256,7 +260,25 @@ export class SyncEngine {
     return fit !== null && fit.ops.length === ops.length;
   }
 
+  private scheduleRetry(): void {
+    const delays = [5_000, 15_000, 30_000, 60_000];
+    const delay = delays[Math.min(this.retryAttempt, delays.length - 1)];
+    this.retryAttempt++;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.sync();
+    }, delay);
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
   private beginSync(): Promise<SyncAttemptResult> {
+    this.clearRetryTimer();
     const promise = this.runSync(++this.attempt);
     this.activeSync = promise;
     const clear = () => {
@@ -273,55 +295,71 @@ export class SyncEngine {
 
   /** Wait for an active attempt, then flush the requested op version if needed. */
   flushThrough(version: number): Promise<SyncAttemptResult> {
-    if (this.criticalFlush) {
-      this.criticalFlush.throughVersion = Math.max(this.criticalFlush.throughVersion, version);
-      const pending = this.criticalFlush;
-      return pending.promise.then((result) => {
+    const FLUSH_TIMEOUT_MS = 30_000;
+    const run = (): Promise<SyncAttemptResult> => {
+      if (this.criticalFlush) {
+        this.criticalFlush.throughVersion = Math.max(this.criticalFlush.throughVersion, version);
+        const pending = this.criticalFlush;
+        return pending.promise.then((result) => {
+          if (result.confirmedThroughVersion >= version) {
+            return { ok: true, confirmedThroughVersion: result.confirmedThroughVersion };
+          }
+          return result;
+        });
+      }
+
+      const record: NonNullable<SyncEngine['criticalFlush']> = {
+        throughVersion: version,
+        promise: Promise.resolve({
+          ok: false,
+          error: new Error('uninitialized'),
+          confirmedThroughVersion: 0,
+        }),
+      };
+      const first = this.activeSync;
+      record.promise = (first ? first.then((result) => result) : this.beginSync()).then(
+        async (prior) => {
+          if (prior.ok && prior.confirmedThroughVersion >= record.throughVersion) return prior;
+          const next = await this.beginSync();
+          if (next.ok) {
+            return {
+              ok: true,
+              confirmedThroughVersion: Math.max(
+                prior.confirmedThroughVersion,
+                next.confirmedThroughVersion,
+              ),
+            };
+          }
+          return {
+            ok: false,
+            error: next.error,
+            confirmedThroughVersion: prior.confirmedThroughVersion,
+          };
+        },
+      );
+      this.criticalFlush = record;
+      void record.promise.then(() => {
+        if (this.criticalFlush === record) this.criticalFlush = null;
+      });
+      return record.promise.then((result) => {
         if (result.confirmedThroughVersion >= version) {
           return { ok: true, confirmedThroughVersion: result.confirmedThroughVersion };
         }
         return result;
       });
-    }
-
-    const record: NonNullable<SyncEngine['criticalFlush']> = {
-      throughVersion: version,
-      promise: Promise.resolve({
-        ok: false,
-        error: new Error('uninitialized'),
-        confirmedThroughVersion: 0,
-      }),
     };
-    const first = this.activeSync;
-    record.promise = (first ? first.then((result) => result) : this.beginSync()).then(
-      async (prior) => {
-        if (prior.ok && prior.confirmedThroughVersion >= record.throughVersion) return prior;
-        const next = await this.beginSync();
-        if (next.ok) {
-          return {
-            ok: true,
-            confirmedThroughVersion: Math.max(
-              prior.confirmedThroughVersion,
-              next.confirmedThroughVersion,
-            ),
-          };
-        }
-        return {
-          ok: false,
-          error: next.error,
-          confirmedThroughVersion: prior.confirmedThroughVersion,
-        };
-      },
-    );
-    this.criticalFlush = record;
-    void record.promise.then(() => {
-      if (this.criticalFlush === record) this.criticalFlush = null;
-    });
-    return record.promise.then((result) => {
-      if (result.confirmedThroughVersion >= version) {
-        return { ok: true, confirmedThroughVersion: result.confirmedThroughVersion };
-      }
-      return result;
+    return new Promise<SyncAttemptResult>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('flushThrough timed out')), FLUSH_TIMEOUT_MS);
+      run().then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
     });
   }
 
@@ -332,6 +370,7 @@ export class SyncEngine {
     if (this.pagehideInstalled) return;
     this.pagehideInstalled = true;
     windowObj.addEventListener('pagehide', () => {
+      this.clearRetryTimer();
       this.flushOnPagehide();
     });
   }

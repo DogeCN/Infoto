@@ -62,14 +62,25 @@
   let isReported = $derived(photo.reports.includes(selfId));
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
-  // HTTP status probed after a load failure; "0" = network error / CORS-blocked.
-  // Falls back to "404" until the HEAD probe resolves.
-  let failStatus = $state('404');
-  let failController: AbortController | null = null;
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
   // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
   // every /sync keeps the loaded image visible; the browser caches decoding by URL itself.
   let loadedUrl = $state('');
+  let observedUrl = '';
+
+  $effect(() => {
+    const url = photo.url;
+    if (url === observedUrl) return;
+    observedUrl = url;
+    if (url) {
+      loadFailed = false;
+    }
+  });
+
+  // A failed load is surfaced as a uniform "ERROR" glitch — the real HTTP status is
+  // not reliably obtainable cross-origin (HEAD is CORS-gated), so showing a code
+  // would be misleading.
+  let failStatus = $state('ERROR');
   // type=1 (animated image without audio track) and type=2 (video with sound) are both
   // video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);
@@ -100,31 +111,19 @@
 
   onDestroy(() => {
     cancelLongPress();
-    failController?.abort();
   });
 
-  // <img>/<video> onerror does not expose the HTTP status (browser security).
-  // Send a HEAD probe so the fallback can show the real code (404/403/500…).
-  // 0 means the request itself failed (network / CORS).
-  function probeFailStatus(url: string) {
-    failController?.abort();
-    failController = new AbortController();
-    fetch(url, { method: 'HEAD', cache: 'force-cache', signal: failController.signal })
-      .then((res) => (failStatus = String(res.status)))
-      .catch(() => {
-        if (!failController?.signal.aborted) failStatus = '0';
-      });
-  }
-
   /**
-   * A local preview can be a source this browser cannot decode (HEIC, an exotic video
-   * codec) — that is not a broken photo, so it degrades to the skeleton and waits for
-   * the real URL instead of showing the glitch fallback.
+   * A load failure (network / CORS / 404) is surfaced as a uniform "ERROR" glitch.
+   * We deliberately do not probe for the HTTP status: a cross-origin HEAD is
+   * CORS-gated and would only yield a misleading code (or "0") on blocked hosts.
+   * A local preview that this browser cannot decode (HEIC, exotic codec) is not a
+   * broken photo, so it degrades to the skeleton and waits for the real URL instead.
    */
   function handleMediaError(): void {
     if (overlay?.preview) return;
     loadFailed = true;
-    probeFailStatus(photo.url);
+    failStatus = 'ERROR';
   }
 
   function handleClick() {
@@ -154,8 +153,8 @@
        Empty URL (upload still in flight) keeps the skeleton instead of an <img>
        whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
-    <div class="flex h-full w-full items-center justify-center bg-card">
-      <GlitchText text={failStatus} size="clamp(2rem, 12vw, 3.5rem)" />
+    <div class="flex h-full w-full items-center justify-center bg-card [container-type:size]">
+      <GlitchText text={failStatus} size="clamp(1.25rem, 22cqmin, 3.5rem)" />
     </div>
   {:else if photo.url}
     {#if loadedUrl !== photo.url}
@@ -325,7 +324,9 @@
   {#if photo.type === 2}
     <button
       type="button"
-      class="absolute bottom-2 right-2 z-10 flex items-center justify-center rounded-full border border-white/15 bg-black/55 text-white/70 backdrop-blur-[4px] transition-[background-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-[#22d3ee]/20 hover:scale-105"
+      class="absolute bottom-2 right-2 z-10 flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {volumeMuted
+        ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
+        : 'border-[#22d3ee]/50 bg-[#22d3ee]/20 text-[#22d3ee]'}"
       style="width: 1.9rem; height: 1.9rem"
       onclick={(e) => {
         e.stopPropagation();

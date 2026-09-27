@@ -1,7 +1,7 @@
 // Shared settings and filter logic for the panel and main page.
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
-import { DEFAULT_COLS } from '$base/lib/band';
+import { DEFAULT_BAND } from '$base/lib/band';
 import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
 /** Ownership filter states: off, include-only, or exclude-only. */
@@ -30,13 +30,8 @@ export interface FilterSettings {
 export interface LayoutSettings {
   dir: ScrollDir;
   strategy: FillStrategy;
-  /**
-   * Target column count, not a pixel width. See `base/lib/band.ts`: pixels made the
-   * setting meaningless on narrow viewports (a 260px band collapsed a 320px phone to
-   * one column, and the slider's own 200px floor could not reach three). The pixel
-   * band is derived from the measured cross size at layout time.
-   */
-  cols: number;
+  /** Target row height / column width in CSS pixels. */
+  band: number;
   gap: number;
 }
 
@@ -96,7 +91,7 @@ export function defaultFilterSettings(): FilterSettings {
 export function defaultSettings(): Settings {
   return {
     filters: defaultFilterSettings(),
-    layout: { dir: 'v', strategy: 'shortest', cols: DEFAULT_COLS, gap: 12 },
+    layout: { dir: 'v', strategy: 'shortest', band: DEFAULT_BAND, gap: 12 },
   };
 }
 
@@ -106,9 +101,9 @@ const STORAGE_KEY = 'infoto-settings';
  * is dropped wholesale and replaced by defaults — there is deliberately no
  * per-field migration; the version tag is the guard.
  *
- * v2: `layout.band` (px) → `layout.cols` (count). A v1 blob is dropped whole, so the
- * old pixel band cannot be reinterpreted as a column count. */
-const SETTINGS_VERSION = 2;
+ * v3: `layout.cols` (count) → `layout.band` (px). A v2 blob is dropped whole, so the
+ * old column count cannot be reinterpreted as a pixel width. */
+const SETTINGS_VERSION = 3;
 
 /** Persisted shape: a `Set` is not JSON-serializable, so media types are stored as an array. */
 interface StoredSettings {

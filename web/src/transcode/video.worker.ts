@@ -67,7 +67,7 @@ async function transcodeVideo(jobId: string, file: Blob): Promise<VideoWorkerRes
   const height = videoTrack.codedHeight ?? videoTrack.displayHeight;
   const { codec, quality } = await pickVideoCodec(width, height);
 
-  const output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
+  let output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
   let conversion: Conversion;
   try {
     conversion = await Conversion.init({
@@ -80,9 +80,11 @@ async function transcodeVideo(jobId: string, file: Blob): Promise<VideoWorkerRes
     // edge cases where the quantizer probe passed but the real encoder rejects: retry once with the VP8 fallback
     if (codec !== 'vp9') throw e;
     const fb = await pickVideoCodecFallback(width, height);
+    const fallbackInput = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+    output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
     conversion = await Conversion.init({
-      input,
-      output: new Output({ format: new WebMOutputFormat(), target: new BufferTarget() }),
+      input: fallbackInput,
+      output,
       video: { codec: fb.codec, quality: fb.quality },
       ...(hasAudio ? { audio: { codec: 'opus' as const, bitrate: OPUS_BITRATE } } : {}),
     });
@@ -125,43 +127,47 @@ async function transcodeGif(jobId: string, file: Blob): Promise<VideoWorkerResul
   } catch {
     throw new Error('gif_decode_failed');
   }
-  const track = decoder.tracks.selectedTrack;
-  const frameCount = (decoder as unknown as { frameCount: number }).frameCount;
-  if (!track || frameCount === 0) throw new Error('gif_decode_failed');
-  const probe = await decoder.decode({ frameIndex: 0 });
-  const width = probe.image.displayWidth || header?.width || 0;
-  const height = probe.image.displayHeight || header?.height || 0;
-  probe.image.close();
-  if (width <= 0 || height <= 0) throw new Error('gif_dimensions_unknown');
-  const { codec, quality } = await pickVideoCodec(width, height);
+  try {
+    const track = decoder.tracks.selectedTrack;
+    const frameCount = (decoder as unknown as { frameCount: number }).frameCount;
+    if (!track || frameCount === 0) throw new Error('gif_decode_failed');
+    const probe = await decoder.decode({ frameIndex: 0 });
+    const width = probe.image.displayWidth || header?.width || 0;
+    const height = probe.image.displayHeight || header?.height || 0;
+    probe.image.close();
+    if (width <= 0 || height <= 0) throw new Error('gif_dimensions_unknown');
+    const { codec, quality } = await pickVideoCodec(width, height);
 
-  const output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
-  const source = new VideoSampleSource({ codec, quality });
-  output.addVideoTrack(source);
-  await output.start();
-  for (let i = 0; i < frameCount; i++) {
-    const { image } = await decoder.decode({ frameIndex: i });
-    // GIF frame duration µs → s; 100ms default for broken frames
-    const durationUs = image.duration ?? 100_000;
-    const sample = new VideoSample(image, {
-      timestamp: i * (durationUs / 1e6),
-      duration: durationUs / 1e6,
-    });
-    await source.add(sample);
-    sample.close();
-    progress(jobId, (i + 1) / frameCount);
+    const output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
+    const source = new VideoSampleSource({ codec, quality });
+    output.addVideoTrack(source);
+    await output.start();
+    for (let i = 0; i < frameCount; i++) {
+      const { image } = await decoder.decode({ frameIndex: i });
+      const durationUs = Math.max(image.duration ?? 100_000, 1000);
+      const sample = new VideoSample(image, {
+        timestamp: i * (durationUs / 1e6),
+        duration: durationUs / 1e6,
+      });
+      await source.add(sample);
+      sample.close();
+      image.close();
+      progress(jobId, (i + 1) / frameCount);
+    }
+    await output.finalize();
+    const buffer = (output.target as BufferTarget).buffer;
+    if (!buffer || buffer.byteLength === 0) throw new Error('empty_output');
+    return {
+      jobId,
+      blob: new Blob([buffer], { type: 'video/webm' }),
+      width,
+      height,
+      hasAudio: false,
+      type: 1,
+    };
+  } finally {
+    decoder.close();
   }
-  await output.finalize();
-  const buffer = (output.target as BufferTarget).buffer;
-  if (!buffer || buffer.byteLength === 0) throw new Error('empty_output');
-  return {
-    jobId,
-    blob: new Blob([buffer], { type: 'video/webm' }),
-    width,
-    height,
-    hasAudio: false,
-    type: 1,
-  };
 }
 
 self.onmessage = async (e: MessageEvent<VideoJobMessage>) => {

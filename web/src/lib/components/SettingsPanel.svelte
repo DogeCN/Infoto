@@ -19,11 +19,11 @@
     LayoutGrid,
     Funnel,
     Globe,
-    ChevronDown,
+    RefreshCw,
   } from '@lucide/svelte';
   import { cn } from '$lib/utils';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
-  import { MAX_COLS, MIN_COLS } from '$base/lib/band';
+  import { MAX_BAND, MIN_BAND, DEFAULT_BAND, defaultBand } from '$base/lib/band';
   import type { Component } from 'svelte';
   import type { MediaType, Photo } from '$shared/types';
   import {
@@ -45,7 +45,6 @@
   import Tooltip from './Tooltip.svelte';
   import { toast } from 'svelte-sonner';
   import { copy, getLocale, LOCALE_OPTIONS, setLocale } from '$lib/i18n.svelte';
-  import type { LocaleCode } from '$shared/copy';
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
@@ -58,6 +57,28 @@
 
   let { onSettingsChange, photos = [], onFilterCount, resetToken = 0 }: Props = $props();
   let settings = $state<Settings>(loadSettings());
+
+  // Mirror WaterfallLayout's mobile dynamic default so the band slider reads the same value
+  // the gallery renders. While the band is untouched (first entry / reset → DEFAULT_BAND) and
+  // the viewport is mobile, the slider shows half the available width; once customized it shows
+  // the stored number. A resize listener keeps it live through rotation / window resize.
+  let viewportW = $state(typeof window === 'undefined' ? 1024 : window.innerWidth);
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => (viewportW = window.innerWidth);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
+  });
+  const isMobilePanel = $derived(viewportW < 768);
+  const displayBand = $derived(
+    settings.layout.band === DEFAULT_BAND && isMobilePanel
+      ? defaultBand(viewportW)
+      : settings.layout.band,
+  );
 
   // Debounced localStorage writes: syncing at 60fps while dragging blocks the
   // main thread. Call the parent immediately (instant layout / filters) and
@@ -81,7 +102,7 @@
   let activeFilterCount = $derived(countActiveFilters(settings.filters));
 
   /** Factory defaults for layout (drives non-default highlighting). */
-  const LAYOUT_DEFAULTS = defaultSettings().layout;
+  const LAYOUT_DEFAULTS = $derived(defaultSettings().layout);
 
   /** Whether the range section has no filterable items (no metadata or every
    *  range is min = max). */
@@ -147,11 +168,13 @@
   }
 
   let shakingType = $state<MediaType | null>(null);
-  const TYPE_LABELS: Record<number, string> = {
+  // `$derived`, not a const: reading `copy` at module/instance scope snapshots the label
+  // at init, so a language switch would leave every tooltip on the previous language.
+  const TYPE_LABELS = $derived<Record<number, string>>({
     0: copy.settings.typeImage,
     1: copy.settings.typeAnimated,
     2: copy.settings.typeVideo,
-  };
+  });
 
   function toggleType(t: MediaType) {
     const next = new Set(settings.filters.types);
@@ -186,11 +209,18 @@
   function setStrategy(s: FillStrategy) {
     settings = { ...settings, layout: { ...settings.layout, strategy: s } };
   }
-  function setCols(v: number) {
-    settings = { ...settings, layout: { ...settings.layout, cols: v } };
+  function setBand(v: number) {
+    settings = { ...settings, layout: { ...settings.layout, band: v } };
   }
   function setGap(v: number) {
     settings = { ...settings, layout: { ...settings.layout, gap: v } };
+  }
+
+  /** Step to the next shipped locale, wrapping. Order follows the registry. */
+  function cycleLocale() {
+    const i = LOCALE_OPTIONS.findIndex((o) => o.code === getLocale());
+    const next = LOCALE_OPTIONS[(i + 1) % LOCALE_OPTIONS.length];
+    if (next) setLocale(next.code);
   }
 </script>
 
@@ -336,11 +366,11 @@
     </div>
   </section>
 
-  <!-- Layout section -->
+  <!-- Interface section -->
   <section>
     <div class="flex items-center justify-between px-1">
       <h3 class="flex items-center gap-1.5 text-sm font-medium">
-        <LayoutGrid class="size-3.5" />{copy.settings.layoutSection}
+        <LayoutGrid class="size-3.5" />{copy.settings.interfaceSection}
       </h3>
       <Tooltip text={copy.settings.resetLayout} side="bottom">
         <button
@@ -354,6 +384,30 @@
     </div>
 
     <div class="mt-4 space-y-3.5 px-1">
+      <!-- Language: one button that cycles, rather than a select. -->
+      <div>
+        <Tooltip text={copy.settings.language} side="bottom">
+          <button
+            type="button"
+            class="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:border-ring hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+            aria-label={copy.settings.language}
+            disabled={LOCALE_OPTIONS.length < 2}
+            onclick={cycleLocale}
+          >
+            <Globe class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span class="flex-1 truncate text-left">
+              {LOCALE_OPTIONS.find((o) => o.code === getLocale())?.label ?? getLocale()}
+            </span>
+            {#if LOCALE_OPTIONS.length > 1}
+              <RefreshCw
+                class="size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
+                aria-hidden="true"
+              />
+            {/if}
+          </button>
+        </Tooltip>
+      </div>
+
       <!-- Scroll direction and fill strategy: icon buttons -->
       <div class="grid grid-cols-2 gap-2">
         <button
@@ -410,16 +464,16 @@
         </button>
       </div>
 
-      <!-- Column count and gap: single-thumb sliders -->
+      <!-- Target band width and gap: single-thumb sliders -->
       <SingleSlider
-        min={MIN_COLS}
-        max={MAX_COLS}
-        step={1}
-        value={settings.layout.cols}
-        defaultValue={LAYOUT_DEFAULTS.cols}
+        min={MIN_BAND}
+        max={MAX_BAND}
+        step={10}
+        value={displayBand}
+        defaultValue={displayBand}
         icon={Ruler}
-        format={(v) => `${v}`}
-        onChange={setCols}
+        format={(v) => `${v}px`}
+        onChange={setBand}
       />
       <SingleSlider
         min={0}
@@ -431,30 +485,6 @@
         format={(v) => `${v}px`}
         onChange={setGap}
       />
-
-      <!-- Language: not a layout knob, but it belongs with the other app-wide
-           preferences. Switching re-renders the whole panel in place. -->
-      <div class="flex items-center gap-3 pt-0.5">
-        <Tooltip text={copy.settings.language} side="bottom">
-          <Globe class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        </Tooltip>
-        <div class="relative flex-1">
-          <select
-            value={getLocale()}
-            aria-label={copy.settings.language}
-            onchange={(e) => setLocale(e.currentTarget.value as LocaleCode)}
-            class="h-9 w-full appearance-none rounded-md border border-input bg-background pl-3 pr-8 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {#each LOCALE_OPTIONS as option (option.code)}
-              <option value={option.code}>{option.label}</option>
-            {/each}
-          </select>
-          <ChevronDown
-            class="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
-            aria-hidden="true"
-          />
-        </div>
-      </div>
     </div>
   </section>
 </div>

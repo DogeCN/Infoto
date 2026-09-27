@@ -1,9 +1,7 @@
 dist/
 node_modules/
 .wrangler/
-.workbuddy/
 .trae/
-test-results/
 web/test-results/
 web/playwright-report/
 web/public/

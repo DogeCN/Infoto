@@ -125,6 +125,12 @@
   border-radius: var(--radius);
 }
 
+[data-sonner-toaster].toast-stack[data-y-position='bottom'] {
+  transition:
+    bottom var(--duration-enter) var(--ease-enter),
+    transform 400ms ease;
+}
+
 @keyframes fadeInUp {
   from {
     opacity: 0;
@@ -143,9 +149,11 @@
   100% {
     transform: translateX(0);
   }
+
   25% {
     transform: translateX(-3px);
   }
+
   75% {
     transform: translateX(3px);
   }
@@ -153,6 +161,10 @@
 
 /* Respect prefers-reduced-motion: decorative transitions and animations collapse to instant. */
 @media (prefers-reduced-motion: reduce) {
+  [data-sonner-toaster].toast-stack[data-y-position='bottom'] {
+    transition: none;
+  }
+
   .vote-fill,
   .vote-meta,
   .skeleton,

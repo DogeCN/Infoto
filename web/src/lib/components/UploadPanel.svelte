@@ -14,8 +14,8 @@
   // Expansion has no button. A pointer-capable device reveals the list while the pointer
   // rests on the panel — entering is instant, leaving waits out a wobble (the TimeLabel
   // debounce) and the hit area is padded so the edge is not a knife edge. Touch devices
-  // have no hover, so there the header drags the sheet open and closed: the height
-  // follows the finger 1:1 and only the release decides, past the midpoint being "open".
+  // have no hover, so the header drags the sheet directly and release keeps its position
+  // with a short velocity-based glide.
   import { onDestroy } from 'svelte';
   import { Clapperboard, X } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
@@ -32,9 +32,13 @@
     /** Multi-select owns the bottom of the screen: its bar is a full-width bottom bar on
      *  a layer above this panel, so the panel slides away while it is up. */
     hidden?: boolean;
+    /** Reports the panel's live pixel height (0 while collapsed or hidden) so the toast
+     *  stack can float above it on narrow layouts. Height tracks the row count, so this
+     *  has to be measured rather than assumed. */
+    onHeight?: (px: number) => void;
   }
 
-  let { tasks, progress, onRemove, hidden = false }: Props = $props();
+  let { tasks, progress, onRemove, hidden = false, onHeight }: Props = $props();
 
   // `$derived`, not a snapshot: the heading follows a language switch.
   const title = $derived(copy.uploadPanel.transcodeTitle);
@@ -52,6 +56,25 @@
     }
     const timer = setTimeout(() => (mounted = false), ROW_EXIT_MS);
     return () => clearTimeout(timer);
+  });
+
+  let shellEl = $state<HTMLElement | undefined>(undefined);
+
+  // Publish the live height. A ResizeObserver rather than measuring in the row effect:
+  // the box also changes on expand/collapse, on the safe-area inset, and during the
+  // entry transition, none of which the row count knows about. Re-running on `hidden`
+  // matters as much as the observer — a translate does not change `offsetHeight`, so
+  // coming back from hidden would otherwise leave the reported height stuck at 0.
+  $effect(() => {
+    if (!shellEl) {
+      onHeight?.(0);
+      return;
+    }
+    const report = () => onHeight?.(hidden ? 0 : shellEl!.offsetHeight);
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(shellEl);
+    return () => ro.disconnect();
   });
 
   // ---- pointer devices: hover, debounced ---------------------------------
@@ -104,10 +127,16 @@
   let dragging = $state(false);
   let dragStartY: number | null = null;
   let dragBaseH = 0;
-  let sheetH = $state(0);
+  let sheetH = $state(HEADER_H);
+  let lastPointerY = 0;
+  let lastPointerAt = 0;
+  let pointerVelocityY = 0;
 
   function naturalH(): number {
-    return HEADER_H + tasks.length * ROW_H + 8;
+    return Math.max(
+      HEADER_H,
+      Math.min(HEADER_H + tasks.length * ROW_H + 8, window.innerHeight * 0.42),
+    );
   }
   function onHeaderPointerDown(e: PointerEvent): void {
     if (canHover) return;
@@ -116,19 +145,31 @@
     sheetH =
       (e.currentTarget as HTMLElement).parentElement?.getBoundingClientRect().height || HEADER_H;
     dragBaseH = sheetH;
+    lastPointerY = e.clientY;
+    lastPointerAt = performance.now();
+    pointerVelocityY = 0;
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
   }
   function onHeaderPointerMove(e: PointerEvent): void {
     if (!dragging || dragStartY === null) return;
+    const now = performance.now();
+    const elapsed = now - lastPointerAt;
+    if (elapsed > 0) pointerVelocityY = (e.clientY - lastPointerY) / elapsed;
     sheetH = Math.min(naturalH(), Math.max(HEADER_H, dragBaseH - (e.clientY - dragStartY)));
+    lastPointerY = e.clientY;
+    lastPointerAt = now;
   }
-  function onHeaderPointerUp(): void {
+  function onHeaderPointerUp(e: PointerEvent): void {
     if (!dragging) return;
-    const open = sheetH > (HEADER_H + naturalH()) / 2;
+    const elapsed = performance.now() - lastPointerAt;
+    if (e.type === 'pointerup' && dragStartY !== null) {
+      sheetH = Math.min(naturalH(), Math.max(HEADER_H, dragBaseH - (e.clientY - dragStartY)));
+    }
+    const velocityY = e.type === 'pointerup' && elapsed <= 80 ? pointerVelocityY : 0;
+    const glide = Math.max(-72, Math.min(72, -velocityY * 110));
     dragging = false;
     dragStartY = null;
-    sheetH = 0;
-    expanded = open;
+    sheetH = Math.min(naturalH(), Math.max(HEADER_H, sheetH + glide));
   }
 
   /** Collapse a departing row's slot instead of letting the list snap shut. */
@@ -172,6 +213,7 @@
     onpointerleave={onLeave}
   >
     <div
+      bind:this={shellEl}
       class="relative overflow-hidden rounded-t-2xl border border-b-0 border-border bg-card/95 pb-[env(safe-area-inset-bottom)] shadow-lg shadow-black/30 backdrop-blur-xl md:rounded-xl md:border-b md:pb-0"
     >
       <!-- No expand button: pointer devices hover, touch devices drag this header. -->
@@ -182,7 +224,7 @@
           : 'cursor-grab touch-none'}"
         role="button"
         tabindex="0"
-        aria-expanded={expanded}
+        aria-expanded={canHover ? expanded : sheetH > HEADER_H}
         aria-label={title}
         onpointerdown={onHeaderPointerDown}
         onpointermove={onHeaderPointerMove}
@@ -191,7 +233,8 @@
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            expanded = !expanded;
+            if (canHover) expanded = !expanded;
+            else sheetH = sheetH > HEADER_H ? HEADER_H : naturalH();
           }
         }}
       >
@@ -209,14 +252,18 @@
            vanish. While dragging the grid is dropped and the height is inline, so the
            sheet tracks the finger with no transition lag. -->
       <div
-        class="overflow-hidden {dragging
-          ? ''
-          : 'grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)] ' +
-            (expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}"
+        class="overflow-hidden {canHover
+          ? 'grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)] ' +
+            (expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')
+          : dragging
+            ? ''
+            : 'transition-[height] duration-[var(--duration-enter)] ease-[var(--ease-enter)]'}"
+        style={!canHover ? `height: ${Math.max(0, Math.min(naturalH(), sheetH) - HEADER_H)}px` : ''}
       >
         <div
-          class="min-h-0 max-h-[60vh] overscroll-contain overflow-y-auto md:max-h-[min(40vh,17.5rem)]"
-          style={dragging ? `height: ${Math.max(0, sheetH - HEADER_H)}px` : ''}
+          class="min-h-0 overscroll-contain overflow-y-auto {canHover
+            ? 'max-h-[min(40vh,17.5rem)]'
+            : 'h-full max-h-[calc(42svh-44px)]'}"
         >
           <div class="space-y-0.5 px-2 pb-2">
             {#each tasks as task (task.jobId)}

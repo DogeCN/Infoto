@@ -39,7 +39,13 @@ const ports = new Set<MessagePort>();
 const bc = 'BroadcastChannel' in self ? new BroadcastChannel('infoto-upload') : null;
 
 function broadcast(m: SwToPageMessage): void {
-  for (const p of ports) p.postMessage(m);
+  for (const p of ports) {
+    try {
+      p.postMessage(m);
+    } catch {
+      // Port closed; idle sweep will clean it.
+    }
+  }
   bc?.postMessage(m);
 }
 
@@ -110,7 +116,16 @@ function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
     ...extra,
   };
   if (rec.purpose === 'editor' && (rec.phase === 'done' || rec.phase === 'failed')) {
-    if (!rec.editorResultAcked) ownerPort(rec)?.postMessage(message);
+    if (!rec.editorResultAcked) {
+      const port = ownerPort(rec);
+      if (port) {
+        try {
+          port.postMessage(message);
+        } catch {
+          // Port closed; the editor waiter will be rejected on reconnect.
+        }
+      }
+    }
     return;
   }
   broadcast(message);
@@ -244,6 +259,7 @@ async function runImageJob(rec: JobRec): Promise<void> {
     }
     rec.phase = 'hashing';
     notify(rec);
+    if (rec.cancelled) return;
     // Hashing and the OPFS write are one tee loop, so this single byte count is the
     // whole leg's real measurement — bytes written over the artifact's known size.
     // No milestone constants: the numerator and denominator are both bytes.
@@ -269,6 +285,8 @@ async function runImageJob(rec: JobRec): Promise<void> {
 async function afterStage1(rec: JobRec): Promise<void> {
   if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
   if (db && rec.sha256) {
+    if (rec.cancelled) return;
+    notify(rec, { fraction: undefined });
     const hit = await lookupSha(db, 'album', rec.sha256).catch(() => undefined);
     if (hit) {
       rec.phase = 'duplicate';
@@ -281,6 +299,7 @@ async function afterStage1(rec: JobRec): Promise<void> {
   // Remember the job: a reload kills this worker, but the artifact is on disk, so the
   // upload can be resumed instead of silently losing a photo the user already uploaded.
   if (db && rec.sha256 && rec.meta && rec.artifact) {
+    if (rec.cancelled) return;
     await putPendingUpload(db, {
       jobId: rec.jobId,
       fileName: rec.fileName,
@@ -314,6 +333,8 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   } else {
     const ext = artifactExt(rec.meta!.type === 0 ? 'image' : 'webm');
     fileName = `m.${ext}`;
+    notify(rec, { fraction: undefined });
+    if (rec.cancelled) return;
     blob = await readArtifact(rec.jobId, ext);
   }
   if (rec.cancelled) return;
@@ -327,6 +348,10 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
     return;
   }
   rec.uploadAbort = new AbortController();
+  if (rec.cancelled) {
+    rec.uploadAbort = undefined;
+    return;
+  }
   const r = await postUpload(blob, {
     origin: self.location.origin,
     fileName,
@@ -361,6 +386,7 @@ function onVideoResult(
       const type: MediaType = hasAudio ? 2 : 1;
       rec.phase = 'hashing';
       notify(rec);
+      if (rec.cancelled) return;
       // Same one-loop measurement as the image leg: the WebM artifact's bytes hashed
       // while being written to OPFS.
       const { sha256, bytes } = await storeArtifact(rec.jobId, blob, 'webm', (written) => {
@@ -401,14 +427,14 @@ function onRetry(jobId: string): void {
   rec.cancelled = false;
   if (rec.purpose === 'editor') {
     // The editor's only leg is the upload, and the picked file is still in the record.
-    void runEditorUpload(rec);
+    void runEditorUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));
     return;
   }
   if (rec.artifact && rec.sha256) {
     // artifact already on disk: go straight to dedupe/upload
     rec.phase = 'uploading';
     notify(rec, { fraction: 0 });
-    void runUpload(rec);
+    void runUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));
     return;
   }
   rec.phase = 'queued';
@@ -514,7 +540,10 @@ async function resumePendingUploads(): Promise<void> {
   if (resumed) return;
   resumed = true;
   if (!db) db = await openOplogDb().catch(() => null);
-  if (!db) return;
+  if (!db) {
+    resumed = false;
+    return;
+  }
   const records = await readPendingUploads(db).catch(() => []);
   for (const r of records) {
     if (jobs.has(r.jobId)) continue;
@@ -542,7 +571,7 @@ async function resumePendingUploads(): Promise<void> {
     };
     jobs.set(r.jobId, rec);
     notify(rec, { fraction: 0 });
-    void runUpload(rec);
+    void runUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));
   }
 }
 
@@ -630,7 +659,7 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       notify(rec);
       if (m.purpose === 'editor') {
         // No transcode leg for the editor — the picked file is uploaded as-is.
-        void runEditorUpload(rec);
+        void runEditorUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));
         return;
       }
       if (route.engine === 'image') {

@@ -76,6 +76,8 @@ const CH = 'infoto-upload';
  *  stall every later file in the same chain. */
 const PROBE_TIMEOUT_MS = 10_000;
 
+const SW_RESTART_BACKOFF_MS = 1000;
+
 /** Upload pipeline client — one instance per page. */
 export class UploadPipeline {
   private sw: SharedWorker | null = null;
@@ -94,6 +96,8 @@ export class UploadPipeline {
     { resolve: (url: string) => void; reject: (error: Error) => void }
   >();
   private readonly pendingAlbumOps = new Set<string>();
+  private swDead = false;
+  private backoffTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(io: PipelineIo = {}) {
     this.io = io;
@@ -110,6 +114,13 @@ export class UploadPipeline {
     this.videoWorkers.clear();
     this.sw?.port.close();
     this.sw = null;
+    if (this.backoffTimer !== null) {
+      clearTimeout(this.backoffTimer);
+      this.backoffTimer = null;
+    }
+    for (const [, waiter] of this.editorWaiters) {
+      waiter.reject(new DOMException('Pipeline stopped', 'AbortError'));
+    }
     this.editorWaiters.clear();
     this.pendingAlbumOps.clear();
   }
@@ -176,10 +187,12 @@ export class UploadPipeline {
 
   /** Connect SharedWorker + BroadcastChannel, register triggers. */
   start(): void {
+    this.swDead = false;
     if (this.sw) return;
     this.sw = this.io.swUrl
       ? new SharedWorker(this.io.swUrl, { type: 'module' })
       : new SharedWorkerCtor();
+    this.sw.onerror = () => this.restartWithBackoff();
     this.lease = new LeaseClient(this.sw.port, {
       onGranted: (m) =>
         this.startVideoWorker(
@@ -225,6 +238,25 @@ export class UploadPipeline {
       if (m.t !== 'jobStatus' || m.purpose !== 'album') return;
       this.emit(this.snapshotFrom(m));
     });
+  }
+
+  private restartWithBackoff(): void {
+    this.swDead = true;
+    for (const s of this.snapshots.values()) {
+      this.emit({ ...s, phase: 'failed', error: 'worker_died' });
+    }
+    this.snapshots.clear();
+    this.editorSnapshot = null;
+    for (const [, waiter] of this.editorWaiters) {
+      waiter.reject(new DOMException('SharedWorker died', 'AbortError'));
+    }
+    this.editorWaiters.clear();
+    this.sw?.port.close();
+    this.sw = null;
+    this.backoffTimer = setTimeout(() => {
+      this.backoffTimer = null;
+      this.start();
+    }, SW_RESTART_BACKOFF_MS);
   }
 
   /** A job left the SharedWorker (cancelJob): drop the row in every holding tab and
@@ -322,7 +354,11 @@ export class UploadPipeline {
     } else {
       await appendOp(this.db, op);
     }
-    this.sw?.port.postMessage({ t: 'opWritten', jobId });
+    try {
+      this.sw?.port.postMessage({ t: 'opWritten', jobId });
+    } catch {
+      /* port closed */
+    }
     this.log(`job ${jobId} URL written to op-log, awaiting sync`);
   }
 
@@ -451,22 +487,38 @@ export class UploadPipeline {
     w.onmessage = (e: MessageEvent<Record<string, unknown>>) => {
       const m = e.data;
       if (m['t'] === 'videoProgress') {
-        this.sw?.port.postMessage({ t: 'videoProgress', jobId, fraction: m['fraction'] });
+        try {
+          this.sw?.port.postMessage({ t: 'videoProgress', jobId, fraction: m['fraction'] });
+        } catch {
+          /* port closed */
+        }
       } else if (m['t'] === 'videoResult') {
         // structured-clone forward, no transfer list (Blob is not Transferable)
-        this.sw?.port.postMessage({
-          t: 'videoResult',
-          jobId,
-          blob: m['blob'],
-          width: m['width'],
-          height: m['height'],
-          hasAudio: m['hasAudio'],
-        });
+        try {
+          this.sw?.port.postMessage({
+            t: 'videoResult',
+            jobId,
+            blob: m['blob'],
+            width: m['width'],
+            height: m['height'],
+            hasAudio: m['hasAudio'],
+          });
+        } catch {
+          try {
+            this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: 'worker_died' });
+          } catch {
+            /* port closed */
+          }
+        }
         this.lease?.release(); // Completion returns the concurrency token.
         w.terminate();
         this.videoWorkers.delete(jobId);
       } else if (m['t'] === 'videoFailed') {
-        this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: m['error'] });
+        try {
+          this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: m['error'] });
+        } catch {
+          /* port closed */
+        }
         this.lease?.release(); // Failure also returns the concurrency token.
         w.terminate();
         this.videoWorkers.delete(jobId);

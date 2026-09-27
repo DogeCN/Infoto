@@ -8,10 +8,13 @@ import { passGate } from './helpers';
 /** Top-bar upload button (opens the file chooser). Title-based: the lucide
  *  class name for UploadCloud never carried a bare `lucide-upload` token
  *  (it renders lucide-upload-cloud / lucide-cloud-upload). */
-const uploadButton = (page: Page) => page.locator('header button[title="上传"]');
+const uploadButton = (page: Page) =>
+  page.locator('header button[title="Upload"], header button[title="上传"]');
 
 /** Transcode-panel row for a given file name (visible while the job is active). */
 const taskRow = (page: Page, name: string) => page.getByText(name, { exact: true });
+const photoCards = (page: Page) =>
+  page.locator('.relative.h-full.w-full.overflow-auto > .relative > [role="button"]');
 
 /** Draw an image in the browser and return it base64 (Node side converts to a Buffer for setFiles). */
 async function makeImage(
@@ -84,6 +87,8 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     page,
     context,
   }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
     await passGate(page);
 
     const file = await makeImage(page, { w: 320, h: 200, type: 'image/jpeg', name: 'e2e.jpg' });
@@ -98,15 +103,20 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await chooser;
     await expect(taskRow(page, 'e2e.jpg')).toBeVisible({ timeout: 60_000 });
     await expect(taskRow(page, 'e2e.jpg')).toBeHidden({ timeout: 120_000 });
+    await expect(photoCards(page).first()).toBeVisible();
+    expect(pageErrors).toEqual([]);
 
     // the sha dedupe cache lives in IndexedDB and is refreshed by the engine's
     // sync path — hit the real top-bar sync button (a bare fetch would not
     // refresh it), so the second pick can hit the duplicate branch
+    const topImage = photoCards(page).first().locator('img');
+    await expect(topImage).toHaveCSS('opacity', '1', { timeout: 30_000 });
     await page.locator('header button:has(svg.lucide-refresh-cw)').click();
     await page.waitForResponse(
       (r) => r.url().includes('/sync') && r.request().method() === 'POST' && r.ok(),
       { timeout: 30_000 },
     );
+    await expect(topImage).toHaveCSS('opacity', '1');
 
     // same file again → sha256 hit → duplicate (stage 2 skipped entirely). The duplicate row is
     // removed within a frame (the snapshot effect strips sha-matched tasks), so assert on the
@@ -126,6 +136,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await uploadButton(page).click();
     await chooser2;
     await dupLog;
+    await expect(page.getByText(/e2e\.jpg (already exists|已存在)/).last()).toBeVisible();
     await page.locator('header button:has(svg.lucide-refresh-cw)').click();
     await expect.poll(count, { timeout: 30_000 }).toBe(before); // no new photo was created
   });

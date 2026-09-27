@@ -21,10 +21,15 @@ export type ImageTranscodeResult = ImageTranscodeOk | ImageTranscodeErr;
 /**
  * Image → WebP: a non-`image/webp` blob.type means the environment lacks WebP support, so the upload is rejected; unparsable sources and zero dimensions are rejected too.
  */
+const MAX_IMAGE_DECODE_BYTES = 50 * 1024 * 1024;
+
 export async function transcodeImage(file: Blob): Promise<ImageTranscodeResult> {
   // No progress to report: decode, draw and encode are three indivisible steps and none
   // of them yields a fraction. The caller shows an indeterminate bar for this leg — a
   // milestone like "40%" would be invented granularity, not measured progress.
+  if (file.size > MAX_IMAGE_DECODE_BYTES) {
+    return { ok: false, error: 'image_too_large' };
+  }
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file);
