@@ -13,13 +13,13 @@ import {
   videoPoolSize,
 } from '$base/upload/pipeline';
 import { postUpload } from '../core/api/uploadClient';
-import { lookupSha } from '../core/oplog/cache';
 import {
   deletePendingUpload,
+  lookupSha,
   openOplogDb,
   putPendingUpload,
   readPendingUploads,
-} from '../core/oplog/store';
+} from '../core/oplog';
 import { readArtifact, removeArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
 import {
@@ -123,6 +123,21 @@ function failJob(rec: JobRec, error: string): void {
   notify(rec);
 }
 
+/**
+ * Byte-fraction progress for a leg that streams its own output: `written / total`,
+ * both in bytes. This is the honest form — a same-unit ratio needs no weights and no
+ * milestones. A zero or missing total yields no fraction at all, so the row keeps
+ * sweeping instead of claiming a percentage no measurement supports.
+ *
+ * A completed leg is not reported as 1: the phase advances on its own notify, and a
+ * leftover 1 would leave the next leg's row briefly showing a full bar that it never
+ * earned.
+ */
+function notifyBytes(rec: JobRec, total: number, written: number): void {
+  if (rec.cancelled || rec.phase !== 'hashing' || total <= 0) return;
+  notify(rec, { fraction: Math.max(0, Math.min(1, written / total)) });
+}
+
 // ---- scheduling ----------------------------------------------------------------
 
 function pumpImage(): void {
@@ -167,7 +182,11 @@ function pumpVideoLeases(): void {
       mime: rec.mime,
       fileName: rec.fileName,
     });
-    notify(rec, { fraction: 0 });
+    // No fraction yet, for the same reason images do not send one: the page worker
+    // has not started, and demuxing / codec probing / Conversion.init report nothing
+    // measurable until the first videoProgress lands. The row must sweep, not sit at
+    // a false 0%.
+    notify(rec);
   }
 }
 
@@ -225,7 +244,12 @@ async function runImageJob(rec: JobRec): Promise<void> {
     }
     rec.phase = 'hashing';
     notify(rec);
-    const { sha256, bytes } = await storeArtifact(rec.jobId, r.blob, 'webp');
+    // Hashing and the OPFS write are one tee loop, so this single byte count is the
+    // whole leg's real measurement — bytes written over the artifact's known size.
+    // No milestone constants: the numerator and denominator are both bytes.
+    const { sha256, bytes } = await storeArtifact(rec.jobId, r.blob, 'webp', (written) => {
+      notifyBytes(rec, r.blob.size, written);
+    });
     if (rec.cancelled) return;
     rec.sha256 = sha256;
     rec.meta = { width: r.width, height: r.height, size: bytes, type: 0 };
@@ -337,7 +361,11 @@ function onVideoResult(
       const type: MediaType = hasAudio ? 2 : 1;
       rec.phase = 'hashing';
       notify(rec);
-      const { sha256, bytes } = await storeArtifact(rec.jobId, blob, 'webm');
+      // Same one-loop measurement as the image leg: the WebM artifact's bytes hashed
+      // while being written to OPFS.
+      const { sha256, bytes } = await storeArtifact(rec.jobId, blob, 'webm', (written) => {
+        notifyBytes(rec, blob.size, written);
+      });
       rec.sha256 = sha256;
       rec.meta = { width, height, size: bytes, type };
       rec.artifact = { ext: 'webm', size: bytes };
@@ -416,7 +444,11 @@ setInterval(() => {
         rec.phase = 'lease-wait';
         // in-flight job re-enqueues (transcoding is idempotent; OPFS artifact sha256 dedupe backstops)
         videoQueue.push(rec.jobId);
-        lease.port.postMessage({ t: 'leaseRevoked', leaseId, jobId: lease.jobId });
+        try {
+          lease.port.postMessage({ t: 'leaseRevoked', leaseId, jobId: lease.jobId });
+        } catch {
+          // The port may have been swept already; the page re-registers on its next message.
+        }
         notify(rec);
         pumpVideoLeases();
       }
@@ -528,10 +560,13 @@ onconnect = (e: MessageEvent) => {
   port.onmessageerror = () => undefined;
   // Resume before replaying: jobs rebuilt from disk must be in `jobs` so the replay
   // below hands the fresh page its cards.
-  void resumePendingUploads();
-  // Album jobs replay for refresh recovery; editor results stay with the original owner
-  // and never cross a page-reload boundary. Terminal album states are skipped: /sync
-  // already delivers `done` photos and a duplicate never landed at all.
+  void resumePendingUploads().then(() => replayJobs(port));
+};
+
+/** Album jobs replay for refresh recovery; editor results stay with the original owner
+ *  and never cross a page-reload boundary. Terminal album states are skipped: /sync
+ *  already delivers `done` photos and a duplicate never landed at all. */
+function replayJobs(port: MessagePort): void {
   for (const rec of jobs.values()) {
     if (rec.purpose === 'editor') continue;
     if (rec.phase === 'done' || rec.phase === 'duplicate') continue;
@@ -547,7 +582,7 @@ onconnect = (e: MessageEvent) => {
       sha256: rec.sha256,
     });
   }
-};
+}
 
 function handleMessage(port: MessagePort, m: PageToSwMessage): void {
   // Liveness stamp (lease reaper / port sweep read it), and re-registration for a
@@ -559,6 +594,7 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
     ports.add(port);
     portIds.set(port, pid);
     portById.set(pid, port);
+    replayJobs(port);
   }
   portLastSeen.set(pid, Date.now());
   switch (m.t) {
@@ -620,6 +656,7 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       forgetJob(m.jobId);
       if (leaseId) {
         leases.delete(leaseId);
+        // ownerPort() already re-registered a swept port, so this posts to a live port.
         owner?.postMessage({ t: 'leaseRevoked', leaseId, jobId: m.jobId });
       }
       // Cancel is the one path that may drop the artifact: the job will never be
@@ -648,7 +685,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
     }
     case 'videoProgress': {
       const rec = jobs.get(m.jobId);
-      if (rec) notify(rec, { fraction: Math.max(0, Math.min(1, m.fraction)) });
+      // A 0 from the worker is a "started, nothing finished" tick, not a measurement:
+      // mediabunny reports 0 before the first frame is encoded, and GIF's first tick
+      // arrives as 1/frameCount, never 0. Forwarding it would pin the bar at 0%
+      // instead of letting it sweep until real progress exists.
+      if (rec && m.fraction > 0) notify(rec, { fraction: Math.max(0, Math.min(1, m.fraction)) });
       return;
     }
     case 'videoResult': {

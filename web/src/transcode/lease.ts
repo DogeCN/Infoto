@@ -38,10 +38,12 @@ export class LeaseClient {
       this.startHeartbeat();
       this.handlers.onGranted(m);
     } else if (m.t === 'leaseRevoked') {
-      this.stopHeartbeat();
+      // Only stop the heartbeat for a lease this client still holds: a revocation
+      // aimed at another lease must not silence a live one.
       if (this.leaseId === m.leaseId) {
         this.leaseId = null;
         this.jobId = null;
+        this.stopHeartbeat();
       }
       this.handlers.onRevoked(m);
     }

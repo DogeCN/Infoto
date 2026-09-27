@@ -4,8 +4,8 @@
 
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import { postSync } from './api/syncClient';
-import { rebuildCache } from './oplog/cache';
-import { OPLOG_SYNC_THRESHOLD, appendOp, countOps, openOplogDb, readOps } from './oplog/store';
+import { rebuildCache } from './oplog';
+import { OPLOG_SYNC_THRESHOLD, appendOp, countOps, openOplogDb, readOps } from './oplog';
 
 /** Browser hard limit for a keepalive request body. */
 export const KEEPALIVE_BODY_LIMIT = 65_536;
@@ -78,11 +78,19 @@ export class SyncEngine {
   private inFlightKeys = new Set<IDBValidKey>();
   private criticalFlush: { throughVersion: number; promise: Promise<SyncAttemptResult> } | null =
     null;
+  private pagehideInstalled = false;
   readonly state: EngineState = { syncing: false, pending: 0 };
 
   constructor(io: EngineIo = {}) {
     this.io = io;
     this.db = io.db ?? null;
+  }
+
+  /** Adopt a new set of callbacks (a remounted page supplies its own store). Injected
+   *  values already present are kept, so a later caller only has to pass what changed. */
+  rebind(io: EngineIo): void {
+    if (io.db) this.db = io.db;
+    this.io = { ...this.io, ...io };
   }
 
   private emit(): void {
@@ -181,7 +189,13 @@ export class SyncEngine {
     response: SyncResponse,
     context: SyncSnapshotContext,
   ): Promise<void> {
-    this.io.onSyncResponse?.(response, context);
+    // The sink may throw (a malformed snapshot); the ops are already cleared, so the
+    // failure must surface as a sync failure rather than an unhandled rejection.
+    try {
+      this.io.onSyncResponse?.(response, context);
+    } catch (e) {
+      console.error('[sync] snapshot apply failed', e);
+    }
     await rebuildCache(db, response.photos).catch((error) => {
       console.warn('[sync] SHA cache rebuild failed', error);
     });
@@ -198,7 +212,7 @@ export class SyncEngine {
     // because it is still in flight (pagehide keepalive) or not yet appended when the
     // snapshot was read must not be claimed, or flushThrough would report phantom success.
     const maxVersion =
-      available.length > 0 ? Math.max(...available.map((entry) => Number(entry.key))) : 0;
+      available.length > 0 ? available.reduce((m, entry) => Math.max(m, Number(entry.key)), 0) : 0;
     for (const entry of available) this.inFlightKeys.add(entry.key);
     this.syncing = true;
     this.emit();
@@ -315,6 +329,8 @@ export class SyncEngine {
    * one: the oplog is durable, so anything the dump misses is resent by the next
    * page load (init) or the manual sync button; a tab switch must not cost a request. */
   install(windowObj: Window = window): void {
+    if (this.pagehideInstalled) return;
+    this.pagehideInstalled = true;
     windowObj.addEventListener('pagehide', () => {
       this.flushOnPagehide();
     });
@@ -332,8 +348,15 @@ async function clearKeys(db: IDBDatabase, keys: IDBValidKey[]): Promise<void> {
   });
 }
 
-/** Get (or create) the global engine instance. */
+/** Get (or create) the global engine instance; a caller that already has one adopts
+ *  the new callbacks, so a remounted page takes over the single engine. */
 export function getEngine(io: EngineIo = {}): SyncEngine {
-  if (!globalScope.__infotoEngine) globalScope.__infotoEngine = new SyncEngine(io);
-  return globalScope.__infotoEngine;
+  const existing = globalScope.__infotoEngine;
+  if (!existing) {
+    const created = new SyncEngine(io);
+    globalScope.__infotoEngine = created;
+    return created;
+  }
+  existing.rebind(io);
+  return existing;
 }

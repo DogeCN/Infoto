@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import type { SyncCallResult, SyncClientIo } from '../../src/core/api/syncClient';
-import { clearOps, openOplogDb, readOps } from '../../src/core/oplog/store';
+import { clearOps, openOplogDb, readOps } from '../../src/core/oplog';
 import type { EngineIo } from '../../src/core/engine';
 import { KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/engine';
 

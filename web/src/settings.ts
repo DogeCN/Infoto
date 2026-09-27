@@ -1,6 +1,7 @@
 // Shared settings and filter logic for the panel and main page.
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
+import { DEFAULT_COLS } from '$base/lib/band';
 import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
 /** Ownership filter states: off, include-only, or exclude-only. */
@@ -29,7 +30,13 @@ export interface FilterSettings {
 export interface LayoutSettings {
   dir: ScrollDir;
   strategy: FillStrategy;
-  band: number;
+  /**
+   * Target column count, not a pixel width. See `base/lib/band.ts`: pixels made the
+   * setting meaningless on narrow viewports (a 260px band collapsed a 320px phone to
+   * one column, and the slider's own 200px floor could not reach three). The pixel
+   * band is derived from the measured cross size at layout time.
+   */
+  cols: number;
   gap: number;
 }
 
@@ -89,7 +96,7 @@ export function defaultFilterSettings(): FilterSettings {
 export function defaultSettings(): Settings {
   return {
     filters: defaultFilterSettings(),
-    layout: { dir: 'v', strategy: 'shortest', band: 260, gap: 12 },
+    layout: { dir: 'v', strategy: 'shortest', cols: DEFAULT_COLS, gap: 12 },
   };
 }
 
@@ -97,8 +104,11 @@ const STORAGE_KEY = 'infoto-settings';
 
 /** Bump whenever the persisted shape changes: a blob written by any other version
  * is dropped wholesale and replaced by defaults — there is deliberately no
- * per-field migration; the version tag is the guard. */
-const SETTINGS_VERSION = 1;
+ * per-field migration; the version tag is the guard.
+ *
+ * v2: `layout.band` (px) → `layout.cols` (count). A v1 blob is dropped whole, so the
+ * old pixel band cannot be reinterpreted as a column count. */
+const SETTINGS_VERSION = 2;
 
 /** Persisted shape: a `Set` is not JSON-serializable, so media types are stored as an array. */
 interface StoredSettings {
@@ -107,11 +117,15 @@ interface StoredSettings {
   layout: LayoutSettings;
 }
 
-/** Read persisted settings. An untagged, mangled or unreadable blob resets to defaults. */
+/** Read persisted settings. An untagged, mangled or unreadable blob resets to defaults.
+ *  The storage is resolved inside the body so a missing `localStorage` (SSR, worker)
+ *  is caught by the same guard as a blocked one. */
 export function loadSettings(storage: Pick<Storage, 'getItem'> = localStorage): Settings {
+  const store = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+  if (!store) return defaultSettings();
   let raw: string | null;
   try {
-    raw = storage.getItem(STORAGE_KEY);
+    raw = store.getItem(STORAGE_KEY);
   } catch {
     return defaultSettings(); // storage blocked (private mode / disabled cookies)
   }
@@ -131,13 +145,15 @@ export function loadSettings(storage: Pick<Storage, 'getItem'> = localStorage): 
 }
 
 export function saveSettings(s: Settings, storage: Pick<Storage, 'setItem'> = localStorage): void {
+  const store = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+  if (!store) return;
   const stored: StoredSettings = {
     v: SETTINGS_VERSION,
     filters: { ...s.filters, types: [...s.filters.types] },
     layout: s.layout,
   };
   try {
-    storage.setItem(STORAGE_KEY, JSON.stringify(stored));
+    store.setItem(STORAGE_KEY, JSON.stringify(stored));
   } catch {
     // Storage blocked or full: the panel still applies in memory for this session.
   }

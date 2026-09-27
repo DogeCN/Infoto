@@ -6,7 +6,8 @@
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import AnnouncementSidebar from '$lib/components/AnnouncementSidebar.svelte';
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
+  import { untrack } from 'svelte';
   import { Toaster, toast } from 'svelte-sonner';
   import { Settings as SettingsIcon, Megaphone } from '@lucide/svelte';
   import { toastOptions } from '$lib/toastOptions';
@@ -24,7 +25,8 @@
   import { translateTaskError } from '$base/upload/pipeline';
   import { readArtifact } from './transcode/opfs';
   import type { Photo } from '$shared/types';
-  import { copy, fmt } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { fmt } from '$shared/copy';
   import type { FilterSettings, LayoutSettings, Settings } from './settings';
   import { applyFilters, defaultFilterSettings, defaultSettings } from './settings';
 
@@ -101,9 +103,10 @@
     batchDone += 1;
   }
 
-  /** Rows the panel shows: the transcode leg only. Past it the card owns the progress
-   *  (hashing is a deliberate silent gap, then the curtain carries the upload leg). */
-  const PANEL_STAGES = new Set(['queued', 'lease-wait', 'transcoding']);
+  /** Rows the panel shows: the legs before the card exists — transcode, plus the
+   *  hashing/write leg that now reports a real byte fraction. Past it the card owns
+   *  the progress and its curtain carries the upload leg. */
+  const PANEL_STAGES = new Set(['queued', 'lease-wait', 'transcoding', 'hashing']);
   let panelRows = $derived(
     Array.from(uploadTasks.values()).filter((t) => PANEL_STAGES.has(t.phase)),
   );
@@ -194,9 +197,9 @@
     // cleanup $effect is still scheduled.
     const landedShas = new Set(store.photos.map((p) => p.sha256));
     for (const t of uploadTasks.values()) {
-      // Hashing stays invisible — its row has already left the panel and the card has
-      // not appeared yet, so dedupe is a silent gap by design. The card enters with
-      // the upload leg and its curtain carries that progress.
+      // The card enters with the upload leg, so hashing stays on the panel row
+      // (which reports its byte fraction) rather than opening a card with nothing
+      // yet to show. Only uploading / done / failed get an entry here.
       if (!['uploading', 'done', 'failed'].includes(t.phase)) continue;
       if ((t.phase === 'done' || t.phase === 'duplicate') && t.sha256 && landedShas.has(t.sha256))
         continue;
@@ -268,14 +271,20 @@
   // After /sync the real entries land: drop matching optimistic entries by sha256.
   // Only terminal phases qualify — deleting on 'uploading' would flicker the card
   // mid-flight. 'duplicate' rows always go, or a sha absent from the store lingers.
+  // The drops run inside `untrack` so writing `uploadTasks` here does not schedule
+  // another run of this effect.
   $effect(() => {
     const shas = new Set(store.photos.map((p) => p.sha256));
+    const toDrop: string[] = [];
     for (const t of uploadTasks.values()) {
       if (t.phase !== 'done' && t.phase !== 'duplicate') continue;
       if (t.phase === 'duplicate' || (t.sha256 && shas.has(t.sha256))) {
-        dropTask(t.jobId);
+        toDrop.push(t.jobId);
       }
     }
+    untrack(() => {
+      for (const jobId of toDrop) dropTask(jobId);
+    });
   });
 
   function handleRetryUpload(photo: Photo) {
@@ -362,8 +371,10 @@
     }
   }
 
+  // `untrack` keeps the guard out of the effect's dependency set, so writing it does
+  // not schedule the second run a plain `if (initialized) return` would.
   $effect(() => {
-    if (initialized) return;
+    if (untrack(() => initialized)) return;
     initialized = true;
     void (async () => {
       await bootstrapIdentity();
@@ -372,6 +383,10 @@
     })();
     pipeline.start();
   });
+
+  // A remount (route switch) must not leave a live SharedWorker port and a
+  // BroadcastChannel listener behind.
+  onDestroy(() => pipeline.stop());
 
   // Task sink lives in its own effect so its unsubscribe is honoured on teardown.
   // (Inside the guarded init effect above it would be torn down by the second run
@@ -495,7 +510,7 @@
     layout = {
       dir: s.layout.dir,
       strategy: s.layout.strategy,
-      band: s.layout.band,
+      cols: s.layout.cols,
       gap: s.layout.gap,
     };
     // Update only when the filters object reference actually changes (layout-only
@@ -713,7 +728,7 @@
           selfId={store.selfId}
           dir={layout.dir}
           strategy={layout.strategy}
-          band={layout.band}
+          cols={layout.cols}
           gap={layout.gap}
           bind:multiMode
           onMultiModeChange={handleMultiModeChange}

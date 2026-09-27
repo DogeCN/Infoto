@@ -1,7 +1,8 @@
 <script lang="ts">
   import { Megaphone, MessageSquare, Plus } from '@lucide/svelte';
   import type { Announcement } from '$shared/types';
-  import { copy } from '$shared/copy';
+  import { copy } from '$lib/i18n.svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { Toaster, toast } from 'svelte-sonner';
   import ErrorPage from '$lib/components/ErrorPage.svelte';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
@@ -53,8 +54,10 @@
   /** Job id of the in-flight editor upload (null when idle/terminal). */
   let editorJobId: string | null = null;
 
+  // `untrack` keeps the guard out of the effect's dependency set, so writing it does
+  // not schedule the second run a plain `if (initialized) return` would.
   $effect(() => {
-    if (initialized) return;
+    if (untrack(() => initialized)) return;
     initialized = true;
     pipeline.start();
     // No engine.install(): the admin page creates no /sync ops (every write is an
@@ -62,6 +65,8 @@
     // alone pulls the one snapshot the page needs.
     engine.init().catch(console.error);
   });
+
+  onDestroy(() => pipeline.stop());
 
   $effect(() =>
     pipeline.onEditorTask((task) => {

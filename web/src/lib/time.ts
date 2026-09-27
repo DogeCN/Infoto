@@ -1,17 +1,23 @@
-import { copy, fmt } from '$shared/copy';
+import { getCopy, getLocale } from '$lib/i18n.svelte';
+import { fmt, plural, type PluralMessage } from '$shared/copy';
+
+/** Fill the plural form for one relative-time unit in the active locale. */
+function unit(forms: PluralMessage, n: number): string {
+  return fmt(plural(n, forms, getLocale()), { n });
+}
 
 /** Compact relative time ("just now" / "N minutes ago" … "N years ago") against
  *  an optional reference so tests (and stale renders) stay deterministic. */
 export function formatRelativeTime(timestamp: number, reference: number = Date.now()): string {
   const elapsed = Math.max(0, reference - timestamp);
-  if (elapsed < 60_000) return copy.time.justNow;
-  if (elapsed < 3_600_000) return fmt(copy.time.minutesAgo, { n: Math.floor(elapsed / 60_000) });
-  if (elapsed < 86_400_000) return fmt(copy.time.hoursAgo, { n: Math.floor(elapsed / 3_600_000) });
+  if (elapsed < 60_000) return getCopy().time.justNow;
+  if (elapsed < 3_600_000) return unit(getCopy().time.minutesAgo, Math.floor(elapsed / 60_000));
+  if (elapsed < 86_400_000) return unit(getCopy().time.hoursAgo, Math.floor(elapsed / 3_600_000));
   const days = Math.floor(elapsed / 86_400_000);
-  if (days < 30) return fmt(copy.time.daysAgo, { n: days });
+  if (days < 30) return unit(getCopy().time.daysAgo, days);
   const months = Math.floor(days / 30);
-  if (months < 12) return fmt(copy.time.monthsAgo, { n: months });
-  return fmt(copy.time.yearsAgo, { n: Math.floor(months / 12) });
+  if (months < 12) return unit(getCopy().time.monthsAgo, months);
+  return unit(getCopy().time.yearsAgo, Math.floor(months / 12));
 }
 
 /** Absolute time with leading components dropped: same day → "HH:MM", same year →
@@ -27,11 +33,11 @@ export function formatSmartAbsolute(timestamp: number, reference: number = Date.
     d.getMonth() === r.getMonth() &&
     d.getDate() === r.getDate();
   if (sameDay) return clock;
-  const monthDay = fmt(copy.time.monthDay, {
+  const monthDay = fmt(getCopy().time.monthDay, {
     month: d.getMonth() + 1,
     day: d.getDate(),
     clock,
   });
   if (d.getFullYear() === r.getFullYear()) return monthDay;
-  return fmt(copy.time.yearMonthDay, { year: d.getFullYear(), monthDay });
+  return fmt(getCopy().time.yearMonthDay, { year: d.getFullYear(), monthDay });
 }

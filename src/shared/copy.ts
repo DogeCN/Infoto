@@ -1,9 +1,17 @@
 /**
- * Centralised user-facing copy. The app ships two locales — `en` (source/default)
- * and `zh` (translation) — and selects one at load time from `navigator.languages`,
- * falling back to `en` where the browser language list is unavailable (Worker, Node
- * tests). Callers stay locale-agnostic: they read `copy.<group>.<key>` and fill any
- * `{name}` placeholder with `fmt()`.
+ * Centralised user-facing copy. Locales are keyed by the exact BCP-47 tags a browser
+ * can report in `navigator.languages` (`zh-CN`, `en-US`, …), so `pickLocale` is nothing
+ * but an exact lookup — to ship another language, write one `Copy` table and register
+ * it under its tag; no matcher logic to touch.
+ *
+ * This module is data + pure helpers only. It is imported by the Worker (error pages)
+ * as well as the page, so it must not touch Svelte runes, `document`, or the DOM. The
+ * Worker resolves a locale per request from `Accept-Language`; the page owns a
+ * reactive handle on the active table (`web/src/lib/i18n.svelte.ts`) plus the
+ * module-level `copy` view below, which plain modules read.
+ *
+ * Callers stay locale-agnostic: they read `copy.<group>.<key>` and fill any `{name}`
+ * placeholder with `fmt()`.
  */
 
 /** Replace `{name}` placeholders in `template` with the matching `vars` entry. */
@@ -14,8 +22,70 @@ export function fmt(template: string, vars?: Record<string, string | number>): s
   );
 }
 
-// ---- English (source / default) ------------------------------------------------
-export const en = {
+// ---- plurals ------------------------------------------------------------------
+
+/** CLDR plural categories. `other` is always present; the rest depend on the locale. */
+export type PluralKey = 'one' | 'two' | 'few' | 'many' | 'other';
+
+/**
+ * Message forms keyed by plural category. `other` is mandatory; the rest are optional
+ * because most languages collapse to `other` alone (Chinese, Japanese, Korean).
+ */
+export type PluralMessage = { other: string } & Partial<
+  Record<Exclude<PluralKey, 'other'>, string>
+>;
+
+const pluralRules = new Map<string, Intl.PluralRules>();
+
+function rulesFor(locale: string): Intl.PluralRules {
+  let rules = pluralRules.get(locale);
+  if (!rules) {
+    try {
+      rules = new Intl.PluralRules(locale);
+    } catch {
+      rules = new Intl.PluralRules(DEFAULT_LOCALE);
+    }
+    pluralRules.set(locale, rules);
+  }
+  return rules;
+}
+
+/**
+ * Pick the form for `n` using the locale's own CLDR rules. `fmt()` is still applied by
+ * the caller, so every form carries the same placeholders. The default locale is the
+ * active one (see `activeLocale`), so a language switch changes plural forms too.
+ */
+export function plural(n: number, forms: PluralMessage, locale: string = activeLocale()): string {
+  const key = rulesFor(locale).select(Math.trunc(Math.abs(n))) as PluralKey;
+  return forms[key] ?? forms.other;
+}
+
+// ---- language negotiation -----------------------------------------------------
+
+/**
+ * Tags of an HTTP `Accept-Language` header, best first (`q=0` entries dropped). The
+ * Worker renders its error pages from these — it has no `navigator` of its own.
+ */
+export function acceptLanguages(header: string | null | undefined): string[] {
+  if (!header) return [];
+  const ranked: Array<{ tag: string; q: number }> = [];
+  for (const part of header.split(',')) {
+    const bits = part.trim().split(';');
+    const tag = bits[0]?.trim();
+    if (!tag) continue;
+    let q = 1;
+    for (const bit of bits.slice(1)) {
+      const match = /^q\s*=\s*([0-9.]+)$/i.exec(bit.trim());
+      if (match) q = Number(match[1]);
+    }
+    if (q > 0) ranked.push({ tag, q });
+  }
+  ranked.sort((a, b) => b.q - a.q);
+  return ranked.map((entry) => entry.tag);
+}
+
+// ---- English US (source / default) ---------------------------------------------
+export const enUS = {
   sync: {
     failed: 'Sync failed',
     queuedRetry: 'Change queued — retrying automatically',
@@ -78,6 +148,8 @@ export const en = {
     announcements: 'Announcements',
     multiSelect: 'Select',
     upload: 'Upload',
+    more: 'More',
+    back: 'Back',
   },
 
   sidebar: {
@@ -102,6 +174,7 @@ export const en = {
     reportedByMe: 'Reported by me',
     layoutSection: 'Layout',
     resetLayout: 'Reset layout',
+    language: 'Language',
     dirVertical: 'Vertical',
     dirHorizontal: 'Horizontal',
     strategyEqualWidth: 'Equal width',
@@ -281,7 +354,7 @@ export const en = {
   },
 
   vote: {
-    count: '{count} votes',
+    count: { one: '{count} vote', other: '{count} votes' },
   },
 
   reactions: {
@@ -290,11 +363,11 @@ export const en = {
 
   time: {
     justNow: 'Just now',
-    minutesAgo: '{n} minutes ago',
-    hoursAgo: '{n} hours ago',
-    daysAgo: '{n} days ago',
-    monthsAgo: '{n} months ago',
-    yearsAgo: '{n} years ago',
+    minutesAgo: { one: '{n} minute ago', other: '{n} minutes ago' },
+    hoursAgo: { one: '{n} hour ago', other: '{n} hours ago' },
+    daysAgo: { one: '{n} day ago', other: '{n} days ago' },
+    monthsAgo: { one: '{n} month ago', other: '{n} months ago' },
+    yearsAgo: { one: '{n} year ago', other: '{n} years ago' },
     monthDay: '{month}/{day} {clock}',
     yearMonthDay: '{year}/{monthDay}',
   },
@@ -319,12 +392,18 @@ export const en = {
   },
 };
 
-// `Copy` is derived from `en`, so `zh` must mirror its shape exactly (the compiler
-// rejects a missing or extra key), keeping both locales in lockstep.
-export type Copy = typeof en;
+/**
+ * `Copy` is derived from `enUS`, so every other locale must mirror its shape exactly
+ * (the compiler rejects a missing or extra key). The one deliberate relaxation: a
+ * plural message may omit any category its own locale's CLDR rules never produce
+ * (`one` for English, nothing beyond `other` for Chinese).
+ */
+type Pluralize<T> = T extends PluralMessage ? PluralMessage : { [K in keyof T]: Pluralize<T[K]> };
 
-// ---- Chinese (translation) ----------------------------------------------------
-const zh: Copy = {
+export type Copy = Pluralize<typeof enUS>;
+
+// ---- Chinese Simplified (translation) ------------------------------------------
+const zhCN: Copy = {
   sync: {
     failed: '同步失败',
     queuedRetry: '操作已排队，稍后自动重试',
@@ -387,6 +466,8 @@ const zh: Copy = {
     announcements: '公告',
     multiSelect: '多选',
     upload: '上传',
+    more: '更多',
+    back: '返回',
   },
 
   sidebar: {
@@ -411,6 +492,7 @@ const zh: Copy = {
     reportedByMe: '我请求删除的',
     layoutSection: '布局',
     resetLayout: '重置布局',
+    language: '语言',
     dirVertical: '纵向',
     dirHorizontal: '横向',
     strategyEqualWidth: '等宽',
@@ -480,7 +562,7 @@ const zh: Copy = {
     googleLens: '谷歌搜图',
     download: '下载',
     delete: '删除',
-    loadFailedStatus: '图片加载失败 ({status})',
+    loadFailedStatus: '图片加载失败（{status}）',
     loadFailed: '图片加载失败',
   },
 
@@ -590,7 +672,7 @@ const zh: Copy = {
   },
 
   vote: {
-    count: '{count} 票',
+    count: { other: '{count} 票' },
   },
 
   reactions: {
@@ -599,16 +681,18 @@ const zh: Copy = {
 
   time: {
     justNow: '刚刚',
-    minutesAgo: '{n} 分钟前',
-    hoursAgo: '{n} 小时前',
-    daysAgo: '{n} 天前',
-    monthsAgo: '{n} 个月前',
-    yearsAgo: '{n} 年前',
+    minutesAgo: { other: '{n} 分钟前' },
+    hoursAgo: { other: '{n} 小时前' },
+    daysAgo: { other: '{n} 天前' },
+    monthsAgo: { other: '{n} 个月前' },
+    yearsAgo: { other: '{n} 年前' },
     monthDay: '{month}月{day}日 {clock}',
     yearMonthDay: '{year}年{monthDay}',
   },
 
   errorPage: {
+    // Deliberately untranslated: these are the fixed English heading/title of the
+    // status page, not prose. See the allowlist in copy.test.ts.
     pageHeading: 'PAGE NOT FOUND',
     notFoundMessage: '您访问的页面不存在',
     backHome: '返回首页',
@@ -619,31 +703,73 @@ const zh: Copy = {
   },
 
   api: {
-    announcementCreateFailed: 'announcement create failed: HTTP {status}',
-    announcementUpdateFailed: 'announcement update failed: HTTP {status}',
-    announcementDeleteFailed: 'announcement delete failed: HTTP {status}',
-    announcementReorderFailed: 'announcement reorder failed: HTTP {status}',
-    feedbackDeleteFailed: 'feedback delete failed: HTTP {status}',
-    feedbackReorderFailed: 'feedback reorder failed: HTTP {status}',
+    announcementCreateFailed: '公告创建失败：HTTP {status}',
+    announcementUpdateFailed: '公告更新失败：HTTP {status}',
+    announcementDeleteFailed: '公告删除失败：HTTP {status}',
+    announcementReorderFailed: '公告排序失败：HTTP {status}',
+    feedbackDeleteFailed: '建议删除失败：HTTP {status}',
+    feedbackReorderFailed: '建议排序失败：HTTP {status}',
   },
 };
 
-const locales: Record<string, Copy> = { en, zh };
+// ---- registry -------------------------------------------------------------------
 
 /**
- * Select the first supported locale from a browser language list, matching on the
- * primary subtag ("zh-CN" → "zh"). Returns `en` when the list is absent or empty.
+ * Tag → table. Keys are the exact tags found in `navigator.languages`; `LocaleCode`
+ * is derived from this record, so registering a new locale is a one-line change here
+ * and nowhere else.
  */
-export function pickLocale(langs?: readonly string[] | undefined): keyof typeof locales {
-  if (langs) {
-    for (const lang of langs) {
-      const primary = lang.toLowerCase().split('-')[0];
-      if (primary && primary in locales) return primary as keyof typeof locales;
-    }
+export const locales: Record<string, Copy> = { 'en-US': enUS, 'zh-CN': zhCN };
+
+export type LocaleCode = keyof typeof locales;
+
+export const DEFAULT_LOCALE: LocaleCode = 'en-US';
+
+/**
+ * Select the first reported tag that this build ships, matching exactly (no subtag
+ * folding: browsers order `navigator.languages` by preference and include the bare
+ * primary language last, so an exact hit is the right test). Falls back to the default
+ * when the list is absent or empty — Workers and Node tests have no `navigator`.
+ */
+export function pickLocale(langs?: readonly string[]): LocaleCode {
+  for (const lang of langs ?? []) {
+    if (lang in locales) return lang as LocaleCode;
   }
-  return 'en';
+  return DEFAULT_LOCALE;
 }
 
-/** Resolved copy for this environment; `en` in Workers and Node, browser locale in the page. */
-export const copy: Copy =
-  locales[pickLocale(typeof navigator !== 'undefined' ? navigator.languages : undefined)];
+/** The locale the browser reports, or the default where there is no `navigator`. */
+function browserLocale(): LocaleCode {
+  return pickLocale(typeof navigator !== 'undefined' ? navigator.languages : undefined);
+}
+
+let active: LocaleCode = browserLocale();
+
+/** The locale that module-level `copy` currently resolves against. */
+export function activeLocale(): LocaleCode {
+  return active;
+}
+
+/**
+ * Point the module-level `copy` at another locale. The page calls this from
+ * `$lib/i18n` when the user picks a language; the Worker leaves it alone and hands an
+ * explicit table to its error pages instead (one isolate serves every locale at once).
+ */
+export function setActiveLocale(code: LocaleCode): void {
+  if (code in locales) active = code;
+}
+
+/**
+ * The active copy table as a live view rather than a snapshot: each group lookup
+ * resolves against `active` at that moment, so a language switch reaches plain modules
+ * (toasts, api clients, the upload pipeline) with no call-site changes and no re-import.
+ *
+ * Components must NOT render from this. A proxy read is invisible to Svelte's
+ * reactivity — a template bound to it would not re-run on a switch — so components
+ * import the `$derived` `copy` from `$lib/i18n` instead. The proxy is deliberately
+ * shallow: `copy.sync.failed` tracks the locale, while `copy.sync` hands back the real
+ * object of the current table and nested reads are plain property access from there.
+ */
+export const copy: Copy = new Proxy({} as Copy, {
+  get: (_target, group: keyof Copy) => locales[active][group],
+});

@@ -58,6 +58,7 @@ class AppState {
 
   private tempIdMap = new Map<number, number>();
   private pendingReorder: { ids: number[]; previousIds: number[] } | null = null;
+  private engineUnsubscribe: (() => void) | null = null;
 
   /** Optimistic marks on photos whose row does not exist server-side yet, keyed by sha256
    *  (the same address photo ops use). Merged into the pending cards so they highlight. */
@@ -74,17 +75,26 @@ class AppState {
   private deferredPhotoOps = new Map<string, Op[]>();
   private engine: SyncEngine | null = null;
 
-  /** Bind engine state; repeated calls with the same engine are ignored. */
+  /** Bind engine state; a repeated call with the same engine is ignored, and a new
+   *  engine replaces the previous subscription instead of stacking listeners. */
   bindEngine(engine: SyncEngine): void {
     if (this.engine === engine) return;
+    this.engineUnsubscribe?.();
+    this.engineUnsubscribe = null;
     this.engine = engine;
-    engine.onState((state) => {
+    this.engineUnsubscribe = engine.onState((state) => {
       this.engineState = { ...state };
     });
   }
 
   private submit(op: Op): Promise<number | null> {
-    return this.engine?.addOp(op) ?? Promise.resolve(null);
+    if (!this.engine) return Promise.resolve(null);
+    // An append failure must not surface as an unhandled rejection: the op stays
+    // queued in the UI and the next sync picks it up.
+    return this.engine.addOp(op).catch((e) => {
+      console.error('[op] append failed', e);
+      return null;
+    });
   }
 
   /** Apply one authoritative full snapshot. */
@@ -93,13 +103,13 @@ class AppState {
     try {
       localStorage.setItem(SELF_ID_KEY, String(r.selfId));
     } catch {
-      /* noop */
+      /* storage blocked */
     }
     // A snapshot computed before our just-appended ops reached the server must not
     // revert the optimistic state: re-fold every op still queued in the oplog.
     const refolded = ops.reapplyQueued(
-      r.photos,
-      r.announcements,
+      r.photos ?? [],
+      r.announcements ?? [],
       context?.queuedOps ?? [],
       r.selfId,
     );
@@ -109,7 +119,9 @@ class AppState {
     // still in flight (temp id) is kept so it does not blink out before the
     // server row arrives. Failures roll the optimistic row back and surface a toast.
     const unconfirmed = this.announcements.filter((announcement) => announcement.id < 0);
-    this.announcements = [...refolded.announcements, ...unconfirmed];
+    this.announcements = [...refolded.announcements, ...unconfirmed].sort(
+      (a, b) => a.sort - b.sort || a.id - b.id,
+    );
 
     // Feedback has no foldable op left (deletes go through /admin/feedback), so the
     // snapshot is authoritative for root; non-root visitors never receive rows.
@@ -170,11 +182,14 @@ class AppState {
     return this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
   }
 
-  private static readonly MARK_FIELD = {
-    like: 'likes',
-    dislike: 'dislikes',
-    report: 'reports',
-  } as const;
+  /** Apply one mark to a pending card and replace the map entry. */
+  private setPendingMark(sha256: string, kind: ops.MarkKind, add: boolean): void {
+    const field = ops.MARK_FIELD[kind];
+    const cur = this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
+    const marks = new Map(this.pendingMarks);
+    marks.set(sha256, { ...cur, [field]: ops.toggleId(cur[field], this.selfId, add) });
+    this.pendingMarks = marks;
+  }
 
   /** Apply one mark locally (pending card or snapshot row) and queue its op. */
   setMarkBySha(sha256: string, kind: ops.MarkKind, add: boolean): void {
@@ -183,11 +198,7 @@ class AppState {
     if (row) {
       this.photos = ops.applyMark(this.photos, row.id, kind, this.selfId, add);
     } else {
-      const field = AppState.MARK_FIELD[kind];
-      const cur = this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
-      const marks = new Map(this.pendingMarks);
-      marks.set(sha256, { ...cur, [field]: ops.toggleId(cur[field], this.selfId, add) });
-      this.pendingMarks = marks;
+      this.setPendingMark(sha256, kind, add);
     }
     this.submitPhotoOp(sha256, { type: ops.markOpType(kind, add) });
   }
@@ -195,7 +206,7 @@ class AppState {
   /** Toggle one mark; likes and dislikes remain mutually exclusive. */
   toggleMark(sha256: string, kind: ops.MarkKind): void {
     const p = this.photos.find((x) => x.sha256 === sha256);
-    const field = AppState.MARK_FIELD[kind];
+    const field = ops.MARK_FIELD[kind];
     const has = p
       ? p[field].includes(this.selfId)
       : (this.pendingMarks.get(sha256)?.[field] ?? []).includes(this.selfId);
@@ -213,22 +224,17 @@ class AppState {
 
   setMarkMany(shas: string[], kind: ops.MarkKind, add: boolean): void {
     if (this.selfId < 0) return;
-    const real = shas.filter((sha) => this.photos.some((p) => p.sha256 === sha));
-    const pending = shas.filter((sha) => !real.includes(sha));
+    const unique = [...new Set(shas)];
+    const real = unique.filter((sha) => this.photos.some((p) => p.sha256 === sha));
+    const pending = unique.filter((sha) => !real.includes(sha));
     if (real.length > 0) {
       const ids = real
         .map((sha) => this.photos.find((p) => p.sha256 === sha)?.id)
         .filter((id): id is number => id !== undefined);
       this.photos = ops.applyMarkMany(this.photos, ids, kind, this.selfId, add);
     }
-    for (const sha of pending) {
-      const field = AppState.MARK_FIELD[kind];
-      const cur = this.pendingMarks.get(sha) ?? { likes: [], dislikes: [], reports: [] };
-      const marks = new Map(this.pendingMarks);
-      marks.set(sha, { ...cur, [field]: ops.toggleId(cur[field], this.selfId, add) });
-      this.pendingMarks = marks;
-    }
-    for (const sha of shas) this.submitPhotoOp(sha, { type: ops.markOpType(kind, add) });
+    for (const sha of pending) this.setPendingMark(sha, kind, add);
+    for (const sha of unique) this.submitPhotoOp(sha, { type: ops.markOpType(kind, add) });
   }
 
   /** Optimistic root delete for multi-selection (sha-addressed, pending cards included). */
@@ -376,14 +382,21 @@ class AppState {
   }
 
   fbDelete(id: number): void {
-    const previous = this.feedback;
+    const index = this.feedback.findIndex((f) => f.id === id);
+    const previous = index >= 0 ? this.feedback[index] : undefined;
     this.feedback = ops.applyFbDelete(this.feedback, id);
     void (async () => {
       try {
         await deleteFeedback(id);
       } catch (error) {
         console.error('[fb] delete failed', error);
-        this.feedback = previous;
+        // Re-insert only the restored row at its old slot; a snapshot may have landed
+        // meanwhile, and a whole-array rollback would discard those unrelated changes.
+        if (previous && !this.feedback.some((f) => f.id === id)) {
+          const next = [...this.feedback];
+          next.splice(Math.min(index, next.length), 0, previous);
+          this.feedback = next;
+        }
         toast.error(copy.admin.feedback.deleteFailed, {
           description: adminFailHint(error, FB_TIMEOUT),
         });

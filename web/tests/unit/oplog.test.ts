@@ -7,8 +7,8 @@ import {
   countOps,
   openOplogDb,
   readOps,
-} from '../../src/core/oplog/store';
-import { lookupSha, putSha } from '../../src/core/oplog/cache';
+} from '../../src/core/oplog';
+import { lookupSha, putSha } from '../../src/core/oplog';
 
 const op = (i: number) => ({ type: 'like' as const, target: i, payload: null });
 

@@ -13,7 +13,7 @@ export function toggleId(list: number[], userId: number, add: boolean): number[]
 
 export type MarkKind = 'like' | 'dislike' | 'report';
 
-const MARK_FIELD: Record<MarkKind, 'likes' | 'dislikes' | 'reports'> = {
+export const MARK_FIELD: Record<MarkKind, 'likes' | 'dislikes' | 'reports'> = {
   like: 'likes',
   dislike: 'dislikes',
   report: 'reports',
@@ -61,12 +61,10 @@ export function applyDelete(photos: Photo[], ids: number[]): Photo[] {
   return photos.filter((p) => !set.has(p.id));
 }
 
-/**
- * The photo an op targets, as it exists in `photos`. Photo ops are addressed by sha256 —
+/** The photo an op targets, as it exists in `photos`. Photo ops are addressed by sha256 —
  * the stable unique index — so this resolves a mark written while its photo was still
- * uploading as soon as the row lands. Returns null when the photo is not in the list.
- */
-export function resolveOpPhoto(photos: Photo[], op: Op): Photo | null {
+ * uploading as soon as the row lands. Returns null when the photo is not in the list. */
+function resolveOpPhoto(photos: Photo[], op: Op): Photo | null {
   if (!op.targetSha) return null;
   return photos.find((p) => p.sha256 === op.targetSha) ?? null;
 }

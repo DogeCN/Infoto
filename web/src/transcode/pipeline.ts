@@ -4,7 +4,7 @@
 
 import { buildUploadOp, routeByMime, translateTaskError, uid } from '$base/upload/pipeline';
 import { copy } from '$shared/copy';
-import { openOplogDb, appendOp } from '../core/oplog/store';
+import { openOplogDb, appendOp } from '../core/oplog';
 import { LeaseClient } from './lease';
 import {
   isSwToPage,
@@ -72,6 +72,10 @@ export interface WorkerLike {
 
 const CH = 'infoto-upload';
 
+/** Upper bound for one source-dimension probe; a probe that never settles must not
+ *  stall every later file in the same chain. */
+const PROBE_TIMEOUT_MS = 10_000;
+
 /** Upload pipeline client — one instance per page. */
 export class UploadPipeline {
   private sw: SharedWorker | null = null;
@@ -85,7 +89,6 @@ export class UploadPipeline {
   private snapshots = new Map<string, PipelineTaskSnapshot>();
   private io: PipelineIo;
   private db: IDBDatabase | null = null;
-  private readonly shaByJob = new Map<string, string>();
   private readonly editorWaiters = new Map<
     string,
     { resolve: (url: string) => void; reject: (error: Error) => void }
@@ -94,6 +97,21 @@ export class UploadPipeline {
 
   constructor(io: PipelineIo = {}) {
     this.io = io;
+  }
+
+  /** Tear down every resource this pipeline holds: the SharedWorker port, the
+   *  BroadcastChannel, the video workers and the pagehide listener. */
+  stop(): void {
+    this.lease?.release();
+    this.lease = null;
+    this.bc?.close();
+    this.bc = null;
+    for (const w of this.videoWorkers.values()) w.terminate();
+    this.videoWorkers.clear();
+    this.sw?.port.close();
+    this.sw = null;
+    this.editorWaiters.clear();
+    this.pendingAlbumOps.clear();
   }
 
   onTask(l: (t: PipelineTaskSnapshot) => void): () => void {
@@ -201,8 +219,7 @@ export class UploadPipeline {
       // only reaches the tab that owns it, and a pruned/cancelled job would
       // otherwise leave a panel row with no job behind it.
       if (m.t === 'jobRemoved') {
-        this.snapshots.delete(m.jobId);
-        this.io.onJobRemoved?.(m.jobId);
+        this.handleJobRemoved(m.jobId);
         return;
       }
       if (m.t !== 'jobStatus' || m.purpose !== 'album') return;
@@ -210,21 +227,23 @@ export class UploadPipeline {
     });
   }
 
+  /** A job left the SharedWorker (cancelJob): drop the row in every holding tab and
+   *  settle an in-flight editor waiter. AbortError, not a plain Error: the owner treats
+   *  it as "cancelled on purpose" and stays quiet instead of flashing a failure. */
+  private handleJobRemoved(jobId: string): void {
+    const waiter = this.editorWaiters.get(jobId);
+    if (waiter) {
+      this.editorWaiters.delete(jobId);
+      waiter.reject(new DOMException(copy.migrate.uploadCancelled, 'AbortError'));
+    }
+    if (this.editorSnapshot?.jobId === jobId) this.editorSnapshot = null;
+    this.snapshots.delete(jobId);
+    this.io.onJobRemoved?.(jobId);
+  }
+
   private onSwMessage(m: SwToPageMessage): void {
     if (m.t === 'jobRemoved') {
-      // cancelJob echoed back (broadcast — every tab holding the row drops it).
-      // An in-flight editor waiter rejects so its owner's await settles; the
-      // editor row state clears so a reopened dialog never replays it.
-      const waiter = this.editorWaiters.get(m.jobId);
-      if (waiter) {
-        this.editorWaiters.delete(m.jobId);
-        // AbortError, not a plain Error: the owner treats it as "cancelled on purpose"
-        // and stays quiet instead of flashing a failure under the editor.
-        waiter.reject(new DOMException(copy.migrate.uploadCancelled, 'AbortError'));
-      }
-      if (this.editorSnapshot?.jobId === m.jobId) this.editorSnapshot = null;
-      this.snapshots.delete(m.jobId);
-      this.io.onJobRemoved?.(m.jobId);
+      this.handleJobRemoved(m.jobId);
       return;
     }
     if (m.t !== 'jobStatus') return;
@@ -258,23 +277,18 @@ export class UploadPipeline {
       return;
     }
     // Capture before emit stores the URL in the snapshot.
-    const alreadyWritten = !!this.pendingAlbumOps.has(m.jobId);
-    if (m.sha256) this.shaByJob.set(m.jobId, m.sha256);
+    const alreadyWritten = this.pendingAlbumOps.has(m.jobId);
     this.emit(this.snapshotFrom(m));
     if (shouldWriteAlbumUploadOp(m.purpose, m.phase, m.url, m.meta, alreadyWritten)) {
       this.pendingAlbumOps.add(m.jobId);
-      void this.writeUploadOp(m.jobId, m.url!, m.meta!)
-        .catch((error) => {
-          this.pendingAlbumOps.delete(m.jobId);
-          this.emit({
-            ...this.snapshotFrom(m),
-            phase: 'failed',
-            error: error instanceof Error ? error.message : 'oplog_write_failed',
-          });
-        })
-        .finally(() => {
-          this.pendingAlbumOps.delete(m.jobId);
+      void this.writeUploadOp(m.jobId, m.sha256 ?? '', m.url!, m.meta!).catch((error) => {
+        this.pendingAlbumOps.delete(m.jobId);
+        this.emit({
+          ...this.snapshotFrom(m),
+          phase: 'failed',
+          error: error instanceof Error ? error.message : 'oplog_write_failed',
         });
+      });
     } else if (m.phase === 'failed') {
       this.log(
         `job ${m.jobId} failed: ${m.error ?? 'unknown'} (artifact kept in OPFS, manual retry available)`,
@@ -284,10 +298,15 @@ export class UploadPipeline {
     }
   }
 
-  private async writeUploadOp(jobId: string, url: string, meta: JobMeta): Promise<void> {
+  private async writeUploadOp(
+    jobId: string,
+    sha256: string,
+    url: string,
+    meta: JobMeta,
+  ): Promise<void> {
     // payload has no created_at / uploader — both are server-authoritative
     const payload: UploadPayload = {
-      sha256: this.shaByJob.get(jobId) ?? '',
+      sha256,
       url,
       width: meta.width,
       height: meta.height,
@@ -341,7 +360,17 @@ export class UploadPipeline {
    * Entry: picked files (the accept list is `image/*,video/*` — exactly routeByMime's coverage surface). `onQueued` fires per accepted file with its job id, letting the page grab the File (the SW clone takes over from here) e.g. to probe source dimensions.
    */
   addFiles(files: FileList | File[], onQueued?: (jobId: string, file: File) => void): void {
-    if (!this.sw) this.start();
+    try {
+      if (!this.sw) this.start();
+    } catch (error) {
+      // A missing SharedWorker (non-secure context, unsupported browser) must not throw
+      // out of a DOM event handler.
+      this.log(`upload unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      this.io.onEvent?.(
+        `worker_start_failed:${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
     for (const file of Array.from(files)) {
       const route = routeByMime(file.type);
       if (!route) {
@@ -470,18 +499,26 @@ export async function probeSourceSize(
       return size.width > 0 && size.height > 0 ? size : null;
     }
     if (mime.startsWith('video/')) {
-      // Metadata-only load — no frame decoding, cheap even for large files.
+      // Metadata-only load — no frame decoding, cheap even for large files. A timeout
+      // guards a container that settles neither event, which would stall every later
+      // probe in the chain.
       return await new Promise((resolve) => {
         const url = URL.createObjectURL(file);
         const v = document.createElement('video');
         v.preload = 'metadata';
         v.muted = true;
+        const timer = setTimeout(() => {
+          URL.revokeObjectURL(url);
+          resolve(null);
+        }, PROBE_TIMEOUT_MS);
         v.onloadedmetadata = () => {
+          clearTimeout(timer);
           const size = { width: v.videoWidth, height: v.videoHeight };
           URL.revokeObjectURL(url);
           resolve(size.width > 0 && size.height > 0 ? size : null);
         };
         v.onerror = () => {
+          clearTimeout(timer);
           URL.revokeObjectURL(url);
           resolve(null);
         };
