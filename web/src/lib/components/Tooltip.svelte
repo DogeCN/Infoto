@@ -73,21 +73,26 @@
       (side === 'right' && r.right + w + GAP_PX > window.innerWidth);
     const ps = noRoom ? OPPOSITE[side] : side;
     placedSide = ps;
-    x =
+    const nextX =
       ps === 'left' || ps === 'right'
         ? ps === 'left'
           ? r.left - GAP_PX
           : r.right + GAP_PX
         : r.left + r.width / 2;
-    y =
+    const nextY =
       ps === 'top' || ps === 'bottom'
         ? ps === 'top'
           ? r.top - GAP_PX
           : r.bottom + GAP_PX
         : r.top + r.height / 2;
-    if (ps === 'top' || ps === 'bottom')
-      x = Math.max(w / 2 + 8, Math.min(window.innerWidth - w / 2 - 8, x));
-    else y = Math.max(h / 2 + 8, Math.min(window.innerHeight - h / 2 - 8, y));
+    x =
+      ps === 'top' || ps === 'bottom'
+        ? Math.max(w / 2 + 8, Math.min(window.innerWidth - w / 2 - 8, nextX))
+        : nextX;
+    y =
+      ps === 'left' || ps === 'right'
+        ? Math.max(h / 2 + 8, Math.min(window.innerHeight - h / 2 - 8, nextY))
+        : nextY;
   }
 
   function show(immediate = false): void {

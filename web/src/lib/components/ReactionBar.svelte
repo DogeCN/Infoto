@@ -18,12 +18,12 @@
   let { announcement, selfId = -1, onReact }: Props = $props();
 
   let counts = $derived(reactionCounts(announcement, selfId));
-  let pickerOpen = $state(false);
+  const pickerId = $props.id();
+  let pickerAnchor = $state<HTMLButtonElement>();
 
   function toggle(emoji: string, selfReacted: boolean) {
     // A second click clears the reaction (empty emoji payload).
     onReact?.(selfReacted ? null : emoji);
-    pickerOpen = false;
   }
 </script>
 
@@ -49,15 +49,12 @@
       aria-label={copy.reactions.add}
       type="button"
       class="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      onclick={() => (pickerOpen = !pickerOpen)}
+      bind:this={pickerAnchor}
+      popovertarget={pickerId}
     >
       <SmilePlus class="size-4" />
     </button>
   </Tooltip>
 
-  {#if pickerOpen}
-    <div class="absolute bottom-9 left-0 z-50">
-      <ReactionPicker onPick={(emoji) => toggle(emoji, false)} />
-    </div>
-  {/if}
+  <ReactionPicker id={pickerId} anchor={pickerAnchor} onPick={(emoji) => toggle(emoji, false)} />
 </div>

@@ -7,7 +7,7 @@
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import AnnouncementSidebar from '$lib/components/AnnouncementSidebar.svelte';
-  import { onDestroy, tick, untrack } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
 
   import { Toaster, toast } from 'svelte-sonner';
   import { Settings as SettingsIcon, Megaphone, Upload } from '@lucide/svelte';
@@ -19,11 +19,11 @@
     disposeTurnstile,
     TURNSTILE_DISPOSE_DELAY_MS,
   } from './core/identity';
-  import { postSync, TurnstileRequiredError } from './core/api/syncClient';
+  import { postSync, type SyncClientIo, type SyncCallResult } from './core/api/syncClient';
   import { createAppStore } from './state/appStore.svelte';
   import { downloadOne, downloadZip } from './core/download';
   import { createUploadStore } from './state/uploadStore.svelte';
-  import type { Photo } from '$shared/types';
+  import type { Photo, SyncRequest } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import {
     type FilterSettings,
@@ -45,6 +45,7 @@
   let syncing = $state(true);
   const store = createAppStore();
   const engine = getEngine({
+    postSyncFn: syncWithIdentity,
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
       syncing = false;
@@ -52,10 +53,7 @@
     onError: (phase, e) => {
       console.error('[sync]', phase, e);
       syncing = false;
-      // Cookie lost/expired → return to the first-entry flow (ensureIdentity
-      // handles Turnstile rendering)
-      if (e instanceof TurnstileRequiredError) void bootstrapIdentity();
-      else notifySyncFailure();
+      notifySyncFailure();
     },
   });
   store.bindEngine(engine);
@@ -66,7 +64,6 @@
   let leftOpen = $state(false);
   let rightOpen = $state(false);
   let multiMode = $state(false);
-  let initialized = $state(false);
   /** Wide layout: the upload panel moves to the bottom-right, clear of bottom-left toasts. */
   let wideLayout = $state(false);
   $effect(() => {
@@ -111,7 +108,6 @@
   });
   let randomOrder = $state<number[]>([]);
 
-  let bootstrapping = false;
   let verificationTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Inbound verification: after a 401 the captcha renders centered in the empty
@@ -120,54 +116,48 @@
   let verifyState = $state<VerifyState>('idle');
   let turnstileEl = $state<HTMLDivElement | undefined>(undefined);
 
-  /** First entry (no cookie): Turnstile → /sync with token → build identity + full snapshot. */
-  async function bootstrapIdentity() {
-    if (bootstrapping) return;
-    bootstrapping = true;
+  /** Resolve verification within the engine's single attempt, preserving its queued operations. */
+  async function syncWithIdentity(
+    request: SyncRequest,
+    io?: SyncClientIo,
+  ): Promise<SyncCallResult> {
     try {
-      const { response, firstEntry } = await ensureIdentity([], {
-        postSyncFn: postSync,
+      const { response, firstEntry } = await ensureIdentity(request.ops, {
+        postSyncFn: (body) => postSync(body, io),
         requestToken: async (siteKey) => {
+          if (destroyed) throw new Error('page_closed');
           verifyState = 'loading';
-          await tick(); // wait for the verify mount point to render, then mount the widget
+          await tick();
           const el = turnstileEl;
-          if (!el) throw new Error('turnstile container missing');
-          const token = await renderTurnstile(siteKey, el);
-          // Only the success path schedules disposal; on failure the widget stays
-          // put to self-heal or wait for a user refresh
-          verificationTimer = setTimeout(() => {
-            void disposeTurnstile().finally(() => {
-              if (verifyState === 'done') verifyState = 'idle';
-            });
-          }, TURNSTILE_DISPOSE_DELAY_MS);
-          return token;
+          if (!el || destroyed) throw new Error('turnstile container missing');
+          return renderTurnstile(siteKey, el);
         },
       });
-      if (destroyed) return;
-      store.applySync(response);
-      // Collapse the verify layer only after content lands, avoiding a one-frame
-      // flash of the "no photos yet" empty state
-      if (firstEntry && verifyState === 'loading') verifyState = 'done';
-    } catch (e) {
-      console.error('[identity] bootstrap failed', e);
-      // Reset verification and dispose the widget when identity initialization fails.
-      if (verifyState === 'loading') verifyState = 'idle';
+      if (firstEntry && !destroyed) {
+        verifyState = 'done';
+        verificationTimer = setTimeout(() => {
+          void disposeTurnstile().finally(() => {
+            if (!destroyed) verifyState = 'idle';
+          });
+        }, TURNSTILE_DISPOSE_DELAY_MS);
+      }
+      return { response, status: 200 };
+    } catch (error) {
+      clearTimeout(verificationTimer);
       void disposeTurnstile();
-    } finally {
-      bootstrapping = false;
+      if (!destroyed) verifyState = 'idle';
+      throw error;
     }
   }
 
-  $effect(() => {
-    if (untrack(() => initialized)) return;
-    initialized = true;
-    void (async () => {
-      await bootstrapIdentity();
-      if (destroyed) return;
-      await engine.init().catch(console.error);
-      engine.install();
-      if (!destroyed) uploads.start();
-    })();
+  onMount(() => {
+    void engine.init().catch((error) => {
+      syncing = false;
+      console.error('[sync] init', error);
+      notifySyncFailure();
+    });
+    engine.install();
+    uploads.start();
   });
 
   let destroyed = false;

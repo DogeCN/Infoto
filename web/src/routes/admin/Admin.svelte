@@ -8,7 +8,7 @@
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import { toastOptions } from '$base/lib/ui';
   import { getEngine } from '../../core/engine';
-  import { TurnstileRequiredError } from '../../core/api/syncClient';
+  import { postSync, TurnstileRequiredError } from '../../core/api/syncClient';
   import { createAppStore } from '../../state/appStore.svelte';
   import { UploadPipeline, type UploadRow } from '../../transcode/pipeline';
 
@@ -21,6 +21,7 @@
   // Sync-failure toast dedupe: the failure stays until the next success, so a burst of toasts is pointless.
   let syncErrorToastAt = 0;
   const engine = getEngine({
+    postSyncFn: postSync,
     onSyncResponse: (response, context) => store.applySync(response, context),
     onError: (phase, error) => {
       console.error('[sync]', phase, error);

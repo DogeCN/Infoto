@@ -40,6 +40,8 @@ export function overlay(node: HTMLElement, options: OverlayOptions) {
   function onKeydown(event: KeyboardEvent) {
     if (!isTop()) return;
     if (event.key === 'Escape') {
+      // Native popovers dismiss before the enclosing overlay.
+      if (node.querySelector(':popover-open')) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       options.onClose();

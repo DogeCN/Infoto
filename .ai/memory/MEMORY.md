@@ -196,6 +196,11 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 
 ## Component Pitfalls
 
+- Reaction menus use the native popover top layer to escape announcement-card clipping. Keep their DOM inside the sidebar for focus containment, and let native popovers consume Escape before the parent overlay.
+- Tooltip placement must calculate clamped coordinates in local variables before assigning reactive coordinates; reading and rewriting the same coordinate inside its positioning effect can exceed Svelte's update depth near viewport edges.
+- `muted` and `popover` have the same color. A menu on `bg-popover` needs a contrasting/tinted hover background, not `hover:bg-muted`. Verify the composited color, not merely the presence of a hover utility.
+- Google Lens must receive the absolute id36 `/l/{id36}` proxy URL, not the original image URL. External Lens processing cannot be verified with local fixtures; browser tests verify the encoded target and actual new-tab activation only.
+
 - **Sticky bottom bar + scroll container padding**: adding `padding-bottom` to `overflow-y-auto` container makes sticky stop above it, scroll content shows through gap. Fix: scroll container only `px-4 pt-4`, bottom spacing handled by panel itself.
 - **Inner z-index escapes**: parent with `position: relative` and `z-index: auto` **does not create stacking context**, inner `relative z-10` can press over sticky bottom bar (really happened with vote bar covering input). Add `isolate` to parent.
 - **Native image drag steals gesture**: selection interaction needs `<img>` `draggable="false"` **and** container `ondragstart={e => e.preventDefault()}`.
@@ -282,3 +287,5 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - Svelte outgoing transitions pause effects inside the leaving subtree before action destruction. ActionSheet releases its shared overlay from a component-scope effect, reading `open` before optional action access, so a closing menu cannot swallow Escape intended for the underlying Lightbox.
 - Card keyboard handlers handle only events targeted at the card itself; nested buttons keep native keyboard activation. Collapsed announcement bodies are inert so clipped vote/reaction controls do not enter the focus order.
 - The user requires the deterministic all-zero root UUID for local seed authentication, with no administrator/visitor selector page. Seeded browser tests establish normal server cookies through `/sync`; no development login route or production authentication change is needed.
+
+- Identity verification belongs inside the engine-owned sync attempt. Do not run a separate bootstrap request before `engine.init()`, or start bootstrap from `onError`: both issue extra requests after failure. A Turnstile-required response permits one token handshake within the same attempt; widget/token/HTTP failure stops until another allowed trigger. Turnstile automatic retry and refresh are disabled.

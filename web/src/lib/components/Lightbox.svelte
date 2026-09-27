@@ -782,14 +782,14 @@
 
   <!-- More menu (bottom action sheet) -->
   <ActionSheet
-    title={copy.lightbox.actions}
+    ariaLabel={copy.lightbox.actions}
     bind:open={showMenu}
     onClose={() => (showMenu = false)}
   >
     <div class="grid grid-cols-3 gap-3">
       <button
         type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+        class="photo-action text-sky-400 hover:bg-sky-400/15"
         onclick={() => {
           void copyText(photo.url, copy.lightbox.originalUrlCopied);
           showMenu = false;
@@ -805,7 +805,7 @@
       {#if !isPending}
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+          class="photo-action text-violet-400 hover:bg-violet-400/15"
           onclick={() => {
             void copyText(shareUrl, copy.lightbox.linkCopied);
             showMenu = false;
@@ -817,32 +817,28 @@
 
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+          class="photo-action text-teal-400 hover:bg-teal-400/15"
           onclick={share}
         >
           <Share2 class="size-6" />
           <span class="text-sm">{copy.lightbox.share}</span>
         </button>
 
-        <button
-          type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 text-primary transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/10"
-          onclick={() => {
-            window.open(
-              `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`,
-              '_blank',
-            );
-            showMenu = false;
-          }}
+        <a
+          href={`https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="photo-action text-primary hover:bg-primary/15"
+          onclick={() => (showMenu = false)}
         >
           <Search class="size-6" />
           <span class="text-sm">{copy.lightbox.googleLens}</span>
-        </button>
+        </a>
       {/if}
 
       <button
         type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 text-amber-500 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+        class="photo-action text-amber-500 hover:bg-amber-500/15"
         onclick={() => {
           onRequestDelete?.(photo);
           showMenu = false;
@@ -856,7 +852,7 @@
       {#if !isPending}
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 text-success transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-success/10"
+          class="photo-action text-success hover:bg-success/15"
           onclick={() => {
             onDownload?.(photo);
             showMenu = false;
@@ -870,7 +866,7 @@
       {#if selfId === 0}
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 text-destructive transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-destructive/10"
+          class="photo-action text-destructive hover:bg-destructive/15"
           onclick={() => {
             onDelete?.(photo);
             showMenu = false;
@@ -885,6 +881,18 @@
 {/if}
 
 <style>
+  .photo-action {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.75rem;
+    padding: 1rem;
+    transition:
+      background-color var(--duration-exit) var(--ease-exit),
+      color var(--duration-exit) var(--ease-exit);
+  }
+
   .lb-meta {
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
   }

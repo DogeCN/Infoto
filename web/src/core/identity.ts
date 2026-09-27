@@ -15,6 +15,9 @@ export interface TurnstileFlowDeps {
 interface TurnstileRenderOptions {
   sitekey: string;
   theme?: string;
+  retry?: 'auto' | 'never';
+  'refresh-expired'?: 'auto' | 'manual' | 'never';
+  'refresh-timeout'?: 'auto' | 'manual' | 'never';
   callback?: (token: string) => void;
   'error-callback'?: () => void;
   'timeout-callback'?: () => void;
@@ -108,6 +111,9 @@ export async function renderTurnstile(
     activeWidgetId = ts.render(container, {
       sitekey: siteKey,
       theme: 'dark',
+      retry: 'never',
+      'refresh-expired': 'manual',
+      'refresh-timeout': 'manual',
       callback: (token: string) => finish(resolve, token),
       'error-callback': () => finish(reject, new Error('turnstile_error')),
       'timeout-callback': () => finish(reject, new Error('turnstile_timeout')),
