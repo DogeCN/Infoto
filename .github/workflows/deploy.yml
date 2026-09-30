@@ -149,16 +149,17 @@ jobs:
       - name: Deploy Worker
         run: npx wrangler deploy
 
+      # The facade origin is a public hostname, not a credential, so it lives in repo
+      # Variables. It is still written with `wrangler secret put` so the Worker stores it
+      # encrypted. The facade's own TC_SECRET never reaches this repo.
       - name: Inject Worker secrets
         env:
-          MEDIA_HOST_URL_VALUE: ${{ secrets.MEDIA_HOST_URL }}
+          MEDIA_HOST_URL_VALUE: ${{ vars.MEDIA_HOST_URL }}
         run: |
-          # The image host and its credential live in the standalone facade
-          # (media-proxy/worker.js); this Worker only stores the URL it hands back.
           # Without MEDIA_HOST_URL the browser would be pointed at the local simulation
-          # on 127.0.0.1, so every upload would fail.
+          # on 127.0.0.1, so every upload would fail. Fail the deploy instead.
           if [ -z "$MEDIA_HOST_URL_VALUE" ]; then
-            echo "::error::repo secret MEDIA_HOST_URL is empty"
+            echo "::error::repo variable MEDIA_HOST_URL is empty"
             exit 1
           fi
           printf '%s' "$MEDIA_HOST_URL_VALUE" | npx wrangler secret put MEDIA_HOST_URL
