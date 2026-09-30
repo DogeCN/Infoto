@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from '$lib/components/EmptyState.svelte';
   import TopBar from '$lib/components/TopBar.svelte';
   import type { SortKey } from '$lib/components/SortTabs.svelte';
   import OverlaySidebar from '$lib/components/OverlaySidebar.svelte';
@@ -6,11 +7,11 @@
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import AnnouncementSidebar from '$lib/components/AnnouncementSidebar.svelte';
-  import { onDestroy, tick } from 'svelte';
-  import { untrack } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
+
   import { Toaster, toast } from 'svelte-sonner';
-  import { Settings as SettingsIcon, Megaphone } from '@lucide/svelte';
-  import { toastOptions } from '$lib/toastOptions';
+  import { Settings as SettingsIcon, Megaphone, Upload } from '@lucide/svelte';
+  import { toastOptions } from '$base/lib/ui';
   import { getEngine } from './core/engine';
   import {
     ensureIdentity,
@@ -18,20 +19,21 @@
     disposeTurnstile,
     TURNSTILE_DISPOSE_DELAY_MS,
   } from './core/identity';
-  import { postSync, TurnstileRequiredError } from './core/api/syncClient';
+  import { postSync, type SyncClientIo, type SyncCallResult } from './core/api/syncClient';
   import { createAppStore } from './state/appStore.svelte';
   import { downloadOne, downloadZip } from './core/download';
-  import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from './transcode/pipeline';
-  import { translateTaskError } from '$base/upload/pipeline';
-  import { readArtifact } from './transcode/opfs';
-  import type { Photo } from '$shared/types';
+  import { createUploadStore } from './state/uploadStore.svelte';
+  import type { Photo, SyncRequest } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
-  import { fmt } from '$shared/copy';
-  import type { FilterSettings, LayoutSettings, Settings } from './settings';
-  import { applyFilters, loadSettings } from './settings';
+  import {
+    type FilterSettings,
+    type LayoutSettings,
+    type Settings,
+    applyFilters,
+    loadSettings,
+  } from './settings';
 
-  /** Surface sync failures, deduped over 10s: while the backend is down every
-   *  retry fails and would flood the toast. */
+  /** Deduplicate sync failure toasts over ten seconds. */
   let lastSyncToastAt = 0;
   function notifySyncFailure(): void {
     const now = Date.now();
@@ -43,6 +45,7 @@
   let syncing = $state(true);
   const store = createAppStore();
   const engine = getEngine({
+    postSyncFn: syncWithIdentity,
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
       syncing = false;
@@ -50,323 +53,17 @@
     onError: (phase, e) => {
       console.error('[sync]', phase, e);
       syncing = false;
-      // Cookie lost/expired → return to the first-entry flow (ensureIdentity
-      // handles Turnstile rendering)
-      if (e instanceof TurnstileRequiredError) void bootstrapIdentity();
-      else notifySyncFailure();
+      notifySyncFailure();
     },
   });
   store.bindEngine(engine);
 
-  const pipeline = new UploadPipeline({
-    onEvent: (line) => console.log('[upload]', line),
-    // The finished upload becomes an op on the sync engine (pending count and the 256-op
-    // threshold belong to it). No sync is kicked off here on purpose: an upload must not
-    // pull a snapshot, so the op leaves with the pagehide flush, the threshold, or the
-    // top bar's manual sync — same as every other op.
-    onUploadOp: (op) => {
-      void engine.addOp(op);
-    },
-    // cancelJob echo (broadcast): drop the row/card in this tab too. A cancel resolves the
-    // job as far as the batch counter is concerned — otherwise the header would freeze at
-    // (total-1)/total with nothing left on screen.
-    onJobRemoved: (jobId) => {
-      if (uploadTasks.has(jobId)) countResolved(jobId);
-      dropTask(jobId);
-    },
-    // Files outside the accept surface (often empty MIME on Windows) — visible notice
-    onRejected: (fileName) =>
-      toast.error(fmt(copy.upload.unknownType, { fileName }), {
-        description: copy.upload.acceptHint,
-      }),
-  });
-
-  let uploadTasks = $state<Map<string, PipelineTaskSnapshot>>(new Map());
+  const uploads = createUploadStore(store, engine);
   let fileInputEl: HTMLInputElement | undefined = $state(undefined);
-  /** Source dimensions probed at enqueue — failed transcodes keep the real aspect ratio. */
-  let probedSizeByJob = $state<Map<string, { width: number; height: number }>>(new Map());
-
-  /**
-   * Panel header counter ({done}/{total}). `total` is every accepted file of the current
-   * pick batch, `done` the ones the panel is finished with (transcoded / failed /
-   * cancelled) — counted once each. It cannot come from the live row list, because a row
-   * leaves the panel long before its job ends: the numerator would rise and fall with the
-   * list instead of describing the batch.
-   */
-  let batchTotal = $state(0);
-  let batchDone = $state(0);
-  const countedJobs = new Set<string>();
-  /** Count a job as resolved exactly once (terminal state, or a cancel). */
-  function countResolved(jobId: string): void {
-    if (countedJobs.has(jobId)) return;
-    countedJobs.add(jobId);
-    batchDone += 1;
-  }
-
-  /** Rows the panel shows: the legs before the card exists — transcode, plus the
-   *  hashing/write leg that now reports a real byte fraction. Past it the card owns
-   *  the progress and its curtain carries the upload leg. */
-  const PANEL_STAGES = new Set(['queued', 'lease-wait', 'transcoding', 'hashing']);
-  let panelRows = $derived(
-    Array.from(uploadTasks.values()).filter((t) => PANEL_STAGES.has(t.phase)),
-  );
-
-  /**
-   * Preview behind the curtain until the host URL exists. It is the TRANSCODED artifact
-   * read back from OPFS, not the picked file: the artifact is what will actually land
-   * (so it always decodes, HEIC and exotic codecs included), it is written before the
-   * card ever appears, and it survives a page reload — where the picked File is gone and
-   * the artifact is still on disk. Reactive: the read is async, so the card repaints when
-   * it lands. Revoked as soon as the task leaves.
-   */
-  let previewUrls = $state<Map<string, string>>(new Map());
-
-  /** Object URL for the OPFS artifact, once per job (no-op while the read is in flight). */
-  const previewReads = new Set<string>();
-  async function ensureArtifactPreview(jobId: string, type: number): Promise<void> {
-    if (previewUrls.has(jobId) || previewReads.has(jobId)) return;
-    previewReads.add(jobId);
-    try {
-      const blob = await readArtifact(jobId, type === 0 ? 'webp' : 'webm');
-      // The job may have landed or been cancelled while the handle was opening
-      if (blob && uploadTasks.has(jobId) && !previewUrls.has(jobId)) {
-        previewUrls.set(jobId, URL.createObjectURL(blob));
-      }
-    } catch {
-      /* an unreadable artifact just leaves the skeleton */
-    } finally {
-      previewReads.delete(jobId);
-    }
-  }
-
-  /** Drop a task and its optimistic-card mapping (idempotent; used by cancel + cleanup). */
-  function dropTask(jobId: string) {
-    const id = tempIdByJob.get(jobId);
-    if (id !== undefined) {
-      tempIdByJob.delete(jobId);
-      jobByTempId.delete(id);
-    }
-    probedSizeByJob.delete(jobId);
-    tempCreatedAt.delete(jobId);
-    writeTempCreatedAt(tempCreatedAt);
-    photoCache.delete(jobId);
-    const sha = uploadTasks.get(jobId)?.sha256;
-    if (sha) store.forgetPendingPhoto(sha);
-    const preview = previewUrls.get(jobId);
-    if (preview) {
-      URL.revokeObjectURL(preview);
-      previewUrls.delete(jobId);
-    }
-    const next = new Map(uploadTasks);
-    next.delete(jobId);
-    uploadTasks = next;
-  }
-
-  // Probes run sequentially (one decode at a time) so a 20-photo pick never
-  // bursts the main thread with concurrent image decodes.
-  let probeChain = Promise.resolve();
-  function queueSizeProbe(jobId: string, file: File) {
-    // Called once per ACCEPTED file (rejected MIME types never get here), so it is the
-    // honest denominator for the panel header counter.
-    batchTotal += 1;
-    probeChain = probeChain
-      .then(async () => {
-        const size = await probeSourceSize(file);
-        if (destroyed) return;
-        if (size && uploadTasks.has(jobId)) probedSizeByJob.set(jobId, size);
-      })
-      .catch(() => undefined);
-  }
-
-  // ---- Optimistic upload entries ----
-  // Transcode done → insert at the top under a "curtain" mask that pulls up with
-  // progress; failure → full mask + retry icon; /sync drops it by sha256 (server wins).
-  let nextTempId = -1;
-  const tempIdByJob = new Map<string, number>();
-  const jobByTempId = new Map<number, string>();
-  const photoCache = new Map<string, Photo>();
-  const EMPTY_MARKS: { likes: number[]; dislikes: number[]; reports: number[] } = {
-    likes: [],
-    dislikes: [],
-    reports: [],
-  };
-  // Guard against double-toasting the same failure within one session (e.g. a
-  // redundant status echo). Replay across a page reload re-toasts intentionally:
-  // a lingering failed upload deserves a fresh reminder.
-  const toastedFailures = new Set<string>();
-  const toastedDuplicates = new Set<string>();
-  const TEMP_CREATED_KEY = 'infoto-temp-created';
-  const TEMP_CREATED_TTL_MS = 30 * 60 * 1000;
-
-  function readTempCreatedAt(): Map<string, number> {
-    try {
-      const raw = sessionStorage.getItem(TEMP_CREATED_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as [string, number][];
-        const now = Date.now();
-        const map = new Map<string, number>();
-        for (const [jobId, ts] of parsed) {
-          if (now - ts < TEMP_CREATED_TTL_MS) map.set(jobId, ts);
-        }
-        return map;
-      }
-    } catch {
-      /* noop */
-    }
-    return new Map();
-  }
-
-  function writeTempCreatedAt(map: Map<string, number>): void {
-    try {
-      sessionStorage.setItem(TEMP_CREATED_KEY, JSON.stringify([...map.entries()]));
-    } catch {
-      /* noop */
-    }
-  }
-
-  // Fixed createdAt per optimistic card — using Date.now() inside the derived
-  // would re-stamp every progress frame and thrash the "newest" sort.
-  const tempCreatedAt = new Map<string, number>(readTempCreatedAt());
-
-  let pendingPhotos = $derived.by(() => {
-    const out: Photo[] = [];
-    // Sync-landed shas hide optimistic done/duplicate cards in the same render
-    // cycle the real photo arrives — no one-frame double display while the
-    // cleanup $effect is still scheduled.
-    const landedShas = new Set(store.photos.map((p) => p.sha256));
-    for (const t of uploadTasks.values()) {
-      // The card enters with the upload leg, so hashing stays on the panel row
-      // (which reports its byte fraction) rather than opening a card with nothing
-      // yet to show. Only uploading / done / failed get an entry here.
-      if (!['uploading', 'done', 'failed'].includes(t.phase)) continue;
-      if ((t.phase === 'done' || t.phase === 'duplicate') && t.sha256 && landedShas.has(t.sha256))
-        continue;
-      // tempId is assigned uniformly in the onTask callback; skip anything that
-      // raced a dropTask (cancel / cleanup) instead of emitting id: undefined
-      const id = tempIdByJob.get(t.jobId);
-      if (id === undefined) continue;
-      // Failed transcodes have no meta: fall back to the probed source dimensions
-      // so the failure card keeps the real aspect ratio (placeholder 800×600 only
-      // when probing also failed)
-      const probed = probedSizeByJob.get(t.jobId);
-      const meta = t.meta ?? {
-        width: probed?.width ?? 800,
-        height: probed?.height ?? 600,
-        size: 0,
-        type: 0 as const,
-      };
-      const sha = t.sha256 ?? '';
-      const marks = sha ? store.pendingMarksFor(sha) : EMPTY_MARKS;
-      const url = t.url ?? previewUrls.get(t.jobId) ?? '';
-      const createdAt = tempCreatedAt.get(t.jobId) ?? Date.now();
-      const cached = photoCache.get(t.jobId);
-      if (
-        cached &&
-        cached.id === id &&
-        cached.sha256 === sha &&
-        cached.url === url &&
-        cached.uploader === store.selfId &&
-        cached.width === meta.width &&
-        cached.height === meta.height &&
-        cached.size === meta.size &&
-        cached.type === meta.type &&
-        cached.createdAt === createdAt &&
-        cached.likes === marks.likes &&
-        cached.dislikes === marks.dislikes &&
-        cached.reports === marks.reports
-      ) {
-        out.push(cached);
-      } else {
-        const photo: Photo = {
-          id,
-          sha256: sha,
-          url,
-          uploader: store.selfId,
-          width: meta.width,
-          height: meta.height,
-          size: meta.size,
-          createdAt,
-          type: meta.type,
-          likes: marks.likes,
-          dislikes: marks.dislikes,
-          reports: marks.reports,
-        };
-        photoCache.set(t.jobId, photo);
-        out.push(photo);
-      }
-    }
-    return out;
-  });
-
-  let uploadOverlays = $derived.by(() => {
-    const m = new Map<
-      number,
-      { fraction?: number; failed?: boolean; error?: string; preview?: boolean }
-    >();
-    for (const t of uploadTasks.values()) {
-      const id = tempIdByJob.get(t.jobId);
-      if (id === undefined) continue;
-      if (t.phase === 'uploading') {
-        // Once the host URL exists the curtain shows the real thing, not the local preview.
-        if (t.meta) m.set(id, { fraction: t.fraction ?? 0, preview: !t.url });
-      } else if (t.phase === 'failed') {
-        // Transcode failure (no meta) still gets a failure mask — retry must not
-        // depend on a successful transcode. The translated reason rides along so
-        // the card can say WHY instead of a bare "upload failed".
-        m.set(id, {
-          failed: true,
-          preview: !t.url,
-          error: translateTaskError(t.error, {
-            oversize: t.error === 'oversize',
-            uploadLeg: !!t.sha256,
-          }),
-        });
-      }
-      // done → no mask (curtain fully open, awaiting /sync correction)
-    }
-    return m;
-  });
-
-  // After /sync the real entries land: drop matching optimistic entries by sha256.
-  // Only terminal phases qualify — deleting on 'uploading' would flicker the card
-  // mid-flight. 'duplicate' rows always go, or a sha absent from the store lingers.
-  // The drops run inside `untrack` so writing `uploadTasks` here does not schedule
-  // another run of this effect.
-  $effect(() => {
-    const shas = new Set(store.photos.map((p) => p.sha256));
-    const toDrop: string[] = [];
-    for (const t of uploadTasks.values()) {
-      if (t.phase !== 'done' && t.phase !== 'duplicate') continue;
-      if (t.phase === 'duplicate' || (t.sha256 && shas.has(t.sha256))) {
-        toDrop.push(t.jobId);
-      }
-    }
-    untrack(() => {
-      for (const jobId of toDrop) dropTask(jobId);
-    });
-  });
-
-  function handleRetryUpload(photo: Photo) {
-    const jobId = jobByTempId.get(photo.id);
-    if (!jobId) return;
-    // A retry is a fresh attempt: allow its failure to toast again, otherwise the
-    // dedupe set would swallow it and the second failure would look like nothing happened.
-    toastedFailures.delete(jobId);
-    pipeline.retry(jobId);
-  }
-
-  /** Dismiss a failed card: cancel on the SW (stops refresh replay) + drop locally. */
-  function handleDismissUpload(photo: Photo) {
-    const jobId = jobByTempId.get(photo.id);
-    if (!jobId) return;
-    pipeline.cancel(jobId);
-    dropTask(jobId);
-  }
 
   let leftOpen = $state(false);
   let rightOpen = $state(false);
   let multiMode = $state(false);
-  let initialized = $state(false);
   /** Wide layout: the upload panel moves to the bottom-right, clear of bottom-left toasts. */
   let wideLayout = $state(false);
   $effect(() => {
@@ -377,33 +74,17 @@
     return () => mq.removeEventListener('change', apply);
   });
 
-  /**
-   * Live height of the upload overlay, published by `UploadPanel`. Its height tracks
-   * the row count, so a fixed clearance would be wrong at 1 row and at 6 — toasts are
-   * positioned against a number, not a guess. 0 while the panel is collapsed or hidden.
-   *
-   * The sink is a module-scope `const`, not an inline arrow: `UploadPanel` observes its
-   * `onHeight` prop, and a fresh function identity per render would tear down and rebuild
-   * its ResizeObserver on every parent update.
-   */
+  /** Measured upload-panel height, zero while collapsed or hidden. A stable callback preserves its observer subscription. */
   let uploadPanelHeight = $state(0);
   const handleUploadPanelHeight = (px: number) => (uploadPanelHeight = px);
 
-  /**
-   * Toast bottom clearance: clear whatever currently owns the bottom edge, else hug it.
-   * Only the narrow layout needs the upload panel's height — from `md` up it moves to the
-   * bottom-right (`md:right-4 md:bottom-4`) and toasts live at bottom-left, so they are
-   * side by side and no clearance is owed.
-   *
-   * Pixels, not rem: the upload half is a measured value, and converting it through the
-   * root font size would put a unit conversion between the measurement and its use.
-   */
+  /** Bottom toast clearance in pixels. Narrow layouts clear the upload panel; multi-select clears the bottom bar. */
   const TOAST_EDGE_GAP = 16;
   const MULTI_SELECT_CLEARANCE = 80;
   let toastOffsetBottom = $derived(
     multiMode
       ? MULTI_SELECT_CLEARANCE
-      : panelRows.length > 0 && !wideLayout
+      : uploads.panelRows.length > 0 && !wideLayout
         ? TOAST_EDGE_GAP + uploadPanelHeight
         : TOAST_EDGE_GAP,
   );
@@ -414,7 +95,6 @@
   let layout = $state<LayoutSettings>(loadedSettings.layout);
   let filters = $state<FilterSettings>(loadedSettings.filters);
   let filterCount = $state(0);
-  let resetToken = $state(0);
 
   // Sort state: latest / hottest / random; each key remembers its own direction —
   // switching away and back keeps it (newest↔oldest, hottest↔coldest saved separately)
@@ -428,7 +108,7 @@
   });
   let randomOrder = $state<number[]>([]);
 
-  let bootstrapping = false;
+  let verificationTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Inbound verification: after a 401 the captcha renders centered in the empty
    *  waterfall; `done` = token in, kept until the handshake ends. */
@@ -436,169 +116,62 @@
   let verifyState = $state<VerifyState>('idle');
   let turnstileEl = $state<HTMLDivElement | undefined>(undefined);
 
-  /** First entry (no cookie): Turnstile → /sync with token → build identity + full snapshot. */
-  async function bootstrapIdentity() {
-    if (bootstrapping) return;
-    bootstrapping = true;
+  /** Resolve verification within the engine's single attempt, preserving its queued operations. */
+  async function syncWithIdentity(
+    request: SyncRequest,
+    io?: SyncClientIo,
+  ): Promise<SyncCallResult> {
     try {
-      const { response, firstEntry } = await ensureIdentity([], {
-        postSyncFn: postSync,
+      const { response, firstEntry } = await ensureIdentity(request.ops, {
+        postSyncFn: (body) => postSync(body, io),
         requestToken: async (siteKey) => {
+          if (destroyed) throw new Error('page_closed');
           verifyState = 'loading';
-          await tick(); // wait for the verify mount point to render, then mount the widget
+          await tick();
           const el = turnstileEl;
-          if (!el) throw new Error('turnstile container missing');
-          const token = await renderTurnstile(siteKey, el);
-          // Only the success path schedules disposal; on failure the widget stays
-          // put to self-heal or wait for a user refresh
-          setTimeout(() => {
-            void disposeTurnstile().finally(() => {
-              if (verifyState === 'done') verifyState = 'idle';
-            });
-          }, TURNSTILE_DISPOSE_DELAY_MS);
-          return token;
+          if (!el || destroyed) throw new Error('turnstile container missing');
+          return renderTurnstile(siteKey, el);
         },
       });
-      store.applySync(response);
-      // Collapse the verify layer only after content lands, avoiding a one-frame
-      // flash of the "no photos yet" empty state
-      if (firstEntry && verifyState === 'loading') verifyState = 'done';
-    } catch (e) {
-      console.error('[identity] bootstrap failed', e);
-      // A failed Turnstile (script blocked, iframe intercepted, mount point
-      // missing, or its 15s timeout) is swallowed above, leaving verifyState
-      // stuck at 'loading' with no reset — the full-screen verify overlay then
-      // never disappears, i.e. a permanent "loading" state. Drop it back to idle
-      // and tear down any half-mounted widget so the gallery shows through.
-      if (verifyState === 'loading') verifyState = 'idle';
-      void disposeTurnstile();
-    } finally {
-      bootstrapping = false;
-    }
-  }
-
-  // `untrack` keeps the guard out of the effect's dependency set, so writing it does
-  // not schedule the second run a plain `if (initialized) return` would.
-  const EDITOR_JOBS_KEY = 'infoto-editor-jobs';
-
-  function readEditorJobs(): Set<string> {
-    try {
-      const raw = sessionStorage.getItem(EDITOR_JOBS_KEY);
-      if (raw) return new Set(JSON.parse(raw) as string[]);
-    } catch {
-      /* noop */
-    }
-    return new Set();
-  }
-
-  function writeEditorJobs(jobs: Set<string>): void {
-    try {
-      sessionStorage.setItem(EDITOR_JOBS_KEY, JSON.stringify([...jobs]));
-    } catch {
-      /* noop */
-    }
-  }
-
-  $effect(() => {
-    if (untrack(() => initialized)) return;
-    initialized = true;
-    void (async () => {
-      await bootstrapIdentity();
-      await engine.init().catch(console.error);
-      engine.install();
-      pipeline.start();
-      const jobs = readEditorJobs();
-      if (jobs.size > 0) {
-        await new Promise((r) => setTimeout(r, 1000));
-        for (const jobId of jobs) {
-          if (!uploadTasks.has(jobId)) {
-            toast.error(copy.upload.editorLost);
-          }
-        }
-        sessionStorage.removeItem(EDITOR_JOBS_KEY);
+      if (firstEntry && !destroyed) {
+        verifyState = 'done';
+        verificationTimer = setTimeout(() => {
+          void disposeTurnstile().finally(() => {
+            if (!destroyed) verifyState = 'idle';
+          });
+        }, TURNSTILE_DISPOSE_DELAY_MS);
       }
-    })();
+      return { response, status: 200 };
+    } catch (error) {
+      clearTimeout(verificationTimer);
+      void disposeTurnstile();
+      if (!destroyed) verifyState = 'idle';
+      throw error;
+    }
+  }
+
+  onMount(() => {
+    void engine.init().catch((error) => {
+      syncing = false;
+      console.error('[sync] init', error);
+      notifySyncFailure();
+    });
+    engine.install();
+    uploads.start();
   });
 
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
-    pipeline.stop();
+    store.dispose();
+    clearTimeout(verificationTimer);
+    void disposeTurnstile();
   });
 
-  // Task sink lives in its own effect so its unsubscribe is honoured on teardown.
-  // (Inside the guarded init effect above it would be torn down by the second run
-  // that the `initialized` write triggers.)
-  $effect(() =>
-    pipeline.onTask((t) => {
-      // Header counter: a job is resolved the moment it stops being one of the panel's
-      // rows (transcoded, dead, or cancelled). The counter therefore reaches total exactly
-      // when the list empties — an upload still in flight is the card's business, not the
-      // panel's, so counting it here would leave the panel header above the real total.
-      if (!PANEL_STAGES.has(t.phase)) countResolved(t.jobId);
-      // Card preview comes from the transcoded artifact, not the picked File.
-      if (t.meta && (t.phase === 'uploading' || t.phase === 'failed')) {
-        void ensureArtifactPreview(t.jobId, t.meta.type);
-      }
-      // Done/duplicate echo whose photo already landed must not resurrect an
-      // optimistic card, but an existing row still drops — otherwise it freezes at
-      // its last stage (the cleanup effect below only scans done/duplicate).
-      if (
-        (t.phase === 'done' || t.phase === 'duplicate') &&
-        t.sha256 &&
-        store.photos.some((p) => p.sha256 === t.sha256)
-      ) {
-        if (t.phase === 'duplicate' && t.fileName && !toastedDuplicates.has(t.jobId)) {
-          toastedDuplicates.add(t.jobId);
-          toast.info(fmt(copy.upload.duplicate, { fileName: t.fileName }));
-        }
-        if (uploadTasks.has(t.jobId)) dropTask(t.jobId);
-        return;
-      }
-      // Duplicate against a sha not (yet) in the store: brief panel row, toast, and
-      // the cleanup effect drops it — no silent nothing, no lingering row.
-      if (t.phase === 'duplicate' && t.fileName && !toastedDuplicates.has(t.jobId)) {
-        toastedDuplicates.add(t.jobId);
-        toast.info(fmt(copy.upload.duplicate, { fileName: t.fileName }));
-      }
-      // Album upload failure: surface a toast so the user notices even if the
-      // failure card scrolled out of view. Editor failures have inline UI.
-      if (t.phase === 'failed' && t.purpose === 'album' && !toastedFailures.has(t.jobId)) {
-        toastedFailures.add(t.jobId);
-        toast.error(
-          fmt(copy.upload.failed, { fileName: t.fileName || copy.upload.defaultFileName }),
-          {
-            description: translateTaskError(t.error, { uploadLeg: !!t.sha256 }),
-          },
-        );
-      }
-      // Optimistic tempIds are assigned here — both pendingPhotos and uploadOverlays
-      // deriveds read them; callbacks run before any derived evaluates, so order is safe
-      if (['uploading', 'done', 'failed'].includes(t.phase) && !tempIdByJob.has(t.jobId)) {
-        const id = nextTempId--;
-        tempIdByJob.set(t.jobId, id);
-        jobByTempId.set(id, t.jobId);
-        tempCreatedAt.set(t.jobId, Date.now());
-        writeTempCreatedAt(tempCreatedAt);
-        if (t.purpose === 'editor') {
-          const jobs = readEditorJobs();
-          jobs.add(t.jobId);
-          writeEditorJobs(jobs);
-        }
-      }
-      uploadTasks = new Map(uploadTasks.set(t.jobId, t));
-    }),
-  );
-
-  // ---- Photo mark / delete ----
-  // Addressed by sha256, never by the numeric id: an in-flight upload has no id yet, and
-  // the hash is the photo's stable unique index (the id only serves the /l/{id36} link).
-  // The store applies the optimistic update and queues the op (deferring it behind the
-  // upload op when the row does not exist yet), so these handlers just forward the hash.
-  const shaOf = (photo: Photo): string => photo.sha256;
+  // Forward photo operations by SHA-256 to the optimistic store and durable operation log.
   /** Ids in a selection → the photos' hashes, resolved against both lists. */
   function shasOf(ids: number[]): string[] {
-    const all = [...pendingPhotos, ...visiblePhotos];
+    const all = [...uploads.pendingPhotos, ...visiblePhotos];
     const out: string[] = [];
     for (const id of ids) {
       const sha = all.find((p) => p.id === id)?.sha256;
@@ -607,16 +180,16 @@
     return out;
   }
   function handleLike(photo: Photo) {
-    store.toggleMark(shaOf(photo), 'like');
+    store.toggleMark(photo.sha256, 'like');
   }
   function handleDislike(photo: Photo) {
-    store.toggleMark(shaOf(photo), 'dislike');
+    store.toggleMark(photo.sha256, 'dislike');
   }
   function handleRequestDelete(photo: Photo) {
-    store.toggleMark(shaOf(photo), 'report');
+    store.toggleMark(photo.sha256, 'report');
   }
   function handleDelete(photo: Photo) {
-    store.deletePhotos([shaOf(photo)]);
+    store.deletePhotos([photo.sha256]);
   }
   function handleDeleteSelected(ids: number[]) {
     const shas = shasOf(ids);
@@ -651,9 +224,8 @@
     }
   }
 
-  // Previous filters reference: on layout-only changes settings.filters keeps the
-  // same spread reference and must not recompute visiblePhotos → waterfall reflow
-  // (one root cause of the freeze)
+  // Skip visiblePhotos when only layout changed. settings.filters keeps the same
+  // reference, and recomputing it reflows the waterfall.
   let _prevFilterRef: import('./settings').FilterSettings | undefined;
   function handleSettingsChange(s: Settings) {
     layout = {
@@ -688,7 +260,8 @@
       const ordered = randomOrder
         .map((id) => map.get(id))
         .filter((p): p is (typeof list)[number] => !!p);
-      const rest = list.filter((p) => !randomOrder.includes(p.id));
+      const orderedIds = new Set(randomOrder);
+      const rest = list.filter((p) => !orderedIds.has(p.id));
       list = [...ordered, ...rest];
     }
     return list;
@@ -744,24 +317,12 @@
     const input = e.target as HTMLInputElement;
     const files = input.files;
     if (!files || files.length === 0) return;
-    // A pick while nothing is in flight starts a fresh batch — the counter describes one
-    // batch, not the session.
-    const inFlight = Array.from(uploadTasks.values()).some(
-      (t) => t.phase !== 'done' && t.phase !== 'duplicate' && t.phase !== 'failed',
-    );
-    if (!inFlight) {
-      batchTotal = 0;
-      batchDone = 0;
-      countedJobs.clear();
-      toastedFailures.clear();
-      toastedDuplicates.clear();
-    }
-    pipeline.addFiles(files, queueSizeProbe);
+    uploads.addFiles(files);
     input.value = '';
   }
   /** Panel row remove button: cancel anywhere in the flow (queue, token wait, transcode). */
   function handleRemoveUpload(jobId: string) {
-    pipeline.cancel(jobId);
+    uploads.cancel(jobId);
   }
   function handleSync() {
     void engine.sync();
@@ -798,7 +359,6 @@
       onSettingsChange={handleSettingsChange}
       photos={store.photos}
       onFilterCount={(n) => (filterCount = n)}
-      {resetToken}
     />
   </OverlaySidebar>
 
@@ -823,9 +383,7 @@
     />
 
     <main class="relative flex-1 overflow-hidden">
-      <!-- Inbound verification: a new user's waterfall is empty anyway, so the captcha sits
-           centered here and the content below shows through the fade. The node unmounts only
-           after the fade (widget disposed first). -->
+      <!-- Verification fades out after the snapshot arrives and the widget is disposed. -->
       {#if verifyState !== 'idle'}
         <div
           data-verify
@@ -845,42 +403,21 @@
       {#if syncing && store.photos.length === 0}
         <div class="flex flex-col items-center justify-center py-24">
           <div class="size-12 animate-pulse rounded-full bg-muted"></div>
-          <p class="mt-4 text-sm text-muted-foreground">Loading…</p>
+          <p class="mt-4 text-sm text-muted-foreground">{copy.gallery.loading}</p>
         </div>
-      {:else if visiblePhotos.length === 0 && pendingPhotos.length === 0}
-        <div
-          class="flex flex-col items-center justify-center py-24 text-center"
-          style="animation: fadeInUp var(--duration-enter) var(--ease-enter) both"
-        >
-          <div class="mb-6">
-            <svg
-              class="size-12 text-muted-foreground"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="17 8 12 3 7 8"></polyline>
-              <line x1="12" y1="3" x2="12" y2="15"></line>
-            </svg>
-          </div>
-          <p class="text-lg font-medium tracking-[-0.02em] text-foreground/85">
-            {store.photos.length === 0 ? copy.gallery.empty : copy.gallery.emptyFiltered}
-          </p>
-          <p class="mt-1.5 text-sm text-muted-foreground">
-            {store.photos.length === 0 ? copy.gallery.emptyHint : copy.gallery.emptyFilteredHint}
-          </p>
-        </div>
+      {:else if visiblePhotos.length === 0 && uploads.pendingPhotos.length === 0}
+        <EmptyState
+          icon={Upload}
+          text={store.photos.length === 0 ? copy.gallery.empty : copy.gallery.emptyFiltered}
+          hint={store.photos.length === 0 ? copy.gallery.emptyHint : copy.gallery.emptyFilteredHint}
+        />
       {:else}
         <WaterfallLayout
           photos={visiblePhotos}
-          pending={pendingPhotos}
-          overlays={uploadOverlays}
-          onRetryUpload={handleRetryUpload}
-          onDismissUpload={handleDismissUpload}
+          pending={uploads.pendingPhotos}
+          overlays={uploads.overlays}
+          onRetryUpload={uploads.retry}
+          onDismissUpload={uploads.dismiss}
           selfId={store.selfId}
           dir={layout.dir}
           strategy={layout.strategy}
@@ -907,7 +444,7 @@
       <Megaphone class="size-5 text-primary" />
     {/snippet}
     <AnnouncementSidebar
-      announcements={store.announcements ?? []}
+      announcements={store.announcements}
       selfId={store.selfId}
       onReact={handleReact}
       onVote={handleVote}
@@ -917,8 +454,8 @@
 
   <!-- Upload progress: the transcode leg only (the card curtain carries the rest). -->
   <UploadPanel
-    tasks={panelRows}
-    progress={{ done: batchDone, total: batchTotal }}
+    tasks={uploads.panelRows}
+    progress={uploads.progress}
     onRemove={handleRemoveUpload}
     onHeight={handleUploadPanelHeight}
     hidden={multiMode}
@@ -926,16 +463,7 @@
 
   <!-- Toast notifications: bottom-left (keeps image subjects clear); color, radius, and font all use site tokens -->
   <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->
-  <!-- expand: the stack is always fully open. Sonner's hover-driven expansion is a trap
-       here — swiping a toast away ends the gesture outside the list, so its internal
-       `interacting` flag is never cleared and the survivors stay stuck expanded.
-       The bottom offset tracks whatever owns the bottom edge. Two elements do, and
-       they are mutually exclusive (the panel slides away in multi-select): the
-       multi-select bar (full-width, bottom-0, z-40) and the upload panel (full-width on
-       narrow screens, bottom-right above it on wide ones). Toasts sit at bottom-LEFT, so
-       on desktop the upload panel is beside them and needs no clearance — only a 1rem
-       gap from the edge. Clearance matters: at 1rem the toasts landed on the multi-select
-       bar and swallowed clicks on select-all. -->
+  <!-- Expanded toast stack with measured clearance above the upload panel or selection bar. -->
   <Toaster
     class="toast-stack"
     position="bottom-left"

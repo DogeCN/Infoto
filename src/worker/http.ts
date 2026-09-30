@@ -24,14 +24,12 @@ export function forbidden(c: Context): Response {
 /** Middleware rejecting every caller that is not the root identity. */
 export function rootGate(db: Db): MiddlewareHandler {
   return async (c, next) => {
-    const user = await resolveUser(db, c.req.header('cookie'));
-    if (!user || user.id !== ROOT_ID) return forbidden(c);
+    if (!(await requireRoot(db, c))) return forbidden(c);
     await next();
   };
 }
 
-/** Root identity for `c`, or null. Route handlers answer 403 themselves so every
- * privileged endpoint shares one error contract. */
+/** Check whether the request belongs to the root identity. */
 export async function requireRoot(db: Db, c: Context): Promise<boolean> {
   const user = await resolveUser(db, c.req.header('cookie'));
   return user !== null && user.id === ROOT_ID;
@@ -49,28 +47,28 @@ export function idParam(c: Context): number | null {
 /** Distinct positive integer ids out of an `{ ids }` body; anything else is dropped. */
 export function bodyIds(body: { ids?: unknown } | null): number[] {
   const raw: unknown[] = Array.isArray(body?.ids) ? body.ids : [];
-  const out: number[] = [];
-  for (const x of raw) {
-    if (typeof x === 'number' && Number.isInteger(x) && x > 0 && !out.includes(x)) out.push(x);
-  }
-  return out;
+  return [
+    ...new Set(
+      raw.filter(
+        (id): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0,
+      ),
+    ),
+  ];
 }
 
-/**
- * `POST /reorder`: renumber `sort` to 0…n-1. The submitted ids lead; ids missing from
- * the body follow in their current order, so a partial submission still produces a
- * gapless 0…n-1 sequence and `sort` stays unique.
- */
+/** Place submitted IDs first, preserve the order of omitted rows, and assign consecutive sort values. */
 export function reorderHandler(db: Db, table: SortTable) {
   return async (c: Context): Promise<Response> => {
     const ids = bodyIds(await readJson<{ ids?: unknown }>(c));
     if (ids.length === 0) return badRequest(c);
-    const rows = await db.prepare(`SELECT id FROM ${table}`).all<{ id: number }>();
+    const rows = await db
+      .prepare(`SELECT id FROM ${table} ORDER BY sort ASC`)
+      .all<{ id: number }>();
     const rank = new Map(ids.map((id, i) => [id, i]));
     const rest = ids.length;
     const all = rows.results
       .map((row) => row.id)
-      .sort((a, b) => (rank.get(a) ?? rest) - (rank.get(b) ?? rest) || a - b);
+      .sort((a, b) => (rank.get(a) ?? rest) - (rank.get(b) ?? rest));
     await db.batch(
       all.map((id, i) => ({ sql: `UPDATE ${table} SET sort = ? WHERE id = ?`, binds: [i, id] })),
     );

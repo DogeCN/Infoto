@@ -1,3 +1,10 @@
+import { type ClassValue, clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
 export const toastOptions = {
   style: [
     // Surface and border use site tokens; richColors' four states tint only the

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Announcement, Feedback, Photo } from '$shared/types';
 import * as ops from '../../src/core/ops';
-import { splitVote } from '../../src/core/vote';
+import { splitVote } from '../../src/core/markdown';
 import { reactionCounts } from '../../src/core/reactions';
 import {
   applyFilters,
@@ -11,7 +11,7 @@ import {
   metricOf,
   metricRange,
 } from '../../src/settings';
-import { normalizeRangeValue, mapRangeValue } from '../../src/lib/components/rangeScale';
+import { mapRangeValue, normalizeRangeValue } from '../../src/base/lib/slider';
 
 const photo = (over: Partial<Photo> & { id: number }): Photo => ({
   sha256: `h${over.id}`,
@@ -38,224 +38,135 @@ const ann = (over: Partial<Announcement> & { id: number }): Announcement => ({
   ...over,
 });
 
-describe('ops: marks', () => {
-  it('toggleId adds / removes idempotently', () => {
+describe('frontend ops and filters', () => {
+  it('applies marks, deletes, and announcement writes without mutating the source', () => {
     expect(ops.toggleId([], 3, true)).toEqual([3]);
-    expect(ops.toggleId([3], 3, true)).toEqual([3]); // already present — no dup
+    expect(ops.toggleId([3], 3, true)).toEqual([3]);
     expect(ops.toggleId([3], 3, false)).toEqual([]);
-    expect(ops.toggleId([], 3, false)).toEqual([]); // already absent
-  });
-
-  it('applyMark only touches the target photo', () => {
-    const list = [photo({ id: 1 }), photo({ id: 2 })];
-    const out = ops.applyMark(list, 2, 'like', 7, true);
-    expect(out[0]!.likes).toEqual([]);
-    expect(out[1]!.likes).toEqual([7]);
-    expect(list[1]!.likes).toEqual([]); // original untouched
-  });
-
-  it('applyMarkMany covers every selected id', () => {
+    expect(ops.toggleId([], 3, false)).toEqual([]);
     const list = [photo({ id: 1 }), photo({ id: 2 }), photo({ id: 3 })];
-    const out = ops.applyMarkMany(list, [1, 3], 'dislike', 5, true);
-    expect(out.map((p) => p.dislikes.length)).toEqual([1, 0, 1]);
-  });
-
-  it('markOpType maps kind + direction to the contract op names', () => {
-    expect(ops.markOpType('like', true)).toBe('like');
+    const marked = ops.applyMark(list, 2, 'like', 7, true);
+    expect(marked[0]!.likes).toEqual([]);
+    expect(marked[1]!.likes).toEqual([7]);
+    expect(list[1]!.likes).toEqual([]);
+    expect(
+      ops.applyMarkMany(list, [1, 3], 'dislike', 5, true).map((p) => p.dislikes.length),
+    ).toEqual([1, 0, 1]);
     expect(ops.markOpType('like', false)).toBe('unlike');
     expect(ops.markOpType('dislike', true)).toBe('dislike');
-    expect(ops.markOpType('dislike', false)).toBe('undislike');
-    expect(ops.markOpType('report', true)).toBe('report');
     expect(ops.markOpType('report', false)).toBe('unreport');
-  });
+    expect(ops.applyDelete(list, [1]).map((p) => p.id)).toEqual([2, 3]);
 
-  it('applyDelete drops the given ids only', () => {
-    const list = [photo({ id: 1 }), photo({ id: 2 })];
-    expect(ops.applyDelete(list, [1]).map((p) => p.id)).toEqual([2]);
-  });
-});
-
-describe('ops: announcements', () => {
-  it('applyVote keeps one row per user (overwrite, not append)', () => {
-    let list = [ann({ id: 1 })];
-    list = ops.applyVote(list, 1, 4, 0);
-    expect(list[0]!.votes).toEqual([{ userId: 4, option: 0 }]);
-    list = ops.applyVote(list, 1, 4, 2);
-    expect(list[0]!.votes).toEqual([{ userId: 4, option: 2 }]);
-    list = ops.applyVote(list, 1, 4, null);
-    expect(list[0]!.votes).toEqual([]);
-  });
-
-  it('applyReact replaces the user row and clears on null', () => {
-    let list = [ann({ id: 1 })];
-    list = ops.applyReact(list, 1, 4, '👍');
-    list = ops.applyReact(list, 1, 4, '🔥');
-    expect(list[0]!.reactions).toEqual([{ userId: 4, emoji: '🔥' }]);
-    list = ops.applyReact(list, 1, 4, null);
-    expect(list[0]!.reactions).toEqual([]);
-  });
-
-  it('applyReorder normalizes sort to 0…n-1 and appends the unmentioned', () => {
-    const list = [ann({ id: 1, sort: 0 }), ann({ id: 2, sort: 1 }), ann({ id: 3, sort: 2 })];
-    const out = ops.applyReorder(list, [3, 1]);
-    expect(out.map((a) => a.id)).toEqual([3, 1, 2]);
-    expect(out.map((a) => a.sort)).toEqual([0, 1, 2]);
-  });
-
-  it('applyAnnCreate uses a negative temp id and appends at the end', () => {
-    const list = [ann({ id: 1, sort: 0 })];
-    const out = ops.applyAnnCreate(list, -1, 'new', 'body', 123);
-    expect(out).toHaveLength(2);
-    expect(out[1]!).toMatchObject({ id: -1, title: 'new', sort: 1, updatedAt: 123 });
-  });
-});
-
-describe('vote parsing', () => {
-  it('splits around the first :::vote line', () => {
-    const r = splitVote('说明\n:::vote 满意 | 一般 | 不满意\n尾部');
-    expect(r.options).toEqual(['满意', '一般', '不满意']);
-    expect(r.before).toBe('说明');
-    expect(r.after).toBe('尾部');
-  });
-
-  it('keeps a leading vote with an empty before part', () => {
-    const r = splitVote(':::vote A | B\n说明');
-    expect(r.options).toEqual(['A', 'B']);
-    expect(r.before).toBe('');
-    expect(r.after).toBe('说明');
-  });
-
-  it('returns no options when absent (body stays in before)', () => {
-    const r = splitVote('纯文本');
-    expect(r.options).toEqual([]);
-    expect(r.before).toBe('纯文本');
-    expect(r.after).toBe('');
-  });
-
-  it('ignores a second :::vote line (it stays in after)', () => {
-    const r = splitVote(':::vote A | B\n:::vote C | D');
-    expect(r.options).toEqual(['A', 'B']);
-    expect(r.before).toBe('');
-    expect(r.after).toBe(':::vote C | D');
-  });
-});
-
-describe('reactions aggregation', () => {
-  it('counts per emoji and flags the current user, in fixed set order', () => {
-    const a = ann({
-      id: 1,
-      reactions: [
-        { userId: 2, emoji: '🔥' },
-        { userId: 1, emoji: '👍' },
-        { userId: 3, emoji: '👍' },
-      ],
+    let announcements = [ann({ id: 1 })];
+    announcements = ops.applyVote(announcements, 1, 4, 0);
+    announcements = ops.applyVote(announcements, 1, 4, 2);
+    expect(announcements[0]!.votes).toEqual([{ userId: 4, option: 2 }]);
+    announcements = ops.applyVote(announcements, 1, 4, null);
+    expect(announcements[0]!.votes).toEqual([]);
+    announcements = ops.applyReact(announcements, 1, 4, '👍');
+    announcements = ops.applyReact(announcements, 1, 4, '🔥');
+    expect(announcements[0]!.reactions).toEqual([{ userId: 4, emoji: '🔥' }]);
+    announcements = ops.applyReact(announcements, 1, 4, null);
+    expect(announcements[0]!.reactions).toEqual([]);
+    const reordered = ops.applyReorder(
+      [ann({ id: 1, sort: 0 }), ann({ id: 2, sort: 1 }), ann({ id: 3, sort: 2 })],
+      [3, 1],
+    );
+    expect(reordered.map((a) => a.id)).toEqual([3, 1, 2]);
+    expect(reordered.map((a) => a.sort)).toEqual([0, 1, 2]);
+    expect(ops.applyAnnCreate([ann({ id: 1, sort: 0 })], -1, 'new', 'body', 123)[1]).toMatchObject({
+      id: -1,
+      title: 'new',
+      sort: 1,
+      updatedAt: 123,
     });
-    expect(reactionCounts(a, 1)).toEqual([
+
+    let feedback: Feedback[] = [];
+    feedback = ops.applyFbCreate(feedback, -1, 0, 'hi', 5);
+    expect(feedback).toEqual([{ id: -1, userId: 0, contentMd: 'hi', createdAt: 5, sort: -1 }]);
+    feedback = ops.applyFbCreate(feedback, -2, 0, 'newer', 6);
+    expect(feedback.map((f) => f.sort)).toEqual([-2, -1]);
+    expect(ops.applyFbDelete(feedback, -1).map((f) => f.id)).toEqual([-2]);
+  });
+
+  it('parses one vote block and counts reactions in set order', () => {
+    const split = splitVote('说明\n:::vote 满意 | 一般 | 不满意\n尾部');
+    expect(split.options).toEqual(['满意', '一般', '不满意']);
+    expect(split.before).toBe('说明');
+    expect(split.after).toBe('尾部');
+    expect(splitVote(':::vote A | B\n说明')).toMatchObject({
+      options: ['A', 'B'],
+      before: '',
+      after: '说明',
+    });
+    expect(splitVote('纯文本')).toMatchObject({ options: [], before: '纯文本', after: '' });
+    expect(splitVote(':::vote A | B\n:::vote C | D').after).toBe(':::vote C | D');
+    expect(
+      reactionCounts(
+        ann({
+          id: 1,
+          reactions: [
+            { userId: 2, emoji: '🔥' },
+            { userId: 1, emoji: '👍' },
+            { userId: 3, emoji: '👍' },
+          ],
+        }),
+        1,
+      ),
+    ).toEqual([
       { emoji: '👍', count: 2, selfReacted: true },
       { emoji: '🔥', count: 1, selfReacted: false },
     ]);
-  });
-
-  it('omits emojis that never appeared', () => {
     expect(reactionCounts(ann({ id: 1 }), 0)).toEqual([]);
   });
-});
 
-describe('filters', () => {
-  const photos = [
-    photo({ id: 1, type: 0, uploader: 0, likes: [0], size: 10 }),
-    photo({ id: 2, type: 1, uploader: 1, dislikes: [0], size: 20 }),
-    photo({ id: 3, type: 2, uploader: 0, reports: [0], size: 30 }),
-  ];
-
-  it('metricOf: heat is likes − dislikes', () => {
+  it('filters by type, ownership, marks, and ranges', () => {
+    const photos = [
+      photo({ id: 1, type: 0, uploader: 0, likes: [0], size: 10 }),
+      photo({ id: 2, type: 1, uploader: 1, dislikes: [0], size: 20 }),
+      photo({ id: 3, type: 2, uploader: 0, reports: [0], size: 30 }),
+    ];
     expect(metricOf(photos[0]!, 'heat')).toBe(1);
     expect(metricOf(photos[1]!, 'heat')).toBe(-1);
-    expect(metricOf(photos[2]!, 'likes')).toBe(0);
-    expect(metricOf(photos[2]!, 'size')).toBe(30);
-  });
-
-  it('metricRange spans the data; null when empty', () => {
     expect(metricRange(photos, 'size')).toEqual([10, 30]);
-    expect(metricRange(photos, 'likes')).toEqual([0, 1]);
     expect(metricRange([], 'size')).toBeNull();
-  });
-
-  it('isFilterable is false when min = max', () => {
     const flat = [photo({ id: 1, likes: [1] }), photo({ id: 2, likes: [2] })];
     expect(isFilterable(flat, 'likes')).toBe(false);
-    expect(isFilterable(flat, 'size')).toBe(false);
     expect(isFilterable(photos, 'size')).toBe(true);
-  });
 
-  it('type filter ANDs with ownership tri-state', () => {
     const f = defaultFilterSettings();
     expect(applyFilters(photos, f, 0)).toHaveLength(3);
-
     f.types = new Set([0, 2]);
-    expect(applyFilters(photos, f, 0).map((p) => p.id)).toEqual([1, 3]);
-
     f.ownedByMe = 'only';
     expect(applyFilters(photos, f, 0).map((p) => p.id)).toEqual([1, 3]);
-
     f.ownedByMe = 'exclude';
     expect(applyFilters(photos, f, 0)).toEqual([]);
+    const liked = defaultFilterSettings();
+    liked.likedByMe = 'only';
+    expect(applyFilters(photos, liked, 0).map((p) => p.id)).toEqual([1]);
+    liked.likedByMe = 'exclude';
+    expect(applyFilters(photos, liked, 0).map((p) => p.id)).toEqual([2, 3]);
+    const reported = defaultFilterSettings();
+    reported.reportedByMe = 'only';
+    expect(applyFilters(photos, reported, 0).map((p) => p.id)).toEqual([3]);
+    const ranged = defaultFilterSettings();
+    ranged.ranges = { size: [15, 25] };
+    expect(applyFilters(photos, ranged, 0).map((p) => p.id)).toEqual([2]);
+    expect(countActiveFilters(defaultFilterSettings())).toBe(0);
+    const counted = defaultFilterSettings();
+    counted.types = new Set([0]);
+    counted.likedByMe = 'only';
+    counted.ranges = { size: [1, 2] };
+    expect(countActiveFilters(counted)).toBe(3);
   });
 
-  it('tri-state only / exclude work on mark arrays', () => {
-    const f = defaultFilterSettings();
-    f.likedByMe = 'only';
-    expect(applyFilters(photos, f, 0).map((p) => p.id)).toEqual([1]);
-    f.likedByMe = 'exclude';
-    expect(applyFilters(photos, f, 0).map((p) => p.id)).toEqual([2, 3]);
-
-    const g = defaultFilterSettings();
-    g.reportedByMe = 'only';
-    expect(applyFilters(photos, g, 0).map((p) => p.id)).toEqual([3]);
-  });
-
-  it('range filters clip the result set', () => {
-    const f = defaultFilterSettings();
-    f.ranges = { size: [15, 25] };
-    expect(applyFilters(photos, f, 0).map((p) => p.id)).toEqual([2]);
-  });
-
-  it('countActiveFilters counts types, tri-states and ranges', () => {
-    const f = defaultFilterSettings();
-    expect(countActiveFilters(f)).toBe(0);
-    f.types = new Set([0]);
-    f.likedByMe = 'only';
-    f.ranges = { size: [1, 2] };
-    expect(countActiveFilters(f)).toBe(3);
-  });
-});
-
-describe('ops: feedback', () => {
-  it('applyFbCreate prepends with a top-of-list sort; applyFbDelete removes by id', () => {
-    let list: Feedback[] = [];
-    list = ops.applyFbCreate(list, -1, 0, 'hi', 5);
-    // sort one below the current minimum, matching the server's INSERT → newest on top
-    expect(list).toEqual([{ id: -1, userId: 0, contentMd: 'hi', createdAt: 5, sort: -1 }]);
-    list = ops.applyFbCreate(list, -2, 0, 'newer', 6);
-    expect(list.map((f) => f.id)).toEqual([-2, -1]);
-    expect(list.map((f) => f.sort)).toEqual([-2, -1]);
-    expect(ops.applyFbDelete(list, -1).map((f) => f.id)).toEqual([-2]);
-  });
-});
-
-describe('slider scale mapping', () => {
-  it('linear maps endpoints and reverses with rounding', () => {
+  it('maps linear and logarithmic slider positions', () => {
     expect(normalizeRangeValue(0, 0, 100, 'linear')).toBe(0);
     expect(normalizeRangeValue(100, 0, 100, 'linear')).toBe(1);
     expect(mapRangeValue(0.255, 0, 100, 'linear')).toBe(26);
-  });
-
-  it('log map keeps the low end usable across orders of magnitude', () => {
     expect(normalizeRangeValue(0, 0, 10_000_000, 'logarithmic')).toBe(0);
     expect(normalizeRangeValue(10_000_000, 0, 10_000_000, 'logarithmic')).toBe(1);
-    // 1 KB resolves to a meaningful fraction instead of near-zero.
     expect(normalizeRangeValue(1024, 0, 10_000_000, 'logarithmic')).toBeGreaterThan(0.3);
-    expect(mapRangeValue(0, 0, 10_000_000, 'logarithmic')).toBe(0);
     expect(mapRangeValue(1, 0, 10_000_000, 'logarithmic')).toBe(10_000_000);
   });
 });

@@ -15,13 +15,7 @@ export function artifactPath(jobId: string, ext: 'webp' | 'webm'): string {
   return `${jobId}.${ext}`;
 }
 
-/**
- * Write to OPFS while hashing the same stream — one pass, two uses; hashing completes when the artifact lands.
- *
- * `onBytes` forwards the tee loop's cumulative byte count; the caller owns the
- * denominator (the artifact's own size is known before the loop starts, so no second
- * measuring pass is needed to know how far along it is).
- */
+/** Write the artifact to OPFS while hashing its stream and reporting cumulative bytes. */
 export async function storeArtifact(
   jobId: string,
   blob: Blob,
@@ -35,9 +29,7 @@ export async function storeArtifact(
     const { sha256, bytes } = await hashBlob(
       blob,
       async (chunk) => {
-        // TS 5.7+ parameterizes Uint8Array over ArrayBufferLike;
-        // FileSystemWriteChunkType requires ArrayBuffer (not SharedArrayBuffer).
-        // hashBlob chunks come from Blob.stream, backed by ArrayBuffer — safe cast.
+        // Blob stream chunks are ArrayBuffer-backed file-write data.
         await writable.write(chunk as unknown as FileSystemWriteChunkType);
       },
       onBytes,

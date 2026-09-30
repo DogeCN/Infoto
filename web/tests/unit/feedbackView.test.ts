@@ -9,14 +9,11 @@ const feedback: Feedback[] = [
 ];
 
 describe('admin feedback view', () => {
-  it('searches content, user IDs, and feedback IDs case-insensitively', () => {
+  it('searches content and ids, and copies the list for an empty query', () => {
     expect(filterFeedback(feedback, '  SEARCH ').map((item) => item.id)).toEqual([10]);
     expect(filterFeedback(feedback, '20').map((item) => item.id)).toEqual([11]);
     expect(filterFeedback(feedback, '12').map((item) => item.id)).toEqual([12]);
     expect(filterFeedback(feedback, '导出').map((item) => item.id)).toEqual([12]);
-  });
-
-  it('returns a copy for an empty query', () => {
     const result = filterFeedback(feedback, '  ');
     expect(result).toEqual(feedback);
     expect(result).not.toBe(feedback);

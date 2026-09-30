@@ -1,23 +1,5 @@
 <script lang="ts">
-  // Top bar. Three densities, resolved from measured widths (see topbarFit.ts) rather
-  // than from a viewport breakpoint:
-  //
-  //   full    — sort labels + all eight controls, one screen
-  //   compact — icon-only sort pill + all eight controls, one screen
-  //   paged   — icon-only pill, two sliding screens with the flying arrow
-  //
-  // The bar gives ground one step at a time as it narrows: the labels go first, and
-  // only when that is still not enough does the arrow appear. Nothing is decided by
-  // guessing how wide a phone is — the old `hidden sm:inline` asked about the viewport,
-  // not about whether the pill was actually squeezed, so labels hid at 320px while
-  // there was still room and stayed visible while things really were tight.
-  //
-  // Measurement trick: the inactive pill variant (and the arrow when not paged) stay in
-  // the DOM as `invisible absolute`. They leave the flow — no footprint, no geometry
-  // change — but still lay out, so their widths are real measurements rather than
-  // estimates. A locale change that lengthens the labels re-measures for free.
-  //
-  // Fixed full width + frosted glass, not sticky (iOS Safari has a known backdrop-filter bug).
+  // Fixed top bar with measured full, compact, and two-page densities. Labels collapse before pagination activates.
   import { Settings, Megaphone, CheckSquare, UploadCloud, Funnel } from '@lucide/svelte';
   import SortPill from './SortPill.svelte';
   import SyncButton from './SyncButton.svelte';
@@ -68,18 +50,10 @@
   // vertical, scrollLeft when horizontal), frosted glass fades in once scrolled.
   let scrolled = $derived(scroll.y > 8 || scroll.x > 8);
 
-  // ---- density resolution ------------------------------------------------------
-  // Starts at the roomiest layout: it is the only choice that cannot overflow, so the
-  // pre-measurement frame is harmless, whereas guessing low would flash the arrow at
-  // every user who never needs it.
+  // Roomiest layout until the first measurement. Guessing low would flash the arrow.
   let mode = $state<BarMode>('full');
 
-  /**
-   * The bar's own width, mirrored into reactive state by the ResizeObserver below.
-   * Everything derived (height, padding, and the fit requirement) reads this rather
-   * than measuring the DOM, because a DOM measurement read inside `$derived` is
-   * evaluated once and never invalidated.
-   */
+  /** Observed bar width driving reactive geometry and density. */
   let barW = $state(0);
 
   // Paged only — one value, not two booleans: there is no third screen, so an integer
@@ -90,31 +64,15 @@
   }
   const paged = $derived(mode === 'paged');
 
-  // Continuous geometry. These replace `h-14 md:h-16` and `px-3 md:px-6`, whose single
-  // Continuous height. This replaces `h-14 md:h-16`, whose single 768px breakpoint
-  // snapped the bar from 55px to 63px in one pixel — a step change in a bar that is
-  // otherwise continuously adaptive. The padding is NOT ramped: it was `px-3 md:px-6`,
-  // and at desktop widths that 24px inset pushed the controls away from the window edge
-  // for no reason, so it is now a constant `px-3` at every width.
-  //
-  // The width comes from `barW`, NOT from `headerEl.clientWidth`: a DOM measurement is
-  // not reactive, so reading it in a `$derived` computes once and never updates again
-  // (observed as a bar frozen at its first computed size at every width).
-  // No rounding: the sub-pixel height is deliberate. A device pixel ratio above 1 can
-  // render it — at dpr 3.375 (the reference phone) the 56→64px ramp spans 27 device
-  // pixels, so fractional CSS values give 27 steps instead of 8. On a dpr-1 desktop the
-  // extra precision is simply dropped by the rasteriser, which is exactly the same 8
-  // steps as before and no worse.
+  // Interpolate bar height from its measured width without rounding fractional pixels.
   const barH = $derived(barHeight(barW));
   const rowStyle = $derived(`padding-left:${BAR_PAD}px;padding-right:${BAR_PAD}px`);
 
   // ---- measurement -------------------------------------------------------------
   let headerEl: HTMLElement | undefined = $state(undefined);
   /**
-   * The single-screen row (or a paged screen). Registered through an action rather than
-   * `bind:this` because two different nodes share the variable: `bind:` would leave a
-   * stale element behind after a mode switch, and reading padding from a detached node
-   * silently yields 0 — which made the requirement collapse and the bar page at 520px.
+   * The single-screen row, or a paged screen. An action, not `bind:this`: two nodes
+   * share the variable, and `bind:` would leave a detached element whose padding reads 0.
    */
   let rowEl: HTMLElement | undefined = $state(undefined);
   /** Action form: `use:` passes the node, so the element is captured here. */
@@ -124,9 +82,8 @@
   }
 
   /**
-   * Natural width of the labelled pill, derived from whichever variant is on screen plus
-   * the label delta. Never measured from a hidden copy — see the note in SortPill for
-   * why that number was 42px wrong and made the bar flap.
+   * Natural width of the labelled pill: the on-screen variant plus the label delta.
+   * A hidden copy reports the containing block, not content width.
    */
   let labelledPillW = $state(0);
   let iconPillW = $state(0);
@@ -142,24 +99,14 @@
   }
 
   /**
-   * The arrow's width. It is not in the single-screen DOM at all, so reading it there
-   * gave 0 and understated the paged requirement. It is also not measurable from a
-   * hidden copy for the same reason as the pill, so it is a constant derived from the
-   * button's own classes (`p-2` + `size-5` + border) — fixed by construction, and the
-   * one control whose size cannot vary with content.
+   * Arrow width. Absent from the single-screen DOM, and a hidden copy does not report
+   * content width, so this is the button's own box (`p-2` + `size-5`).
    */
   const ARROW_W = 36;
 
   /**
-   * The two fixed-size control groups, measured from hidden in-flow probes rather than
-   * from whichever screen is currently rendered.
-   *
-   * These are five fixed-size icon buttons whose widths cannot vary with content or
-   * locale, so they are constants of the markup. Reading them off the live screen was
-   * another instance of the same mistake: when the mode flips, the bindings move to the
-   * paged rows, where one group is absent, so the requirement briefly read 0 for it and
-   * the bar could jump two modes at once. Measuring them once, from nodes that are
-   * always laid out, removes the feedback entirely.
+   * Widths of the two fixed-size control groups, read from probes that stay mounted.
+   * The live screen drops one group on a mode switch, so a read there briefly returns 0.
    */
   let groupProbeEl: HTMLElement | undefined = $state(undefined);
   let leftExtraW = $state(0);
@@ -180,17 +127,10 @@
     // page. `bar` is 0 only before the header is laid out.
     if (!bar || !labelledPillW || !iconPillW || !leftExtraW || !rightBtnsW || !rowEl) return;
 
-    // The padding is the same constant the row is rendered with, so the requirement can
-    // never disagree with what is on screen. (Reading it back off the row worked, but
-    // two earlier attempts re-derived it in JS — one re-implemented Tailwind's `md:`
-    // breakpoint, another counted two `gap-1` intervals where the row has three — and
-    // each mistake shifted the threshold enough to overflow a 13px window.)
+    // Use the rendered row gap when calculating the required width.
     const padX = BAR_PAD;
     const gap = parseFloat(getComputedStyle(rowEl).columnGap) || 0;
-    // One screen has four items (pill, left group, spacer, right group) → 3 intervals.
-    // Each paged screen also has three (pill, left, spacer, arrow | arrow, right group)
-    // → 2 intervals. These are structural, so they are written down rather than counted,
-    // and the markup keeps them in step (see the two `{#if}` arms).
+    // Spacing intervals: three in full mode and two on each paged screen.
     const SINGLE_GAPS = 3;
     const PAGED_GAPS = 2;
 
@@ -220,9 +160,7 @@
   $effect(() => {
     if (!headerEl) return;
     let raf = 0;
-    // The width is mirrored into `barW` here because that is what makes the geometry
-    // reactive — and `barW` must be set on *every* observed size, not only when the
-    // derived density changes, or the bar keeps whatever height it first computed.
+    // Update reactive width on every observed size change.
     const schedule = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
@@ -233,9 +171,7 @@
     };
     const ro = new ResizeObserver(schedule);
     ro.observe(headerEl);
-    // Only the bar itself: every measured width is either a fixed-size group (from the
-    // probe) or the pill (reported in-flow by SortPill), so no live node is observed and
-    // nothing can feed the decision back into itself.
+    // Observe the bar independently of its density-dependent contents.
     window.addEventListener('resize', schedule);
     // One late pass: a web-font swap can shift the label widths after first paint.
     const t = setTimeout(schedule, 250);
@@ -248,11 +184,7 @@
     };
   });
 
-  // ---- markup, defined once ----------------------------------------------------
-  // The two control groups are snippets rather than duplicated markup so that the
-  // width-measuring probe below renders *exactly* the same controls as the live bar. A
-  // hand-copied probe would silently drift from the real thing and report a width for a
-  // control that no longer exists.
+  // Shared control snippets keep measurement probes identical to visible controls.
 </script>
 
 {#snippet settingsBtn()}
@@ -316,18 +248,7 @@
   </div>
 {/snippet}
 
-<!-- Always-mounted copies of the two fixed-size control groups, used only to read
-       their widths. Rendered *outside* the header: inside it the element would either
-       become a flex child and steal space, or — if `fixed`/`absolute` — become the
-       containing block for the paged `w-[200%]` track and drag both screens off-screen.
-
-       `w-max` is what makes the width a content width (`absolute`/`fixed` shrink-to-fit
-       resolves against the containing block instead, which is how the sort pill's hidden
-       twin read 215px against a true 258px). `opacity-0` rather than `visibility: hidden`
-       because `visibility` is inherited but overridable by a descendant, and a real
-       button was in fact painting at the viewport origin. `height: 0` + `overflow: visible`
-       keeps the row from adding any height. `inert` keeps the invisible controls out of
-       the tab order. -->
+<!-- Inert, zero-height content-width probe outside the header's flex layout. -->
 <div
   bind:this={groupProbeEl}
   class="pointer-events-none flex w-max items-center gap-1 opacity-0"
@@ -349,9 +270,7 @@
   style="height: {barH}px"
 >
   {#if paged}
-    <!-- Two screens on one sliding track: the arrow genuinely travels across the bar
-         instead of two sets cross-fading. `w-[200%]` with each screen at half of it
-         means a −50% shift lands exactly on screen 2 at any bar width. -->
+    <!-- Two half-width screens on a double-width sliding track. -->
     <div
       class="flex h-full w-[200%] transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] {screen ===
       1
@@ -371,11 +290,7 @@
 
         <div class="flex-1"></div>
 
-        <!-- The arrow rides at the far edge of *each* screen, so the control that brings
-             you here is the control that takes you back. It is a fixed-size control, so
-             its width is a constant (ARROW_W) rather than something measured — measuring
-             a control that is not in this DOM is how the paged requirement got
-             understated before. -->
+        <!-- Fixed-size control on the outer edge of each screen. Width is ARROW_W. -->
         <div class="shrink-0">
           <PagerArrow {screen} onToggle={toggleScreen} />
         </div>
@@ -386,9 +301,7 @@
           <PagerArrow {screen} onToggle={toggleScreen} />
         </div>
 
-        <!-- The arrow stays hard left (it is the way back) while the buttons hug the
-             right edge, so screen 2 mirrors screen 1's balance: a control at each end,
-             nothing stranded in the middle. -->
+        <!-- Arrow hard left, buttons hard right: screen 2 mirrors screen 1. -->
         <div class="flex-1"></div>
 
         <div class="flex shrink-0 items-center gap-1">

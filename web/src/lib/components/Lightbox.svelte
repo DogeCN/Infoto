@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Full-screen media lightbox as a plain div layer: a shadcn Dialog's focus traps and inert would interfere with gesture bubbling.
-  // Gestures via direct DOM transforms: swipe left/right = like/dislike (auto-advance), down = download, up = action sheet;
-  // hints fade/scale with the drag and spring back below the threshold; double-click/pinch/Ctrl+wheel zoom, drag pans; no click paging.
+  import { overlay } from '$base/lib/overlay';
+  // Full-screen media viewer with swipe actions, pinch and wheel zoom, drag panning, and keyboard controls.
   import { MEDIA_TYPE, type Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import {
@@ -22,7 +21,7 @@
     Volume2,
   } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
-  import { proxyUrl } from '$base/lib/id36';
+  import { proxyUrl } from '$shared/media';
   import { humanSize } from '$base/lib/format';
   import ActionSheet from './ActionSheet.svelte';
   import TimeLabel from './TimeLabel.svelte';
@@ -113,15 +112,9 @@
     const transition = animate ? 'transform var(--duration-exit) var(--ease-exit)' : 'none';
     wrapEl.style.transition = transition;
     wrapEl.style.transform = `translate(${zoomX + dx}px, ${zoomY + dy}px) scale(${scale})`;
-    // Overlays riding inside the wrapper (the card's volume button) counter-scale so
-    // zooming the media does not inflate them. Set on the wrapper so the custom
-    // property inherits down; the CSS default (1) covers the pre-first-gesture paint.
-    // Tailwind's `scale-*` sets the separate `scale` property, so this `transform`
-    // does not fight the hover grow.
+    // Counter-scale media controls while preserving their independent hover scale.
     wrapEl.style.setProperty('--inv', String(1 / scale));
-    // `--inv` itself applies instantly, so on an animated zoom the button would jump
-    // to its counter-scaled size while the media is still growing — reading as a brief
-    // shrink then a pop. Mirroring the wrapper's transition puts both on one timeline.
+    // Apply the same transform transition to media and counter-scaled controls.
     if (cornerEl) cornerEl.style.transition = transition;
   }
 
@@ -273,15 +266,23 @@
     toggleDislike();
   }
 
+  let gestureTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    void open;
+    void photo?.sha256;
+    return () => clearTimeout(gestureTimer);
+  });
+
   function triggerGesture(dir: 'left' | 'right' | 'up' | 'down'): void {
     if (!photo) return;
+    clearTimeout(gestureTimer);
     applyWrap(0, 0, true);
     if (dir === 'left' || dir === 'right') {
       if (dir === 'left') markLike();
       else markDislike();
       gestureDir = dir;
       gestureRatio = 1;
-      setTimeout(() => {
+      gestureTimer = setTimeout(() => {
         gestureDir = null;
         gestureRatio = 0;
         onNavigate?.(currentIndex < photos.length - 1 ? currentIndex + 1 : 0);
@@ -291,7 +292,7 @@
       toast.success(copy.lightbox.downloadStarted);
       gestureDir = dir;
       gestureRatio = 1;
-      setTimeout(() => {
+      gestureTimer = setTimeout(() => {
         gestureDir = null;
         gestureRatio = 0;
       }, 250);
@@ -339,9 +340,7 @@
   }
 
   function onDblClick(e: MouseEvent): void {
-    // e.target is the capture element (pointer capture retargets click/dblclick
-    // to the stage), so hit-test the point itself: only a dblclick landing on
-    // the media may toggle zoom; bars/buttons/backdrop must not.
+    // Hit-test double clicks against media rather than the pointer-capture target.
     const hit = document.elementFromPoint(e.clientX, e.clientY);
     if (!hit?.closest('.lb-media')) return;
     if (showMenu || gestureMoved) return;
@@ -376,7 +375,8 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (!open) return;
+    if (!open || e.defaultPrevented) return;
+    if (e.key === ' ' && (e.target as HTMLElement).closest('button, a, input, textarea')) return;
 
     // While the menu is open, arrows / Escape only close it and never reach
     // the gestures (no marking or paging behind the menu). Other keys are
@@ -443,30 +443,13 @@
     scale = 1;
     zoomX = 0;
     zoomY = 0;
-    // New photo: reset failure state. `loadedUrl` is deliberately NOT cleared — a
-    // pre-warmed neighbour is already decoded, and blanking it would flash the
-    // skeleton over media that is sitting right there in cache. Each media element
-    // reports its own arrival, and a URL we are leaving simply stops matching.
+    // Reset load errors on photo changes while keeping the URL-based decoded-media cache.
     loadFailed = false;
     failStatus = 'ERROR';
     if (wrapEl) applyWrap();
   });
 
-  // Preload the two neighbours so switching feels instant, wrapping around the ends.
-  // Two things this effect deliberately does NOT do:
-  //   • it never cancels a warm-up. `photos` is a brand-new array on every /sync, so a
-  //     cleanup would abort downloads that are already in flight and start them over;
-  //     `img.src = ''` can also fire a stray request to the document URL.
-  //   • it does not warm while the viewer is closed. The Lightbox stays mounted, so
-  //     without the `open` guard every page load would fetch neighbours for a viewer
-  //     nobody opened.
-  //
-  // Only still images are warmed here. Videos are NOT: a throwaway <video> would spin
-  // up a real decoder, and a ranged GET of the head buys nothing — measured against our
-  // CDN, the whole 25MB arrives in ~0.9s, so trimming it to a 2MB slice saves less than
-  // the warm-up itself costs, and the <video> does not reuse the partial response
-  // anyway. Videos are handled where it actually pays: see `preload="auto"` on the
-  // media element, which starts buffering before the user reaches it.
+  // Preload adjacent still images while open. Video buffering is owned by the displayed media element.
   $effect(() => {
     if (!open) return;
     const len = photos.length;
@@ -498,15 +481,6 @@
     toast.error(copy.lightbox.loadFailed);
   }
 
-  // Lock page scrolling while open.
-  $effect(() => {
-    if (typeof document === 'undefined') return;
-    document.body.style.overflow = open ? 'hidden' : '';
-    return () => {
-      document.body.style.overflow = '';
-    };
-  });
-
   // ---- menu actions ----------------------------------------------------------
 
   async function copyText(text: string, label: string) {
@@ -518,7 +492,6 @@
     }
   }
 
-  /** Proxy URL for out-of-site sharing (host URLs never leave the Worker). */
   /** An optimistic upload entry: it has no server id yet, so anything addressed by id
    *  (the /l/ proxy link, the id36 file name) is unavailable until it lands. */
   let isPending = $derived(photo ? photo.id < 0 : false);
@@ -558,6 +531,11 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     bind:this={stageEl}
+    role="dialog"
+    aria-modal="true"
+    aria-label={copy.lightbox.preview}
+    tabindex="-1"
+    use:overlay={{ enabled: open, onClose: () => onClose?.() }}
     class="fixed inset-0 z-70 touch-none bg-black/92 opacity-0 backdrop-blur-[8px] pointer-events-none invisible transition-[opacity,visibility] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
     class:show={shown}
     onpointerdown={onPointerDown}
@@ -576,6 +554,7 @@
         <span class="tabular-nums text-white/90">{currentIndex + 1} / {photos.length}</span>
         <Tooltip text={isLiked ? copy.lightbox.unlike : copy.lightbox.like} side="bottom">
           <button
+            aria-label={isLiked ? copy.lightbox.unlike : copy.lightbox.like}
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isLiked
               ? 'bg-[#f43f5e]/85 text-white'
@@ -588,6 +567,7 @@
         </Tooltip>
         <Tooltip text={isDisliked ? copy.lightbox.undislike : copy.lightbox.dislike} side="bottom">
           <button
+            aria-label={isDisliked ? copy.lightbox.undislike : copy.lightbox.dislike}
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isDisliked
               ? 'bg-[#3b82f6]/85 text-white'
@@ -603,6 +583,7 @@
           side="bottom"
         >
           <button
+            aria-label={isReported ? copy.lightbox.cancelReport : copy.lightbox.report}
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isReported
               ? 'bg-amber-500/85 text-white'
@@ -618,6 +599,7 @@
       <div class="flex items-center gap-0.5">
         <Tooltip text={copy.lightbox.more} side="bottom">
           <button
+            aria-label={copy.lightbox.more}
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10"
             onclick={() => (showMenu = true)}
@@ -627,6 +609,7 @@
         </Tooltip>
         <Tooltip text={copy.lightbox.close} side="bottom">
           <button
+            aria-label={copy.lightbox.close}
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10"
             onclick={onClose}
@@ -637,17 +620,13 @@
       </div>
     </div>
 
-    <!-- Media: the gesture layer writes the wrap transform directly to the DOM for pointer-following.
-         Sizing keeps a margin on every edge: only max-h-screen/max-w-full on narrow screens fills the
-         width (or overflows at native pixel size) and covers the info bars. -->
+    <!-- Gesture transforms operate on the media wrapper; viewport margins preserve space for controls. -->
     <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
       <div
         bind:this={wrapEl}
         class="relative flex max-w-full select-none items-center justify-center will-change-transform"
       >
-        <!-- Skeleton sized from the photo's metadata: native width/height (--w/--h)
-             and aspect ratio (--ar) form the exact box the <img> renders into, so
-             the skeleton caps at --w/--h, not just at the viewport budget. -->
+        <!-- Size the placeholder from native dimensions and aspect ratio. -->
         {#if loadedUrl !== photo.url}
           <div
             class="lb-box lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
@@ -661,14 +640,7 @@
           </div>
         {/if}
         {#if photo.type !== 0}
-          <!-- type=1 (silent WebM) and type=2 (video with audio) both use video. The box
-               comes entirely from .lb-media's CSS (see there for why the width/height
-               attributes must stay off).
-               `preload="auto"` buffers the whole file as soon as the element exists:
-               without it the browser applies its own heuristic and often settles for
-               `metadata`, which leaves the decoder starved exactly when the user
-               switches. Our CDN delivers 25MB in well under a second, so fetching it
-               eagerly is far cheaper than the stall it prevents. -->
+          <!-- Render silent and audio WebM with CSS sizing and eager buffering. -->
           <video
             src={photo.url}
             class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
@@ -702,14 +674,12 @@
           />
         {/if}
 
-        <!-- Card-corner volume button, same place and treatment as the waterfall's
-             PhotoCard. Anchored to the wrapper (which shrink-wraps the media) and
-             counter-scaled about that corner, so it tracks the media box exactly and
-             keeps its size through the zoom. -->
+        <!-- Anchor the counter-scaled volume control to the media corner. -->
         {#if photo.type === 2}
           <div class="lb-corner" bind:this={cornerEl}>
             <Tooltip text={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute} side="left">
               <button
+                aria-label={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute}
                 type="button"
                 class="flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {volumeMuted
                   ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
@@ -786,6 +756,7 @@
       <div class="flex items-center gap-1">
         <Tooltip text={copy.lightbox.prev}>
           <button
+            aria-label={copy.lightbox.prev}
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
             disabled={photos.length < 2}
@@ -796,6 +767,7 @@
         </Tooltip>
         <Tooltip text={copy.lightbox.next}>
           <button
+            aria-label={copy.lightbox.next}
             type="button"
             class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
             disabled={photos.length < 2}
@@ -809,11 +781,15 @@
   </div>
 
   <!-- More menu (bottom action sheet) -->
-  <ActionSheet bind:open={showMenu} onClose={() => (showMenu = false)}>
+  <ActionSheet
+    ariaLabel={copy.lightbox.actions}
+    bind:open={showMenu}
+    onClose={() => (showMenu = false)}
+  >
     <div class="grid grid-cols-3 gap-3">
       <button
         type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+        class="photo-action text-sky-400 hover:bg-sky-400/15"
         onclick={() => {
           void copyText(photo.url, copy.lightbox.originalUrlCopied);
           showMenu = false;
@@ -829,7 +805,7 @@
       {#if !isPending}
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+          class="photo-action text-violet-400 hover:bg-violet-400/15"
           onclick={() => {
             void copyText(shareUrl, copy.lightbox.linkCopied);
             showMenu = false;
@@ -841,32 +817,28 @@
 
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+          class="photo-action text-teal-400 hover:bg-teal-400/15"
           onclick={share}
         >
           <Share2 class="size-6" />
           <span class="text-sm">{copy.lightbox.share}</span>
         </button>
 
-        <button
-          type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 text-primary transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/10"
-          onclick={() => {
-            window.open(
-              `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`,
-              '_blank',
-            );
-            showMenu = false;
-          }}
+        <a
+          href={`https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="photo-action text-primary hover:bg-primary/15"
+          onclick={() => (showMenu = false)}
         >
           <Search class="size-6" />
           <span class="text-sm">{copy.lightbox.googleLens}</span>
-        </button>
+        </a>
       {/if}
 
       <button
         type="button"
-        class="flex flex-col items-center gap-2 rounded-xl p-4 text-amber-500 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted"
+        class="photo-action text-amber-500 hover:bg-amber-500/15"
         onclick={() => {
           onRequestDelete?.(photo);
           showMenu = false;
@@ -880,7 +852,7 @@
       {#if !isPending}
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 text-success transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-success/10"
+          class="photo-action text-success hover:bg-success/15"
           onclick={() => {
             onDownload?.(photo);
             showMenu = false;
@@ -894,7 +866,7 @@
       {#if selfId === 0}
         <button
           type="button"
-          class="flex flex-col items-center gap-2 rounded-xl p-4 text-destructive transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-destructive/10"
+          class="photo-action text-destructive hover:bg-destructive/15"
           onclick={() => {
             onDelete?.(photo);
             showMenu = false;
@@ -909,6 +881,18 @@
 {/if}
 
 <style>
+  .photo-action {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.75rem;
+    padding: 1rem;
+    transition:
+      background-color var(--duration-exit) var(--ease-exit),
+      color var(--duration-exit) var(--ease-exit);
+  }
+
   .lb-meta {
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
   }
@@ -916,14 +900,7 @@
   /* Media sizing: vertical space for the bars, horizontal margins on narrow screens (also the
      edge-gesture area); only max-h-screen + max-w-full degrades to native pixels. */
   .lb-media {
-    /* Sized ENTIRELY in CSS, never via the width/height attributes: those are presentational
-       hints that set a concrete rendered width, which then only ever gets shrunk by
-       max-width and no longer tracks the aspect ratio. That clipped the rounded corners
-       and pushed the card-corner control off the visible media. Instead the box comes
-       from `.lb-box` below, which the skeleton shares — one formula, so the placeholder
-       and the revealed media occupy an identical box and nothing moves on arrival.
-       `--ar` alone reserves the space before decode, which is what stops a <video>
-       opening at the 300x150 CSS replaced-element default. */
+    /* Share metadata-derived CSS sizing between media and skeleton to reserve the final box before decoding. */
     max-height: calc(100dvh - 8rem);
     aspect-ratio: var(--ar, auto);
     border-radius: 14px;
@@ -933,25 +910,16 @@
       transform 0.3s ease;
   }
 
-  /* The media's rendered box, derived from the photo's own metadata. Shared verbatim by
-     .lb-media and .lb-skeleton — the skeleton additionally centres itself on the wrapper
-     with percent + translate, because the wrapper is 0×0 until the media has a box. */
+  /* Media and placeholder dimensions, constrained by native size and viewport space. */
   .lb-box {
     width: min(var(--w), calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
     max-width: calc(100vw - 2.5rem);
   }
 
-  /* Skeleton placeholder sized from the photo's metadata while media decodes.
-     The <img> never scales past native pixels, so width = min(--w, viewport width
-     budget, viewport height budget * aspect ratio) — the revealed media's box. */
+  /* Metadata-sized placeholder while media decodes. */
   .lb-skeleton {
     position: absolute;
-    /* Centred on the wrapper's centre rather than with `inset: 0; margin: auto`: the
-       wrapper holds the media itself and collapses to 0×0 until that media has an
-       intrinsic size, and `margin: auto` cannot centre a box bigger than its
-       containing block — it pinned the skeleton's left/top edge to the centre and let
-       the rest overflow right/down (the off-centre panel). Percent + translate is
-       immune to the container's size. */
+    /* Center the skeleton independently of its containing block size. */
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
@@ -979,13 +947,7 @@
     animation: none;
   }
 
-  /* Card-corner control anchored to the media box. The wrapper is `relative` and
-     shrink-wraps the media, so `bottom/right: 0.5rem` is the media's own corner —
-     no duplicate of the skeleton's sizing maths, and it tracks every media size.
-     The wrapper scales for zoom, so the control counter-scales about that same
-     corner: `transform-origin: bottom right` keeps the anchor point pinned while
-     `scale(1/n)` keeps the pixel size constant. Tailwind's `scale-*` writes the
-     standalone `scale` property, so the hover grow composes with this. */
+  /* Anchor the volume control to the media corner and counter-scale it during zoom. */
   .lb-corner {
     position: absolute;
     right: 0.5rem;

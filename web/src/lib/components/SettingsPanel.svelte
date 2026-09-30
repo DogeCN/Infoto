@@ -21,9 +21,9 @@
     Globe,
     RefreshCw,
   } from '@lucide/svelte';
-  import { cn } from '$lib/utils';
+  import { cn } from '$base/lib/ui';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
-  import { MAX_BAND, MIN_BAND, DEFAULT_BAND, defaultBand } from '$base/lib/band';
+  import { MAX_BAND, MIN_BAND } from '$base/lib/band';
   import type { Component } from 'svelte';
   import type { MediaType, Photo } from '$shared/types';
   import {
@@ -51,34 +51,10 @@
     /** Source photos for computing dynamic ranges. */
     photos?: Photo[];
     onFilterCount?: (count: number) => void;
-    /** Increment to trigger "reset all filters" (top-bar badge). */
-    resetToken?: number;
   }
 
-  let { onSettingsChange, photos = [], onFilterCount, resetToken = 0 }: Props = $props();
+  let { onSettingsChange, photos = [], onFilterCount }: Props = $props();
   let settings = $state<Settings>(loadSettings());
-
-  // Mirror WaterfallLayout's mobile dynamic default so the band slider reads the same value
-  // the gallery renders. While the band is untouched (first entry / reset → DEFAULT_BAND) and
-  // the viewport is mobile, the slider shows half the available width; once customized it shows
-  // the stored number. A resize listener keeps it live through rotation / window resize.
-  let viewportW = $state(typeof window === 'undefined' ? 1024 : window.innerWidth);
-  $effect(() => {
-    if (typeof window === 'undefined') return;
-    const onResize = () => (viewportW = window.innerWidth);
-    window.addEventListener('resize', onResize);
-    window.addEventListener('orientationchange', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      window.removeEventListener('orientationchange', onResize);
-    };
-  });
-  const isMobilePanel = $derived(viewportW < 768);
-  const displayBand = $derived(
-    settings.layout.band === DEFAULT_BAND && isMobilePanel
-      ? defaultBand(viewportW)
-      : settings.layout.band,
-  );
 
   // Debounced localStorage writes: syncing at 60fps while dragging blocks the
   // main thread. Call the parent immediately (instant layout / filters) and
@@ -150,15 +126,6 @@
     onFilterCount?.(activeFilterCount);
   });
 
-  // Top-bar badge click: reset all filters.
-  let lastReset = $state(0);
-  $effect(() => {
-    if (resetToken !== lastReset) {
-      lastReset = resetToken;
-      settings = { ...settings, filters: defaultFilterSettings() };
-    }
-  });
-
   function resetFilters() {
     settings = { ...settings, filters: defaultFilterSettings() };
   }
@@ -168,8 +135,7 @@
   }
 
   let shakingType = $state<MediaType | null>(null);
-  // `$derived`, not a const: reading `copy` at module/instance scope snapshots the label
-  // at init, so a language switch would leave every tooltip on the previous language.
+  // Derive localized labels reactively.
   const TYPE_LABELS = $derived<Record<number, string>>({
     0: copy.settings.typeImage,
     1: copy.settings.typeAnimated,
@@ -234,6 +200,7 @@
       </h3>
       <Tooltip text={copy.settings.resetFilters} side="bottom">
         <button
+          aria-label={copy.settings.resetFilters}
           type="button"
           class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
           onclick={resetFilters}
@@ -310,6 +277,7 @@
       <div class="flex items-center gap-1">
         <Tooltip text={TYPE_LABELS[0]!} side="bottom">
           <button
+            aria-label={TYPE_LABELS[0]!}
             type="button"
             class={cn(
               'inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
@@ -328,6 +296,7 @@
         </Tooltip>
         <Tooltip text={TYPE_LABELS[1]!} side="bottom">
           <button
+            aria-label={TYPE_LABELS[1]!}
             type="button"
             class={cn(
               'inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
@@ -346,6 +315,7 @@
         </Tooltip>
         <Tooltip text={TYPE_LABELS[2]!} side="bottom">
           <button
+            aria-label={TYPE_LABELS[2]!}
             type="button"
             class={cn(
               'inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
@@ -374,6 +344,7 @@
       </h3>
       <Tooltip text={copy.settings.resetLayout} side="bottom">
         <button
+          aria-label={copy.settings.resetLayout}
           type="button"
           class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
           onclick={resetLayout}
@@ -469,8 +440,8 @@
         min={MIN_BAND}
         max={MAX_BAND}
         step={10}
-        value={displayBand}
-        defaultValue={displayBand}
+        value={settings.layout.band}
+        defaultValue={LAYOUT_DEFAULTS.band}
         icon={Ruler}
         format={(v) => `${v}px`}
         onChange={setBand}

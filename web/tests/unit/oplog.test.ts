@@ -1,102 +1,55 @@
 import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  OPLOG_SYNC_THRESHOLD,
   appendOp,
   clearOps,
   countOps,
+  lookupSha,
   openOplogDb,
+  putSha,
   readOps,
 } from '../../src/core/oplog';
-import { lookupSha, putSha } from '../../src/core/oplog';
 
 const op = (i: number) => ({ type: 'like' as const, target: i, payload: null });
 
-describe('oplog store (IndexedDB)', () => {
-  let db: IDBDatabase;
-  beforeEach(async () => {
-    // close leftover connections so deleteDatabase is not blocked
-    // (in fake-indexeddb an open connection prevents onsuccess forever).
-    const dbs = await indexedDB.databases();
-    for (const d of dbs) {
-      if (d.name === 'infoto') {
-        await new Promise<void>((resolve) => {
-          const req = indexedDB.deleteDatabase('infoto');
-          req.onsuccess = () => resolve();
-          req.onerror = () => resolve();
-          req.onblocked = () => resolve();
-        });
-      }
-    }
-    db = await openOplogDb();
+async function freshDb(): Promise<IDBDatabase> {
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase('infoto');
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();
+    req.onblocked = () => resolve();
   });
-  afterEach(() => {
+  return openOplogDb();
+}
+
+describe('oplog', () => {
+  it('appends, clears, and keeps sha lookups scoped to a purpose', async () => {
+    const db = await freshDb();
     try {
+      expect(await countOps(db)).toBe(0);
+      await appendOp(db, op(1));
+      await appendOp(db, op(2));
+      expect(await countOps(db)).toBe(2);
+      expect((await readOps(db)).map((e) => e.op.target as number)).toEqual([1, 2]);
+      await clearOps(db);
+      expect(await countOps(db)).toBe(0);
+
+      await putSha(db, 'album', 'abc', 42);
+      expect(await lookupSha(db, 'album', 'abc')).toMatchObject({
+        sha256: 'abc',
+        purpose: 'album',
+        photoId: 42,
+      });
+      expect(await lookupSha(db, 'album', 'missing')).toBeUndefined();
+      await putSha(db, 'editor', 'def', null, 'https://cdn.example/x.png');
+      expect(await lookupSha(db, 'editor', 'def')).toMatchObject({
+        purpose: 'editor',
+        photoId: null,
+        url: 'https://cdn.example/x.png',
+      });
+      expect(await lookupSha(db, 'album', 'def')).toBeUndefined();
+    } finally {
       db.close();
-    } catch {
-      /* noop */
     }
-  });
-
-  it('appends in order and reports counts', async () => {
-    expect(await countOps(db)).toBe(0);
-    await appendOp(db, op(1));
-    await appendOp(db, op(2));
-    expect(await countOps(db)).toBe(2);
-    const entries = await readOps(db);
-    expect(entries.map((e) => e.op.target as number)).toEqual([1, 2]);
-  });
-
-  it('threshold constant is 256', () => {
-    expect(OPLOG_SYNC_THRESHOLD).toBe(256);
-  });
-
-  it('clearAfter semantics: clearing removes everything', async () => {
-    for (let i = 0; i < 5; i++) await appendOp(db, op(i));
-    await clearOps(db);
-    expect(await countOps(db)).toBe(0);
-  });
-});
-
-describe('meta cache (sha256 dedupe)', () => {
-  let db: IDBDatabase;
-  beforeEach(async () => {
-    const dbs = await indexedDB.databases();
-    for (const d of dbs) {
-      if (d.name === 'infoto') {
-        await new Promise<void>((resolve) => {
-          const req = indexedDB.deleteDatabase('infoto');
-          req.onsuccess = () => resolve();
-          req.onerror = () => resolve();
-          req.onblocked = () => resolve();
-        });
-      }
-    }
-    db = await openOplogDb();
-  });
-  afterEach(() => {
-    try {
-      db.close();
-    } catch {
-      /* noop */
-    }
-  });
-
-  it('stores and looks up sha entries per purpose', async () => {
-    await putSha(db, 'album', 'abc', 42);
-    expect(await lookupSha(db, 'album', 'abc')).toMatchObject({
-      sha256: 'abc',
-      purpose: 'album',
-      photoId: 42,
-    });
-    expect(await lookupSha(db, 'album', 'missing')).toBeUndefined();
-
-    await putSha(db, 'editor', 'def', null, 'https://cdn.example/x.png');
-    expect(await lookupSha(db, 'editor', 'def')).toMatchObject({
-      purpose: 'editor',
-      photoId: null,
-      url: 'https://cdn.example/x.png',
-    });
-    expect(await lookupSha(db, 'album', 'def')).toBeUndefined(); // purposes must not collide
   });
 });

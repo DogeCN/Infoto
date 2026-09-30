@@ -1,6 +1,4 @@
-// /upload client — streaming proxy to the image host. One attempt per call: no
-// retry here (automatic retries are disabled — a failure is surfaced and the manual
-// retry handle takes over). The 45s budget is an idle/no-progress deadline from the base pipeline.ts, not a wall-clock cap.
+// Single-attempt upload transport with an idle-progress deadline and caller-controlled retry.
 
 import type { TcUploadResponse } from '$shared/types';
 import { UPLOAD_TIMEOUT_MS } from '$base/upload/pipeline';
@@ -59,9 +57,7 @@ function parseTcResponse(text: string, status: number): UploadResult {
   return { ok: true, url: data };
 }
 
-/** Multipart file name for one Blob, derived from its own MIME. The album names its
- *  artifacts explicitly (it knows the extension); this covers the editor, which uploads
- *  the picked file as-is — the host serves what the name says it is. */
+/** Choose the multipart filename extension from the Blob MIME type. */
 function extFor(blob: Blob): string {
   const mime = (blob.type || '').toLowerCase().split(';')[0]!.trim();
   const known: Record<string, string> = {
@@ -89,11 +85,10 @@ function buildForm(blob: Blob, fileName?: string): FormData {
   return fd;
 }
 
-/** One /upload attempt (no retry here — retries live in the pipeline layer): the
- * multipart field is fixed `file`, the extension follows the artifact type (.webp /
- * .webm). Transport defaults to XHR so progress stays observable (fetch has no upload stream) — the curtain overlay is driven by it; tests inject fetchFn. */
+/** Upload one multipart file with observable XHR progress or an injected fetch transport. */
 export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<UploadResult> {
-  const origin = io.origin ?? window.location.origin;
+  if (io.signal?.aborted) return { ok: false, error: 'aborted', detail: 'cancelled' };
+  const origin = io.origin ?? location.origin;
   const timeoutMs = io.timeoutMs ?? UPLOAD_TIMEOUT_MS;
 
   if (io.fetchFn) {
@@ -113,7 +108,7 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
       // abort (watchdog or an external cancel) and network failures all count as one
       // failed attempt; the pipeline discards the result of a cancelled job anyway
       if (io.signal?.aborted) return { ok: false, error: 'aborted', detail: 'cancelled' };
-      const aborted = e instanceof DOMException && e.name === 'AbortError';
+      const aborted = ctrl.signal.aborted;
       return { ok: false, error: aborted ? 'timeout' : 'network_error', detail: String(e) };
     } finally {
       clearTimeout(t);
@@ -122,12 +117,16 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
   }
 
   return new Promise<UploadResult>((resolve) => {
-    const xhr = (io.xhrFactory ?? (() => new XMLHttpRequest()))();
-    xhr.open('POST', `${origin}/upload`);
-    xhr.withCredentials = true;
-    // XHR's built-in `timeout` measures the WHOLE attempt (connect + body + response),
-    // so a slow upload dies mid-transfer while bytes still move. Watch for silence
-    // instead: it fails only after `timeoutMs` with no progress; progress re-arms it.
+    let xhr: XMLHttpRequest;
+    try {
+      xhr = (io.xhrFactory ?? (() => new XMLHttpRequest()))();
+      xhr.open('POST', `${origin}/upload`);
+      xhr.withCredentials = true;
+    } catch (error) {
+      resolve({ ok: false, error: 'network_error', detail: String(error) });
+      return;
+    }
+    // Restart the idle watchdog on progress; sustained transfers have no wall-clock deadline.
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     // The watchdog aborts the same XHR the caller can cancel, so onabort must know which
@@ -143,6 +142,7 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     const cancel = (): void => {
       cancelled = true;
       xhr.abort();
+      settle({ ok: false, error: 'aborted', detail: 'cancelled' });
     };
     const arm = (): void => {
       if (watchdog !== undefined) clearTimeout(watchdog);
@@ -157,6 +157,7 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     }
     io.signal?.addEventListener('abort', cancel, { once: true });
     xhr.upload.onprogress = (e) => {
+      if (settled) return;
       if (e.lengthComputable && e.total > 0) {
         io.onProgress?.(Math.max(0, Math.min(1, e.loaded / e.total)));
       }

@@ -1,11 +1,6 @@
-// IndexedDB op-log and the sha→photo cache. Ops are append-only; 256 entries trigger a
-// sync, and the log clears on success. The cache maps album/editor image hashes to
-// their photo rows so a re-upload of the same bytes is recognised.
+// Durable operations and purpose-scoped media hashes in IndexedDB. Confirmed operations are removed after synchronization.
 
 import type { Op, Photo } from '$shared/types';
-
-/** Sync threshold: op-log length that triggers an automatic sync. */
-export const OPLOG_SYNC_THRESHOLD = 256;
 
 const DB_NAME = 'infoto';
 const DB_VERSION = 2;
@@ -109,16 +104,12 @@ export function countOps(db: IDBDatabase): Promise<number> {
   return withStore(db, STORE, 'readonly', (store) => store.count());
 }
 
-/** Clear everything — only called after a successful sync. */
+/** Clear the oplog for isolated test setup. */
 export function clearOps(db: IDBDatabase): Promise<void> {
   return withStore(db, STORE, 'readwrite', (store) => store.clear());
 }
 
-// ---- resumable uploads ---------------------------------------------------------
-// A page reload kills the SharedWorker and with it every in-flight job. The artifact is
-// already on disk (OPFS), so the job itself is recoverable — only its metadata is not.
-// Storing that metadata here lets the worker rebuild the job and finish the upload, so a
-// reload no longer silently drops a photo that was already transcoded.
+// Persist upload metadata so SharedWorker restarts can resume artifacts stored in OPFS.
 
 export async function putPendingUpload(db: IDBDatabase, rec: PendingUploadRecord): Promise<void> {
   await withStore(db, RESUME_STORE, 'readwrite', (store) => store.put(rec));

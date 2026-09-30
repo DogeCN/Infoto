@@ -7,6 +7,7 @@ import type { AppEnv } from '../app.ts';
 import type { Db } from '../db.ts';
 import {
   MEDIA_TYPE,
+  MAX_SYNC_OPS,
   type Announcement,
   type Feedback,
   type MediaType,
@@ -18,8 +19,6 @@ import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '.
 import { verifyTurnstile } from '../turnstile.ts';
 import { isStorableMediaUrl } from './media.ts';
 
-/** One request may not exceed this many ops. */
-const MAX_OPS_PER_REQUEST = 500;
 /** Text fields an anonymous op may carry. */
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_EMOJI_LENGTH = 16;
@@ -85,7 +84,7 @@ const text = (v: unknown, max = MAX_TEXT_LENGTH): string | null =>
   typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
 /** Non-negative integer, or null. */
 const count = (v: unknown): number | null =>
-  typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null;
+  typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
 const mediaType = (v: unknown): MediaType | null =>
   v === MEDIA_TYPE.IMAGE || v === MEDIA_TYPE.ANIMATED || v === MEDIA_TYPE.VIDEO ? v : null;
 
@@ -307,7 +306,7 @@ export function syncHandler(env: AppEnv) {
     if (!body || typeof body !== 'object' || !Array.isArray(body.ops)) {
       return c.json({ ok: false, error: 'bad_request' }, 400);
     }
-    if (body.ops.length > MAX_OPS_PER_REQUEST) {
+    if (body.ops.length > MAX_SYNC_OPS) {
       return c.json({ ok: false, error: 'too_many_ops' }, 413);
     }
 

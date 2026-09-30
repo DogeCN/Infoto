@@ -1,6 +1,4 @@
-// Waterfall layout engine — pure functions, no DOM. Four modes = scroll direction (v/h) × fill strategy (sequential/shortest):
-// v+sequential → Justified ↓ equal-height rows, strict left→right top→down;  v+shortest → Masonry ↓ equal-width columns, shortest column first;  h+sequential → Justified → equal-width columns, strict top→down left→right;
-// h+shortest → Masonry → equal-height rows, shortest row first. computeLayoutChunked yields to requestAnimationFrame every few hundred items so huge albums never block a frame; the extent lands in one shot.
+// Pure vertical and horizontal waterfall layouts with sequential or shortest-lane placement. Chunked computation yields between batches.
 
 export type ScrollDir = 'v' | 'h';
 export type FillStrategy = 'sequential' | 'shortest';

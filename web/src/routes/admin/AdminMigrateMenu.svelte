@@ -15,9 +15,7 @@
   let fileInput = $state<HTMLInputElement | null>(null);
   let importing = $state(false);
   let exporting = $state(false);
-  // Pick-to-import leaves no confirm step, so the progress row below the buttons
-  // is the ONLY feedback an import gives — without it a slow or hung upload looks
-  // exactly like a dead button (the import button stays disabled throughout).
+  // Display measured import progress and disable repeated imports while a request is active.
   let progress = $state(0);
   let importName = $state('');
 

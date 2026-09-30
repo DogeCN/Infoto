@@ -1,6 +1,4 @@
-// GET|POST /admin/migrate — SQL export and import, root only. Import swaps the whole
-// dataset: every table is renamed aside, recreated from the schema, refilled, and the
-// old copies dropped. A failure restores the previous tables.
+// Root-only SQL export and import. Import replaces the dataset and restores backup tables on failure.
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';

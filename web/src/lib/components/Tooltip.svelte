@@ -2,7 +2,7 @@
   // Accessible tooltip for a single trigger element. Visible on hover and keyboard focus, and
   // on a 500ms long-press for touch devices (the native title attribute is unreachable there).
   // Portaled above <body> so overflow clipping and transformed ancestors can't trap it; placement flips to the opposite side near a viewport edge.
-  import type { Snippet } from 'svelte';
+  import { onDestroy, type Snippet } from 'svelte';
 
   type Side = 'top' | 'bottom' | 'left' | 'right';
 
@@ -14,6 +14,7 @@
 
   let { text = '', side = 'top', children }: Props = $props();
 
+  const tooltipId = $props.id();
   let wrapper = $state<HTMLSpanElement | undefined>(undefined);
   let tipEl = $state<HTMLDivElement | undefined>(undefined);
   let open = $state(false);
@@ -24,6 +25,12 @@
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
+
+  onDestroy(() => {
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    clearTimeout(pressTimer);
+  });
 
   const SHOW_DELAY_MS = 350;
   const HIDE_DELAY_MS = 80;
@@ -66,18 +73,26 @@
       (side === 'right' && r.right + w + GAP_PX > window.innerWidth);
     const ps = noRoom ? OPPOSITE[side] : side;
     placedSide = ps;
-    x =
+    const nextX =
       ps === 'left' || ps === 'right'
         ? ps === 'left'
           ? r.left - GAP_PX
           : r.right + GAP_PX
         : r.left + r.width / 2;
-    y =
+    const nextY =
       ps === 'top' || ps === 'bottom'
         ? ps === 'top'
           ? r.top - GAP_PX
           : r.bottom + GAP_PX
         : r.top + r.height / 2;
+    x =
+      ps === 'top' || ps === 'bottom'
+        ? Math.max(w / 2 + 8, Math.min(window.innerWidth - w / 2 - 8, nextX))
+        : nextX;
+    y =
+      ps === 'left' || ps === 'right'
+        ? Math.max(h / 2 + 8, Math.min(window.innerHeight - h / 2 - 8, nextY))
+        : nextY;
   }
 
   function show(immediate = false): void {
@@ -105,6 +120,7 @@
     show();
   }
   function onPointerOut(): void {
+    clearPress();
     hide();
   }
   function onFocusIn(): void {
@@ -123,6 +139,17 @@
   function onKeyDown(e: KeyboardEvent): void {
     if (e.key === 'Escape') open = false;
   }
+
+  $effect(() => {
+    const trigger = triggerEl();
+    if (!open || !trigger) return;
+    const previous = trigger.getAttribute('aria-describedby');
+    trigger.setAttribute('aria-describedby', [previous, tooltipId].filter(Boolean).join(' '));
+    return () => {
+      if (previous) trigger.setAttribute('aria-describedby', previous);
+      else trigger.removeAttribute('aria-describedby');
+    };
+  });
 
   // Follow the trigger while open (scroll, resize, sidebar drag).
   $effect(() => {
@@ -163,7 +190,8 @@
     use:portal
     bind:this={tipEl}
     role="tooltip"
-    class="pointer-events-none fixed z-[100] whitespace-nowrap rounded-md bg-surface-top px-2 py-1 text-[11px] font-medium text-foreground shadow-md {TIP_TRANSLATE[
+    id={tooltipId}
+    class="pointer-events-none fixed z-[100] w-max max-w-[calc(100vw-1rem)] break-words text-center rounded-md bg-surface-top px-2 py-1 text-[11px] font-medium text-foreground shadow-md {TIP_TRANSLATE[
       placedSide
     ]}"
     style:left={`${x}px`}

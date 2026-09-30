@@ -60,6 +60,13 @@
   let isLiked = $derived(photo.likes.includes(selfId));
   let isDisliked = $derived(photo.dislikes.includes(selfId));
   let isReported = $derived(photo.reports.includes(selfId));
+  /** Column or row is too small for the resting badge and volume sizes. */
+  let tight = $derived(width < 140 || height < 64);
+  const badgeCls = $derived(
+    tight
+      ? 'flex items-center gap-0.5 rounded-full bg-black/55 px-1 py-px text-[10px] font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75'
+      : 'flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75',
+  );
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
@@ -90,7 +97,9 @@
   let longPressTimer: ReturnType<typeof setTimeout> | undefined;
   let didLongPress = false;
 
-  function handlePointerDown() {
+  function handlePointerDown(event: PointerEvent) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return;
+    cancelLongPress();
     didLongPress = false;
     longPressTimer = setTimeout(() => {
       didLongPress = true;
@@ -113,13 +122,7 @@
     cancelLongPress();
   });
 
-  /**
-   * A load failure (network / CORS / 404) is surfaced as a uniform "ERROR" glitch.
-   * We deliberately do not probe for the HTTP status: a cross-origin HEAD is
-   * CORS-gated and would only yield a misleading code (or "0") on blocked hosts.
-   * A local preview that this browser cannot decode (HEIC, exotic codec) is not a
-   * broken photo, so it degrades to the skeleton and waits for the real URL instead.
-   */
+  /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
   function handleMediaError(): void {
     if (overlay?.preview) return;
     loadFailed = true;
@@ -139,6 +142,8 @@
     : 'border-white/0 hover:border-white/10'}"
   style="left: {x}px; top: {y}px; width: {width}px; height: {height}px"
   role="button"
+  aria-label={copy.lightbox.preview}
+  aria-pressed={multiMode ? selected : undefined}
   tabindex="0"
   onclick={handleClick}
   onpointerdown={handlePointerDown}
@@ -146,7 +151,9 @@
   onpointercancel={handlePointerUp}
   onpointerleave={cancelLongPress}
   onkeydown={(e) => {
-    if (e.key === 'Enter' || e.key === ' ') onClick?.();
+    if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault();
+    onClick?.();
   }}
 >
   <!-- Media: on load failure render a glitching error code.
@@ -154,7 +161,10 @@
        whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
     <div class="flex h-full w-full items-center justify-center bg-card [container-type:size]">
-      <GlitchText text={failStatus} size="clamp(1.25rem, 22cqmin, 3.5rem)" />
+      <GlitchText
+        text={failStatus}
+        size={width < 140 ? 'clamp(0.65rem, 14cqmin, 0.85rem)' : 'clamp(1.25rem, 22cqmin, 3.5rem)'}
+      />
     </div>
   {:else if photo.url}
     {#if loadedUrl !== photo.url}
@@ -195,9 +205,7 @@
   <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry / dismiss -->
   {#if overlay}
     {#if overlay.failed}
-      <!-- Curtain back down to full cover. Both controls are the bare glyph: no plate,
-           no ring, no hover fill — the stroke colour is the only feedback channel, so a
-           hover cannot introduce a surface the resting state does not have. -->
+      <!-- Failure cover with retry and dismiss controls. -->
       <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
         <button
           type="button"
@@ -227,16 +235,7 @@
         </button>
       </div>
     {:else}
-      <!-- The curtain: the media is uncovered from the bottom as the leg progresses. Its
-           remove button rides on top of it — a cancel must be available mid-flight, not
-           only once the job has already failed.
-
-           The last sliver never opens while the job is still running: XHR reports the
-           request body as fully sent almost immediately (it measures the socket buffer,
-           not the host's response), so on a fast local link the fraction jumps straight
-           to 1 and an uncapped curtain would vanish at once — a card under upload looked
-           like a bare photo with a stray X. The veil now survives until 'done' removes
-           the overlay. -->
+      <!-- Reveal media with upload progress while keeping a cancellation veil until server completion. -->
       <div
         class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70 transition-[height] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
         style="height: {Math.max(0, 1 - Math.min(overlay.fraction ?? 0, CURTAIN_MAX_OPEN)) * 100}%"
@@ -258,33 +257,42 @@
 
   <!-- Selection checkbox (top-right) -->
   {#if multiMode}
-    <div class="absolute top-2 right-2 z-10">
+    <div class="absolute z-10 {tight ? 'top-1 right-1' : 'top-2 right-2'}">
       <div
-        class="flex items-center justify-center size-6 rounded-full transition-all duration-[var(--duration-enter)] ease-[var(--ease-enter)] {selected
+        class="flex items-center justify-center rounded-full transition-all duration-[var(--duration-enter)] ease-[var(--ease-enter)] {tight
+          ? 'size-4'
+          : 'size-6'} {selected
           ? 'bg-primary text-primary-foreground'
           : 'bg-black/50 text-white/80 backdrop-blur-sm border border-white/20 hover:bg-black/70'}"
       >
         {#if selected}
-          <Check class="size-4" />
+          <Check class={tight ? 'size-2.5' : 'size-4'} />
         {/if}
       </div>
     </div>
   {/if}
 
-  <!-- Mark badges: pills overlaid on the image, each hidden entirely when its count is zero.
-       Color language: the user's own mark = solid cyan (fill-current on the icon); everyone else's
-       marks = outline cyan at reduced opacity (plain white read as monotone). -->
-  <div class="absolute bottom-2 left-2 z-10 flex items-center gap-1.5">
+  <!-- Mark badges, hidden when the count is zero. The viewer's own mark is filled; others use the same hue at lower opacity. -->
+  <div
+    class="absolute z-10 flex flex-wrap items-center {tight
+      ? 'bottom-1 left-1 max-w-[calc(100%-0.35rem)] gap-1'
+      : 'bottom-2 left-2 max-w-[calc(100%-0.5rem)] gap-1.5'}"
+  >
     {#if photo.likes.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
+        class={badgeCls}
+        aria-label={isLiked ? copy.lightbox.unlike : copy.lightbox.like}
         onclick={(e) => {
           e.stopPropagation();
           onLike?.();
         }}
       >
-        <ThumbsUp class="size-3 {isLiked ? 'fill-current text-[#f43f5e]' : 'text-[#f43f5e]/60'}" />
+        <ThumbsUp
+          class="{tight ? 'size-2.5' : 'size-3'} {isLiked
+            ? 'fill-current text-[#f43f5e]'
+            : 'text-[#f43f5e]/60'}"
+        />
         <span class="tabular-nums">{photo.likes.length}</span>
       </button>
     {/if}
@@ -292,14 +300,17 @@
     {#if photo.dislikes.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
+        class={badgeCls}
+        aria-label={isDisliked ? copy.lightbox.undislike : copy.lightbox.dislike}
         onclick={(e) => {
           e.stopPropagation();
           onDislike?.();
         }}
       >
         <ThumbsDown
-          class="size-3 {isDisliked ? 'fill-current text-[#3b82f6]' : 'text-[#3b82f6]/60'}"
+          class="{tight ? 'size-2.5' : 'size-3'} {isDisliked
+            ? 'fill-current text-[#3b82f6]'
+            : 'text-[#3b82f6]/60'}"
         />
         <span class="tabular-nums">{photo.dislikes.length}</span>
       </button>
@@ -308,35 +319,43 @@
     {#if photo.reports.length > 0}
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75"
+        class={badgeCls}
+        aria-label={isReported ? copy.lightbox.cancelReport : copy.lightbox.report}
         onclick={(e) => {
           e.stopPropagation();
           onRequestDelete?.();
         }}
       >
-        <Flag class="size-3 {isReported ? 'fill-current text-amber-400' : 'text-amber-400/60'}" />
+        <Flag
+          class="{tight ? 'size-2.5' : 'size-3'} {isReported
+            ? 'fill-current text-amber-400'
+            : 'text-amber-400/60'}"
+        />
         <span class="tabular-nums">{photo.reports.length}</span>
       </button>
     {/if}
   </div>
 
-  <!-- Volume button (type=2 video with sound) -->
-  {#if photo.type === 2}
+  <!-- Volume button (type=2 video with sound). A failed card has no media to mute. -->
+  {#if photo.type === 2 && !loadFailed}
     <button
       type="button"
-      class="absolute bottom-2 right-2 z-10 flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {volumeMuted
+      class="absolute z-10 flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {tight
+        ? 'bottom-1 right-1'
+        : 'bottom-2 right-2'} {volumeMuted
         ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
         : 'border-[#22d3ee]/50 bg-[#22d3ee]/20 text-[#22d3ee]'}"
-      style="width: 1.9rem; height: 1.9rem"
+      aria-label={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute}
+      style="width: {tight ? '1.25rem' : '1.9rem'}; height: {tight ? '1.25rem' : '1.9rem'}"
       onclick={(e) => {
         e.stopPropagation();
         volumeMuted = !volumeMuted;
       }}
     >
       {#if volumeMuted}
-        <VolumeX class="size-4 text-amber-500" />
+        <VolumeX class="{tight ? 'size-3' : 'size-4'} text-amber-500" />
       {:else}
-        <Volume2 class="size-4" />
+        <Volume2 class={tight ? 'size-3' : 'size-4'} />
       {/if}
     </button>
   {/if}

@@ -1,9 +1,5 @@
 <script lang="ts">
-  // Three-segment sort selector: newest / hottest / random, icon and text diff with
-  // state. Whether the labels show is decided by the top bar from measured widths and
-  // passed down — this component never guesses it from a viewport breakpoint.
-  // SegmentedControl provides the visuals; this component owns the domain logic
-  // (per-item direction, random reshuffle).
+  // Localized sort selector with per-key directions and random reshuffling. Density is supplied by the top bar.
   import { Clock4, Clock10, Flame, Snowflake, Shuffle } from '@lucide/svelte';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import type { SegmentedItem } from '$lib/components/SegmentedControl.svelte';
@@ -13,9 +9,7 @@
 
   interface Props {
     sortKey?: SortKey;
-    /** The direction each sort item remembers for itself (newest↔oldest, hottest↔coldest):
-     *  with only the active direction passed, inactive items revert to default labels on
-     *  switch-away and jump to the real direction only on the way back. */
+    /** Remembered ascending direction for each sort key. */
     dirs?: Partial<Record<SortKey, boolean>>;
     onChange?: (key: SortKey) => void;
     onReshuffle?: () => void;

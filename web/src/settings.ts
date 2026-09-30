@@ -1,7 +1,7 @@
 // Shared settings and filter logic for the panel and main page.
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
-import { DEFAULT_BAND } from '$base/lib/band';
+import { DEFAULT_BAND, MAX_BAND, MIN_BAND } from '$base/lib/band';
 import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
 /** Ownership filter states: off, include-only, or exclude-only. */
@@ -97,12 +97,7 @@ export function defaultSettings(): Settings {
 
 const STORAGE_KEY = 'infoto-settings';
 
-/** Bump whenever the persisted shape changes: a blob written by any other version
- * is dropped wholesale and replaced by defaults — there is deliberately no
- * per-field migration; the version tag is the guard.
- *
- * v3: `layout.cols` (count) → `layout.band` (px). A v2 blob is dropped whole, so the
- * old column count cannot be reinterpreted as a pixel width. */
+/** Persisted settings schema version. Other versions reset to defaults. */
 const SETTINGS_VERSION = 3;
 
 /** Persisted shape: a `Set` is not JSON-serializable, so media types are stored as an array. */
@@ -112,45 +107,70 @@ interface StoredSettings {
   layout: LayoutSettings;
 }
 
-/** Read persisted settings. An untagged, mangled or unreadable blob resets to defaults.
- *  The storage is resolved inside the body so a missing `localStorage` (SSR, worker)
- *  is caught by the same guard as a blocked one. */
-export function loadSettings(storage: Pick<Storage, 'getItem'> = localStorage): Settings {
-  const store = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
-  if (!store) return defaultSettings();
-  let raw: string | null;
+/** Read and validate the complete stored shape; invalid settings reset to defaults. */
+export function loadSettings(storage?: Pick<Storage, 'getItem'>): Settings {
   try {
-    raw = store.getItem(STORAGE_KEY);
-  } catch {
-    return defaultSettings(); // storage blocked (private mode / disabled cookies)
-  }
-  if (!raw) return defaultSettings();
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredSettings>;
-    if (parsed.v !== SETTINGS_VERSION || !parsed.filters || !parsed.layout) {
-      return defaultSettings();
-    }
+    const raw = (storage ?? localStorage).getItem(STORAGE_KEY);
+    if (!raw) return defaultSettings();
+    const parsed = JSON.parse(raw) as StoredSettings;
+    if (!validStoredSettings(parsed)) return defaultSettings();
     return {
       filters: { ...parsed.filters, types: new Set(parsed.filters.types) },
-      layout: parsed.layout,
+      layout: {
+        ...parsed.layout,
+        band: Math.min(MAX_BAND, Math.max(MIN_BAND, parsed.layout.band)),
+        gap: Math.min(32, Math.max(0, parsed.layout.gap)),
+      },
     };
   } catch {
     return defaultSettings();
   }
 }
 
-export function saveSettings(s: Settings, storage: Pick<Storage, 'setItem'> = localStorage): void {
-  const store = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
-  if (!store) return;
+function validStoredSettings(value: StoredSettings): boolean {
+  if (!value || value.v !== SETTINGS_VERSION || !value.filters || !value.layout) return false;
+  const { filters, layout } = value;
+  if (
+    !['v', 'h'].includes(layout.dir) ||
+    !['sequential', 'shortest'].includes(layout.strategy) ||
+    !Number.isFinite(layout.band) ||
+    !Number.isFinite(layout.gap)
+  )
+    return false;
+  if (
+    !Array.isArray(filters.types) ||
+    !filters.types.length ||
+    !filters.types.every((type) => MEDIA_TYPES.includes(type))
+  )
+    return false;
+  if (
+    ![filters.ownedByMe, filters.likedByMe, filters.dislikedByMe, filters.reportedByMe].every(
+      (mode) => ['off', 'only', 'exclude'].includes(mode),
+    )
+  )
+    return false;
+  if (!filters.ranges || typeof filters.ranges !== 'object' || Array.isArray(filters.ranges))
+    return false;
+  return Object.entries(filters.ranges).every(
+    ([key, range]) =>
+      RANGE_KEYS.includes(key as RangeKey) &&
+      Array.isArray(range) &&
+      range.length === 2 &&
+      range.every(Number.isFinite) &&
+      range[0] <= range[1],
+  );
+}
+
+export function saveSettings(settings: Settings, storage?: Pick<Storage, 'setItem'>): void {
   const stored: StoredSettings = {
     v: SETTINGS_VERSION,
-    filters: { ...s.filters, types: [...s.filters.types] },
-    layout: s.layout,
+    filters: { ...settings.filters, types: [...settings.filters.types] },
+    layout: settings.layout,
   };
   try {
-    store.setItem(STORAGE_KEY, JSON.stringify(stored));
+    (storage ?? localStorage).setItem(STORAGE_KEY, JSON.stringify(stored));
   } catch {
-    // Storage blocked or full: the panel still applies in memory for this session.
+    // Settings remain active when storage is unavailable.
   }
 }
 

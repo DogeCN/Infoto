@@ -475,7 +475,7 @@ test('negative and fractional media metadata is rejected', async () => {
   }
 });
 
-test('upload without multipart → 400; no cookie → 401', async () => {
+test('upload enforces authentication, signs the upstream request, and preserves failures', async () => {
   const { app } = makeApp();
   const noAuth = await app.request('http://localhost/upload', { method: 'POST', body: 'x' });
   assert.equal(noAuth.status, 401);

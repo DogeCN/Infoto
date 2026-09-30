@@ -1,13 +1,6 @@
 <script lang="ts">
-  // The top bar's single pager arrow. There are two of these, one per screen, and they
-  // share the same component: the one on the visible screen is the control, the other is
-  // parked off-bar inside the sliding track.
-  //
-  // Why one flying control rather than one per screen: the user's brief is that the arrow
-  // "flies to the other side and becomes the other arrow" — it must read as a single
-  // object that moved, not as two buttons that appeared. The rotation is therefore tied
-  // to `screen`, not to hover, and the chevron points *away* from the current screen
-  // (right on screen 1, left on screen 2) so it always advertises where a tap goes.
+  // Pager control, one instance per screen. The off-screen copy rides the sliding track.
+  // Rotation follows `screen`, not hover, so the chevron always points at the other screen.
   import { ChevronLeft } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
 
@@ -29,17 +22,14 @@
   title={label}
   aria-label={label}
 >
-  <!-- Rotation is what makes the flip readable: the track slides with the same
-       --duration-enter / --ease-enter, so the chevron turns exactly as it arrives, and
-       one control can be read as the same object that moved. -->
+  <!-- Shares the track's enter timing, so the chevron turns as the track arrives. -->
   <span
     class="flex transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] {screen ===
     1
       ? 'rotate-180'
       : 'rotate-0'}"
   >
-    <!-- ChevronLeft points left, which is where screen 1 lies; on screen 1 the
-         rotation above has already turned it, so the mirror is off. -->
+    <!-- ChevronLeft points at screen 1; screen 1's rotation turns it the other way. -->
     <ChevronLeft class="size-5" />
   </span>
 </button>

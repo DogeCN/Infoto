@@ -1,6 +1,4 @@
-// Two-stage orchestration (page side): pick files → addJob → SharedWorker schedules (image transcode on the SW thread, video delegated back to this page's
-// DedicatedWorker via token lease) → dedupe → upload → write op-log. Progress is broadcast via BroadcastChannel, and the SW re-sends job state on reconnect,
-// so a refresh never loses tasks.
+// Page-side upload orchestration: SharedWorker scheduling, video leases, durable operations, and broadcast progress.
 
 import { buildUploadOp, routeByMime, translateTaskError, uid } from '$base/upload/pipeline';
 import { copy } from '$shared/copy';
@@ -12,12 +10,12 @@ import {
   type JobPurpose,
   type JobStatusMessage,
   type SwToPageMessage,
+  pipelineResultAction,
+  shouldWriteAlbumUploadOp,
 } from './protocol';
-import { pipelineResultAction, shouldWriteAlbumUploadOp } from './uploadPurpose';
+
 import type { Op, UploadPayload } from '$shared/types';
-// ?sharedworker puts the SW through Vite's bundler (a bare new URL('./sw.ts',
-// import.meta.url) is copied verbatim as an untranspiled .ts asset — broken
-// both by TS syntax and by the .ts -> video/mp2t MIME on static hosting).
+// Bundle the SharedWorker entry through Vite's worker pipeline.
 import SharedWorkerCtor from './sw?sharedworker';
 
 export interface PipelineTaskSnapshot {
@@ -437,9 +435,7 @@ export class UploadPipeline {
     this.sw?.port.postMessage({ t: 'retryJob', jobId });
   }
 
-  /**
-   * Retry a failed editor upload, delivering the URL via a fresh Promise: the first failure consumed the waiter, so a new one is registered before the SW re-runs (the OPFS artifact is reused when stage 1 already succeeded).
-   */
+  /** Register a new result waiter and retry the failed editor upload. */
   retryEditorUpload(jobId: string): Promise<string> {
     return new Promise((resolve, reject) => {
       this.editorWaiters.set(jobId, { resolve, reject });
@@ -463,9 +459,7 @@ export class UploadPipeline {
     }
   }
 
-  /**
-   * After leaseGranted, create/reuse this page's top-level DedicatedWorker. Worker creation failure or onerror → mark failed and return the token; never fall back to the main thread, which is too slow for video encoding.
-   */
+  /** Run leased video work in a dedicated worker; release the lease on completion or failure. */
   private startVideoWorker(jobId: string, file: Blob, mime: string, engine: 'video' | 'gif'): void {
     let w: WorkerLike;
     try {
@@ -535,9 +529,7 @@ export class UploadPipeline {
   }
 }
 
-/**
- * Source-file dimensions, probed on the page while it still holds the File (after addJob only the SW's clone remains); null when probing fails. A transcode that dies before producing meta reuses these so its failure card keeps the real aspect ratio instead of the 800×600 placeholder.
- */
+/** Probe source dimensions for optimistic cards, returning null when probing fails. */
 export async function probeSourceSize(
   file: Blob,
 ): Promise<{ width: number; height: number } | null> {

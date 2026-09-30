@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import type { Announcement } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
-  import { splitVote } from '../../core/vote';
+  import { splitVote } from '../../core/markdown';
   import MarkdownView from './MarkdownView.svelte';
   import VoteBlock from './VoteBlock.svelte';
   import ReactionBar from './ReactionBar.svelte';
@@ -31,22 +32,30 @@
     expandedIds = next;
   }
 
-  function startResize(e: PointerEvent) {
-    e.preventDefault();
-    const startY = e.clientY;
+  let stopResize = () => {};
+  onDestroy(() => stopResize());
+
+  function startResize(event: PointerEvent) {
+    if (event.button !== 0) return;
+    stopResize();
+    event.preventDefault();
+    const startY = event.clientY;
     const startH = taH;
-    const el = e.currentTarget as HTMLElement;
-    el.setPointerCapture?.(e.pointerId);
-    const onMove = (ev: PointerEvent) => {
-      taH = Math.min(480, Math.max(120, startH - (ev.clientY - startY)));
+    const onMove = (next: PointerEvent) => {
+      if (next.pointerId === event.pointerId)
+        taH = Math.min(480, Math.max(120, startH - (next.clientY - startY)));
     };
-    const onUp = () => {
-      el.releasePointerCapture?.(e.pointerId);
+    const onEnd = (next: PointerEvent) => {
+      if (next.pointerId === event.pointerId) stopResize();
+    };
+    stopResize = () => {
       window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointerup', onEnd);
+      window.removeEventListener('pointercancel', onEnd);
     };
     window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointerup', onEnd);
+    window.addEventListener('pointercancel', onEnd);
   }
 
   function handleSend() {
@@ -91,6 +100,8 @@
              (MarkdownView does not remount, vote and reaction state survive); min-h-0 lets 0fr squash -->
         <div
           class="grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
+          inert={!expanded}
+          aria-hidden={!expanded}
           style="grid-template-rows: {expanded ? '1fr' : '0fr'}"
         >
           <div class="min-h-0 overflow-hidden">
@@ -125,9 +136,7 @@
     {/each}
   </div>
 
-  <!-- Feedback input: pinned to the bottom of the sidebar, floating above the content as announcements scroll.
-       Its background matches the sidebar (card) so it never glows brighter than the content like an "overflow".
-       z-20: the card can hold z-indexed inner layers (vote bar etc.) that this sticky element must stay above -->
+  <!-- Sticky feedback input above the scrollable announcement content. -->
   <div class="sticky bottom-0 z-20 mt-auto bg-card pb-4 pt-4">
     <!-- The wrapper owns radius/border/clipping: the textarea background always stays inside the rounded corners -->
     <div
@@ -151,14 +160,20 @@
       {/if}
 
       <!-- Resize handle at the top right: drag up to grow, down to shrink -->
-      <div
-        role="presentation"
+      <button
+        type="button"
+        aria-label={copy.announcements.resizeHandle}
         class="absolute right-1 top-1 flex h-5 w-5 cursor-ns-resize items-center justify-center text-muted-foreground/50 transition-colors hover:text-muted-foreground"
         title={copy.announcements.resizeHandle}
         onpointerdown={startResize}
+        onkeydown={(event) => {
+          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+          event.preventDefault();
+          taH = Math.min(480, Math.max(120, taH + (event.key === 'ArrowUp' ? 16 : -16)));
+        }}
       >
         <ChevronsUpDown class="size-3.5" />
-      </div>
+      </button>
 
       <button
         type="button"

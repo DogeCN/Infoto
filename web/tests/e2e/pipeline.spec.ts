@@ -1,13 +1,9 @@
-// Transcode + upload pipeline against the local Worker (via the Vite dev proxy) — the highest-risk area.
-// Covers image/gif transcode + upload, the 100MB pre-check, the manual retry handle, cross-tab progress,
-// pagehide; drives the real app UI (the always-pass verification gate and the top-bar upload button).
+// Exercise image and video uploads, size limits, retries, cross-tab progress, and pagehide synchronization.
 import { expect, test, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { passGate } from './helpers';
 
-/** Top-bar upload button (opens the file chooser). Title-based: the lucide
- *  class name for UploadCloud never carried a bare `lucide-upload` token
- *  (it renders lucide-upload-cloud / lucide-cloud-upload). */
+/** Locate the upload action by its localized accessible name. */
 const uploadButton = (page: Page) =>
   page.locator('header button[title="Upload"], header button[title="上传"]');
 
@@ -45,9 +41,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
   }) => {
     await page.goto('/');
     const probe = await page.evaluate(async () => {
-      // the SharedWorker global has no Worker constructor (established browser
-      // fact, contract-confirmed) — video workers must be created by the page's
-      // main thread. No SharedWorker is constructed here.
+      // Probe encoders on the page, which owns the dedicated video workers.
       const canvas = new OffscreenCanvas(2, 2);
       const ctx = canvas.getContext('2d')!;
       ctx.fillStyle = '#000';
@@ -118,9 +112,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     );
     await expect(topImage).toHaveCSS('opacity', '1');
 
-    // same file again → sha256 hit → duplicate (stage 2 skipped entirely). The duplicate row is
-    // removed within a frame (the snapshot effect strips sha-matched tasks), so assert on the
-    // pipeline log line + the server snapshot instead of the DOM.
+    // Assert duplicate detection through pipeline events and the server snapshot.
     const count = async () => {
       const r = await context.request.post('/sync', { data: { ops: [] } });
       return ((await r.json()) as { photos: unknown[] }).photos.length;
@@ -138,7 +130,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await dupLog;
     await expect(page.getByText(/e2e\.jpg (already exists|已存在)/).last()).toBeVisible();
     await page.locator('header button:has(svg.lucide-refresh-cw)').click();
-    await expect.poll(count, { timeout: 30_000 }).toBe(before); // no new photo was created
+    await expect.poll(count, { timeout: 30_000 }).toBe(before); // The duplicate upload leaves the photo count unchanged.
   });
 
   test('gif E2E: frame-by-frame transcode → type=1', async ({ page }) => {
@@ -187,9 +179,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 
   test('retry handle: failed tasks expose a retry button', async ({ page }) => {
     await passGate(page);
-    // A 0-byte PNG cannot decode, so stage 1 fails (no network interception —
-    // the SharedWorker issues /upload and page.route cannot see those requests).
-    // The failed job surfaces as a waterfall card with a retry handle.
+    // An empty PNG fails decoding and exposes a retryable upload card.
     const chooser = page
       .waitForEvent('filechooser')
       .then((fc) =>

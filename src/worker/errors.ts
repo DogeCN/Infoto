@@ -5,6 +5,7 @@ import {
   type Copy,
   type LocaleCode,
 } from '../shared/copy.ts';
+import { ERROR_FONT_QUERY, fontHeadBlock, fontPageCsp } from '../shared/fonts.ts';
 
 // Error pages: a large cyan status code with a red/cyan double-layer glitch offset on a
 // dark background. The displaced double text is the only effect.
@@ -15,12 +16,7 @@ const escapeHtml = (value: string): string =>
     (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
   );
 
-/**
- * The table and tag these pages render in. One isolate serves every visitor, so the
- * locale is resolved per request from `Accept-Language` rather than read from the
- * module-level `copy` (which the Worker never mutates). Unknown tags fall back to
- * English.
- */
+/** Resolve each request's locale from Accept-Language, defaulting to English. */
 function localeFor(request: Request | undefined): { code: LocaleCode; copy: Copy } {
   const code = pickLocale(acceptLanguages(request?.headers.get('Accept-Language')));
   return { code, copy: locales[code] };
@@ -39,8 +35,7 @@ function page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${code} · Infoto</title>
-<link rel="preconnect" href="https://fonts.googleapis.cn" crossorigin>
-<link href="https://fonts.googleapis.cn/css2?family=Space+Grotesk:wght@400;700&family=Inter:wght@400;600&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet">
+${fontHeadBlock(ERROR_FONT_QUERY)}
 <style>
 	:root { color-scheme: dark; }
 	* { margin: 0; padding: 0; box-sizing: border-box; }
@@ -135,8 +130,7 @@ function page(
       'Cache-Control': 'no-store',
       'Content-Language': lang,
       'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy':
-        "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.cn; font-src https://fonts.gstatic.com;",
+      'Content-Security-Policy': fontPageCsp(),
     },
   });
 }

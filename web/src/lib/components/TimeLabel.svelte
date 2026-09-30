@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { getLocale } from '$lib/i18n.svelte';
   import { onDestroy } from 'svelte';
-  import { formatRelativeTime, formatSmartAbsolute } from '$lib/time';
+  import { formatRelativeTime, formatSmartAbsolute } from '$base/lib/format';
 
   interface Props {
     /** Epoch millis of the moment to render. */
@@ -12,8 +13,7 @@
 
   let { time, align = 'start', class: className = '' }: Props = $props();
 
-  // Tick so the relative label ("just now / N minutes ago") advances without a reload;
-  // 30s is finer than the smallest unit ever shown, so the label never looks stale.
+  // Refresh relative timestamps every 30 seconds.
   let now = $state(Date.now());
   $effect(() => {
     void time;
@@ -22,9 +22,7 @@
     return () => clearInterval(timer);
   });
 
-  // Hover is JS-driven rather than `:hover` so leaving is debounced: the label sits
-  // beside other controls, so a pointer wobbling across its edge would flip the swap
-  // rapidly. Enter is instant; leave waits LEAVE_DELAY_MS, cancelled by a re-enter.
+  // Show absolute time immediately on hover; debounce pointer leave.
   const LEAVE_DELAY_MS = 160;
   let hovered = $state(false);
   let leaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -47,13 +45,11 @@
     if (leaveTimer) clearTimeout(leaveTimer);
   });
 
-  let relativeLabel = $derived(formatRelativeTime(time, now));
-  let absoluteLabel = $derived(formatSmartAbsolute(time, now));
+  let relativeLabel = $derived(formatRelativeTime(time, now, getLocale()));
+  let absoluteLabel = $derived(formatSmartAbsolute(time, now, getLocale()));
 </script>
 
-<!-- Relative by default; hover slides it out to the left as the precise time slides in
-     from the right. Both live in one grid cell, so the row never reflows on hover;
-     `aria-label` always carries the precise time. -->
+<!-- Stack relative and absolute labels in one grid cell for a width-stable transition. -->
 <!-- role=presentation: this wrapper is a hit-area only, not content. -->
 <span
   class="time-hit {className}"

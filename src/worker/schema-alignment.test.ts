@@ -44,18 +44,11 @@ function schemaColumns(sql: string): Map<string, string[]> {
   return out;
 }
 
-test('schema-ddl.ts matches schema.sql after whitespace/case normalize', () => {
+test('schema-ddl.ts and the migrate export lists match schema.sql', () => {
   assert.equal(norm(SCHEMA_SQL), norm(file));
-});
-
-test('the export column lists cover every declared column, in order', () => {
   const declared = schemaColumns(file);
   for (const [table, columns] of Object.entries(EXPORT_COLUMNS)) {
     assert.deepEqual([...columns], declared.get(table), table);
   }
-  assert.deepEqual(
-    [...MIGRATE_TABLES].sort(),
-    [...declared.keys()].sort(),
-    'every table in schema.sql is exported',
-  );
+  assert.deepEqual([...MIGRATE_TABLES].sort(), [...declared.keys()].sort());
 });

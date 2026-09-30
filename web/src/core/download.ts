@@ -4,8 +4,8 @@
 
 import { Zip, ZipPassThrough } from 'fflate';
 import type { Photo } from '$shared/types';
-import { extOfType, padName } from '$base/lib/format';
-import { toId36 } from '$base/lib/id36';
+import { padName } from '$base/lib/format';
+import { toId36, extOfType } from '$shared/media';
 
 /** Make the browser save a Blob. */
 function saveBlob(blob: Blob, filename: string): void {
@@ -20,10 +20,7 @@ function saveBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-/** Fetch a photo's bytes, preferring the image-host direct link (browser cache is
- * reused, so repeat downloads are free). Falls back to the same-origin `/l/{id36}`
- * proxy when the direct link is blocked (CORS / network error) or returns a status
- * the proxy may circumvent (e.g. Referer-based hotlink protection). */
+/** Fetch media directly with browser caching, then try the same-origin proxy on failure. */
 async function fetchPhoto(photo: Photo, fetchFn: typeof fetch): Promise<Response> {
   try {
     const res = await fetchFn(photo.url, { cache: 'force-cache' });
@@ -46,9 +43,7 @@ export async function downloadOne(photo: Photo, fetchFn: typeof fetch = fetch): 
   saveBlob(blob, `${toId36(photo.id)}.${extOfType(photo.type)}`);
 }
 
-/** Pack several photos into download.zip. `photos` must follow the current sort
- * order — the index is the array position. fflate's streaming Zip writes each file
- * as soon as it downloads, so they never all sit in memory at once. */
+/** Download photos sequentially into a ZIP, with zero-padded entry names in display order. */
 export async function downloadZip(photos: Photo[], fetchFn: typeof fetch = fetch): Promise<void> {
   const total = photos.length;
   if (total === 0) return;

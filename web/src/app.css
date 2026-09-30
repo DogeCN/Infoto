@@ -2,7 +2,7 @@
 @plugin "@tailwindcss/typography";
 
 @theme {
-  /* Blue-black surface ladder: brighter and airier than a neutral near-black. */
+  /* Blue-black surfaces and semantic colors. */
   --color-background: #0a0e1a;
   --color-foreground: #e2e8f0;
   --color-muted-foreground: #7b85a0;
@@ -22,7 +22,7 @@
   --color-warning: #f59e0b;
   --radius: 12px;
 
-  /* Motion tokens (Rayburst style: asymmetric timing + spring popovers). */
+  /* Shared entrance, exit, and spring timing. */
   --ease-enter: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -69,7 +69,7 @@
     cursor: pointer;
   }
 
-  button:focus-visible {
+  :where(button, a, input, textarea, select, [tabindex]):focus-visible {
     outline: 2px solid var(--color-primary);
     outline-offset: 2px;
   }
@@ -84,17 +84,17 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #2a2a33;
+    background: var(--color-border);
     border-radius: 999px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #3a3a46;
+    background: var(--color-muted-foreground);
   }
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: #2a2a33 transparent;
+    scrollbar-color: var(--color-border) transparent;
   }
 
   ::selection {
@@ -161,6 +161,15 @@
 
 /* Respect prefers-reduced-motion: decorative transitions and animations collapse to instant. */
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
   [data-sonner-toaster].toast-stack[data-y-position='bottom'] {
     transition: none;
   }
@@ -173,5 +182,34 @@
   [style*="fadeInUp"] {
     transition: none !important;
     animation: none !important;
+  }
+}
+
+@layer components {
+  .slider-thumb {
+    @apply absolute top-1/2 size-[18px] -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full outline-none border-[3px] border-background bg-primary transition-transform duration-[120ms] ease-out active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+  .slider-bubble {
+    @apply pointer-events-none relative whitespace-nowrap rounded-md bg-surface-top px-2.5 py-[3px] text-[11px] font-semibold tabular-nums text-foreground shadow-md;
+  }
+  .slider-caret {
+    @apply absolute top-full size-2 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-surface-top;
+  }
+}
+
+@layer base {
+  button:disabled {
+    cursor: not-allowed;
+  }
+  input,
+  textarea,
+  [contenteditable='true'],
+  .prose {
+    user-select: text;
+  }
+  textarea,
+  input,
+  select {
+    font: inherit;
   }
 }
