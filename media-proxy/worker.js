@@ -51,7 +51,7 @@ async function makeTcToken(secret) {
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
+    headers: corsHeaders({ 'content-type': 'application/json; charset=utf-8' }),
   });
 
 /** Any origin may upload: the facade is a public endpoint and the upstream stays
@@ -78,7 +78,12 @@ function isPublicHttps(url) {
   }
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
   const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
-  if (host === '' || host.startsWith('[') || /^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
+  if (host === '' || host.startsWith('[')) return false;
+  // Reject any purely numeric host: dotted IPv4, decimal (2130706433), or hex (0x7f000001).
+  // These bypass the dotted-IPv4 check and may resolve to loopback/internal addresses.
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || /^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
+    return false;
+  }
   if (/^(?:local|internal|localhost)$/.test(host) || /\.(?:local|internal|localhost)$/.test(host)) {
     return false;
   }
@@ -132,13 +137,21 @@ async function handleUpload(request, env) {
     return json({ error: 'bad_upstream_url' }, 502);
   }
 
-  return new Response(JSON.stringify({ data }), { status: 200, headers });
+  // Override content-type: the relayed upstream value may be text/plain etc.,
+  // but we always return our own JSON envelope on success.
+  return new Response(JSON.stringify({ data }), {
+    status: 200,
+    headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
+  });
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const isKnownRoute = url.pathname === '/upload' || url.pathname === '/health';
     if (request.method === 'OPTIONS') {
+      // Only answer preflight for routes that actually exist; unknown paths get 404.
+      if (!isKnownRoute) return json({ error: 'not_found' }, 404);
       return new Response(null, { status: 204, headers: corsHeaders({}) });
     }
     if (request.method === 'GET' && url.pathname === '/health') {

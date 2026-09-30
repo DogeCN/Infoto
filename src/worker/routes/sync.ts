@@ -17,7 +17,7 @@ import {
 } from '../../shared/types.ts';
 import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '../identity.ts';
 import { verifyTurnstile } from '../turnstile.ts';
-import { LOCAL_MEDIA_HOST_URL, isStorableMediaUrl } from './media.ts';
+import { LOCAL_MEDIA_HOST_URL, isAllowedMediaUrl } from './media.ts';
 
 /** Text fields an anonymous op may carry. */
 const MAX_TEXT_LENGTH = 20_000;
@@ -122,7 +122,8 @@ async function announcementExists(db: Db, id: number): Promise<boolean> {
   return (await db.prepare('SELECT id FROM announcements WHERE id = ?').bind(id).first()) !== null;
 }
 
-async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promise<void> {
+async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): Promise<void> {
+  const db = env.db;
   const isRoot = user.id === ROOT_ID;
   switch (op.type) {
     case 'upload': {
@@ -135,8 +136,11 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
       const type = mediaType(p.type);
       if (!sha256 || !url || width === null || height === null || size === null) return;
       if (type === null) return;
-      if (!isStorableMediaUrl(url)) return;
-      if (await db.prepare('SELECT id FROM photos WHERE sha256 = ?').bind(sha256).first()) return;
+      // Must match the read proxy's rule, or a locally uploaded photo is stored and then
+      // refused by /l/:id36 (or, before this was shared, dropped right here).
+      if (!isAllowedMediaUrl(env, url)) return;
+      if (await env.db.prepare('SELECT id FROM photos WHERE sha256 = ?').bind(sha256).first())
+        return;
       await db
         .prepare(
           `INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
@@ -218,11 +222,11 @@ async function applyOp(db: Db, user: UserRow, op: Op, serverTime: number): Promi
 }
 
 /** Apply the batch, dropping an op that throws without affecting the others. */
-async function applyOps(db: Db, user: UserRow, ops: Op[], serverTime: number): Promise<void> {
+async function applyOps(env: AppEnv, user: UserRow, ops: Op[], serverTime: number): Promise<void> {
   for (const op of ops) {
     if (!op || typeof op.type !== 'string') continue;
     try {
-      await applyOp(db, user, op, serverTime);
+      await applyOp(env, user, op, serverTime);
     } catch (e) {
       console.error('[sync] op dropped', op.type, e);
     }
@@ -335,7 +339,7 @@ export function syncHandler(env: AppEnv) {
     }
 
     const serverTime = Date.now();
-    await applyOps(env.db, user, body.ops, serverTime);
+    await applyOps(env, user, body.ops, serverTime);
 
     const snap = await snapshot(env.db, user.id);
     const res = c.json({

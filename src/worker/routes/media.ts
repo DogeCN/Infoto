@@ -58,25 +58,29 @@ export function isStorableMediaUrl(url: string): boolean {
   return true;
 }
 
+/**
+ * Storage/read rule for a media URL. The simulated host serves plain HTTP on loopback,
+ * which `isStorableMediaUrl` rejects by design; trust exactly that origin, and only when
+ * MEDIA_HOST_URL is unset or still points at the local simulation — a deployed facade
+ * gets the strict rule.
+ *
+ * Both the write path (`/sync` upload ops) and the read proxy (`/l/:id36`) must use this,
+ * or a locally uploaded photo is stored and then refused, or silently dropped on arrival.
+ * Compare parsed origins, never string prefixes: "http://127.0.0.1:8788.evil.example"
+ * shares a prefix with the origin but is an unrelated host.
+ */
+export function isAllowedMediaUrl(env: AppEnv, url: string): boolean {
+  if (isStorableMediaUrl(url)) return true;
+  if ((env.mediaHostUrl ?? LOCAL_MEDIA_HOST_URL) !== LOCAL_MEDIA_HOST_URL) return false;
+  try {
+    return new URL(url).origin === LOCAL_MEDIA_HOST_URL;
+  } catch {
+    return false;
+  }
+}
+
 export function mediaHandler(env: AppEnv) {
-  // The simulated host serves plain HTTP on loopback, which the SSRF guard rejects by
-  // design. Trust exactly that origin, and only when MEDIA_HOST_URL is unset or still
-  // points at the local simulation — a deployed facade gets the strict rule.
-  const localHost =
-    (env.mediaHostUrl ?? LOCAL_MEDIA_HOST_URL) === LOCAL_MEDIA_HOST_URL
-      ? LOCAL_MEDIA_HOST_URL
-      : null;
-  // Compare parsed origins, not string prefixes: "http://127.0.0.1:8788.evil.example"
-  // shares a prefix with the origin but is an unrelated host.
-  const acceptable = (url: string): boolean => {
-    if (isStorableMediaUrl(url)) return true;
-    if (localHost === null) return false;
-    try {
-      return new URL(url).origin === localHost;
-    } catch {
-      return false;
-    }
-  };
+  const acceptable = (url: string): boolean => isAllowedMediaUrl(env, url);
 
   return async (c: Context): Promise<Response> => {
     const id36 = c.req.param('id36') ?? '';

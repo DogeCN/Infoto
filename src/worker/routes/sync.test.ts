@@ -498,6 +498,56 @@ test('the image host is decoupled: no /upload route, facade URL served by /sync'
   assert.equal(((await res.json()) as SyncResponse).mediaHostUrl, 'https://facade.example');
 });
 
+// A locally uploaded photo is plain-HTTP loopback. The write path and the read proxy must
+// agree on that, or `npm run dev` loses every upload with no error anywhere.
+test('upload ops accept the local simulation URL the read proxy can then serve', async () => {
+  const localUrl = 'http://127.0.0.1:8788/abc.webp';
+  const uploadOp = (sha: string, url: string) => ({
+    type: 'upload' as const,
+    target: null,
+    payload: { sha256: sha, url, width: 1, height: 1, size: 1, type: 0 },
+  });
+
+  // Unset MEDIA_HOST_URL: the loopback URL is accepted and stored.
+  const local = makeApp();
+  const localCookie = cookieFrom(await syncNew(local.app));
+  let snap = (await (
+    await postOps(local.app, localCookie, [uploadOp('a'.repeat(64), localUrl)])
+  ).json()) as SyncResponse;
+  assert.equal(snap.photos.length, 1);
+  assert.equal(snap.photos[0]!.url, localUrl);
+
+  // And /l/1 actually serves it, so store and read cannot drift apart.
+  const original = globalThis.fetch;
+  const requested: string[] = [];
+  globalThis.fetch = async (input) => {
+    requested.push(String(input));
+    return new Response('bytes', { headers: { 'Content-Type': 'image/webp' } });
+  };
+  try {
+    assert.equal((await local.app.request('http://localhost/l/1')).status, 200);
+    assert.deepEqual(requested, [localUrl]);
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  // A deployed facade gets the strict rule: the same loopback URL is refused on write.
+  const prod = makeApp({ mediaHostUrl: 'https://facade.example' });
+  const prodCookie = cookieFrom(await syncNew(prod.app));
+  snap = (await (
+    await postOps(prod.app, prodCookie, [uploadOp('b'.repeat(64), localUrl)])
+  ).json()) as SyncResponse;
+  assert.equal(snap.photos.length, 0);
+
+  // A public HTTPS URL is stored either way.
+  const https = makeApp({ mediaHostUrl: 'https://facade.example' });
+  const httpsCookie = cookieFrom(await syncNew(https.app));
+  snap = (await (
+    await postOps(https.app, httpsCookie, [uploadOp('c'.repeat(64), 'https://file.example/x.webp')])
+  ).json()) as SyncResponse;
+  assert.equal(snap.photos.length, 1);
+});
+
 // /admin (the page) is not a Worker route: it falls through to the ASSETS SPA fallback,
 // so the root boundary there is frontend-only. Every /admin/* API is server-gated.
 test('https Set-Cookie includes Secure; plain http does not', async () => {

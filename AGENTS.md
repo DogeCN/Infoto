@@ -190,6 +190,7 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 | `src/testing/localDb.ts`                        | Local/unit-test Db over `node:sqlite` (via `createRequire`); never imported by the Worker |
 | `src/worker/schema-ddl.ts`                      | Generated DDL string for the Worker — never hand-edit                                     |
 | `media-proxy/worker.js`                         | Standalone image-host facade — owns `TC_SECRET`, separate deploy (ADR 0009)               |
+| `media-proxy/README.md`                         | Facade API contract — read this to plug in a different storage backend                    |
 | `web/src/core/engine.ts`                        | Sync engine (oplog, sync trigger points)                                                  |
 | `web/src/base/upload/pipeline.ts`               | Upload pipeline (pure logic, testable)                                                    |
 | `web/src/transcode/pipeline.ts`                 | Transcode pipeline orchestrator                                                           |
