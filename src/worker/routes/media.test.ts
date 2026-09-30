@@ -62,6 +62,42 @@ test('validates media origins, redirect targets, and response isolation', async 
       globalThis.fetch = original;
     }
   }
+  // The local simulated host is plain-HTTP loopback, which the SSRF guard rejects. That
+  // exception applies only while no real host is configured, and never widens to other
+  // loopback URLs once MEDIA_HOST_URL is set.
+  {
+    const { db, app: local } = makeApp();
+    db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+      VALUES ('t', 'http://127.0.0.1:8788/a.webp', 0, 1, 1, 1, 1, 0)`);
+    const original = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = async (input) => {
+      requested.push(String(input));
+      return new Response('bytes', { headers: { 'Content-Type': 'image/webp' } });
+    };
+    try {
+      assert.equal((await local.request('http://localhost/l/1')).status, 200);
+      assert.deepEqual(requested, ['http://127.0.0.1:8788/a.webp']);
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  // With a real host configured the same loopback URL is refused again.
+  {
+    const { db, app: prod } = makeApp({ mediaHostUrl: 'https://tc.example' });
+    db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+      VALUES ('t', 'http://127.0.0.1:8788/a.webp', 0, 1, 1, 1, 1, 0)`);
+    assert.equal((await prod.request('http://localhost/l/1')).status, 404);
+  }
+
+  // A loopback URL sharing the prefix but not the origin stays refused.
+  {
+    const { db, app: prefix } = makeApp();
+    db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+      VALUES ('t', 'http://127.0.0.1:8788.evil.example/a.webp', 0, 1, 1, 1, 1, 0)`);
+    assert.equal((await prefix.request('http://localhost/l/1')).status, 404);
+  }
 });
 
 function mediaApp() {

@@ -11,8 +11,11 @@ import { adminApp } from './routes/admin.ts';
 
 export interface AppEnv {
   db: Db;
-  /** Image-host signing secret (TC_SECRET). */
+  /** Image-host signing secret (TC_SECRET). Absent locally: the simulated host ignores the token. */
   tcSecret?: string;
+  /** Image-host multipart endpoint. Defaults to the local simulated host so dev never
+   *  touches the production host; deployments inject the real URL via MEDIA_HOST_URL. */
+  mediaHostUrl?: string;
   /** Cloudflare Turnstile secret key. */
   turnstileSecret?: string;
   /** Public Turnstile site key — delivered in the /sync 401 `turnstile_required` body. */

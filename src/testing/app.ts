@@ -32,7 +32,12 @@ export function stubSiteverify(): (success: boolean) => void {
 }
 
 export function makeApp(
-  opts: { turnstileSecret?: string; turnstileSiteKey?: string; tcSecret?: string } = {},
+  opts: {
+    turnstileSecret?: string;
+    turnstileSiteKey?: string;
+    tcSecret?: string;
+    mediaHostUrl?: string;
+  } = {},
 ): {
   db: ReturnType<typeof openLocalDb>;
   app: TestApp;

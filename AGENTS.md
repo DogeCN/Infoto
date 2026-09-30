@@ -79,7 +79,7 @@ Run from the repo root:
 
 Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedge`/`chromium`), `npm run test:watch -w infoto-web`. Run `npm run e2e -w infoto-web -- ui.spec.ts` for mocked gallery, keyboard, overlay, locale, narrow-screen, and failed-upload regressions. Full pipeline specs require the real upload service configuration.
 
-Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started by `npm run dev`. It accepts multipart uploads at `POST /upload`, stores files in `.local-media/`, and serves them at `GET /{filename}`. The Worker's upload proxy points to `http://127.0.0.1:8788/upload` — no external image host is contacted. Production deploy injects the real `TC_SECRET` and the Worker uses the real image host URL.
+Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started by `npm run dev`. It accepts multipart uploads at `POST /upload`, stores files in `.local-media/`, and serves them at `GET /{filename}`. **When `MEDIA_HOST_URL` is unset the Worker targets `http://127.0.0.1:8788/upload`, so dev never touches the real host.** Deployments inject the real `MEDIA_HOST_URL` (repo secret) alongside `TC_SECRET`; both are required by the deploy workflow. `TC_SECRET` is optional locally — the simulated host ignores `X-Auth-Token`.
 
 ---
 

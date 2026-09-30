@@ -6,6 +6,7 @@ import type { AppEnv } from '../app.ts';
 import { fromId36 } from '../../shared/media.ts';
 import { MEDIA_TYPE } from '../../shared/types.ts';
 import { notFoundPage, serverErrorPage } from '../errors.ts';
+import { localMediaOrigin } from './upload.ts';
 
 const MIME_BY_TYPE: Record<number, string> = {
   [MEDIA_TYPE.IMAGE]: 'image/webp',
@@ -54,6 +55,22 @@ export function isStorableMediaUrl(url: string): boolean {
 }
 
 export function mediaHandler(env: AppEnv) {
+  // The simulated host serves over plain HTTP on loopback, which the SSRF guard rejects by
+  // design. Allowing exactly that origin — and only when no real host is configured — keeps
+  // dev images viewable without weakening the rule for stored URLs at large.
+  const localHost = localMediaOrigin(env);
+  // Compare parsed origins, not string prefixes: "http://127.0.0.1:8788.evil.example"
+  // shares a prefix with the origin but is an unrelated host.
+  const acceptable = (url: string): boolean => {
+    if (isStorableMediaUrl(url)) return true;
+    if (localHost === null) return false;
+    try {
+      return new URL(url).origin === localHost;
+    } catch {
+      return false;
+    }
+  };
+
   return async (c: Context): Promise<Response> => {
     const id36 = c.req.param('id36') ?? '';
     const id = fromId36(id36);
@@ -69,7 +86,7 @@ export function mediaHandler(env: AppEnv) {
     try {
       let url = row.url;
       for (let redirects = 0; ; redirects++) {
-        if (!isStorableMediaUrl(url)) return notFoundPage(c.req.raw);
+        if (!acceptable(url)) return notFoundPage(c.req.raw);
         upstream = await fetch(url, { redirect: 'manual' });
         if (![301, 302, 303, 307, 308].includes(upstream.status)) break;
         const location = upstream.headers.get('Location');

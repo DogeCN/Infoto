@@ -46,7 +46,7 @@
 - **HMR leaves stale modules** after repeated edits to one file — symptoms are "not defined" errors for symbols that _are_ defined. `page.goto(url + '?t=' + Date.now())` forces a full reload and is the reliable fix; `touch` is not enough.
 - **Browser width probes need a real settle.** The `ResizeObserver + rAF` chain needs ~200ms; sampling at 8ms reads the previous frame's value and looks exactly like a jump. I mis-diagnosed "468–482 still flapping" as a real bug because of this — it was a sampling artifact.
 - After changes, run `npm run lint` (includes `prettier --check`, catches unformatted files).
-- Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started by `npm run dev`. It accepts multipart uploads at `POST /upload`, stores files in `.local-media/`, and serves them at `GET /{filename}`. The Worker's upload proxy points to `http://127.0.0.1:8788/upload` — no external image host is contacted. Production deploy injects the real `TC_SECRET` and the Worker uses the real image host URL.
+- Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started by `npm run dev`. It accepts multipart uploads at `POST /upload`, stores files in `.local-media/`, and serves them at `GET /{filename}`. **The image host is `MEDIA_HOST_URL`; when unset the Worker falls back to `http://127.0.0.1:8788`, so dev never reaches the real host.** Deploy injects `MEDIA_HOST_URL` + `TC_SECRET` as required secrets — never hardcode the production host in `upload.ts`. `TC_SECRET` may be absent locally (the simulation ignores `X-Auth-Token`); a real host is never called unsigned. `media.ts` trusts loopback URLs only while `MEDIA_HOST_URL` is unset — that exception is the SSRF guard's single hole, keep it narrow.
 
 ---
 

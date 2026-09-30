@@ -487,15 +487,29 @@ test('upload enforces authentication, signs the upstream request, and preserves 
   });
   assert.equal(badCt.status, 400);
   assert.deepEqual(await badCt.json(), { ok: false, error: 'bad_content_type' });
-  const noSecret = await app.request('http://localhost/upload', {
-    method: 'POST',
-    headers: { Cookie: cookie, 'Content-Type': 'multipart/form-data; boundary=x' },
-    body: '--x--',
-  });
-  assert.equal(noSecret.status, 500);
-  assert.deepEqual(await noSecret.json(), { ok: false, error: 'tc_secret_missing' });
+
+  // Without TC_SECRET the request still forwards, unsigned, to the local simulated host.
+  const originalFetch0 = globalThis.fetch;
+  let unsigned = true;
+  globalThis.fetch = async (url, init) => {
+    unsigned = new Headers(init?.headers).get('X-Auth-Token') === null;
+    assert.equal(String(url), 'http://127.0.0.1:8788/upload');
+    return Response.json({ data: 'http://127.0.0.1:8788/a.webp' });
+  };
+  try {
+    const noSecret = await app.request('http://localhost/upload', {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'multipart/form-data; boundary=x' },
+      body: '--x--',
+    });
+    assert.equal(noSecret.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch0;
+  }
+  assert.equal(unsigned, true);
+
   const secret = 'fixture-upload-secret';
-  const { app: signedApp } = makeApp({ tcSecret: secret });
+  const { app: signedApp } = makeApp({ tcSecret: secret, mediaHostUrl: 'https://host.example' });
   const signedCookie = cookieFrom(await syncNew(signedApp));
   const request = () =>
     signedApp.request('http://localhost/upload', {
@@ -509,7 +523,7 @@ test('upload enforces authentication, signs the upstream request, and preserves 
       const body =
         status === 200 ? { data: 'https://media.example/test.webp' } : { error: 'rate_limited' };
       globalThis.fetch = async (url, init) => {
-        assert.equal(String(url), 'http://127.0.0.1:8788/upload');
+        assert.equal(String(url), 'https://host.example/upload');
         assert.equal(init?.method, 'POST');
         const headers = new Headers(init?.headers);
         const token = headers.get('X-Auth-Token')!;

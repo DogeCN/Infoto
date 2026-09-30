@@ -6,7 +6,19 @@ import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';
 import { resolveUser } from '../identity.ts';
 
-const HOST_UPLOAD_URL = 'http://127.0.0.1:8788/upload';
+/** Local simulated image host (scripts/local-media-host.mjs), so a dev upload never
+ *  reaches the production host. Deployments set MEDIA_HOST_URL to the real endpoint. */
+const LOCAL_MEDIA_ORIGIN = 'http://127.0.0.1:8788';
+
+/** Origin the media proxy may additionally trust for stored URLs, or null when a real
+ *  image host is configured (production stores only public HTTPS URLs). */
+export function localMediaOrigin(env: AppEnv): string | null {
+  if (env.mediaHostUrl) return null;
+  return LOCAL_MEDIA_ORIGIN;
+}
+
+const hostUploadUrl = (env: AppEnv): string =>
+  env.mediaHostUrl ? `${env.mediaHostUrl}/upload` : `${LOCAL_MEDIA_ORIGIN}/upload`;
 
 /** Upstream headers worth passing back: the client parses the JSON body, and rate-limit
  *  headers explain a rejection the same way the image host does. */
@@ -55,22 +67,20 @@ export function uploadHandler(env: AppEnv) {
       return c.json({ ok: false, error: 'bad_content_type' }, 400);
     }
 
-    if (!env.tcSecret) return c.json({ ok: false, error: 'tc_secret_missing' }, 500);
+    const upstreamUrl = hostUploadUrl(env);
+    // The real host authenticates by token; the local simulation ignores it. Signing only
+    // when a secret exists keeps `npm run dev` working on a fresh clone (no TC_SECRET)
+    // without ever sending an unsigned request to a real host.
+    const reqHeaders = new Headers({ 'Content-Type': ct });
+    if (env.tcSecret) reqHeaders.set('X-Auth-Token', await makeTcToken(env.tcSecret));
 
-    const init: RequestInit = {
-      method: 'POST',
-      headers: {
-        'X-Auth-Token': await makeTcToken(env.tcSecret),
-        'Content-Type': ct,
-      },
-      body: c.req.raw.body,
-    };
+    const init: RequestInit = { method: 'POST', headers: reqHeaders, body: c.req.raw.body };
     // Streaming a request body requires half-duplex on the runtime.
     (init as { duplex?: string }).duplex = 'half';
 
     let upstream: Response;
     try {
-      upstream = await fetch(HOST_UPLOAD_URL, init);
+      upstream = await fetch(upstreamUrl, init);
     } catch {
       return c.json({ ok: false, error: 'image_host_unreachable' }, 502);
     }
