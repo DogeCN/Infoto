@@ -31,7 +31,9 @@ export function stubSiteverify(): (success: boolean) => void {
   };
 }
 
-export function makeApp(opts: { turnstileSecret?: string; turnstileSiteKey?: string } = {}): {
+export function makeApp(
+  opts: { turnstileSecret?: string; turnstileSiteKey?: string; tcSecret?: string } = {},
+): {
   db: ReturnType<typeof openLocalDb>;
   app: TestApp;
 } {

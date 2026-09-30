@@ -1,5 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import type { SyncResponse } from '../../shared/types.ts';
 import { cookieFrom, makeApp, stubSiteverify, sync, syncNew } from '../../testing/app.ts';
 
@@ -493,15 +494,13 @@ test('upload without multipart → 400; no cookie → 401', async () => {
   });
   assert.equal(noSecret.status, 500);
   assert.deepEqual(await noSecret.json(), { ok: false, error: 'tc_secret_missing' });
-<<<<<<< HEAD
-=======
-
   const secret = 'fixture-upload-secret';
-  const signedApp = createApp({ db, tcSecret: secret });
+  const { app: signedApp } = makeApp({ tcSecret: secret });
+  const signedCookie = cookieFrom(await syncNew(signedApp));
   const request = () =>
     signedApp.request('http://localhost/upload', {
       method: 'POST',
-      headers: { Cookie: cookie, 'Content-Type': 'multipart/form-data; boundary=x' },
+      headers: { Cookie: signedCookie, 'Content-Type': 'multipart/form-data; boundary=x' },
       body: '--x--',
     });
   const originalFetch = globalThis.fetch;
@@ -548,7 +547,6 @@ test('upload without multipart → 400; no cookie → 401', async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
->>>>>>> 512193b (Dev: add local media host for uploads)
 });
 
 // /admin (the page) is not a Worker route: it falls through to the ASSETS SPA fallback,
