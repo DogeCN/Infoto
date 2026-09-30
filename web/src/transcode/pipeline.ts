@@ -9,6 +9,7 @@ import {
   type JobMeta,
   type JobPurpose,
   type JobStatusMessage,
+  type MediaHostRequest,
   type SwToPageMessage,
   pipelineResultAction,
   shouldWriteAlbumUploadOp,
@@ -96,6 +97,8 @@ export class UploadPipeline {
   private readonly pendingAlbumOps = new Set<string>();
   private swDead = false;
   private backoffTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Facade URL last reported to the SW; re-sent only when it changes. */
+  private mediaHost: string | undefined;
 
   constructor(io: PipelineIo = {}) {
     this.io = io;
@@ -211,6 +214,8 @@ export class UploadPipeline {
       this.onSwMessage(m);
     };
     this.sw.port.start();
+    // A fresh SW starts with no upload target, so replay the one this page already knows.
+    if (this.mediaHost) this.sw.port.postMessage({ t: 'mediaHost', url: this.mediaHost });
     // Return video tokens on pagehide independently of visibilitychange.
     this.lease.install();
     // deviceMemory is window-only — report both readings so the SW can size
@@ -236,6 +241,17 @@ export class UploadPipeline {
       if (m.t !== 'jobStatus' || m.purpose !== 'album') return;
       this.emit(this.snapshotFrom(m));
     });
+  }
+
+  /**
+   * Point the SharedWorker at the upload facade named by /sync. The SW is shared and
+   * outlives this page, so it cannot discover the target itself; called on every sync so
+   * a reconfigured facade takes effect without a reload.
+   */
+  setMediaHost(url: string): void {
+    if (this.mediaHost === url) return;
+    this.mediaHost = url;
+    this.sw?.port?.postMessage({ t: 'mediaHost', url } satisfies MediaHostRequest);
   }
 
   private restartWithBackoff(): void {

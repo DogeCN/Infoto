@@ -65,8 +65,21 @@ function parseMultipart(buf, boundary) {
   return files;
 }
 
+// The browser uploads here from the page origin, so the dev stand-in must answer CORS
+// exactly like the real facade does — otherwise dev fails for a reason production would not.
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-headers': 'content-type',
+};
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, CORS).end();
+    return;
+  }
 
   if (req.method === 'GET') {
     const fname = safeFilename(url.pathname.slice(1));
@@ -82,6 +95,7 @@ const server = createServer((req, res) => {
     const ext = path.extname(fname).toLowerCase();
     const mime = MIME_BY_EXT[ext] ?? 'application/octet-stream';
     res.writeHead(200, {
+      ...CORS,
       'content-type': mime,
       'cache-control': 'public, max-age=31536000, immutable',
     });
@@ -94,7 +108,7 @@ const server = createServer((req, res) => {
     const bm = /boundary=(.+)/.exec(ct);
     if (!bm) {
       res
-        .writeHead(400, { 'content-type': 'application/json' })
+        .writeHead(400, { ...CORS, 'content-type': 'application/json' })
         .end('{"error":"bad_content_type"}');
       return;
     }
@@ -105,7 +119,9 @@ const server = createServer((req, res) => {
       const files = parseMultipart(buf, bm[1]);
       const file = files.find((f) => f.field === 'file');
       if (!file || !file.filename) {
-        res.writeHead(400, { 'content-type': 'application/json' }).end('{"error":"no_file"}');
+        res
+          .writeHead(400, { ...CORS, 'content-type': 'application/json' })
+          .end('{"error":"no_file"}');
         return;
       }
       const ext = path.extname(file.filename).toLowerCase();
@@ -113,7 +129,7 @@ const server = createServer((req, res) => {
       const stored = `${id}${ext}`;
       writeFileSync(path.join(MEDIA_DIR, stored), file.data);
       const publicUrl = `http://127.0.0.1:${PORT}/${stored}`;
-      res.writeHead(200, { 'content-type': 'application/json' });
+      res.writeHead(200, { ...CORS, 'content-type': 'application/json' });
       res.end(JSON.stringify({ url: publicUrl, data: publicUrl }));
     });
     return;

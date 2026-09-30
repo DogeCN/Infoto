@@ -51,7 +51,6 @@ const config = {
     },
     proxy: {
       '/sync': proxy(),
-      '/upload': proxy({ proxyTimeout: 120_000 }),
       '/l': proxy({ cookieDomainRewrite: false }),
       // Proxy admin API endpoints while retaining the SPA fallback for /admin.
       '/admin/migrate': proxy(),

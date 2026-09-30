@@ -35,6 +35,7 @@ describe('sync and upload clients', () => {
       ok: true,
       serverTime: 1,
       selfId: 0,
+      mediaHostUrl: 'https://facade.test',
       photos: [],
       announcements: [],
       feedback: [],
@@ -75,13 +76,13 @@ describe('sync and upload clients', () => {
     expect(
       await postUpload(new Blob(['x'], { type: 'image/webp' }), {
         fetchFn: uploaded,
-        origin: 'http://x',
+        mediaHostUrl: 'http://x',
       }),
     ).toEqual({ ok: true, url: 'https://host/f.webp' });
     expect(uploaded.mock.calls[0]![0]).toBe('http://x/upload');
     const denied = vi.fn().mockResolvedValue(okResponse({ error: 'unauthorized' }, 401));
     expect(
-      await postUpload(new Blob(['x']), { fetchFn: denied, origin: 'http://x' }),
+      await postUpload(new Blob(['x']), { fetchFn: denied, mediaHostUrl: 'http://x' }),
     ).toMatchObject({
       ok: false,
       error: 'unauthorized',
@@ -95,7 +96,7 @@ describe('sync and upload clients', () => {
         }),
     );
     expect(
-      await postUpload(new Blob(['x']), { fetchFn: slow, origin: 'http://x', timeoutMs: 10 }),
+      await postUpload(new Blob(['x']), { fetchFn: slow, mediaHostUrl: 'http://x', timeoutMs: 10 }),
     ).toMatchObject({ ok: false, error: 'timeout' });
   });
 

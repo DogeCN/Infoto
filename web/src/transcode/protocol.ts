@@ -104,6 +104,15 @@ export interface PoolHintRequest {
   hardwareConcurrency?: number;
 }
 
+/**
+ * Upload target from the /sync response. The SW is shared across tabs and outlives any one
+ * page, so it cannot call /sync itself; whichever page connects last sets the target.
+ */
+export interface MediaHostRequest {
+  t: 'mediaHost';
+  url: string;
+}
+
 export type PageToSwMessage =
   | AddJobRequest
   | CancelJobRequest
@@ -115,7 +124,8 @@ export type PageToSwMessage =
   | VideoFailedRequest
   | OpWrittenRequest
   | EditorResultAckRequest
-  | PoolHintRequest;
+  | PoolHintRequest
+  | MediaHostRequest;
 
 // ---- response / progress / lease: SharedWorker → page --------------------------
 
@@ -185,6 +195,7 @@ const PAGE_TYPES = new Set([
   'opWritten',
   'editorResultAck',
   'poolHint',
+  'mediaHost',
 ]);
 const SW_TYPES = new Set(['jobStatus', 'leaseGranted', 'leaseRevoked', 'jobRemoved']);
 const JOB_PURPOSES = new Set<JobPurpose>(['album', 'editor']);

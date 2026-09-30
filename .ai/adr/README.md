@@ -43,3 +43,4 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0006](0006-dual-source-web-fonts.md)           | Web Fonts Race the Official Host Against the USTC Mirror       | Accepted |
 | [0007](0007-shared-frontend-lifecycle.md)       | Shared Frontend Lifecycle and Utility Boundaries               | Accepted |
 | [0008](0008-explicit-sync-triggers.md)          | Synchronization Uses Explicit User and Page-Lifecycle Triggers | Accepted |
+| [0009](0009-standalone-image-host-facade.md)    | Image Host as a Standalone Facade                              | Accepted |

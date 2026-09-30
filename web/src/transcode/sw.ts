@@ -93,6 +93,8 @@ const leases = new Map<string, Lease>();
 
 /** Video concurrency, bounded to one or two jobs and refined by page capability hints. */
 let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
+/** Upload facade from the page's /sync response; unset means "use the local simulation". */
+let mediaHostUrl: string | undefined;
 
 function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
   // Cancelled jobs (record already deleted from `jobs`) stay silent — otherwise
@@ -328,7 +330,7 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
     return;
   }
   const r = await postUpload(blob, {
-    origin: self.location.origin,
+    mediaHostUrl,
     fileName,
     signal: rec.uploadAbort.signal,
     onProgress: (fraction) => notify(rec, { fraction }),
@@ -701,6 +703,10 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
     case 'poolHint': {
       videoLimit = videoPoolSize(m);
       pumpVideoLeases();
+      return;
+    }
+    case 'mediaHost': {
+      mediaHostUrl = m.url;
       return;
     }
   }

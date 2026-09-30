@@ -4,17 +4,14 @@ import { Hono } from 'hono';
 import type { Db } from './db.ts';
 import { notFoundPage, serverErrorPage } from './errors.ts';
 import { syncHandler } from './routes/sync.ts';
-import { uploadHandler } from './routes/upload.ts';
 import { mediaHandler } from './routes/media.ts';
 import { migrateExportHandler, migrateImportHandler } from './routes/migrate.ts';
 import { adminApp } from './routes/admin.ts';
 
 export interface AppEnv {
   db: Db;
-  /** Image-host signing secret (TC_SECRET). Absent locally: the simulated host ignores the token. */
-  tcSecret?: string;
-  /** Image-host multipart endpoint. Defaults to the local simulated host so dev never
-   *  touches the production host; deployments inject the real URL via MEDIA_HOST_URL. */
+  /** Standalone image-host facade the browser uploads to (see media-proxy/worker.js).
+   *  Delivered in the /sync response; defaults to the local simulated host in dev. */
   mediaHostUrl?: string;
   /** Cloudflare Turnstile secret key. */
   turnstileSecret?: string;
@@ -26,13 +23,12 @@ export interface AppEnv {
 
 /** Endpoints answering JSON. Everything else gets the HTML error page, so a media
  *  proxy or static request never has to parse an error body. */
-const JSON_ROUTE = /^\/(?:sync|upload|admin)(?:\/|$)/;
+const JSON_ROUTE = /^\/(?:sync|admin)(?:\/|$)/;
 
 export function createApp(env: AppEnv): Hono {
   const app = new Hono();
 
   app.post('/sync', syncHandler(env));
-  app.post('/upload', uploadHandler(env));
   app.get('/l/:id36', mediaHandler(env));
   app.get('/admin/migrate', migrateExportHandler(env));
   app.post('/admin/migrate', migrateImportHandler(env));

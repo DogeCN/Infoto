@@ -17,7 +17,7 @@ import {
 } from '../../shared/types.ts';
 import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '../identity.ts';
 import { verifyTurnstile } from '../turnstile.ts';
-import { isStorableMediaUrl } from './media.ts';
+import { LOCAL_MEDIA_HOST_URL, isStorableMediaUrl } from './media.ts';
 
 /** Text fields an anonymous op may carry. */
 const MAX_TEXT_LENGTH = 20_000;
@@ -338,7 +338,15 @@ export function syncHandler(env: AppEnv) {
     await applyOps(env.db, user, body.ops, serverTime);
 
     const snap = await snapshot(env.db, user.id);
-    const res = c.json({ ok: true, serverTime, selfId: user.id, ...snap });
+    const res = c.json({
+      ok: true,
+      serverTime,
+      selfId: user.id,
+      // Uploads go straight from the browser to the facade; this server only stores the
+      // URL it hands back.
+      mediaHostUrl: env.mediaHostUrl ?? LOCAL_MEDIA_HOST_URL,
+      ...snap,
+    });
     res.headers.set('Set-Cookie', sessionCookie(user.uuid, c.req.raw));
     return res;
   };

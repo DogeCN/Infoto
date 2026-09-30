@@ -140,6 +140,9 @@ export interface SyncResponse {
   /** Server millisecond clock, used to correct optimistic timestamps. */
   serverTime: number;
   selfId: number;
+  /** Where the browser POSTs artifacts. The standalone facade owns the image host and its
+   *  credentials, so this server never sees an upload or a TC_SECRET. */
+  mediaHostUrl: string;
   photos: Photo[];
   announcements: Announcement[];
   /** Real data for the root user only; empty array for everyone else. */
@@ -147,9 +150,9 @@ export interface SyncResponse {
 }
 
 /**
- * Image-host JSON returned verbatim by POST /upload: URL in `data`, message in `msg` / `error`.
+ * Image-host JSON returned by the facade's POST /upload: URL in `data`, message in `msg` / `error`.
  */
-export interface TcUploadResponse {
+export interface MediaHostUploadResponse {
   data?: string;
   msg?: string;
   error?: string;

@@ -1,8 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
 import type { SyncResponse } from '../../shared/types.ts';
-import { cookieFrom, makeApp, stubSiteverify, sync, syncNew } from '../../testing/app.ts';
+import { cookieFrom, makeApp, postOps, stubSiteverify, sync, syncNew } from '../../testing/app.ts';
 
 const setSiteverify = stubSiteverify();
 
@@ -475,92 +474,28 @@ test('negative and fractional media metadata is rejected', async () => {
   }
 });
 
-test('upload enforces authentication, signs the upstream request, and preserves failures', async () => {
+// Uploads are the standalone facade's job (media-proxy/worker.js): this Worker holds no
+// image-host credential and has no upload route. All it does is name the facade in /sync.
+test('the image host is decoupled: no /upload route, facade URL served by /sync', async () => {
   const { app } = makeApp();
   const noAuth = await app.request('http://localhost/upload', { method: 'POST', body: 'x' });
-  assert.equal(noAuth.status, 401);
+  assert.equal(noAuth.status, 404);
   const cookie = cookieFrom(await syncNew(app));
-  const badCt = await app.request('http://localhost/upload', {
+  const withCookie = await app.request('http://localhost/upload', {
     method: 'POST',
-    headers: { Cookie: cookie, 'Content-Type': 'application/json' },
-    body: '{}',
+    headers: { Cookie: cookie, 'Content-Type': 'multipart/form-data; boundary=x' },
+    body: '--x--',
   });
-  assert.equal(badCt.status, 400);
-  assert.deepEqual(await badCt.json(), { ok: false, error: 'bad_content_type' });
+  assert.equal(withCookie.status, 404);
 
-  // Without TC_SECRET the request still forwards, unsigned, to the local simulated host.
-  const originalFetch0 = globalThis.fetch;
-  let unsigned = true;
-  globalThis.fetch = async (url, init) => {
-    unsigned = new Headers(init?.headers).get('X-Auth-Token') === null;
-    assert.equal(String(url), 'http://127.0.0.1:8788/upload');
-    return Response.json({ data: 'http://127.0.0.1:8788/a.webp' });
-  };
-  try {
-    const noSecret = await app.request('http://localhost/upload', {
-      method: 'POST',
-      headers: { Cookie: cookie, 'Content-Type': 'multipart/form-data; boundary=x' },
-      body: '--x--',
-    });
-    assert.equal(noSecret.status, 200);
-  } finally {
-    globalThis.fetch = originalFetch0;
-  }
-  assert.equal(unsigned, true);
+  // Unset MEDIA_HOST_URL falls back to the local simulation so dev uploads stay local.
+  const local = await postOps(app, cookie, []);
+  assert.equal(((await local.json()) as SyncResponse).mediaHostUrl, 'http://127.0.0.1:8788');
 
-  const secret = 'fixture-upload-secret';
-  const { app: signedApp } = makeApp({ tcSecret: secret, mediaHostUrl: 'https://host.example' });
-  const signedCookie = cookieFrom(await syncNew(signedApp));
-  const request = () =>
-    signedApp.request('http://localhost/upload', {
-      method: 'POST',
-      headers: { Cookie: signedCookie, 'Content-Type': 'multipart/form-data; boundary=x' },
-      body: '--x--',
-    });
-  const originalFetch = globalThis.fetch;
-  try {
-    for (const status of [200, 429]) {
-      const body =
-        status === 200 ? { data: 'https://media.example/test.webp' } : { error: 'rate_limited' };
-      globalThis.fetch = async (url, init) => {
-        assert.equal(String(url), 'https://host.example/upload');
-        assert.equal(init?.method, 'POST');
-        const headers = new Headers(init?.headers);
-        const token = headers.get('X-Auth-Token')!;
-        const [header, payload, signature] = token.split('.');
-        assert.deepEqual(JSON.parse(Buffer.from(header!, 'base64url').toString()), {
-          alg: 'HS256',
-          typ: 'JWT',
-        });
-        const signedAt = JSON.parse(Buffer.from(payload!, 'base64url').toString()).timestamp;
-        assert.ok(Math.abs(Date.now() - signedAt) < 5000);
-        assert.equal(
-          signature,
-          createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url'),
-        );
-        assert.equal(headers.get('Cookie'), null);
-        assert.equal(headers.get('Content-Type'), 'multipart/form-data; boundary=x');
-        assert.equal(await new Response(init?.body).text(), '--x--');
-        return Response.json(body, {
-          status,
-          headers: { 'Retry-After': '12', 'Set-Cookie': 'upstream=private' },
-        });
-      };
-      const response = await request();
-      assert.equal(response.status, status);
-      assert.deepEqual(await response.json(), body);
-      assert.equal(response.headers.get('Retry-After'), '12');
-      assert.equal(response.headers.get('Set-Cookie'), null);
-    }
-    globalThis.fetch = async () => {
-      throw new Error('upstream unavailable');
-    };
-    const failed = await request();
-    assert.equal(failed.status, 502);
-    assert.deepEqual(await failed.json(), { ok: false, error: 'image_host_unreachable' });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  const { app: deployed } = makeApp({ mediaHostUrl: 'https://facade.example' });
+  const deployedCookie = cookieFrom(await syncNew(deployed));
+  const res = await postOps(deployed, deployedCookie, []);
+  assert.equal(((await res.json()) as SyncResponse).mediaHostUrl, 'https://facade.example');
 });
 
 // /admin (the page) is not a Worker route: it falls through to the ASSETS SPA fallback,
