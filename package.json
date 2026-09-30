@@ -11,16 +11,13 @@
     "node": ">=22.6.0"
   },
   "scripts": {
-    "dev": "concurrently -n api,web -c cyan,magenta \"npm run db:local && npm run dev:worker\" \"npm run wait:worker && npm run dev -w infoto-web\"",
+    "dev": "concurrently -n api,web,media -c cyan,magenta,yellow \"npm run db:local && npm run dev:worker\" \"npm run wait:worker && npm run dev -w infoto-web\" \"npm run dev:media\"",
     "dev:worker": "node --use-system-ca node_modules/wrangler/bin/wrangler.js dev --port 8787",
+    "dev:media": "node scripts/local-media-host.mjs",
     "wait:worker": "node scripts/wait-for-worker.mjs",
     "build": "npm run build -w infoto-web",
     "db:local": "node scripts/db-local.mjs",
     "db:reset": "node scripts/reset-local-db.mjs",
-    "seed:media": "node scripts/download-seed-media.mjs",
-    "seed:transcode": "node scripts/transcode-seed-media.mjs",
-    "seed:all": "node scripts/download-seed-media.mjs && node scripts/transcode-seed-media.mjs && node scripts/seed-local-db.mjs",
-    "db:seed": "node scripts/seed-local-db.mjs",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
     "test": "vitest run && npm test -w infoto-web",
     "lint": "eslint . && prettier --check .",

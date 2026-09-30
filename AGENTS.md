@@ -77,7 +77,9 @@ Run from the repo root:
 | `npm run db:reset`   | Reset local D1 data                                                  |
 | `npm run gen-schema` | Generate `src/worker/schema-ddl.ts` from `schema.sql`                |
 
-Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedge`/`chromium`), `npm run test:watch -w infoto-web`.
+Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedge`/`chromium`), `npm run test:watch -w infoto-web`. Run `npm run e2e -w infoto-web -- ui.spec.ts` for mocked gallery, keyboard, overlay, locale, narrow-screen, and failed-upload regressions. Full pipeline specs require the real upload service configuration.
+
+Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started by `npm run dev`. It accepts multipart uploads at `POST /upload`, stores files in `.local-media/`, and serves them at `GET /{filename}`. The Worker's upload proxy points to `http://127.0.0.1:8788/upload` — no external image host is contacted. Production deploy injects the real `TC_SECRET` and the Worker uses the real image host URL.
 
 ---
 

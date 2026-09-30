@@ -493,6 +493,62 @@ test('upload without multipart → 400; no cookie → 401', async () => {
   });
   assert.equal(noSecret.status, 500);
   assert.deepEqual(await noSecret.json(), { ok: false, error: 'tc_secret_missing' });
+<<<<<<< HEAD
+=======
+
+  const secret = 'fixture-upload-secret';
+  const signedApp = createApp({ db, tcSecret: secret });
+  const request = () =>
+    signedApp.request('http://localhost/upload', {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'multipart/form-data; boundary=x' },
+      body: '--x--',
+    });
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const status of [200, 429]) {
+      const body =
+        status === 200 ? { data: 'https://media.example/test.webp' } : { error: 'rate_limited' };
+      globalThis.fetch = async (url, init) => {
+        assert.equal(String(url), 'http://127.0.0.1:8788/upload');
+        assert.equal(init?.method, 'POST');
+        const headers = new Headers(init?.headers);
+        const token = headers.get('X-Auth-Token')!;
+        const [header, payload, signature] = token.split('.');
+        assert.deepEqual(JSON.parse(Buffer.from(header!, 'base64url').toString()), {
+          alg: 'HS256',
+          typ: 'JWT',
+        });
+        const signedAt = JSON.parse(Buffer.from(payload!, 'base64url').toString()).timestamp;
+        assert.ok(Math.abs(Date.now() - signedAt) < 5000);
+        assert.equal(
+          signature,
+          createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url'),
+        );
+        assert.equal(headers.get('Cookie'), null);
+        assert.equal(headers.get('Content-Type'), 'multipart/form-data; boundary=x');
+        assert.equal(await new Response(init?.body).text(), '--x--');
+        return Response.json(body, {
+          status,
+          headers: { 'Retry-After': '12', 'Set-Cookie': 'upstream=private' },
+        });
+      };
+      const response = await request();
+      assert.equal(response.status, status);
+      assert.deepEqual(await response.json(), body);
+      assert.equal(response.headers.get('Retry-After'), '12');
+      assert.equal(response.headers.get('Set-Cookie'), null);
+    }
+    globalThis.fetch = async () => {
+      throw new Error('upstream unavailable');
+    };
+    const failed = await request();
+    assert.equal(failed.status, 502);
+    assert.deepEqual(await failed.json(), { ok: false, error: 'image_host_unreachable' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+>>>>>>> 512193b (Dev: add local media host for uploads)
 });
 
 // /admin (the page) is not a Worker route: it falls through to the ASSETS SPA fallback,

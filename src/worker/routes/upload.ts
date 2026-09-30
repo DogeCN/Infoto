@@ -6,7 +6,7 @@ import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';
 import { resolveUser } from '../identity.ts';
 
-const HOST_UPLOAD_URL = 'https://tc.0147258.xyz/upload';
+const HOST_UPLOAD_URL = 'http://127.0.0.1:8788/upload';
 
 /** Upstream headers worth passing back: the client parses the JSON body, and rate-limit
  *  headers explain a rejection the same way the image host does. */
