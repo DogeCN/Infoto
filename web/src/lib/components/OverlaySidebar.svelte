@@ -1,8 +1,7 @@
 <script lang="ts">
-  // Pop-up sidebar: floats above the main content behind a scrim and never changes its
-  // width, so the waterfall doesn't relayout on open/close. Desktop drags the inner edge
-  // to resize (persisted to localStorage); mobile (< 768px) is full-width with no dragging.
-  import type { Snippet } from 'svelte';
+  // Overlay sidebar with persisted desktop resizing and a full-width mobile layout.
+  import { onDestroy, type Snippet } from 'svelte';
+  import { overlay } from '$base/lib/overlay';
   import { copy } from '$lib/i18n.svelte';
   import { X } from '@lucide/svelte';
 
@@ -29,7 +28,9 @@
   function clamp(w: number): number {
     const viewportMax =
       typeof window === 'undefined' ? MAX_W : Math.max(MIN_W, window.innerWidth - 48);
-    return Math.round(Math.min(MAX_W, viewportMax, Math.max(MIN_W, w)));
+    return Math.round(
+      Math.min(MAX_W, viewportMax, Math.max(MIN_W, Number.isFinite(w) ? w : DEFAULT_W)),
+    );
   }
 
   function loadWidth(key: string): number {
@@ -45,58 +46,70 @@
   let width = $state(DEFAULT_W);
   let dragging = $state(false);
 
-  // Read localStorage / viewport width after mount so the first frame doesn't use a wrong value
+  // Load the stored width after mounting.
   $effect(() => {
     width = loadWidth(storageKey);
   });
 
-  /** Drag the inner edge: drag a left sidebar right to widen, a right sidebar left to widen. */
-  function startResize(e: PointerEvent) {
-    e.preventDefault();
-    dragging = true;
-    const startX = e.clientX;
-    const startW = width;
-    const sign = side === 'left' ? 1 : -1;
-    const onMove = (ev: PointerEvent) => {
-      width = clamp(startW + (ev.clientX - startX) * sign);
-    };
-    const onUp = () => {
-      dragging = false;
-      try {
-        localStorage.setItem(storageKey, String(width));
-      } catch {
-        /* noop */
-      }
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  }
-
-  function onResizeKey(e: KeyboardEvent) {
-    const sign = side === 'left' ? 1 : -1;
-    if (e.key === 'ArrowLeft') width = clamp(width - 16 * sign);
-    else if (e.key === 'ArrowRight') width = clamp(width + 16 * sign);
-    else return;
-    e.preventDefault();
+  function saveWidth() {
     try {
       localStorage.setItem(storageKey, String(width));
     } catch {
-      /* noop */
+      /* Storage is optional. */
     }
+  }
+
+  let stopResize = () => {};
+  onDestroy(() => stopResize());
+  $effect(() => {
+    if (!open) stopResize();
+  });
+
+  /** Resize from the inner edge with pointer cancellation and teardown cleanup. */
+  function startResize(event: PointerEvent) {
+    if (event.button !== 0) return;
+    stopResize();
+    event.preventDefault();
+    dragging = true;
+    const startX = event.clientX;
+    const startWidth = width;
+    const sign = side === 'left' ? 1 : -1;
+    const move = (next: PointerEvent) => {
+      if (next.pointerId === event.pointerId)
+        width = clamp(startWidth + (next.clientX - startX) * sign);
+    };
+    const finish = (next: PointerEvent) => {
+      if (next.pointerId === event.pointerId) {
+        saveWidth();
+        stopResize();
+      }
+    };
+    stopResize = () => {
+      dragging = false;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  }
+
+  function onResizeKey(event: KeyboardEvent) {
+    const sign = side === 'left' ? 1 : -1;
+    if (event.key === 'ArrowLeft') width = clamp(width - 16 * sign);
+    else if (event.key === 'ArrowRight') width = clamp(width + 16 * sign);
+    else return;
+    event.preventDefault();
+    saveWidth();
   }
 
   function close() {
     open = false;
   }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && open) close();
-  }
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onresize={() => (width = clamp(width))} />
 
 {#if open}
   <!-- Full-screen scrim (covers the top bar): dims everything while open, layered above the
@@ -108,8 +121,15 @@
   ></div>
 {/if}
 
-<aside
-  class="fixed top-0 z-50 flex h-full w-full flex-col border-border bg-card shadow-2xl shadow-black/40 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] md:w-[var(--sidebar-w)]"
+<div
+  role="dialog"
+  aria-modal={open ? true : undefined}
+  aria-label={title}
+  aria-hidden={!open}
+  inert={!open}
+  tabindex="-1"
+  use:overlay={{ enabled: open, onClose: close }}
+  class="fixed top-0 z-50 flex h-full w-full flex-col border-border bg-card shadow-2xl shadow-black/40 transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)]"
   class:left-0={side === 'left'}
   class:right-0={side === 'right'}
   class:translate-x-0={open}
@@ -141,14 +161,14 @@
       class="flex items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-all duration-200 hover:bg-background hover:text-foreground hover:scale-105 active:scale-95"
       onclick={close}
       title={copy.sidebar.close}
+      aria-label={copy.sidebar.close}
+      data-autofocus
     >
       <X class="size-5" />
     </button>
   </div>
 
-  <!-- Content area scrolls independently; min-h-0 gives children's h-full / sticky footers a
-       definite height. No bottom padding on purpose: it would stop the sticky footer 16px short
-       and leak scrolling content through that gap — panels own their bottom spacing; no selection while dragging. -->
+  <!-- Independent scroll area; child panels provide bottom spacing for sticky controls. -->
   <div
     class="min-h-0 flex-1 overflow-y-auto px-4 pt-4"
     style="user-select: {dragging ? 'none' : 'auto'}"
@@ -157,4 +177,4 @@
       {@render children()}
     {/if}
   </div>
-</aside>
+</div>

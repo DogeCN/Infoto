@@ -139,61 +139,108 @@ describe('postUpload', () => {
     expect(((explicit.sentBody as FormData).get('file') as File).name).toBe('m.webm');
   });
 
-  it('maps network, HTTP, cancel, and late responses without a second settle', async () => {
-    const thrown = new FakeXhr();
-    thrown.sendShouldThrow = true;
-    expect(await call(thrown)).toEqual({
-      ok: false,
-      error: 'network_error',
-      detail: String(new Error('sync send failure')),
-    });
+  it('settles network, setup, cancellation, and late events exactly once', async () => {
+    // Maps network, HTTP, cancel, and late responses without a second settle.
+    {
+      const thrown = new FakeXhr();
+      thrown.sendShouldThrow = true;
+      expect(await call(thrown)).toEqual({
+        ok: false,
+        error: 'network_error',
+        detail: String(new Error('sync send failure')),
+      });
 
-    const unauthorized = new FakeXhr();
-    const unauthorizedCall = call(unauthorized);
-    unauthorized.finish(401, JSON.stringify({ error: 'unauthorized', msg: 'not verified' }));
-    expect(await unauthorizedCall).toEqual({
-      ok: false,
-      error: 'unauthorized',
-      detail: 'not verified',
-    });
+      const unauthorized = new FakeXhr();
+      const unauthorizedCall = call(unauthorized);
+      unauthorized.finish(401, JSON.stringify({ error: 'unauthorized', msg: 'not verified' }));
+      expect(await unauthorizedCall).toEqual({
+        ok: false,
+        error: 'unauthorized',
+        detail: 'not verified',
+      });
 
-    const status = new FakeXhr();
-    const statusCall = call(status);
-    status.finish(503, 'upstream unavailable');
-    expect(await statusCall).toEqual({ ok: false, error: 'http_503' });
+      const status = new FakeXhr();
+      const statusCall = call(status);
+      status.finish(503, 'upstream unavailable');
+      expect(await statusCall).toEqual({ ok: false, error: 'http_503' });
 
-    const late = new FakeXhr();
-    const lateCall = call(late);
-    await vi.advanceTimersByTimeAsync(1_000);
-    late.finish(200, JSON.stringify({ data: 'https://cdn.test/late.webp' }));
-    expect(await lateCall).toEqual({
-      ok: false,
-      error: 'timeout',
-      detail: 'no progress before deadline',
-    });
+      const late = new FakeXhr();
+      const lateCall = call(late);
+      await vi.advanceTimersByTimeAsync(1_000);
+      late.finish(200, JSON.stringify({ data: 'https://cdn.test/late.webp' }));
+      expect(await lateCall).toEqual({
+        ok: false,
+        error: 'timeout',
+        detail: 'no progress before deadline',
+      });
 
-    const cancel = new FakeXhr();
-    const ctrl = new AbortController();
-    const cancelCall = postUpload(blob, {
-      origin: ORIGIN,
-      timeoutMs: 60_000,
-      signal: ctrl.signal,
-      xhrFactory: () => cancel as unknown as XMLHttpRequest,
-    });
-    cancel.progress(1, 10);
-    ctrl.abort();
-    expect(await cancelCall).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
-
-    const already = new FakeXhr();
-    const aborted = new AbortController();
-    aborted.abort();
-    expect(
-      await postUpload(blob, {
+      const cancel = new FakeXhr();
+      const ctrl = new AbortController();
+      const cancelCall = postUpload(blob, {
         origin: ORIGIN,
-        signal: aborted.signal,
-        xhrFactory: () => already as unknown as XMLHttpRequest,
-      }),
-    ).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
-    expect(already.sentBody).toBeNull();
+        timeoutMs: 60_000,
+        signal: ctrl.signal,
+        xhrFactory: () => cancel as unknown as XMLHttpRequest,
+      });
+      cancel.progress(1, 10);
+      ctrl.abort();
+      expect(await cancelCall).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
+
+      const already = new FakeXhr();
+      const aborted = new AbortController();
+      aborted.abort();
+      expect(
+        await postUpload(blob, {
+          origin: ORIGIN,
+          signal: aborted.signal,
+          xhrFactory: () => already as unknown as XMLHttpRequest,
+        }),
+      ).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
+      expect(already.sentBody).toBeNull();
+    }
+
+    // Does not start fetch for an already-cancelled upload.
+    {
+      const controller = new AbortController();
+      controller.abort();
+      const fetchFn = vi.fn();
+      expect(
+        await postUpload(blob, { signal: controller.signal, fetchFn, origin: ORIGIN }),
+      ).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
+      expect(fetchFn).not.toHaveBeenCalled();
+    }
+
+    // Settles setup failures as upload errors.
+    {
+      expect(
+        await postUpload(blob, {
+          origin: ORIGIN,
+          xhrFactory: () => {
+            throw new Error('unavailable');
+          },
+        }),
+      ).toMatchObject({ ok: false, error: 'network_error' });
+    }
+
+    // Ignores progress events after completion.
+    {
+      vi.useFakeTimers();
+      try {
+        const xhr = new FakeXhr();
+        const onProgress = vi.fn();
+        const request = postUpload(blob, {
+          origin: ORIGIN,
+          onProgress,
+          xhrFactory: () => xhr as unknown as XMLHttpRequest,
+        });
+        xhr.finish(200, JSON.stringify({ data: 'https://cdn.test/a.webp' }));
+        await request;
+        xhr.progress(1, 2);
+        expect(onProgress).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 });

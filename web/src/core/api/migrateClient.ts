@@ -27,9 +27,7 @@ export type MigrateImportResult =
 
 export type XhrFactory = () => XMLHttpRequest;
 
-/** Whole-request deadline: without it `xhr.timeout` never fires, so a stalled
- * connection leaves `importing` latched forever with no way out. Deliberately
- * generous — the server runs arbitrary SQL inside this window, not just the upload. */
+/** Whole-request deadline covering SQL upload and server execution. */
 export const MIGRATE_TIMEOUT_MS = 5 * 60_000;
 
 export interface MigrateSqlOptions {

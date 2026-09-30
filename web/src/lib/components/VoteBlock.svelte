@@ -40,9 +40,7 @@
     {@const pct = total ? (count / total) * 100 : 0}
     {@const isChosen = chosen === idx}
     {@const isWinner = max > 0 && count === max}
-    <!-- isolate: keeps the internal z-10 inside the button's own stacking context. Otherwise a
-         relative + z-index:auto button builds no layer, so the inner z-10 escapes to the outer
-         context and climbs past the parent's sticky frame (this really did clip through). -->
+    <!-- Isolate the vote button layers below surrounding sticky controls. -->
     <button
       type="button"
       class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-[var(--duration-exit)] {isChosen

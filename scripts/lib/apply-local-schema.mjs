@@ -1,16 +1,4 @@
-// Shared: bring the local D1 up to schema.sql — quietly, and only when needed.
-//
-// Why this exists instead of a bare `wrangler d1 execute`:
-//  1. Noise. When stdout is not a TTY (always true under `npm run dev`'s pipes)
-//     wrangler dumps one JSON object per statement, which buries the worker's
-//     own startup log. We drop stdout and keep stderr for real failures.
-//  2. Cost. schema.sql is all CREATE TABLE IF NOT EXISTS, so re-applying never
-//     drops data — but it still boots miniflare on every `npm run dev`. Skip it
-//     once the tables are there; `deploy.yml` gates its remote apply on the very
-//     same check, so local and CI agree on what "initialized" means.
-//
-// Detection is only an optimization: applying is idempotent and silent, so a
-// wrong guess costs a few ms and never data.
+// Initialize local D1 only when tables are missing. Suppress statement output and preserve error diagnostics.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
@@ -24,11 +12,7 @@ const WRANGLER = path.join(root, 'node_modules', 'wrangler', 'bin', 'wrangler.js
 const SQLITE_DIR = path.join(root, '.wrangler', 'state', 'v3', 'd1', 'miniflare-D1DatabaseObject');
 const PROBE_TABLE = 'users';
 
-/**
- * Local D1 sqlite files, newest first. Wrangler names the file after a hash of
- * the database name + binding, so renaming those in wrangler.toml leaves a
- * stale sibling behind — hence "exactly one file" as the only unambiguous case.
- */
+/** Local D1 database files, ordered by modification time. A single file identifies the active database unambiguously. */
 function localDbFiles() {
   if (!existsSync(SQLITE_DIR)) return [];
   return readdirSync(SQLITE_DIR)

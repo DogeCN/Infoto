@@ -30,9 +30,7 @@ function adminFailHint(error: unknown, timeoutId: string): string {
     : copy.admin.fail.network;
 }
 
-/** selfId arrives on every /sync and its uuid mapping is permanent, so it is cached in
- * localStorage for a first-frame identity on /admin; every /sync response overwrites it,
- * so a stale cache self-corrects. The id is public (see identity.ts), never a secret. */
+/** Cache the public self ID for initial rendering; authenticated snapshots replace it. */
 const SELF_ID_KEY = 'infoto-self-id';
 const PENDING_MARKS_KEY = 'infoto-pending-marks';
 
@@ -99,24 +97,30 @@ class AppState {
 
   private engine: SyncEngine | null = null;
 
-  /** Bind engine state; a repeated call with the same engine is ignored, and a new
-   *  engine replaces the previous subscription instead of stacking listeners. */
+  /** Replace the engine subscription when binding a different engine. */
   bindEngine(engine: SyncEngine): void {
     if (this.engine === engine) return;
     this.engineUnsubscribe?.();
     this.engineUnsubscribe = null;
     this.engine = engine;
+    this.engineState = { ...engine.state };
     this.engineUnsubscribe = engine.onState((state) => {
       this.engineState = { ...state };
     });
   }
 
+  dispose(): void {
+    this.engineUnsubscribe?.();
+    this.engineUnsubscribe = null;
+    this.engine = null;
+  }
+
   private submit(op: Op): Promise<number | null> {
     if (!this.engine) return Promise.resolve(null);
-    // An append failure must not surface as an unhandled rejection: the op stays
-    // queued in the UI and the next sync picks it up.
+    // Report storage failures without an unhandled rejection.
     return this.engine.addOp(op).catch((e) => {
       console.error('[op] append failed', e);
+      toast.error(copy.sync.failed, { description: copy.sync.storageFailed });
       return null;
     });
   }
@@ -132,16 +136,14 @@ class AppState {
     // A snapshot computed before our just-appended ops reached the server must not
     // revert the optimistic state: re-fold every op still queued in the oplog.
     const refolded = ops.reapplyQueued(
-      r.photos ?? [],
-      r.announcements ?? [],
+      r.photos,
+      r.announcements,
       context?.queuedOps ?? [],
       r.selfId,
     );
     this.photos = refolded.photos;
 
-    // Announcements are authoritative from the snapshot; a row whose create is
-    // still in flight (temp id) is kept so it does not blink out before the
-    // server row arrives. Failures roll the optimistic row back and surface a toast.
+    // Keep pending creates alongside authoritative announcements until completion or rollback.
     const unconfirmed = this.announcements.filter((announcement) => announcement.id < 0);
     this.announcements = [...refolded.announcements, ...unconfirmed].sort(
       (a, b) => a.sort - b.sort || a.id - b.id,
@@ -149,7 +151,7 @@ class AppState {
 
     // Feedback has no foldable op left (deletes go through /admin/feedback), so the
     // snapshot is authoritative for root; non-root visitors never receive rows.
-    this.feedback = r.selfId === 0 ? (r.feedback ?? []) : [];
+    this.feedback = r.selfId === 0 ? r.feedback : [];
   }
 
   // Photos
@@ -247,9 +249,7 @@ class AppState {
 
   // Announcements
 
-  // Announcements are written through the root-only admin API, not /sync ops. Each write
-  // resolves immediately (create returns the real id): the local row is optimistic, the
-  // server row replaces it, and a failure rolls back that row and surfaces a toast.
+  // Admin writes optimistically update one row and commit or roll it back after the response.
 
   annCreate(title: string, contentMd: string): void {
     const tempId = takeTempId();
@@ -307,8 +307,7 @@ class AppState {
         await deleteAnnouncement(id);
       } catch (error) {
         console.error('[ann] delete failed', error);
-        // Re-insert only the restored row at its old slot; if a snapshot already
-        // brought it back, leave that row alone.
+        // Restore the deleted row at its prior position unless a snapshot already restored it.
         if (previous && !this.announcements.some((a) => a.id === id)) {
           const next = [...this.announcements];
           next.splice(Math.min(index, next.length), 0, previous);
@@ -344,7 +343,7 @@ class AppState {
     const resolved = this.resolveIds(pending.ids);
     if (!resolved.every((id) => id > 0)) return;
     this.pendingReorder = null;
-    // Every temp id the reorder referenced is real now, so the mapping is spent.
+    // Clear temporary-ID mappings after all referenced creates complete.
     this.tempIdMap.clear();
     void this.submitReorder(resolved, pending.previousIds);
   }
@@ -388,8 +387,7 @@ class AppState {
         await deleteFeedback(id);
       } catch (error) {
         console.error('[fb] delete failed', error);
-        // Re-insert only the restored row at its old slot; a snapshot may have landed
-        // meanwhile, and a whole-array rollback would discard those unrelated changes.
+        // Restore only the deleted row, preserving unrelated snapshot changes.
         if (previous && !this.feedback.some((f) => f.id === id)) {
           const next = [...this.feedback];
           next.splice(Math.min(index, next.length), 0, previous);

@@ -1,5 +1,4 @@
-// Turnstile first-entry flow: explicit rendering (theme dark) → the token rides
-// exactly one first /sync → afterwards Turnstile never appears in any flow again.
+// Resolve the server session and acquire a Turnstile token when verification is required.
 
 import { TurnstileRequiredError, postSync } from './api/syncClient';
 import type { Op, SyncResponse } from '$shared/types';
@@ -9,15 +8,16 @@ const TURNSTILE_SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?
 export interface TurnstileFlowDeps {
   /** Injected for unit tests and E2E. */
   postSyncFn?: typeof postSync;
-  /** Full token-acquisition strategy. The default builds its own full-screen
-   * overlay (no UI context: unit tests, scripted calls); the product UI injects
-   * its own implementation that puts the CAPTCHA into an existing empty state. */
+  /** Token acquisition strategy. The default owns an overlay; the application supplies its gallery-mounted widget. */
   requestToken?: (siteKey: string) => Promise<string>;
 }
 
 interface TurnstileRenderOptions {
   sitekey: string;
   theme?: string;
+  retry?: 'auto' | 'never';
+  'refresh-expired'?: 'auto' | 'manual' | 'never';
+  'refresh-timeout'?: 'auto' | 'manual' | 'never';
   callback?: (token: string) => void;
   'error-callback'?: () => void;
   'timeout-callback'?: () => void;
@@ -39,11 +39,23 @@ function loadTurnstile(): Promise<TurnstileApi> {
     const s = document.createElement('script');
     s.src = TURNSTILE_SCRIPT;
     s.async = true;
-    s.onload = () => {
-      if (w.turnstile) resolve(w.turnstile);
-      else reject(new Error('turnstile api missing'));
+    const timer = setTimeout(() => fail('turnstile script timeout'), TURNSTILE_TIMEOUT_MS);
+    const cleanup = () => {
+      clearTimeout(timer);
+      s.onload = null;
+      s.onerror = null;
     };
-    s.onerror = () => reject(new Error('turnstile script load failed'));
+    const fail = (message: string) => {
+      cleanup();
+      s.remove();
+      reject(new Error(message));
+    };
+    s.onload = () => {
+      if (!w.turnstile) return fail('turnstile api missing');
+      cleanup();
+      resolve(w.turnstile);
+    };
+    s.onerror = () => fail('turnstile script load failed');
     document.head.appendChild(s);
   });
   scriptPromise = promise;
@@ -54,9 +66,7 @@ function loadTurnstile(): Promise<TurnstileApi> {
   return promise;
 }
 
-/** Id of the widget rendered but not yet disposed. Turnstile keeps internal polling
- * timers, so removing the DOM node alone leaves a dangling widget (console spam plus
- * iframe postMessage errors) — call turnstile.remove(id) first. */
+/** Active Turnstile widget ID, disposed before its host element is removed. */
 let activeWidgetId: string | null = null;
 
 /** Dispose the current widget (idempotent). */
@@ -75,9 +85,7 @@ export async function disposeTurnstile(): Promise<void> {
 /** Fallback timeout when Turnstile gives no callback: a stuck widget must not stall first-run onboarding. */
 const TURNSTILE_TIMEOUT_MS = 15_000;
 
-/** Wait window before disposing the widget. Right after the token arrives the
- * Turnstile iframe's final handshake is still in flight, so an immediate remove
- * posts into a torn-down window (target origin mismatch); the node goes only after dispose. */
+/** Delay disposal until the Turnstile iframe's final handshake completes. */
 export const TURNSTILE_DISPOSE_DELAY_MS = 800;
 
 /** Render Turnstile explicitly and wait for the token. Rejects on timeout when the
@@ -103,6 +111,9 @@ export async function renderTurnstile(
     activeWidgetId = ts.render(container, {
       sitekey: siteKey,
       theme: 'dark',
+      retry: 'never',
+      'refresh-expired': 'manual',
+      'refresh-timeout': 'manual',
       callback: (token: string) => finish(resolve, token),
       'error-callback': () => finish(reject, new Error('turnstile_error')),
       'timeout-callback': () => finish(reject, new Error('turnstile_timeout')),
@@ -110,9 +121,7 @@ export async function renderTurnstile(
   });
 }
 
-/** Default token strategy: a self-built full-screen overlay, used only when there
- * is no UI context (unit tests, scripted calls). `App.svelte` injects its own
- * implementation that puts the CAPTCHA into the waterfall's empty state. */
+/** Default token acquisition overlay for callers without an existing UI mount point. */
 async function overlayRequestToken(siteKey: string): Promise<string> {
   const container = document.createElement('div');
   container.id = 'infoto-turnstile';
@@ -136,13 +145,11 @@ async function overlayRequestToken(siteKey: string): Promise<string> {
 
 export interface IdentityBootstrapResult {
   response: SyncResponse;
-  /** true = this was a first entry (identity created with a Turnstile token). */
+  /** Whether verification created a new identity. */
   firstEntry: boolean;
 }
 
-/** First entry = one Turnstile check + two /sync calls; with a valid cookie (no 401)
- * the snapshot returns directly. A token is fetched only on 401 turnstile_required —
- * the HttpOnly uuid cookie is unreadable client-side, so /sync must always be probed first. */
+/** Probe the server session, request verification on turnstile_required, and return the authenticated snapshot. */
 export async function ensureIdentity(
   ops: Op[] = [],
   deps: TurnstileFlowDeps = {},

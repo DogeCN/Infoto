@@ -1,11 +1,9 @@
 <script lang="ts">
-  // Markdown rendering core: markdown-it produces HTML, DOMPurify sanitizes it, and the host
-  // parses :::vote lines into a VoteBlock. Images are off by default (user feedback must not
-  // load external hosts = tracking pixels); root-authored content opts in via allowImages.
+  // Sanitized Markdown rendering. External images are enabled only for trusted content.
   import { onDestroy } from 'svelte';
   import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
-  import { upgradeAnimatedMedia } from './markdownMedia';
+  import { upgradeAnimatedMedia } from '../../core/markdown';
 
   // Two independent renderers: the default one blocks images (public sidebar
   // must not render arbitrary external image hosts); the trusted one allows them.
@@ -23,12 +21,7 @@
   let el: HTMLDivElement | undefined = $state(undefined);
   let html = $derived(DOMPurify.sanitize(renderer.render(content)));
 
-  /**
-   * Give every rendered image/video a shimmer placeholder while it loads. Markdown has
-   * no intrinsic size, so the media element starts at zero height and the block would
-   * otherwise collapse to nothing until the bytes arrive — wrapping it in a block with a
-   * fixed aspect ratio keeps the layout and shows the same skeleton the waterfall uses.
-   */
+  /** Reserve media space with a shared shimmer until loading succeeds or fails. */
   function wrapPendingMedia(root: ParentNode): void {
     for (const media of Array.from(root.querySelectorAll('img, video'))) {
       if (media.closest('.md-media')) continue;

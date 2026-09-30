@@ -1,50 +1,38 @@
 #!/usr/bin/env node
-// Seed the local D1 with fake data for manual testing.
-//
-// What it does
-//   - reads the *transcoded* sample media from scripts/seed-media/transcoded/
-//     (produced by `npm run seed:transcode`, which is the Node-side reproduction of
-//     the browser pipeline: still → WebP, animated/video → WebM) — no runtime
-//     network needed for the media bytes themselves,
-//   - pushes each file through the real POST /upload proxy (the URL-producing stage
-//     of the upload pipeline) so photos.url is a genuine image-host direct URL,
-//   - inserts photo rows via POST /sync `upload` ops,
-//   - then layers on likes / dislikes / reports, announcements (with a vote block +
-//     reactions) and feedback to maximise feature coverage,
-//   - finally pins the seeded root user's uuid to all-zeros so it is deterministic
-//     across reseeds and easy to target in manual tests (relationships in the DB
-//     reference users by id, not uuid, so this is safe).
-//
-// Requires a local Worker on SEED_BASE (default http://127.0.0.1:8787). If none is
-// listening the script spawns its own `wrangler dev --port 8787`, waits for it, and
-// tears it down afterwards. The DB must be empty (run `npm run db:reset` first);
-// a non-empty photos table aborts.
+// Seed an empty local D1 using the running Worker. Use the all-zero root UUID and refuse populated content tables.
+// --local-media inserts local fixture URLs instead of uploading to the image host.
 
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { openLocalDb } from './lib/local-db.mjs';
 import { MEDIA } from './seed-media-manifest.mjs';
 
 const TRANSCODED_DIR = path.join(import.meta.dirname, 'seed-media', 'transcoded');
 const baseOf = (n) => n.replace(/\.[^.]+$/, '');
 
 const BASE = process.env.SEED_BASE || 'http://127.0.0.1:8787';
+if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(BASE).hostname))
+  throw new Error('SEED_BASE must point to a loopback Worker; remote seeding is disabled');
 // Any non-empty value: the local deployment answers with the always-pass test secret.
 const TURNSTILE_TOKEN = 'seed';
+const ROOT_UUID = '00000000-0000-0000-0000-000000000000';
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const localMedia = process.argv.includes('--local-media');
+const FFPROBE = process.env.FFPROBE_BIN || 'ffprobe';
 
 function log(...a) {
   console.log('[seed]', ...a);
 }
 
 async function httpPost(path, body, cookie) {
-  const headers = cookie ? { cookie } : { 'Content-Type': 'application/json' };
+  const headers = { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) };
   const res = await fetch(BASE + path, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
   });
   const setCookie = res.headers.get('set-cookie');
   let data = null;
@@ -62,13 +50,18 @@ async function createUser() {
     ops: [],
   });
   if (status !== 200 || !data?.ok) throw new Error(`identity creation failed (status ${status})`);
-  return { cookie: setCookie, id: data.selfId };
+  return { cookie: setCookie.split(';')[0], id: data.selfId };
 }
 
 async function uploadMedia(bytes, mime, name, cookie) {
   const fd = new FormData();
   fd.append('file', new Blob([bytes], { type: mime }), name);
-  const res = await fetch(BASE + '/upload', { method: 'POST', body: fd, headers: { cookie } });
+  const res = await fetch(BASE + '/upload', {
+    method: 'POST',
+    body: fd,
+    headers: { cookie },
+    signal: AbortSignal.timeout(120_000),
+  });
   const j = await res.json().catch(() => null);
   const url = j?.data ?? j?.url;
   if (res.status < 200 || res.status >= 300 || !url) {
@@ -92,7 +85,7 @@ function sha256Hex(buf) {
 function ffprobeDims(file) {
   try {
     const out = execFileSync(
-      'ffprobe',
+      FFPROBE,
       [
         '-v',
         'error',
@@ -104,7 +97,7 @@ function ffprobeDims(file) {
         'csv=p=0',
         file,
       ],
-      { shell: true, encoding: 'utf8' },
+      { encoding: 'utf8' },
     );
     const [w, h] = out
       .trim()
@@ -112,67 +105,9 @@ function ffprobeDims(file) {
       .map((n) => Number(n));
     if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return { w, h };
   } catch {
-    /* fall back to manifest dims */
+    /* Report unavailable dimensions to the caller. */
   }
   return null;
-}
-
-// Free the port so the seed always owns its Worker and writes to the same local D1
-// file we inspect afterwards.
-function killPort(port) {
-  try {
-    execSync(
-      `powershell -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue; if($c){Stop-Process -Id $c.OwningProcess -Force}"`,
-      { stdio: 'ignore' },
-    );
-  } catch {
-    /* nothing listening */
-  }
-}
-
-async function ensureWorker() {
-  killPort(8787);
-  await delay(1000);
-  try {
-    const r = await fetch(BASE + '/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{"ops":[]}',
-    });
-    if (r.status > 0) {
-      log('using existing Worker on', BASE);
-      return null;
-    }
-  } catch {
-    /* not up — spawn our own */
-  }
-  log('no Worker on', BASE, '— spawning a temporary one...');
-  const child = spawn(
-    process.execPath,
-    ['--use-system-ca', 'node_modules/wrangler/bin/wrangler.js', 'dev', '--port', '8787'],
-    { cwd: process.cwd(), stdio: 'ignore' },
-  );
-  const deadline = Date.now() + 120_000;
-  for (;;) {
-    await delay(1500);
-    try {
-      const r = await fetch(BASE + '/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{"ops":[]}',
-      });
-      if (r.status > 0) {
-        log('temporary Worker ready');
-        return child;
-      }
-    } catch {
-      /* keep waiting */
-    }
-    if (Date.now() > deadline) {
-      child.kill('SIGKILL');
-      throw new Error('timed out waiting for temporary Worker');
-    }
-  }
 }
 
 async function main() {
@@ -180,25 +115,52 @@ async function main() {
     throw new Error(
       `missing ${TRANSCODED_DIR} — run "npm run seed:media" then "npm run seed:transcode" first`,
     );
-  const child = await ensureWorker();
+  const db = openLocalDb();
   try {
-    const root = await createUser();
+    for (const table of ['photos', 'announcements', 'feedback']) {
+      if (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n > 0)
+        throw new Error(`${table} is not empty; existing data was left unchanged`);
+    }
+    for (const spec of MEDIA) {
+      const file = path.join(
+        TRANSCODED_DIR,
+        `${baseOf(spec.name)}.${spec.type === 0 ? 'webp' : 'webm'}`,
+      );
+      if (!existsSync(file))
+        throw new Error(`Missing ${file}; prepare all seed media before seeding`);
+      if (!ffprobeDims(file))
+        throw new Error(`Cannot inspect ${file}; install ffprobe or set FFPROBE_BIN`);
+    }
+    if (
+      !localMedia &&
+      !process.env.TC_SECRET &&
+      !/^[ \t]*TC_SECRET\s*=\s*\S+/m.test(
+        existsSync('.dev.vars') ? readFileSync('.dev.vars', 'utf8') : '',
+      )
+    )
+      throw new Error(
+        'TC_SECRET is not configured. Configure the image host or use --local-media for offline fixtures.',
+      );
+    if (!db.prepare('SELECT id FROM users WHERE id = 0').get()) await createUser();
+    db.prepare('UPDATE users SET uuid = ? WHERE id = 0').run(ROOT_UUID);
+    const root = { id: 0, cookie: `uuid=${ROOT_UUID}` };
     const snap = await syncOps(root.cookie, []);
     if (snap.photos.length > 0) {
       throw new Error(
         `photos table not empty (${snap.photos.length} rows) — run "npm run db:reset" first`,
       );
     }
-    const A = await createUser();
-    const B = await createUser();
-    const C = await createUser();
+    const existing = (id) => {
+      const user = db.prepare('SELECT id, uuid FROM users WHERE id = ?').get(id);
+      return user ? { id: user.id, cookie: `uuid=${user.uuid}` } : createUser();
+    };
+    const A = await existing(1);
+    const B = await existing(2);
+    const C = await existing(3);
     const users = { root, A, B, C };
     log(`identities: root=${root.id} A=${A.id} B=${B.id} C=${C.id}`);
 
-    // ---- media: read transcoded artifact → upload → insert photo row ---------
-    // Each raw file was already converted to the pipeline's output format: WebP for
-    // stills, WebM for animated/video. We upload those artifacts, so photos.url ends up
-    // pointing at a WebP/WebM file the renderer decodes natively (no 200 fallback).
+    // Upload transcoded WebP and WebM artifacts and insert their metadata.
     const shas = [];
     // name → image-host URL, so other seeded content can reference real uploads
     // instead of inventing external links (everything visible must be on our host).
@@ -207,16 +169,15 @@ async function main() {
       const ext = spec.type === 0 ? 'webp' : 'webm';
       const fname = `${baseOf(spec.name)}.${ext}`;
       const fp = path.join(TRANSCODED_DIR, fname);
-      if (!existsSync(fp)) {
-        log(`SKIP missing transcoded ${fname} — run npm run seed:transcode`);
-        continue;
-      }
       const buf = readFileSync(fp);
-      const dims = ffprobeDims(fp) ?? (spec.type === 1 ? { w: 1, h: 1 } : { w: spec.w, h: spec.h });
+      const dims = ffprobeDims(fp);
+      if (!dims) throw new Error(`Cannot inspect ${fp}`);
       const mime = spec.type === 0 ? 'image/webp' : 'video/webm';
       const cookie = users[spec.uploader].cookie;
       try {
-        const url = await uploadMedia(buf, mime, fname, cookie);
+        const url = localMedia
+          ? `/__seed-media/${fname}`
+          : await uploadMedia(buf, mime, fname, cookie);
         const payload = {
           sha256: sha256Hex(buf),
           url,
@@ -225,14 +186,33 @@ async function main() {
           size: buf.length,
           type: spec.type,
         };
-        await syncOps(cookie, [{ type: 'upload', target: null, payload }]);
+        if (localMedia) {
+          db.prepare(
+            `INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            payload.sha256,
+            url,
+            users[spec.uploader].id,
+            payload.width,
+            payload.height,
+            payload.size,
+            Date.now() - (MEDIA.length - shas.length) * 3_600_000,
+            payload.type,
+          );
+        } else {
+          await syncOps(cookie, [{ type: 'upload', target: null, payload }]);
+        }
         shas.push(payload.sha256);
         uploadedUrls[spec.name] = url;
         log(
           `photo ${fname} (${dims.w}x${dims.h}, type=${spec.type}, ${buf.length} bytes) → ${url}`,
         );
       } catch (e) {
-        log(`photo ${fname} FAILED: ${e.message}`);
+        throw new Error(
+          `Seeding stopped at ${fname}: ${e.message}. Check local data before retrying.`,
+          { cause: e },
+        );
       }
     }
     log(`inserted ${shas.length} photos`);
@@ -301,7 +281,7 @@ async function main() {
     await syncOps(C.cookie, [{ type: 'vote', target: ann1, payload: { option: 0 } }]);
     await syncOps(root.cookie, [{ type: 'vote', target: ann1, payload: { option: 0 } }]);
     await syncOps(A.cookie, [{ type: 'react', target: ann1, payload: { emoji: '👍' } }]);
-    await syncOps(B.cookie, [{ type: 'react', target: ann1, payload: { emoji: '🎉' } }]);
+    await syncOps(B.cookie, [{ type: 'react', target: ann1, payload: { emoji: '🔥' } }]);
     log(`announcement ${ann1} with 4 votes + 2 reactions`);
 
     const ann2 = await mkAnn(
@@ -310,7 +290,7 @@ async function main() {
     );
     await syncOps(A.cookie, [{ type: 'react', target: ann2, payload: { emoji: '❤️' } }]);
     await syncOps(B.cookie, [{ type: 'react', target: ann2, payload: { emoji: '👍' } }]);
-    await syncOps(C.cookie, [{ type: 'react', target: ann2, payload: { emoji: '🚀' } }]);
+    await syncOps(C.cookie, [{ type: 'react', target: ann2, payload: { emoji: '😮' } }]);
     log(`announcement ${ann2} with 3 reactions`);
 
     const ann3 = await mkAnn(
@@ -336,45 +316,11 @@ async function main() {
       `DONE — photos=${finalSnap.photos.length} announcements=${finalSnap.announcements.length} feedback=${finalSnap.feedback.length}`,
     );
   } finally {
-    if (child) {
-      child.kill('SIGKILL');
-      log('temporary Worker stopped');
-    }
+    db.close();
   }
 }
 
-/** Rewrite the seeded root user's uuid to all-zeros so reseeds are reproducible. */
-async function pinRootUuid() {
-  const { DatabaseSync } = await import('node:sqlite');
-  const ALL_ZERO = '00000000-0000-0000-0000-000000000000';
-  const root = path.resolve(import.meta.dirname, '..');
-  const dir = path.join(root, '.wrangler', 'state', 'v3', 'd1');
-  if (!existsSync(dir)) return;
-  const files = readdirSync(dir, { recursive: true })
-    .filter((f) => typeof f === 'string' && f.endsWith('.sqlite') && !f.includes('metadata.'))
-    .map((f) => path.join(dir, f));
-  for (const file of files) {
-    try {
-      const db = new DatabaseSync(file);
-      const before = db.prepare('SELECT uuid FROM users WHERE id = 0').get()?.uuid;
-      if (!before) {
-        db.close();
-        continue;
-      }
-      db.prepare('UPDATE users SET uuid = ? WHERE id = 0').run(ALL_ZERO);
-      db.close();
-      log(`pinned root uuid: ${before} → ${ALL_ZERO}`);
-      return;
-    } catch {
-      /* no users table in this file */
-    }
-  }
-  log('could not locate DB to pin root uuid — skipping');
-}
-
-main()
-  .then(() => pinRootUuid())
-  .catch((e) => {
-    console.error('[seed] FATAL', e.message);
-    process.exit(1);
-  });
+main().catch((error) => {
+  console.error('[seed] FATAL', error.message);
+  process.exitCode = 1;
+});

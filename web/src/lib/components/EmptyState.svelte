@@ -1,7 +1,5 @@
 <script lang="ts">
-  // Unified empty state: centered graphic plus one sentence, with an optional secondary hint.
-  // An explicit icon wins; otherwise the gradient illustration renders (one of the two sanctioned
-  // gradient uses). The gradient id is unique per instance, so coexisting states cannot collide.
+  // Centered empty state with an optional icon and hint. Illustration gradient IDs are unique per instance.
   import type { Component } from 'svelte';
 
   interface Props {

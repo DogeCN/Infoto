@@ -1,7 +1,4 @@
-// SharedWorker entry — transcode queue / image pool / video token pool / heartbeat leases.
-// Neither WebCodecs nor the Worker constructor exists in this global, so image transcoding runs on this thread by importing image.worker.ts as a module;
-// video jobs are only dispatched here — actual transcoding happens in the page's top-level DedicatedWorker.
-// Editor jobs skip every one of those pools: purpose='editor' uploads the picked file as-is (runEditorUpload).
+// SharedWorker scheduler for image transcoding, leased video workers, direct editor uploads, and heartbeat cleanup.
 
 import type { MediaType } from '$shared/types';
 import {
@@ -94,9 +91,7 @@ interface Lease {
 }
 const leases = new Map<string, Lease>();
 
-/**
- * Global video concurrency (1–2): computed from the SW's own navigator at startup, then refined by each page's poolHint (deviceMemory is window-only); pages on one machine report identical readings, so last-write-wins updates are exact in practice.
- */
+/** Video concurrency, bounded to one or two jobs and refined by page capability hints. */
 let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
 
 function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
@@ -138,16 +133,7 @@ function failJob(rec: JobRec, error: string): void {
   notify(rec);
 }
 
-/**
- * Byte-fraction progress for a leg that streams its own output: `written / total`,
- * both in bytes. This is the honest form — a same-unit ratio needs no weights and no
- * milestones. A zero or missing total yields no fraction at all, so the row keeps
- * sweeping instead of claiming a percentage no measurement supports.
- *
- * A completed leg is not reported as 1: the phase advances on its own notify, and a
- * leftover 1 would leave the next leg's row briefly showing a full bar that it never
- * earned.
- */
+/** Measured byte progress. Missing totals and completed stages report no fraction; phase changes signal completion. */
 function notifyBytes(rec: JobRec, total: number, written: number): void {
   if (rec.cancelled || rec.phase !== 'hashing' || total <= 0) return;
   notify(rec, { fraction: Math.max(0, Math.min(1, written / total)) });
@@ -197,10 +183,7 @@ function pumpVideoLeases(): void {
       mime: rec.mime,
       fileName: rec.fileName,
     });
-    // No fraction yet, for the same reason images do not send one: the page worker
-    // has not started, and demuxing / codec probing / Conversion.init report nothing
-    // measurable until the first videoProgress lands. The row must sweep, not sit at
-    // a false 0%.
+    // Keep progress indeterminate until the video worker reports a measured fraction.
     notify(rec);
   }
 }
@@ -219,9 +202,7 @@ let nextPortId = 1;
 const portById = new Map<number, MessagePort>();
 /** Last message time per port — the only liveness signal a port offers. */
 const portLastSeen = new Map<number, number>();
-/**
- * Silence from a port that holds a lease: a live page heartbeats every 5s and stays well inside this even under background timer throttling (≈1/min), while a closed tab says nothing at all — distinguishes a gone page from a throttled one.
- */
+/** Port inactivity threshold for abandoning leases held by disconnected pages. */
 const DEAD_OWNER_MS = 120_000;
 /** A port with no owned jobs that has been silent this long is swept (it re-registers on its next message). */
 const PORT_IDLE_MS = 10 * 60_000;
@@ -260,9 +241,7 @@ async function runImageJob(rec: JobRec): Promise<void> {
     rec.phase = 'hashing';
     notify(rec);
     if (rec.cancelled) return;
-    // Hashing and the OPFS write are one tee loop, so this single byte count is the
-    // whole leg's real measurement — bytes written over the artifact's known size.
-    // No milestone constants: the numerator and denominator are both bytes.
+    // Report bytes hashed and written relative to the artifact size.
     const { sha256, bytes } = await storeArtifact(rec.jobId, r.blob, 'webp', (written) => {
       notifyBytes(rec, r.blob.size, written);
     });
@@ -311,11 +290,7 @@ async function afterStage1(rec: JobRec): Promise<void> {
   await runUpload(rec);
 }
 
-/**
- * The editor leg: no transcode, no sha pass, no OPFS artifact — the picked file was
- * cloned into this record on addJob and goes up as-is, so there is nothing to wait for
- * but the transfer itself.
- */
+/** Upload the editor's cloned source directly, without transcoding, hashing, or OPFS storage. */
 async function runEditorUpload(rec: JobRec): Promise<void> {
   rec.phase = 'uploading';
   notify(rec, { fraction: 0 });
@@ -414,8 +389,7 @@ function onVideoFailed(rec: JobRec, error: string): void {
 function onRetry(jobId: string): void {
   const rec = jobs.get(jobId);
   if (!rec) {
-    // The record was reclaimed (or cancelled elsewhere) while the card was still
-    // up — tell every holder to drop it, otherwise the retry button dead-ends.
+    // Notify holding pages when a retry targets a reclaimed or cancelled job.
     broadcast({ t: 'jobRemoved', jobId });
     return;
   }
@@ -460,9 +434,7 @@ setInterval(() => {
         const pid = owners.get(rec.jobId);
         const seen = pid === undefined ? 0 : (portLastSeen.get(pid) ?? 0);
         if (pid === undefined || now - seen > DEAD_OWNER_MS) {
-          // The owning page stopped talking long before its lease did — closed, not throttled.
-          // Re-enqueueing would pin the token pool (top of 2) forever, blocking every other
-          // video upload; drop the job instead and let each page clean up its own row.
+          // Drop jobs whose owning page has exceeded the inactivity threshold.
           forgetJob(rec.jobId);
           continue;
         }
@@ -482,9 +454,7 @@ setInterval(() => {
   }
 }, 2_000);
 
-/**
- * Terminal-job housekeeping: each job's source Blob (a picked video can be gigabytes) and its record (useful only for refresh replay and manual retry) grow without bound otherwise; it runs on the lease reaper's clock so long-lived sessions stay flat.
- */
+/** Release source blobs and expired terminal-job records during periodic housekeeping. */
 function reclaimTerminalJobs(): void {
   const now = Date.now();
   const pruneable: JobRec[] = [];
@@ -529,12 +499,7 @@ setInterval(() => {
 
 // ---- connection & message dispatch ---------------------------------------------------
 
-/**
- * Rebuild jobs that were mid-upload when the worker died (a page reload tears it down
- * whenever no other tab holds it). The artifact is still in OPFS, so the upload leg can
- * simply be re-run: the card comes back and the photo still lands. Without this a reload
- * silently dropped every photo that had been transcoded but not yet sent.
- */
+/** Resume interrupted album uploads from persisted metadata and OPFS artifacts. */
 let resumed = false;
 async function resumePendingUploads(): Promise<void> {
   if (resumed) return;
@@ -547,8 +512,7 @@ async function resumePendingUploads(): Promise<void> {
   const records = await readPendingUploads(db).catch(() => []);
   for (const r of records) {
     if (jobs.has(r.jobId)) continue;
-    // The artifact is the whole reason a resume is possible; without it the record is
-    // stale (cancelled, or the artifact was reclaimed) and must not linger.
+    // Delete resumable records whose artifacts are missing.
     const blob = await readArtifact(r.jobId, r.artifactExt);
     if (!blob) {
       void deletePendingUpload(db, r.jobId).catch(() => undefined);
@@ -592,9 +556,7 @@ onconnect = (e: MessageEvent) => {
   void resumePendingUploads().then(() => replayJobs(port));
 };
 
-/** Album jobs replay for refresh recovery; editor results stay with the original owner
- *  and never cross a page-reload boundary. Terminal album states are skipped: /sync
- *  already delivers `done` photos and a duplicate never landed at all. */
+/** Replay non-terminal album jobs on reconnect. Editor results remain private to their owning page. */
 function replayJobs(port: MessagePort): void {
   for (const rec of jobs.values()) {
     if (rec.purpose === 'editor') continue;
@@ -614,9 +576,7 @@ function replayJobs(port: MessagePort): void {
 }
 
 function handleMessage(port: MessagePort, m: PageToSwMessage): void {
-  // Liveness stamp (lease reaper / port sweep read it), and re-registration for a
-  // port that was swept while its page sat idle — it must be back in `ports`
-  // before anything is posted to it.
+  // Refresh port liveness and registration before handling messages.
   let pid = portIds.get(port);
   if (pid === undefined) {
     pid = nextPortId++;
@@ -675,10 +635,7 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       const rec = jobs.get(m.jobId);
       if (!rec) return;
       rec.cancelled = true;
-      // Cancelling must reach whatever leg is still running: stop an in-flight /upload
-      // (its result would be discarded anyway — the bytes are what costs) and hand the
-      // video token back so the owning page kills its encoder instead of finishing a job
-      // nobody will see.
+      // Cancel active transfers and release video leases.
       rec.uploadAbort?.abort();
       const owner = ownerPort(rec);
       const leaseId = rec.leaseId;
@@ -714,10 +671,7 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
     }
     case 'videoProgress': {
       const rec = jobs.get(m.jobId);
-      // A 0 from the worker is a "started, nothing finished" tick, not a measurement:
-      // mediabunny reports 0 before the first frame is encoded, and GIF's first tick
-      // arrives as 1/frameCount, never 0. Forwarding it would pin the bar at 0%
-      // instead of letting it sweep until real progress exists.
+      // Ignore startup zeroes until video encoding reports measured progress.
       if (rec && m.fraction > 0) notify(rec, { fraction: Math.max(0, Math.min(1, m.fraction)) });
       return;
     }

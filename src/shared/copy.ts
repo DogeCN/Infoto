@@ -1,24 +1,10 @@
-/**
- * Centralised user-facing copy. Locales are keyed by the exact BCP-47 tags a browser
- * can report in `navigator.languages` (`zh-CN`, `en-US`, …), so `pickLocale` is nothing
- * but an exact lookup — to ship another language, write one `Copy` table and register
- * it under its tag; no matcher logic to touch.
- *
- * This module is data + pure helpers only. It is imported by the Worker (error pages)
- * as well as the page, so it must not touch Svelte runes, `document`, or the DOM. The
- * Worker resolves a locale per request from `Accept-Language`; the page owns a
- * reactive handle on the active table (`web/src/lib/i18n.svelte.ts`) plus the
- * module-level `copy` view below, which plain modules read.
- *
- * Callers stay locale-agnostic: they read `copy.<group>.<key>` and fill any `{name}`
- * placeholder with `fmt()`.
- */
+/** Shared locale tables, exact BCP-47 matching, and interpolation helpers for the frontend and Worker. */
 
 /** Replace `{name}` placeholders in `template` with the matching `vars` entry. */
 export function fmt(template: string, vars?: Record<string, string | number>): string {
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (placeholder, key: string) =>
-    key in vars ? String(vars[key]) : placeholder,
+    Object.hasOwn(vars, key) ? String(vars[key]) : placeholder,
   );
 }
 
@@ -50,11 +36,7 @@ function rulesFor(locale: string): Intl.PluralRules {
   return rules;
 }
 
-/**
- * Pick the form for `n` using the locale's own CLDR rules. `fmt()` is still applied by
- * the caller, so every form carries the same placeholders. The default locale is the
- * active one (see `activeLocale`), so a language switch changes plural forms too.
- */
+/** Select the locale's CLDR plural form; placeholders are filled separately by fmt. */
 export function plural(n: number, forms: PluralMessage, locale: string = activeLocale()): string {
   const key = rulesFor(locale).select(Math.trunc(Math.abs(n))) as PluralKey;
   return forms[key] ?? forms.other;
@@ -87,25 +69,25 @@ export function acceptLanguages(header: string | null | undefined): string[] {
 // ---- English US (source / default) ---------------------------------------------
 export const enUS = {
   sync: {
+    storageFailed: 'Could not save this change locally. Free storage and try again.',
     failed: 'Sync failed',
-    queuedRetry: 'Change queued — retrying automatically',
-    dataMayBeStale: 'Data may be out of date — retrying automatically',
+    queuedRetry: 'Change saved locally — click Sync to retry',
+    dataMayBeStale: 'Data may be out of date — reopen the page to retry',
     button: 'Sync',
     pendingCount: 'Sync ({count} pending)',
   },
 
   upload: {
     unknownType: "Can't detect the file type of {fileName}",
-    acceptHint: 'Only image and video files are supported',
+    acceptHint: 'Images and videos only',
     duplicate: '{fileName} already exists',
     defaultFileName: 'Photo',
     failed: 'Failed to upload {fileName}',
-    editorLost: 'Editor upload was interrupted and lost',
     errors: {
       timeout: 'Upload timed out',
       network: 'Network error',
-      unauthorized: 'Unauthorized — please verify first',
-      oversize: 'Output exceeds 100MB and cannot be uploaded',
+      unauthorized: 'Verify before uploading',
+      oversize: 'Output exceeds the 100 MB upload limit',
       tooLarge: 'File too large',
       httpFailed: 'Upload failed (HTTP {status})',
       failed: 'Upload failed',
@@ -138,10 +120,11 @@ export const enUS = {
   },
 
   gallery: {
+    loading: 'Loading…',
     empty: 'No photos yet',
     emptyFiltered: 'No photos match the filters',
-    emptyHint: 'Tap the upload button to add your first photo',
-    emptyFilteredHint: 'Try adjusting the filters',
+    emptyHint: 'Upload your first photo',
+    emptyFilteredHint: 'Adjust the filters',
   },
 
   topbar: {
@@ -168,7 +151,7 @@ export const enUS = {
     keepOneType: 'Keep at least one type',
     filterSection: 'Filters',
     resetFilters: 'Reset filters',
-    hint: 'Filter by value after uploading photos',
+    hint: 'No numeric range to filter',
     ownedByMe: 'Uploaded by me',
     likedByMe: 'Liked by me',
     dislikedByMe: 'Disliked by me',
@@ -216,6 +199,8 @@ export const enUS = {
   },
 
   lightbox: {
+    preview: 'Media preview',
+    actions: 'Photo actions',
     liked: 'Liked',
     unliked: 'Like removed',
     disliked: 'Disliked',
@@ -260,7 +245,7 @@ export const enUS = {
   },
 
   editor: {
-    imageUploadFailed: 'Image upload failed — please retry',
+    imageUploadFailed: 'Image upload failed. Retry',
     uploading: 'Uploading',
     retry: 'Retry',
     previewAria: 'Live preview',
@@ -286,8 +271,8 @@ export const enUS = {
       feedback: 'Feedback',
     },
     fail: {
-      backendTimeout: 'Backend is not responding — please retry later',
-      network: 'Check your network connection and retry',
+      backendTimeout: 'Server not responding. Try again later',
+      network: 'Check your connection and retry',
     },
     announcement: {
       publishFailed: 'Failed to publish announcement',
@@ -393,12 +378,7 @@ export const enUS = {
   },
 };
 
-/**
- * `Copy` is derived from `enUS`, so every other locale must mirror its shape exactly
- * (the compiler rejects a missing or extra key). The one deliberate relaxation: a
- * plural message may omit any category its own locale's CLDR rules never produce
- * (`one` for English, nothing beyond `other` for Chinese).
- */
+/** Locale tables share the English table's shape; plural messages may omit categories unused by their locale. */
 type Pluralize<T> = T extends PluralMessage ? PluralMessage : { [K in keyof T]: Pluralize<T[K]> };
 
 export type Copy = Pluralize<typeof enUS>;
@@ -406,25 +386,25 @@ export type Copy = Pluralize<typeof enUS>;
 // ---- Chinese Simplified (translation) ------------------------------------------
 const zhCN: Copy = {
   sync: {
+    storageFailed: '无法保存本地更改，请释放存储空间后重试。',
     failed: '同步失败',
-    queuedRetry: '操作已排队，稍后自动重试',
-    dataMayBeStale: '数据可能不是最新，稍后会自动重试',
+    queuedRetry: '操作已保存在本地，点击同步重试',
+    dataMayBeStale: '数据可能不是最新，请重新打开页面重试',
     button: '同步',
     pendingCount: '同步（{count} 条待发送）',
   },
 
   upload: {
     unknownType: '无法识别 {fileName} 的文件类型',
-    acceptHint: '仅支持图片和视频文件',
+    acceptHint: '仅支持图片和视频',
     duplicate: '{fileName} 已存在',
     defaultFileName: '照片',
     failed: '{fileName} 上传失败',
-    editorLost: '编辑器上传被中断，已丢失',
     errors: {
       timeout: '上传超时',
       network: '网络错误',
       unauthorized: '未授权，请先通过验证',
-      oversize: '产物超过 100MB，无法上传',
+      oversize: '文件超过 100 MB 上传上限',
       tooLarge: '文件过大',
       httpFailed: '上传失败（HTTP {status}）',
       failed: '上传失败',
@@ -457,10 +437,11 @@ const zhCN: Copy = {
   },
 
   gallery: {
+    loading: '加载中…',
     empty: '还没有照片',
     emptyFiltered: '没有符合筛选的照片',
-    emptyHint: '点击右上角上传你的第一张照片',
-    emptyFilteredHint: '试试调整筛选条件',
+    emptyHint: '上传第一张照片',
+    emptyFilteredHint: '调整筛选条件',
   },
 
   topbar: {
@@ -487,7 +468,7 @@ const zhCN: Copy = {
     keepOneType: '至少保留一个类型',
     filterSection: '筛选',
     resetFilters: '重置筛选',
-    hint: '上传照片后可按数值筛选',
+    hint: '暂无可筛选的数值范围',
     ownedByMe: '我上传的',
     likedByMe: '我喜欢的',
     dislikedByMe: '我不喜欢的',
@@ -535,6 +516,8 @@ const zhCN: Copy = {
   },
 
   lightbox: {
+    preview: '媒体预览',
+    actions: '照片操作',
     liked: '已标记喜欢',
     unliked: '已取消喜欢',
     disliked: '已标记不喜欢',
@@ -701,7 +684,7 @@ const zhCN: Copy = {
     notFoundTitle: 'Not Found',
     serverErrorTitle: 'Server Error',
     workerNotFoundMessage: '页面不存在或已被移除',
-    workerServerError: '服务端开了个小差，稍后再试',
+    workerServerError: '服务暂不可用，请稍后重试',
   },
 
   api: {
@@ -721,21 +704,16 @@ const zhCN: Copy = {
  * is derived from this record, so registering a new locale is a one-line change here
  * and nowhere else.
  */
-export const locales: Record<string, Copy> = { 'en-US': enUS, 'zh-CN': zhCN };
+export const locales = { 'en-US': enUS, 'zh-CN': zhCN } satisfies Record<string, Copy>;
 
 export type LocaleCode = keyof typeof locales;
 
 export const DEFAULT_LOCALE: LocaleCode = 'en-US';
 
-/**
- * Select the first reported tag that this build ships, matching exactly (no subtag
- * folding: browsers order `navigator.languages` by preference and include the bare
- * primary language last, so an exact hit is the right test). Falls back to the default
- * when the list is absent or empty — Workers and Node tests have no `navigator`.
- */
+/** Select the first exact registered locale tag, otherwise the default locale. */
 export function pickLocale(langs?: readonly string[]): LocaleCode {
   for (const lang of langs ?? []) {
-    if (lang in locales) return lang as LocaleCode;
+    if (Object.hasOwn(locales, lang)) return lang as LocaleCode;
   }
   return DEFAULT_LOCALE;
 }
@@ -752,26 +730,12 @@ export function activeLocale(): LocaleCode {
   return active;
 }
 
-/**
- * Point the module-level `copy` at another locale. The page calls this from
- * `$lib/i18n` when the user picks a language; the Worker leaves it alone and hands an
- * explicit table to its error pages instead (one isolate serves every locale at once).
- */
+/** Set the active locale for plain frontend modules. Worker responses resolve their locale per request. */
 export function setActiveLocale(code: LocaleCode): void {
-  if (code in locales) active = code;
+  if (Object.hasOwn(locales, code)) active = code;
 }
 
-/**
- * The active copy table as a live view rather than a snapshot: each group lookup
- * resolves against `active` at that moment, so a language switch reaches plain modules
- * (toasts, api clients, the upload pipeline) with no call-site changes and no re-import.
- *
- * Components must NOT render from this. A proxy read is invisible to Svelte's
- * reactivity — a template bound to it would not re-run on a switch — so components
- * import the `$derived` `copy` from `$lib/i18n` instead. The proxy is deliberately
- * shallow: `copy.sync.failed` tracks the locale, while `copy.sync` hands back the real
- * object of the current table and nested reads are plain property access from there.
- */
+/** Live, non-reactive copy view for plain modules. Svelte components use the reactive copy in lib/i18n.svelte.ts. */
 export const copy: Copy = new Proxy({} as Copy, {
   get: (_target, group: keyof Copy) => locales[active][group],
 });

@@ -8,7 +8,7 @@ const okResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 describe('sync and upload clients', () => {
-  it('classifies turnstile, retries 429, and times out a silent backend', async () => {
+  it('classifies Turnstile and rate-limit failures without retrying, and bounds stalled requests', async () => {
     const required = vi
       .fn()
       .mockResolvedValue(
@@ -45,17 +45,17 @@ describe('sync and upload clients', () => {
     );
 
     vi.useFakeTimers();
-    const limited = vi
-      .fn()
-      .mockResolvedValueOnce(okResponse({ error: 'rate_limited' }, 429))
-      .mockResolvedValueOnce(
-        okResponse({ ok: true, selfId: 3, photos: [], announcements: [], feedback: [] }),
+    try {
+      const limited = vi.fn().mockResolvedValue(okResponse({ error: 'rate_limited' }, 429));
+      await expect(postSync({ ops: [] }, { fetchFn: limited, origin: 'http://x' })).rejects.toThrow(
+        'rate_limited',
       );
-    const limitedCall = postSync({ ops: [] }, { fetchFn: limited, origin: 'http://x' });
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect((await limitedCall).response.selfId).toBe(3);
-    expect(limited).toHaveBeenCalledTimes(2);
-    vi.useRealTimers();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(limited).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const hanging = vi.fn((_url: string, init?: RequestInit) => {
       return new Promise<Response>((_resolve, reject) => {

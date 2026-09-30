@@ -27,13 +27,13 @@ Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Sv
 
 ```
 src/worker/        Worker entry & API (Hono routes, D1 implementation, identity/sync/upload)
-src/shared/        Shared types + copy/i18n
+src/shared/        Shared contracts, media identifiers, and copy/i18n
 src/testing/       Local dev + test adapters (node:sqlite Db; NEVER import in Worker)
 schema.sql         D1 DDL script (idempotent on deploy)
 web/src/
   base/            Common layer: lib/ (layout, media, utils) + upload/ (upload pipeline)
   core/            Business logic: api/ (sync/upload client), oplog, identity, markdown — pure TS, testable
-  state/           Svelte reactive stores (.svelte.ts)
+  state/           Svelte reactive app/upload stores (.svelte.ts)
   lib/components/   UI component library
   routes/          Page routes (App-level components)
   transcode/       Browser-side video transcoding (WebCodecs + SharedWorker)
@@ -55,7 +55,7 @@ dist/              Vite build output (not in git, served by wrangler [assets])
 
 ## 5. Environment Requirements
 
-- **Node >= 22.6** (24 recommended, matches CI/deploy)
+- **Node >= 22.6** (24 recommended; CI uses 22)
 - npm workspaces: **single lockfile** (root `package-lock.json`); never generate one in `web/`
 
 ---
@@ -77,7 +77,9 @@ Run from the repo root:
 | `npm run db:reset`   | Reset local D1 data                                                  |
 | `npm run gen-schema` | Generate `src/worker/schema-ddl.ts` from `schema.sql`                |
 
-Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedge`/`chromium`), `npm run test:watch -w infoto-web`.
+Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedge`/`chromium`), `npm run test:watch -w infoto-web`. Run `npm run e2e -w infoto-web -- ui.spec.ts` for mocked gallery, keyboard, overlay, locale, narrow-screen, and failed-upload regressions. Full pipeline specs require the real upload service configuration.
+
+Local seed: prepare `scripts/seed-media/transcoded/` (ffmpeg/ffprobe), start `npm run dev` with `TC_SECRET` in ignored `.dev.vars`, then run `npm run db:seed`. The seeded root UUID is always `00000000-0000-0000-0000-000000000000`; there is no development identity-selector endpoint. The seeder refuses populated content tables and never starts or kills a Worker. `SEED_BASE` must be loopback; `FFPROBE_BIN` may specify ffprobe. For explicitly offline fixtures only, use `npm run db:seed -- --local-media` and `INFOTO_SEED_MEDIA=1 npm run dev` to enable read-only asset serving, without changing authentication. Relative fixture URLs must not be imported into production. `INFOTO_SEEDED_TEST=1 npm run e2e -w infoto-web -- seeded.spec.ts` exercises real local D1 through seeded cookies; set `INFOTO_EXPECT_UPLOAD_FAILURE=1` only when testing an unavailable image host. Successful production upload and Turnstile verification require separate real-service checks.
 
 ---
 
@@ -102,6 +104,8 @@ Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedg
 10. **Reusable drag-sort list**: Always use `lib/components/ReorderableList.svelte` for new sortable lists.
 11. **Measure, never guess, in responsive layout**: Derive a control's state from a measured value, not a viewport breakpoint — `web/src/lib/components/topbarFit.ts` is the worked example, including the three ways measuring goes wrong (hidden-copy widths, probe placement, and a zero-slack fit).
 
+12. **Sync only on explicit user request, page open, or page exit**: no queue threshold, periodic/background retry, visibility-change sync, or HTTP 429 retry. Unconfirmed operations stay in IndexedDB. Admin mutation endpoints remain immediate user-initiated writes.
+
 ---
 
 ## 9. Local Dev Environment (Pitfalls)
@@ -110,7 +114,7 @@ Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedg
 - Start dev: `npm run dev` at repo root (Worker + Vite + `db:local`). **Never `nohup npm run dev:worker &`** (creates competing workerd processes fighting for :8787).
 - **Never start `npm run dev` on top of a previous instance**: a stray vite still bound to 5173 makes the new one fall back to 5174, and _both_ proxy the single Worker on 8787 — the doubled cold-start traffic triggers workerd "runtime crashed unexpectedly" restarts (it self-heals, but is noisy and avoidable). Always free 8787 / 5173 / 5174 (`Get-NetTCPConnection -LocalPort <p>` → `Stop-Process -Id <pid>`) before starting dev.
 - wrangler reports Ready but curl hangs = zombie workerd on port; kill `workerd.exe` and restart.
-- If localhost unreachable, try `127.0.0.1` (local Vite only listens on IPv6 `[::1]:5173`).
+- Vite binds `0.0.0.0:5173` with strict port selection; local hosts and `.e2b.app` previews are accepted. Browser API calls stay same-origin through the proxy.
 - After renaming a module export, vite may serve stale transform → `touch` the file to invalidate watcher cache.
 - **Temp scripts must never live in `web/` root** (triggers full-page reload, log spam = reload storm, can crash Worker). Put them in `scripts/` or use `.tmp-*` patterns (already in `.gitignore` / `.prettierignore`).
 

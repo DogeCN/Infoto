@@ -3,7 +3,7 @@
 
 /** Numeric id -> base-36 string. Throws on negative / non-integer input. */
 export function toId36(id: number): string {
-  if (!Number.isInteger(id) || id < 0) throw new Error(`invalid id: ${id}`);
+  if (!Number.isSafeInteger(id) || id < 0) throw new Error(`invalid id: ${id}`);
   return id.toString(36);
 }
 
@@ -17,4 +17,9 @@ export function fromId36(s: string): number | null {
 /** Short media URL for off-site scenarios: `{origin}/l/{id36}`. */
 export function proxyUrl(origin: string, id: number): string {
   return `${origin}/l/${toId36(id)}`;
+}
+
+/** File extension implied by photos.type (only webp / webm exist). */
+export function extOfType(type: number): 'webp' | 'webm' {
+  return type === 0 ? 'webp' : 'webm';
 }

@@ -1,14 +1,14 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, type Plugin, type UserConfig } from 'vite';
+import type { InlineConfig } from 'vitest/node';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
+import { seedMediaPlugin } from '../scripts/lib/seed-media.mjs';
 import { injectFontRace } from '../src/shared/fonts.ts';
 
-// Single-origin SPA: every backend call goes to {origin} (the Worker sends no CORS headers). In dev the
-// proxy forwards API paths to the local Worker started by `wrangler dev` at the repo root (`npm run
-// dev:worker`, port 8787) — no test-site redirect, no local shim runtime; the target is fixed by contract.
-const backend = 'http://localhost:8787';
+// Forward same-origin API requests to the local Worker.
+const backend = 'http://127.0.0.1:8787';
 
 const proxy = (extra: Record<string, unknown> = {}) => ({
   target: backend,
@@ -17,8 +17,7 @@ const proxy = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-// Shared code: $shared = contract types (one level up, next to the Worker),
-// $base = DOM-free base libs + upload pipeline (web/src/base).
+// Resolve shared contracts, reusable utilities, and UI components.
 const alias = {
   $shared: fileURLToPath(new URL('../src/shared', import.meta.url)),
   $base: fileURLToPath(new URL('./src/base', import.meta.url)),
@@ -34,20 +33,20 @@ function fontRacePlugin(): Plugin {
   };
 }
 
-export default defineConfig({
-  plugins: [fontRacePlugin(), tailwindcss(), svelte()],
+const config = {
+  plugins: [seedMediaPlugin(), fontRacePlugin(), tailwindcss(), svelte()],
   resolve: { alias },
-  // Pre-bundle at server start: discovering these deps mid-session (first page
-  // that loads the video worker) re-optimizes deps and full-reloads the page —
-  // fatal for e2e (execution contexts destroyed mid-test).
+  // Pre-bundle worker dependencies before the first browser session.
   optimizeDeps: { include: ['mediabunny', 'hash-wasm'] },
   // Build straight into the Worker ASSETS directory. dist/ is gitignored —
   // the deploy workflow builds it (see .github/workflows/deploy.yml).
   build: { outDir: '../dist', emptyOutDir: true },
   server: {
+    host: '0.0.0.0',
+    allowedHosts: ['.e2b.app'],
+    strictPort: true,
     port: 5173,
-    // Temp scripts/output landing in web/ root make Vite full-reload on every watch event — each log
-    // write would reload the page, freezing the user's tab and taking Workers down with it. Ignored explicitly.
+    // Exclude generated test artifacts from live reload.
     watch: {
       ignored: ['**/.tmp-*', '**/*.out', '**/.chk*', '**/.shot*', '**/test-results/**'],
     },
@@ -55,9 +54,7 @@ export default defineConfig({
       '/sync': proxy(),
       '/upload': proxy({ proxyTimeout: 120_000 }),
       '/l': proxy({ cookieDomainRewrite: false }),
-      // Only proxy real endpoints under /admin; the /admin page itself is a front-end route. Proxying the whole path to the Worker returns the
-      // built dist/index.html (hashed /assets) that does not exist on the dev server → Vite answers text/html, the browser blocks it → white
-      // screen. In dev Vite's SPA fallback serves the shell (/src/main.ts) and the root check falls back to selfId === 0 from /sync (same as e2e).
+      // Proxy admin API endpoints while retaining the SPA fallback for /admin.
       '/admin/migrate': proxy(),
       '/admin/announcements': proxy(),
       '/admin/feedback': proxy(),
@@ -68,4 +65,6 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
   },
-} as never);
+} satisfies UserConfig & { test: InlineConfig };
+
+export default defineConfig(config);

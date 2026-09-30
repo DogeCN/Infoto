@@ -1,21 +1,5 @@
 <script lang="ts">
-  // Upload progress panel for the home waterfall. It shows the leg the caller hands in:
-  // the album feeds it the transcode rows (queue / token wait / transcode) and the moment
-  // a file is transcoded its row collapses out and the waterfall card carries the rest
-  // under its curtain. There is no second panel — the editor's upload feedback is its save
-  // button (Save → uploading), so a floating panel there would be a duplicate readout.
-  //
-  // One file is ONE row: filename left, bar filling whatever is left of the row, and a
-  // remove button at the far end. No icon, no stage word, no percentage — the bar is the
-  // whole message and runs 0→1 in one piece rather than resetting per stage. A phase with
-  // no progress to report yet (queued, waiting for a video token) sweeps instead of
-  // sitting dead at zero.
-  //
-  // Expansion has no button. A pointer-capable device reveals the list while the pointer
-  // rests on the panel — entering is instant, leaving waits out a wobble (the TimeLabel
-  // debounce) and the hit area is padded so the edge is not a knife edge. Touch devices
-  // have no hover, so the header drags the sheet directly and release keeps its position
-  // with a short velocity-based glide.
+  // Album progress panel with measured progress or an indeterminate sweep. Pointer hover expands the list; touch dragging controls its height.
   import { onDestroy } from 'svelte';
   import { Clapperboard, X } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
@@ -32,9 +16,7 @@
     /** Multi-select owns the bottom of the screen: its bar is a full-width bottom bar on
      *  a layer above this panel, so the panel slides away while it is up. */
     hidden?: boolean;
-    /** Reports the panel's live pixel height (0 while collapsed or hidden) so the toast
-     *  stack can float above it on narrow layouts. Height tracks the row count, so this
-     *  has to be measured rather than assumed. */
+    /** Report measured panel height for toast clearance; hidden or collapsed panels report zero. */
     onHeight?: (px: number) => void;
   }
 
@@ -60,11 +42,7 @@
 
   let shellEl = $state<HTMLElement | undefined>(undefined);
 
-  // Publish the live height. A ResizeObserver rather than measuring in the row effect:
-  // the box also changes on expand/collapse, on the safe-area inset, and during the
-  // entry transition, none of which the row count knows about. Re-running on `hidden`
-  // matters as much as the observer — a translate does not change `offsetHeight`, so
-  // coming back from hidden would otherwise leave the reported height stuck at 0.
+  // Observe rendered height and visibility to update toast clearance.
   $effect(() => {
     if (!shellEl) {
       onHeight?.(0);
@@ -116,11 +94,7 @@
     if (leaveTimer) clearTimeout(leaveTimer);
   });
 
-  // ---- touch devices: drag the header ------------------------------------
-  // The sheet is bottom-anchored, so it grows upward and the finger delta is applied
-  // inverted. Nothing is decided mid-drag: pointerdown anchors the current rendered
-  // height (grabbing a half-open sheet continues smoothly), pointermove only clamps to
-  // the two physical ends, and pointerup picks the end by the midpoint.
+  // Touch dragging adjusts the bottom-anchored panel height; release chooses the nearest endpoint.
   const HEADER_H = 44;
   /** Row pitch: py-1.5 (12px) + text-xs line-height (16px) = 28px. */
   const ROW_H = 28;
@@ -182,12 +156,7 @@
     };
   }
 
-  /**
-   * Nothing measurable to show — the bar sweeps instead of claiming a percentage. Two
-   * cases: the job has not started (queued, waiting for a video token), or the leg it is
-   * on cannot measure itself (image transcoding is three indivisible steps; only video
-   * encoding and the upload transfer report real fractions).
-   */
+  /** Use an indeterminate sweep for queued jobs and stages without measurable progress. */
   function indeterminate(task: UploadRow): boolean {
     return task.phase === 'queued' || task.phase === 'lease-wait' || task.fraction == null;
   }
@@ -209,6 +178,7 @@
       : 'translate-y-0 opacity-100'}"
     role="presentation"
     aria-hidden={hidden}
+    inert={hidden}
     onpointerenter={onEnter}
     onpointerleave={onLeave}
   >
@@ -247,11 +217,9 @@
         {/if}
       </div>
 
-      <!-- The list collapses via grid-template-rows 1fr↔0fr, not max-h-0: a max-height
-           clip gives its children a zero-width content box in some engines and the bars
-           vanish. While dragging the grid is dropped and the height is inline, so the
-           sheet tracks the finger with no transition lag. -->
+      <!-- Animate expansion with grid rows; pointer dragging sets height directly. -->
       <div
+        inert={canHover ? !expanded : sheetH <= HEADER_H}
         class="overflow-hidden {canHover
           ? 'grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)] ' +
             (expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')
@@ -312,10 +280,7 @@
 {/if}
 
 <style>
-  /* The collapsed panel is a thin bar, so a pointer wobbling across its edge must not
-     flip the list open and shut: pad the hover boundary. The card itself is `relative`
-     so it paints above this pseudo-element — a positioned ::before would otherwise
-     swallow every click meant for the row's remove button. */
+  /* Expand the hover boundary behind the interactive panel content. */
   .upload-panel::before {
     content: '';
     position: absolute;

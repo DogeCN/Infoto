@@ -97,7 +97,9 @@
   let longPressTimer: ReturnType<typeof setTimeout> | undefined;
   let didLongPress = false;
 
-  function handlePointerDown() {
+  function handlePointerDown(event: PointerEvent) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return;
+    cancelLongPress();
     didLongPress = false;
     longPressTimer = setTimeout(() => {
       didLongPress = true;
@@ -120,13 +122,7 @@
     cancelLongPress();
   });
 
-  /**
-   * A load failure (network / CORS / 404) is surfaced as a uniform "ERROR" glitch.
-   * We deliberately do not probe for the HTTP status: a cross-origin HEAD is
-   * CORS-gated and would only yield a misleading code (or "0") on blocked hosts.
-   * A local preview that this browser cannot decode (HEIC, exotic codec) is not a
-   * broken photo, so it degrades to the skeleton and waits for the real URL instead.
-   */
+  /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
   function handleMediaError(): void {
     if (overlay?.preview) return;
     loadFailed = true;
@@ -146,6 +142,8 @@
     : 'border-white/0 hover:border-white/10'}"
   style="left: {x}px; top: {y}px; width: {width}px; height: {height}px"
   role="button"
+  aria-label={copy.lightbox.preview}
+  aria-pressed={multiMode ? selected : undefined}
   tabindex="0"
   onclick={handleClick}
   onpointerdown={handlePointerDown}
@@ -153,7 +151,9 @@
   onpointercancel={handlePointerUp}
   onpointerleave={cancelLongPress}
   onkeydown={(e) => {
-    if (e.key === 'Enter' || e.key === ' ') onClick?.();
+    if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault();
+    onClick?.();
   }}
 >
   <!-- Media: on load failure render a glitching error code.
@@ -205,9 +205,7 @@
   <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry / dismiss -->
   {#if overlay}
     {#if overlay.failed}
-      <!-- Curtain back down to full cover. Both controls are the bare glyph: no plate,
-           no ring, no hover fill — the stroke colour is the only feedback channel, so a
-           hover cannot introduce a surface the resting state does not have. -->
+      <!-- Failure cover with retry and dismiss controls. -->
       <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
         <button
           type="button"
@@ -237,16 +235,7 @@
         </button>
       </div>
     {:else}
-      <!-- The curtain: the media is uncovered from the bottom as the leg progresses. Its
-           remove button rides on top of it — a cancel must be available mid-flight, not
-           only once the job has already failed.
-
-           The last sliver never opens while the job is still running: XHR reports the
-           request body as fully sent almost immediately (it measures the socket buffer,
-           not the host's response), so on a fast local link the fraction jumps straight
-           to 1 and an uncapped curtain would vanish at once — a card under upload looked
-           like a bare photo with a stray X. The veil now survives until 'done' removes
-           the overlay. -->
+      <!-- Reveal media with upload progress while keeping a cancellation veil until server completion. -->
       <div
         class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70 transition-[height] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
         style="height: {Math.max(0, 1 - Math.min(overlay.fraction ?? 0, CURTAIN_MAX_OPEN)) * 100}%"
@@ -293,6 +282,7 @@
       <button
         type="button"
         class={badgeCls}
+        aria-label={isLiked ? copy.lightbox.unlike : copy.lightbox.like}
         onclick={(e) => {
           e.stopPropagation();
           onLike?.();
@@ -311,6 +301,7 @@
       <button
         type="button"
         class={badgeCls}
+        aria-label={isDisliked ? copy.lightbox.undislike : copy.lightbox.dislike}
         onclick={(e) => {
           e.stopPropagation();
           onDislike?.();
@@ -329,6 +320,7 @@
       <button
         type="button"
         class={badgeCls}
+        aria-label={isReported ? copy.lightbox.cancelReport : copy.lightbox.report}
         onclick={(e) => {
           e.stopPropagation();
           onRequestDelete?.();
@@ -353,6 +345,7 @@
         : 'bottom-2 right-2'} {volumeMuted
         ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
         : 'border-[#22d3ee]/50 bg-[#22d3ee]/20 text-[#22d3ee]'}"
+      aria-label={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute}
       style="width: {tight ? '1.25rem' : '1.9rem'}; height: {tight ? '1.25rem' : '1.9rem'}"
       onclick={(e) => {
         e.stopPropagation();

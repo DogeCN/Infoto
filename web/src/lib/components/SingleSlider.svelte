@@ -1,12 +1,16 @@
 <script lang="ts">
-  // Single-handle slider (layout panel: target bandwidth / gap), sharing RangeSlider's visual and
-  // interaction language — a real DOM handle with pointer events, no native input[type=range] (its
-  // thumb can't be dragged or drawn in Firefox). Normalized [0,1] state, step-aligned: it emits only when the mapped value changes, so one drag can't flood upstream recomputes (waterfall reflow is the jank source).
+  // Step-aligned single-thumb slider with pointer and keyboard controls and change-only emissions.
   import type { Component } from 'svelte';
-  import { onMount } from 'svelte';
   import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
-  import { cn } from '$lib/utils';
+  import { cn } from '$base/lib/ui';
+  import {
+    bubblePosition,
+    thumbCenter,
+    pointerPosition,
+    clamp01,
+    stepValue,
+  } from '$base/lib/slider';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
@@ -34,30 +38,17 @@
     onChange,
   }: Props = $props();
 
-  /** Handle diameter (px), matching size-[18px] in the template; used for travel and placement. */
-  const THUMB = 18;
-  /** Caret half-extent (8px square rotated 45° → 5.7px circumradius); the tip
-   *  never sits closer than this to either bubble corner. */
-  const TIP_PAD = 6;
-
-  const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
   let span = $derived(Math.max(1, max - min));
   let active = $derived(value !== defaultValue);
 
   /** Normalized position → business value (aligned to step). */
-  const mapValue = (t: number): number => {
-    const raw = min + t * span;
-    const aligned = step > 0 ? Math.round(raw / step) * step : raw;
-    return Math.min(max, Math.max(min, Number(aligned.toFixed(6))));
-  };
+  const mapValue = (t: number): number => stepValue(t, min, max, step);
 
   // svelte-ignore state_referenced_locally
   let t = $state(clamp01((value - min) / span));
   let curVal = $derived(mapValue(t));
 
-  // External controlled values flow back only when the mapped value differs from props
-  // (during a drag the props are the value just emitted, so it can't snap back; resets
-  // and outside changes still snap correctly).
+  // Reconcile external values while preserving continuous thumb travel during dragging.
   $effect(() => {
     void value;
     void min;
@@ -72,32 +63,8 @@
   let trackEl = $state<HTMLDivElement | undefined>(undefined);
   let trackWidth = $state(0);
 
-  onMount(() => {
-    if (!trackEl) return;
-    const update = (): void => {
-      trackWidth = trackEl!.getBoundingClientRect().width;
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(trackEl);
-    return () => ro.disconnect();
-  });
-
-  /** Thumb centre position on the track (same formula as RangeSlider, fill ends stay coaxial). */
-  function thumbCenter(n: number): string {
-    return `calc(${THUMB / 2}px + ${n * 100}% - ${n * THUMB}px)`;
-  }
-  /** Bubble geometry in px against the live track width and the bubble's own width. The
-   *  caret is the bubble's only pointing anchor, so it stays on the thumb centre: near the
-   *  ends the body stops at the track edge and the caret slides along it. */
-  function bubblePos(n: number, bw: number): { left: number; tip: number } {
-    const w = trackWidth;
-    const center = THUMB / 2 + n * Math.max(0, w - THUMB);
-    if (!w || !bw) return { left: center - bw / 2, tip: bw / 2 };
-    const left = Math.min(Math.max(center - bw / 2, 0), Math.max(0, w - bw));
-    const tip = Math.min(Math.max(center - left, TIP_PAD), Math.max(TIP_PAD, bw - TIP_PAD));
-    return { left, tip };
-  }
+  const bubblePos = (position: number, width: number) =>
+    bubblePosition(position, width, trackWidth);
 
   // ---- pointer interaction -------------------------------------------------
   let drag = $state(false);
@@ -108,9 +75,7 @@
   let dragRect: DOMRect | null = null;
 
   function tFromClientX(clientX: number): number {
-    if (!dragRect) return 0;
-    const usable = Math.max(1, dragRect.width - THUMB);
-    return clamp01((clientX - dragRect.left - THUMB / 2) / usable);
+    return dragRect ? pointerPosition(clientX, dragRect) : 0;
   }
 
   function applyT(next: number): void {
@@ -121,7 +86,7 @@
   }
 
   function onPointerDown(e: PointerEvent): void {
-    if (!trackEl) return;
+    if (!trackEl || e.button !== 0) return;
     dragRect = trackEl.getBoundingClientRect();
     trackWidth = dragRect.width;
     drag = true;
@@ -173,17 +138,6 @@
     applyT(target);
   }
 
-  const thumbCls = cn(
-    'absolute top-1/2 size-[18px] -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full outline-none',
-    'border-[3px] border-background bg-primary',
-    'transition-transform duration-[120ms] ease-out active:cursor-grabbing',
-    'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-  );
-  const bubbleCls =
-    'pointer-events-none relative whitespace-nowrap rounded-md bg-surface-top px-2.5 py-[3px] text-[11px] font-semibold tabular-nums text-foreground shadow-md';
-  const caretCls =
-    'absolute top-full size-2 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-surface-top';
-
   const iconCls = $derived(
     cn(
       'size-4 shrink-0 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
@@ -199,11 +153,13 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={trackEl}
+    bind:clientWidth={trackWidth}
     class="relative h-8 min-w-0 cursor-pointer touch-none select-none"
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
     onpointerup={endDrag}
     onpointercancel={endDrag}
+    onlostpointercapture={endDrag}
   >
     <!-- base track -->
     <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-border"></div>
@@ -223,11 +179,11 @@
       >
         <div
           bind:clientWidth={bw}
-          class={bubbleCls}
+          class="slider-bubble"
           transition:fly={{ y: 3, duration: 140, easing: cubicOut }}
         >
           {format(curVal)}
-          <span class={caretCls} style="left: {bs.tip}px"></span>
+          <span class="slider-caret" style="left: {bs.tip}px"></span>
         </div>
       </div>
     {/if}
@@ -240,7 +196,11 @@
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={curVal}
-      class={cn(thumbCls, drag ? 'z-20 scale-[1.22] transition-none' : 'z-10 hover:scale-110')}
+      aria-valuetext={format(curVal)}
+      class={cn(
+        'slider-thumb',
+        drag ? 'z-20 scale-[1.22] transition-none' : 'z-10 hover:scale-110',
+      )}
       style="left: {thumbCenter(t)}"
       onkeydown={onKeydown}
       onpointerenter={() => (hover = true)}

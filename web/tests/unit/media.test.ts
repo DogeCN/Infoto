@@ -1,7 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { toId36, fromId36, proxyUrl } from '../../src/base/lib/id36.ts';
-import { humanSize, padName, extOfType } from '../../src/base/lib/format.ts';
+import { toId36, fromId36, proxyUrl, extOfType } from '$shared/media';
+
+import { humanSize, padName } from '../../src/base/lib/format.ts';
 import { marqueeHits, rectsIntersect } from '../../src/base/lib/marquee.ts';
 
 test('id36, sizes, and download names', () => {

@@ -31,9 +31,7 @@
     onDelete,
   }: Props = $props();
 
-  // Optimistic upload entries carry negative ids and are excluded from the selection
-  // upstream — counting them here would keep "select all" unreachable (selected can never
-  // reach photos.length) and would inflate the advertised download size with undownloadable files.
+  // Exclude optimistic uploads from selectable counts and download sizes.
   let selectable = $derived(photos.filter((p) => p.id >= 0));
   let count = $derived(selected.size);
   let totalSize = $derived(
@@ -41,9 +39,7 @@
   );
   let allSelected = $derived(count === selectable.length && selectable.length > 0);
 
-  /** Whether any selected item carries the current user's mark. Unmark is its own case:
-   *  it is pointless without a mark to undo, so it stays disabled until one exists —
-   *  unlike download/delete, which only need a non-empty selection. */
+  /** Whether selected photos contain a mark the current user can remove. */
   let hasAnyMark = $derived(
     selectable.some(
       (p) =>
@@ -100,9 +96,7 @@
       {/if}
     </button>
 
-    <!-- Download/delete/unmark share one look (semantic colour always on, tinted plate on
-         hover). Their enablement differs on purpose: download and delete need a selection,
-         unmark needs a selection that actually carries a mark. -->
+    <!-- Download and delete require a selection; unmark requires an existing user mark. -->
     <button
       type="button"
       class="{btn} size-10 text-warning hover:bg-warning/10 disabled:opacity-40"

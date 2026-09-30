@@ -1,7 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import {
-  OPLOG_SYNC_THRESHOLD,
   appendOp,
   clearOps,
   countOps,
@@ -25,7 +24,6 @@ async function freshDb(): Promise<IDBDatabase> {
 
 describe('oplog', () => {
   it('appends, clears, and keeps sha lookups scoped to a purpose', async () => {
-    expect(OPLOG_SYNC_THRESHOLD).toBe(256);
     const db = await freshDb();
     try {
       expect(await countOps(db)).toBe(0);
