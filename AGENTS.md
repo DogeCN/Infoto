@@ -27,13 +27,13 @@ Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Sv
 
 ```
 src/worker/        Worker entry & API (Hono routes, D1 implementation, identity/sync/upload)
-src/shared/        Shared types + copy/i18n
+src/shared/        Shared contracts, media identifiers, and copy/i18n
 src/testing/       Local dev + test adapters (node:sqlite Db; NEVER import in Worker)
 schema.sql         D1 DDL script (idempotent on deploy)
 web/src/
   base/            Common layer: lib/ (layout, media, utils) + upload/ (upload pipeline)
   core/            Business logic: api/ (sync/upload client), oplog, identity, markdown — pure TS, testable
-  state/           Svelte reactive stores (.svelte.ts)
+  state/           Svelte reactive app/upload stores (.svelte.ts)
   lib/components/   UI component library
   routes/          Page routes (App-level components)
   transcode/       Browser-side video transcoding (WebCodecs + SharedWorker)
@@ -55,7 +55,7 @@ dist/              Vite build output (not in git, served by wrangler [assets])
 
 ## 5. Environment Requirements
 
-- **Node >= 22.6** (24 recommended, matches CI/deploy)
+- **Node >= 22.6** (24 recommended; CI uses 22)
 - npm workspaces: **single lockfile** (root `package-lock.json`); never generate one in `web/`
 
 ---
@@ -104,6 +104,8 @@ Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started b
 10. **Reusable drag-sort list**: Always use `lib/components/ReorderableList.svelte` for new sortable lists.
 11. **Measure, never guess, in responsive layout**: Derive a control's state from a measured value, not a viewport breakpoint — `web/src/lib/components/topbarFit.ts` is the worked example, including the three ways measuring goes wrong (hidden-copy widths, probe placement, and a zero-slack fit).
 
+12. **Sync only on explicit user request, page open, or page exit**: no queue threshold, periodic/background retry, visibility-change sync, or HTTP 429 retry. Unconfirmed operations stay in IndexedDB. Admin mutation endpoints remain immediate user-initiated writes.
+
 ---
 
 ## 9. Local Dev Environment (Pitfalls)
@@ -112,7 +114,7 @@ Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started b
 - Start dev: `npm run dev` at repo root (Worker + Vite + `db:local`). **Never `nohup npm run dev:worker &`** (creates competing workerd processes fighting for :8787).
 - **Never start `npm run dev` on top of a previous instance**: a stray vite still bound to 5173 makes the new one fall back to 5174, and _both_ proxy the single Worker on 8787 — the doubled cold-start traffic triggers workerd "runtime crashed unexpectedly" restarts (it self-heals, but is noisy and avoidable). Always free 8787 / 5173 / 5174 (`Get-NetTCPConnection -LocalPort <p>` → `Stop-Process -Id <pid>`) before starting dev.
 - wrangler reports Ready but curl hangs = zombie workerd on port; kill `workerd.exe` and restart.
-- If localhost unreachable, try `127.0.0.1` (local Vite only listens on IPv6 `[::1]:5173`).
+- Vite binds `0.0.0.0:5173` with strict port selection; local hosts and `.e2b.app` previews are accepted. Browser API calls stay same-origin through the proxy.
 - After renaming a module export, vite may serve stale transform → `touch` the file to invalidate watcher cache.
 - **Temp scripts must never live in `web/` root** (triggers full-page reload, log spam = reload storm, can crash Worker). Put them in `scripts/` or use `.tmp-*` patterns (already in `.gitignore` / `.prettierignore`).
 

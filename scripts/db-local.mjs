@@ -1,9 +1,5 @@
 #!/usr/bin/env node
-// Apply schema.sql to the local D1 — skipped when the tables are already there.
-// Usage: node scripts/db-local.mjs [--force] [--quiet]
-//
-// Wired to `npm run db:local`, which `npm run dev` and the Playwright
-// webServer both use to bootstrap before the Worker starts.
+// Apply the local schema when tables are missing. Accepts --force and --quiet.
 
 import { ensureLocalSchema } from './lib/apply-local-schema.mjs';
 

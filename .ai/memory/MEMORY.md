@@ -35,6 +35,7 @@
 
 - **NEVER `Stop-Process -Name node` / `taskkill /IM node`**: Kills the agent's own shell bridge, causing all subsequent Bash/PowerShell tools to fail with `command expected string / undefined`. To clear a port: `Get-NetTCPConnection -LocalPort <p>` → `Stop-Process -Id <pid>`.
 - Start dev: `npm run dev` at repo root = Worker(8787) + Web(5173) + `db:local` (idempotent, does not clear data). **Never `nohup npm run dev:worker &`** (creates competing workerd processes fighting for :8787).
+- Dev proxy `cookieDomainRewrite` is empty, so the session cookie stays host-only. Rewriting it to `Domain=localhost` drops the cookie on any non-localhost dev host.
 - **Never start `npm run dev` on top of a previous instance.** A stray vite still bound to 5173 makes the new one fall back to 5174, and _both_ proxy the single Worker on 8787 — the doubled cold-start traffic triggers workerd "runtime crashed unexpectedly" restarts. It self-heals, but is noisy and avoidable. Always free 8787 / 5173 / 5174 (`Get-NetTCPConnection -LocalPort <p>` → `Stop-Process -Id <pid>`) before starting dev.
 - wrangler reports Ready but curl hangs = zombie workerd on port; kill `workerd.exe` and restart. localhost unreachable → try `127.0.0.1` (local Vite only listens on IPv6 `[::1]:5173`).
 - After renaming a module export, vite may serve stale transform → `touch` the file to invalidate watcher cache.
@@ -54,6 +55,17 @@
 - Identity cookie `uuid` is set by Worker as **HttpOnly** → frontend `document.cookie` cannot read it. **Never** use "cookie exists" to determine authentication; whether authenticated can only be answered by the server → always probe `/sync` first.
 - Turnstile widget must `turnstile.remove(widgetId)` before removing DOM, otherwise orphaned widget keeps polling and errors. After token returns, **do not** remove immediately (iframe handshake not complete, postMessage goes to removed window); delay ~800ms, hide overlay during this time.
 - In dev, site key is injected by vite from root `.dev.vars` as `VITE_TURNSTILE_SITE_KEY` (fallback only when 401 body missing).
+- Cloudflare's published always-pass secret `1x0000000000000000000000000000000AA` accepts any non-empty token and does not call siteverify. A missing secret, an empty token, and every other secret still fail closed. Do not treat that short-circuit as a bypass for the production secret.
+
+---
+
+## Web Fonts (2026-09-27)
+
+- Do not use `fonts.googleapis.cn`. It is unstable and is not a source.
+- Race two stylesheets; the first successful load is applied and the other `<link>` is removed. Official: `fonts.googleapis.com` / `fonts.gstatic.com`. USTC mirror: `fonts.proxy.ustclug.org` / `fonts-gstatic.proxy.ustclug.org` (USTCLUG reverse proxy; `mirrors.ustc.edu.cn` does not currently list these hosts in its reverse-proxy table).
+- One helper, `src/shared/fonts.ts`. Vite injects it at `<!-- font-race -->` in `web/index.html`. The Worker error page inlines the same helper. Families and weights stay as they were (`display=swap`).
+- Error-page CSP must name both CSS hosts and both file hosts. The race script is static — never interpolate the request into it.
+- If both hosts fail, `system-ui` / `-apple-system` / `sans-serif` remain the fallback. Do not vendor Noto Sans SC to paper over a dead host.
 
 ---
 
@@ -87,6 +99,13 @@
 
 ---
 
+## Unit Suite Shape (2026-09-27)
+
+- Keep the unit suite under 100 cases. Merge related assertions into one case instead of adding a fine-grained test per branch.
+- Sync failures, including HTTP 429, do not schedule retries. Tests use fake timers to verify that queued operations remain local until a permitted trigger.
+
+---
+
 ## Verification Discipline (2026-09-27, three false conclusions in one session)
 
 - **Performance numbers must be measured cold, and the same URL at least twice.** A first `curl` hits the CDN cache: the 25MB video measured "≈10s" cold-start-correct is **0.9s** — a full order of magnitude off. A 10× discrepancy means the measurement is wrong before the code is.
@@ -102,7 +121,7 @@
 - **No invented percentages without real granularity** → use indeterminate (shimmer). Image transcoding = decode / drawImage / convertToBlob three one-shot calls, no intermediate granularity (once added 0.4/0.6 fake milestones, caught by user and reverted).
 - **Weights only appear when "combining multiple legs into one 0→1"**. Each leg is a **same-dimension single ratio** (frames/frames, seconds/seconds, bytes/bytes) — naturally objective, no need to explain weights. Whenever you want to combine two legs into one, first answer where the weights come from.
 - **Hashing + disk write is one tee loop** (`opfs.ts#storeArtifact` feeds `hash.ts#teeToHash`, same `for(;;)`), advances together, inseparable. **It is also not a continuation of transcoding**: `transcodeImage` returns a complete Blob, hashing consumes the product **after** transcoding ends, during which `bytes` is always 0. **Do not report transcoding progress from this loop** — the user made this exact inference and it is wrong.
-- **hashing leg reports a real fraction** (the "deliberate silent gap" design was dropped 2026-09-27): `teeToHash(source, write, onBytes?)` → `storeArtifact(…, onBytes)` → SW `notifyBytes(rec, total, written)`. Numerator and denominator are **both bytes** (`blob.size` known up front, no second measuring pass). Both `runImageJob` and `onVideoResult` wired. `App.svelte#PANEL_STAGES` gained `'hashing'`; `pendingPhotos` unchanged (card still only at `uploading`).
+- **hashing leg reports a real fraction** (the "deliberate silent gap" design was dropped 2026-09-27): `teeToHash(source, write, onBytes?)` → `storeArtifact(…, onBytes)` → SW `notifyBytes(rec, total, written)`. Numerator and denominator are **both bytes** (`blob.size` known up front, no second measuring pass). Both `runImageJob` and `onVideoResult` wired. `state/uploadStore.svelte.ts#PANEL_STAGES` gained `'hashing'`; `pendingPhotos` unchanged (card still only at `uploading`).
 - Phase breakdown: `queued`/`lease-wait`/image `transcoding` → shimmer; video transcoding start also shimmer (worker startup + demux + codec detection has no reportable quantity); video/GIF transcoding → mediabunny `onProgress` / GIF `(i+1)/frameCount`; `hashing` → `written/total` bytes; `uploading` → XHR `upload.onprogress` (its leading `fraction: 0` is kept — an honest starting point, unlike the transcode leg's fake one).
 - `notifyBytes` three details: `total <= 0` **does not send fraction**; loop **does not report 1** (residue makes next leg start full); only sends when `phase === 'hashing'` (late OPFS callbacks must not pollute another leg).
 - ⚠️ **Video progress must filter 0**: `mediabunny`'s first tick is "started, nothing finished", and GIF's first is `1/frameCount` (never 0), so dropping `fraction === 0` is safe and is what keeps the transcode row sweeping instead of pinned at 0%.
@@ -130,8 +149,10 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 
 ## Waterfall: Target Band Width Drives Density (2026-09-27)
 
-- Persist `layout.band` as a CSS-pixel target width (default 260; slider 200–800, step 10). The existing layout engine derives the effective row/column count from the measured cross size and this target width.
-- This restores the earlier direct-width control at the user's request. The column-count model had replaced it because a fixed 260px band yielded one column on a 320px phone, and the 200px slider minimum could not provide a compact multi-column view. The restored model deliberately accepts that narrow-screen consequence in exchange for directly controlling card scale.
+- Persist `layout.band` as a CSS-pixel target width (default 260; slider 100–800, step 10). The existing layout engine derives the effective row/column count from the measured cross size and this target width. The floor is 100, not 200, so the same slider can reach a compact phone layout; there is still no viewport-specific default.
+- `loadSettings` clamps a stored band to 100–800 and gap to 0–32. A value outside the slider is not a second default.
+- At band 100 a card is about 97px wide, and a panorama can be ~30px tall. Mark badges, the error label, and the volume control shrink below 140px wide or 64px tall. A failed video has no mute button — there is no media to mute.
+- Direct pixel width stays the control. A viewport-specific default is still rejected. The slider floor is 100px so a phone can choose a compact multi-column view; the untouched default remains 260px, which can still be one column on a narrow screen.
 - **Zoom is a uniform scale**: `gap * zoom` and `band * zoom` together. Scaling only the band doubles the gap's share and changes density on the way down.
 - The virtualiser's `maxExtent` must be the **real maximum box length** — a tall portrait is far higher than the band and a panorama far wider than one column; under-estimating makes the binary search skip on-screen boxes.
 - **Shape changes bump `SETTINGS_VERSION` and drop the blob whole**. v2 column-count settings are discarded instead of being interpreted as pixel widths; no per-field migration — project red line.
@@ -150,7 +171,7 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - Collapse **forbids `max-h-0`** (gives child elements zero-width content box, progress bar disappears): use `grid-rows-[1fr]↔[0fr]` or `out:collapse` (`grid-template-rows: tfr`). After last row leaves, shell stays ~280ms more before unmounting.
 - **Card insertion timing**: hashing does not insert card (still uploading to insert), but hashing progress is carried by **panel row** (`PANEL_STAGES` includes `'hashing'`) — row is row, card is card, not contradictory. Duplicate only shows Toast.
 - Card overlay's "actual media" relies on local object URL (`previewUrlByJob`, revoke on dropTask), `overlay.preview` lets PhotoCard degrade undecodable preview to skeleton.
-- **No auto-sync after upload** (user decision): only `engine.addOp(op)`, relies on pagehide / accumulate 256 / manual sync to send. Cost is new photos stay as optimistic cards until next sync.
+- **No auto-sync after upload** (user decision): only `engine.addOp(op)`, relies on page open / pagehide / manual sync to send. Cost is new photos stay as optimistic cards until next sync.
 - **Toasts always `expand`**: sonner's hover-expand is a pitfall here (left-swipe close with pointer outside list, `interacting` mark unclear → remaining notifications never expand).
 - **Toast 避让底边是实测高度，不是常量**。`UploadPanel` 通过 `onHeight?(px)` 上报内层卡片的 `ResizeObserver` 高度，`App.svelte` 的 `toastOffsetBottom` 按 `multiMode → 80px` / `窄屏 + panelRows>0 → 16px + 实测高度` / 否则 `16px` 取值。三个坑：① effect 必须依赖 `hidden`（translate 不改 `offsetHeight`，从 hidden 回来高度会卡在 0）；② App 侧回调必须是模块级 `const`（内联箭头每次渲染换新引用，会把子组件的 RO 拆了重建）；③ 单位用 px 不用 rem（实测值过根字号换算会插入误差）。桌面端浮层在右下、toast 在左下，互不冲突，所以只在窄屏避让。
 - **触发 toast 的可靠零副作用路径**：`page.setInputFiles('input[type=file]', '非媒体文件')` → accept 校验拒绝并 toast，不写库。sonner 的 Toaster DOM 只在有 toast 时存在，空闲页面读不到 offset。
@@ -159,11 +180,11 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 
 ## /sync & Op Layer
 
-- **Four trigger points**: page open (`engine.init()`) / `pagehide` dump / oplog accumulates **256** / homepage topbar manual sync. `addOp` itself does not trigger. **`visibilitychange` trigger has been deleted per user decision** (oplog is naturally persistent, late send does not lose data, any new page will supplement). `engine.install()` only registers pagehide.
+- **Three sync trigger categories**: explicit user request / page open (`engine.init()`) / `pagehide` flush. Adding operations, queue size, visibility changes, periodic timers, network recovery, and HTTP 429 never trigger synchronization. Failed/unconfirmed operations remain in IndexedDB until the next permitted trigger. User-initiated SQL import refresh remains part of that explicit manual operation; admin mutation endpoints are independent writes, not background oplog sync.
 - **Photo ops always use sha256 addressing** (user mandate: id is only index for external link `/l/{id36}`, in-site requests never use id). `Op.targetSha` for all photo ops; `target` only serves announcement vote/react. Therefore **optimistic cards can enter Lightbox and multi-select**; uploading write ops first go into `deferredPhotoOps`, wait for `photoOpQueued(sha)` to release — **ops must come after upload op** (/sync replays in array order), this is the premise of the whole mechanism.
 - **Announcements and feedback writes go through independent admin API, not /sync oplog**. Announcements: `POST/PUT/DELETE /admin/announcements`, `POST /admin/announcements/reorder` (root-only). Feedback: create still goes through `/sync`'s `fb_create` (each visitor sends with own identity, not privileged), delete/sort go through `DELETE /admin/feedback/{id}` + `POST /admin/feedback/reorder`. Reads still go through /sync snapshot.
   - **New write endpoints must sync three places**: worker routes + `app.ts` mount + **`web/vite.config.ts` proxy whitelist** (missing it falls back to SPA returning HTML — this was the cause of "save failed" back then).
-  - Unified through `web/src/core/api/adminClient.ts` (`adminWrite()` + 15s timeout), do not write timeout logic separately.
+  - Shared JSON transport lives in `web/src/core/api/request.ts` (15s deadline through response-body consumption); sync and admin clients reuse it. Uploads retain their separate idle-progress watchdog.
   - **Failure feedback only goes through `toast.error` + rollback**, "saving/saving failed" badges have been completely removed.
   - Sorting never blocked by temporary id: new creation takes effect locally immediately (tempId), if still tempId during sorting, suspend and wait for real id then supplement.
   - feedback `sort INTEGER NOT NULL` (no DEFAULT), uniqueness guaranteed by construction (insert `MIN(sort)-1` to top, renumber `0…n-1` during sorting), snapshot single `ORDER BY sort ASC`.
@@ -174,6 +195,11 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 ---
 
 ## Component Pitfalls
+
+- Reaction menus use the native popover top layer to escape announcement-card clipping. Keep their DOM inside the sidebar for focus containment, and let native popovers consume Escape before the parent overlay.
+- Tooltip placement must calculate clamped coordinates in local variables before assigning reactive coordinates; reading and rewriting the same coordinate inside its positioning effect can exceed Svelte's update depth near viewport edges.
+- `muted` and `popover` have the same color. A menu on `bg-popover` needs a contrasting/tinted hover background, not `hover:bg-muted`. Verify the composited color, not merely the presence of a hover utility.
+- Google Lens must receive the absolute id36 `/l/{id36}` proxy URL, not the original image URL. External Lens processing cannot be verified with local fixtures; browser tests verify the encoded target and actual new-tab activation only.
 
 - **Sticky bottom bar + scroll container padding**: adding `padding-bottom` to `overflow-y-auto` container makes sticky stop above it, scroll content shows through gap. Fix: scroll container only `px-4 pt-4`, bottom spacing handled by panel itself.
 - **Inner z-index escapes**: parent with `position: relative` and `z-index: auto` **does not create stacking context**, inner `relative z-10` can press over sticky bottom bar (really happened with vote bar covering input). Add `isolate` to parent.
@@ -222,7 +248,7 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - `/?e2e=1` and `/harness` panel deleted. Gate copy anchor "通过验证后即可浏览" is still visible during `done` fade-out (opacity-0), hidden after idle unmount.
 - **SharedWorker-issued requests (/upload etc.) cannot be intercepted by `page.route`, nor seen by `page.on('request')`** — network assertions involving upload must switch signals: pipeline console logs (like `duplicate: sha256 cache hit`), panel row appear/disappear, server snapshot (`context.request.post('/sync')`).
 - **duplicate task's "duplicate" row lives less than one frame** (dedup effect immediately removes), DOM assertion inevitably flaky.
-- Mock data: `page.route` intercept `/api/photos`, or directly POST /sync with upload ops (use fake domain for url then route returns SVG data). Local Turnstile dummy token `XXXX.DUMMY.TOKEN.XXXX` can create identity.
+- Mock data: `page.route` intercept `/sync`, or directly POST /sync with upload ops (use fake domain for url then route returns SVG data). Local Turnstile dummy token `XXXX.DUMMY.TOKEN.XXXX` can create identity.
 
 ---
 
@@ -247,3 +273,19 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 ## "Looks like fallback but actually required, do not delete"
 
 `photos.likes/dislikes/reports` `DEFAULT '[]'` (upload INSERT does not list these columns) · `CREATE TABLE IF NOT EXISTS` (deploy idempotent) · `env.assets?` (worker unit tests without assets) · `migrate.ts` `restoreOldTables` (import failure rollback) · oplog DB_VERSION+contains guard · transcode VP8/GIF media fallback · `sync.ts` `idList`/`rec()` malformed input defense · `OverlaySidebar`/`readCachedSelfId` preference first-frame defaults.
+
+## Shared Lifecycle and Refactoring Boundaries (2026-09-27)
+
+- ADR 0007 defines the upload-store and shared-overlay boundaries. Create `createUploadStore` within a component so teardown runs; use `SvelteMap` for asynchronously populated preview/probe data consumed by derived UI.
+- Await oplog persistence before acknowledging an upload to the SharedWorker. A rejected local write leaves the artifact resumable; upload completion does not add a new automatic sync trigger.
+- Sync captures and drains the queued snapshot in batches of at most `MAX_SYNC_OPS` (500), deleting only confirmed keys. Operations appended during a request stay queued for the next sync; partial failures retain the unconfirmed tail.
+- Sidebar, ActionSheet, and Lightbox share `base/lib/overlay.ts`. Only the top layer handles keyboard focus/Escape; scroll unlock happens when the stack empties. Hidden mounted panels are inert. Icon buttons have explicit accessible names; tooltips only describe them.
+- `src/shared/media.ts` owns base-36 media IDs and file extensions for both runtimes. `core/markdown.ts`, `base/lib/format.ts`, `base/lib/slider.ts`, and `transcode/protocol.ts` hold their respective consolidated helpers.
+- Media proxy validation checks HTTPS, credentials, local hostnames/private literals, and each redirect; output MIME comes from stored media type with nosniff and sandbox CSP. This does not resolve DNS names or prevent DNS rebinding; stronger isolation requires an upstream allowlist or infrastructure enforcement.
+- Vite binds all interfaces with a `.e2b.app` host suffix allowlist and a strict port. Do not disable host validation globally. UI browser regressions are in `web/tests/e2e/ui.spec.ts`; they mock sync/media and do not prove production challenge or upstream-upload behavior.
+
+- Svelte outgoing transitions pause effects inside the leaving subtree before action destruction. ActionSheet releases its shared overlay from a component-scope effect, reading `open` before optional action access, so a closing menu cannot swallow Escape intended for the underlying Lightbox.
+- Card keyboard handlers handle only events targeted at the card itself; nested buttons keep native keyboard activation. Collapsed announcement bodies are inert so clipped vote/reaction controls do not enter the focus order.
+- The user requires the deterministic all-zero root UUID for local seed authentication, with no administrator/visitor selector page. Seeded browser tests establish normal server cookies through `/sync`; no development login route or production authentication change is needed.
+
+- Identity verification belongs inside the engine-owned sync attempt. Do not run a separate bootstrap request before `engine.init()`, or start bootstrap from `onError`: both issue extra requests after failure. A Turnstile-required response permits one token handshake within the same attempt; widget/token/HTTP failure stops until another allowed trigger. Turnstile automatic retry and refresh are disabled.
