@@ -10,6 +10,7 @@ import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from '../t
 import { readArtifact } from '../transcode/opfs';
 import type { SyncEngine } from '../core/engine';
 import type { createAppStore } from './appStore.svelte';
+import { setMediaHostSink } from './appStore.svelte';
 
 /** Album upload state, optimistic cards, progress, and preview resource ownership. */
 export function createUploadStore(store: ReturnType<typeof createAppStore>, engine: SyncEngine) {
@@ -33,6 +34,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   });
 
   let uploadTasks = $state<Map<string, PipelineTaskSnapshot>>(new Map());
+
+  // /sync names the upload facade; the SharedWorker needs it before any job can upload.
+  setMediaHostSink((url) => pipeline.setMediaHost(url));
   /** Source dimensions probed at enqueue — failed transcodes keep the real aspect ratio. */
   const probedSizeByJob = new SvelteMap<string, { width: number; height: number }>();
 

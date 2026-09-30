@@ -46,12 +46,12 @@ class FakeXhr {
   }
 }
 
-const ORIGIN = 'https://upload.test';
+const MEDIA_HOST = 'https://upload.test';
 const blob = new Blob(['x'], { type: 'image/webp' });
 
 function call(xhr: FakeXhr, timeoutMs = 1_000): Promise<UploadResult> {
   return postUpload(blob, {
-    origin: ORIGIN,
+    mediaHostUrl: MEDIA_HOST,
     timeoutMs,
     xhrFactory: () => xhr as unknown as XMLHttpRequest,
   });
@@ -101,7 +101,7 @@ describe('postUpload', () => {
     const fractions: number[] = [];
     const progressXhr = new FakeXhr();
     const progressCall = postUpload(blob, {
-      origin: ORIGIN,
+      mediaHostUrl: MEDIA_HOST,
       timeoutMs: 1_000,
       xhrFactory: () => progressXhr as unknown as XMLHttpRequest,
       onProgress: (f) => fractions.push(f),
@@ -120,7 +120,7 @@ describe('postUpload', () => {
     expect(((named.sentBody as FormData).get('file') as File).name).toBe('m.webp');
     const png = new FakeXhr();
     const pngCall = postUpload(new Blob(['x'], { type: 'image/png' }), {
-      origin: ORIGIN,
+      mediaHostUrl: MEDIA_HOST,
       timeoutMs: 1_000,
       xhrFactory: () => png as unknown as XMLHttpRequest,
     });
@@ -129,7 +129,7 @@ describe('postUpload', () => {
     expect(((png.sentBody as FormData).get('file') as File).name).toBe('m.png');
     const explicit = new FakeXhr();
     const explicitCall = postUpload(new Blob(['x']), {
-      origin: ORIGIN,
+      mediaHostUrl: MEDIA_HOST,
       timeoutMs: 1_000,
       fileName: 'm.webm',
       xhrFactory: () => explicit as unknown as XMLHttpRequest,
@@ -177,7 +177,7 @@ describe('postUpload', () => {
       const cancel = new FakeXhr();
       const ctrl = new AbortController();
       const cancelCall = postUpload(blob, {
-        origin: ORIGIN,
+        mediaHostUrl: MEDIA_HOST,
         timeoutMs: 60_000,
         signal: ctrl.signal,
         xhrFactory: () => cancel as unknown as XMLHttpRequest,
@@ -191,7 +191,7 @@ describe('postUpload', () => {
       aborted.abort();
       expect(
         await postUpload(blob, {
-          origin: ORIGIN,
+          mediaHostUrl: MEDIA_HOST,
           signal: aborted.signal,
           xhrFactory: () => already as unknown as XMLHttpRequest,
         }),
@@ -205,7 +205,7 @@ describe('postUpload', () => {
       controller.abort();
       const fetchFn = vi.fn();
       expect(
-        await postUpload(blob, { signal: controller.signal, fetchFn, origin: ORIGIN }),
+        await postUpload(blob, { signal: controller.signal, fetchFn, mediaHostUrl: MEDIA_HOST }),
       ).toEqual({ ok: false, error: 'aborted', detail: 'cancelled' });
       expect(fetchFn).not.toHaveBeenCalled();
     }
@@ -214,7 +214,7 @@ describe('postUpload', () => {
     {
       expect(
         await postUpload(blob, {
-          origin: ORIGIN,
+          mediaHostUrl: MEDIA_HOST,
           xhrFactory: () => {
             throw new Error('unavailable');
           },
@@ -229,7 +229,7 @@ describe('postUpload', () => {
         const xhr = new FakeXhr();
         const onProgress = vi.fn();
         const request = postUpload(blob, {
-          origin: ORIGIN,
+          mediaHostUrl: MEDIA_HOST,
           onProgress,
           xhrFactory: () => xhr as unknown as XMLHttpRequest,
         });
@@ -242,5 +242,31 @@ describe('postUpload', () => {
         vi.useRealTimers();
       }
     }
+  });
+
+  // The facade is a separate origin; leaking this site's session cookie to it would hand a
+  // stranger's upload our identity. Both transports must stay credential-free.
+  it('targets the facade without sending credentials', async () => {
+    const xhr = new FakeXhr();
+    const request = postUpload(blob, {
+      mediaHostUrl: MEDIA_HOST,
+      xhrFactory: () => xhr as unknown as XMLHttpRequest,
+    });
+    expect(xhr.url).toBe(`${MEDIA_HOST}/upload`);
+    expect(xhr.withCredentials).toBe(false);
+    xhr.finish(200, JSON.stringify({ data: 'https://facade.test/m/abc.webp' }));
+    await expect(request).resolves.toEqual({
+      ok: true,
+      url: 'https://facade.test/m/abc.webp',
+    });
+
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ data: 'https://facade.test/m/x.webp' }), { status: 200 }),
+      );
+    await postUpload(blob, { mediaHostUrl: MEDIA_HOST, fetchFn });
+    expect(fetchFn.mock.calls[0]?.[0]).toBe(`${MEDIA_HOST}/upload`);
+    expect((fetchFn.mock.calls[0]?.[1] as RequestInit).credentials).toBe('omit');
   });
 });

@@ -1,11 +1,11 @@
 // Single-attempt upload transport with an idle-progress deadline and caller-controlled retry.
 
-import type { TcUploadResponse } from '$shared/types';
+import type { MediaHostUploadResponse } from '$shared/types';
 import { UPLOAD_TIMEOUT_MS } from '$base/upload/pipeline';
 
 export interface UploadResultOk {
   ok: true;
-  /** Image-host direct URL (response `data` field). */
+  /** Facade URL (response `data` field) — what gets stored in photos.url. */
   url: string;
 }
 
@@ -21,7 +21,8 @@ export type UploadResult = UploadResultOk | UploadResultErr;
 export interface UploadCallIo {
   /** Injected transport (tests); when absent the XHR path is used. */
   fetchFn?: typeof fetch;
-  origin?: string;
+  /** Facade base URL from the /sync response. */
+  mediaHostUrl?: string;
   /** Timeout override (tests). */
   timeoutMs?: number;
   /** Upload progress 0…1 (XHR upload.onprogress; fetch cannot observe it). */
@@ -35,10 +36,15 @@ export interface UploadCallIo {
   xhrFactory?: () => XMLHttpRequest;
 }
 
-function parseTcResponse(text: string, status: number): UploadResult {
-  let json: TcUploadResponse | null;
+/** Facade endpoint. Falls back to the local simulation when /sync has not answered yet. */
+function uploadEndpoint(mediaHostUrl: string | undefined): string {
+  return `${mediaHostUrl ?? 'http://127.0.0.1:8788'}/upload`;
+}
+
+function parseMediaHostResponse(text: string, status: number): UploadResult {
+  let json: MediaHostUploadResponse | null;
   try {
-    json = JSON.parse(text) as TcUploadResponse;
+    json = JSON.parse(text) as MediaHostUploadResponse;
   } catch {
     json = null;
   }
@@ -88,7 +94,7 @@ function buildForm(blob: Blob, fileName?: string): FormData {
 /** Upload one multipart file with observable XHR progress or an injected fetch transport. */
 export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<UploadResult> {
   if (io.signal?.aborted) return { ok: false, error: 'aborted', detail: 'cancelled' };
-  const origin = io.origin ?? location.origin;
+  const endpoint = uploadEndpoint(io.mediaHostUrl);
   const timeoutMs = io.timeoutMs ?? UPLOAD_TIMEOUT_MS;
 
   if (io.fetchFn) {
@@ -97,13 +103,14 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     const forward = () => ctrl.abort();
     io.signal?.addEventListener('abort', forward, { once: true });
     try {
-      const res = await io.fetchFn(`${origin}/upload`, {
+      const res = await io.fetchFn(endpoint, {
         method: 'POST',
         body: buildForm(blob, io.fileName),
         signal: ctrl.signal,
-        credentials: 'include',
+        // The facade is a separate origin and must never see this site's session cookie.
+        credentials: 'omit',
       });
-      return parseTcResponse(await res.text(), res.status);
+      return parseMediaHostResponse(await res.text(), res.status);
     } catch (e) {
       // abort (watchdog or an external cancel) and network failures all count as one
       // failed attempt; the pipeline discards the result of a cancelled job anyway
@@ -120,8 +127,9 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     let xhr: XMLHttpRequest;
     try {
       xhr = (io.xhrFactory ?? (() => new XMLHttpRequest()))();
-      xhr.open('POST', `${origin}/upload`);
-      xhr.withCredentials = true;
+      xhr.open('POST', endpoint);
+      // Never attach the session cookie to a cross-origin facade request.
+      xhr.withCredentials = false;
     } catch (error) {
       resolve({ ok: false, error: 'network_error', detail: String(error) });
       return;
@@ -163,7 +171,7 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
       }
       arm();
     };
-    xhr.onload = () => settle(parseTcResponse(xhr.responseText, xhr.status));
+    xhr.onload = () => settle(parseMediaHostResponse(xhr.responseText, xhr.status));
     xhr.onerror = () => settle({ ok: false, error: 'network_error', detail: 'xhr error' });
     xhr.onabort = () =>
       settle(

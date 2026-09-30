@@ -20,15 +20,17 @@ Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Sv
 4. **Run `npm run lint` + `npm run ts-check` + `npm test` before finishing every task** (full green required).
 5. **Layer dependency direction is strict** — `routes → components → state/core → base`; `base/` never imports business-layer code.
 6. **Routine work does not touch `.ai/`** — memory is written only per §10 conditions.
+7. **The image host is never compiled into this Worker** — it lives behind `media-proxy/worker.js` and is reached only through `MEDIA_HOST_URL` (ADR 0009). No `/upload` route, no `TC_SECRET` here, and never a hardcoded upstream hostname in `src/`.
 
 ---
 
 ## 3. Architecture Layers
 
 ```
-src/worker/        Worker entry & API (Hono routes, D1 implementation, identity/sync/upload)
+src/worker/        Worker entry & API (Hono routes, D1 implementation, identity/sync/media proxy)
 src/shared/        Shared contracts, media identifiers, and copy/i18n
 src/testing/       Local dev + test adapters (node:sqlite Db; NEVER import in Worker)
+media-proxy/       Standalone image-host facade (separate deploy, owns TC_SECRET — ADR 0009)
 schema.sql         D1 DDL script (idempotent on deploy)
 web/src/
   base/            Common layer: lib/ (layout, media, utils) + upload/ (upload pipeline)
@@ -79,7 +81,7 @@ Run from the repo root:
 
 Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedge`/`chromium`), `npm run test:watch -w infoto-web`. Run `npm run e2e -w infoto-web -- ui.spec.ts` for mocked gallery, keyboard, overlay, locale, narrow-screen, and failed-upload regressions. Full pipeline specs require the real upload service configuration.
 
-Local dev uses a simulated image host (`scripts/local-media-host.mjs`) started by `npm run dev`. It accepts multipart uploads at `POST /upload`, stores files in `.local-media/`, and serves them at `GET /{filename}`. **When `MEDIA_HOST_URL` is unset the Worker targets `http://127.0.0.1:8788/upload`, so dev never touches the real host.** Deployments inject the real `MEDIA_HOST_URL` (repo secret) alongside `TC_SECRET`; both are required by the deploy workflow. `TC_SECRET` is optional locally — the simulated host ignores `X-Auth-Token`.
+Uploads go to a **standalone image-host facade** (`media-proxy/worker.js`, deployed separately with secret `TC_SECRET`). The browser POSTs the artifact straight to it; it signs the request, forwards to the real image host, and returns a URL **on its own origin** — so the upstream can be swapped later without rewriting a single `photos.url`. This Worker has **no `/upload` route and no `TC_SECRET`**; it only stores the returned URL and names the facade in the `/sync` response (`mediaHostUrl`), which the page forwards to the SharedWorker via the `mediaHost` message. Set the repo secret `MEDIA_HOST_URL` to the facade's origin — the deploy workflow hard-fails without it. Local dev needs no facade: with `MEDIA_HOST_URL` unset everything falls back to `http://127.0.0.1:8788`, served by `scripts/local-media-host.mjs` (started by `npm run dev`, gitignored `.local-media/`), which answers CORS exactly like the real facade so dev failures stay meaningful.
 
 ---
 
@@ -187,6 +189,7 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 | `src/shared/copy.ts`                            | i18n copy tables (en-US / zh-CN), BCP-47 exact-match keys                                 |
 | `src/testing/localDb.ts`                        | Local/unit-test Db over `node:sqlite` (via `createRequire`); never imported by the Worker |
 | `src/worker/schema-ddl.ts`                      | Generated DDL string for the Worker — never hand-edit                                     |
+| `media-proxy/worker.js`                         | Standalone image-host facade — owns `TC_SECRET`, separate deploy (ADR 0009)               |
 | `web/src/core/engine.ts`                        | Sync engine (oplog, sync trigger points)                                                  |
 | `web/src/base/upload/pipeline.ts`               | Upload pipeline (pure logic, testable)                                                    |
 | `web/src/transcode/pipeline.ts`                 | Transcode pipeline orchestrator                                                           |

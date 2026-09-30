@@ -35,7 +35,6 @@ export function makeApp(
   opts: {
     turnstileSecret?: string;
     turnstileSiteKey?: string;
-    tcSecret?: string;
     mediaHostUrl?: string;
   } = {},
 ): {

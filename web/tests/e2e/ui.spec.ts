@@ -24,6 +24,7 @@ async function mockAlbum(page: Page, items = photos, announcements: Announcement
         ok: true,
         selfId: 0,
         serverTime: Date.now(),
+        mediaHostUrl: 'https://facade.test',
         photos: items,
         announcements,
         feedback: [],

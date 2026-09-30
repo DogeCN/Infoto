@@ -77,12 +77,24 @@ function writePendingMarks(
   }
 }
 
+/** Facade sink, wired by the upload store once its pipeline exists. Layering note:
+ *  appStore must not import the upload pipeline, so the upload store registers here. */
+let mediaHostSink: ((url: string) => void) | null = null;
+
+export function setMediaHostSink(sink: (url: string) => void): void {
+  mediaHostSink = sink;
+}
+
+const setMediaHost = (url: string): void => mediaHostSink?.(url);
+
 class AppState {
   engineState = $state<EngineState>({ syncing: false, pending: 0 });
   selfId = $state<number>(readCachedSelfId());
   photos = $state<Photo[]>([]);
   announcements = $state<Announcement[]>([]);
   feedback = $state<Feedback[]>([]);
+  /** Upload facade from the last /sync response. */
+  mediaHostUrl = $state<string>('');
 
   private tempIdMap = new Map<number, number>();
   private pendingReorder: { ids: number[]; previousIds: number[] } | null = null;
@@ -128,6 +140,10 @@ class AppState {
   /** Apply one authoritative full snapshot. */
   applySync(r: SyncResponse, context?: SyncSnapshotContext): void {
     this.selfId = r.selfId;
+    // Uploads go straight to the facade; the SharedWorker needs the target before a job
+    // can run, and a reconfigured facade must take effect without a reload.
+    this.mediaHostUrl = r.mediaHostUrl;
+    setMediaHost(r.mediaHostUrl);
     try {
       localStorage.setItem(SELF_ID_KEY, String(r.selfId));
     } catch {

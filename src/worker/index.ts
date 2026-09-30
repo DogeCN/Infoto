@@ -7,7 +7,6 @@ import { d1Db } from './db-d1.ts';
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  TC_SECRET?: string;
   MEDIA_HOST_URL?: string;
   TURNSTILE_SECRET_KEY?: string;
   TURNSTILE_SITE_KEY?: string;
@@ -21,7 +20,6 @@ export default {
     if (!app) {
       const appEnv: AppEnv = {
         db: d1Db(env.DB),
-        tcSecret: env.TC_SECRET,
         mediaHostUrl: env.MEDIA_HOST_URL,
         turnstileSecret: env.TURNSTILE_SECRET_KEY,
         turnstileSiteKey: env.TURNSTILE_SITE_KEY,

@@ -16,6 +16,7 @@ const snapshot = (announcements: SyncResponse['announcements'] = []): SyncRespon
   ok: true,
   serverTime: 1_000,
   selfId: 0,
+  mediaHostUrl: 'https://facade.test',
   photos: [],
   announcements,
   feedback: [],

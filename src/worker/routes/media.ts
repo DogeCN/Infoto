@@ -6,7 +6,11 @@ import type { AppEnv } from '../app.ts';
 import { fromId36 } from '../../shared/media.ts';
 import { MEDIA_TYPE } from '../../shared/types.ts';
 import { notFoundPage, serverErrorPage } from '../errors.ts';
-import { localMediaOrigin } from './upload.ts';
+
+/** Local simulated image host (scripts/local-media-host.mjs). A deployment points
+ *  MEDIA_HOST_URL at the standalone facade instead, so dev uploads never reach the
+ *  production host and this default is inert in production. */
+export const LOCAL_MEDIA_HOST_URL = 'http://127.0.0.1:8788';
 
 const MIME_BY_TYPE: Record<number, string> = {
   [MEDIA_TYPE.IMAGE]: 'image/webp',
@@ -55,10 +59,13 @@ export function isStorableMediaUrl(url: string): boolean {
 }
 
 export function mediaHandler(env: AppEnv) {
-  // The simulated host serves over plain HTTP on loopback, which the SSRF guard rejects by
-  // design. Allowing exactly that origin — and only when no real host is configured — keeps
-  // dev images viewable without weakening the rule for stored URLs at large.
-  const localHost = localMediaOrigin(env);
+  // The simulated host serves plain HTTP on loopback, which the SSRF guard rejects by
+  // design. Trust exactly that origin, and only when MEDIA_HOST_URL is unset or still
+  // points at the local simulation — a deployed facade gets the strict rule.
+  const localHost =
+    (env.mediaHostUrl ?? LOCAL_MEDIA_HOST_URL) === LOCAL_MEDIA_HOST_URL
+      ? LOCAL_MEDIA_HOST_URL
+      : null;
   // Compare parsed origins, not string prefixes: "http://127.0.0.1:8788.evil.example"
   // shares a prefix with the origin but is an unrelated host.
   const acceptable = (url: string): boolean => {

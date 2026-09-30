@@ -151,16 +151,12 @@ jobs:
 
       - name: Inject Worker secrets
         env:
-          TC_SECRET_VALUE: ${{ secrets.TC_SECRET }}
           MEDIA_HOST_URL_VALUE: ${{ secrets.MEDIA_HOST_URL }}
         run: |
-          if [ -z "$TC_SECRET_VALUE" ]; then
-            echo "::error::repo secret TC_SECRET is empty"
-            exit 1
-          fi
-          printf '%s' "$TC_SECRET_VALUE" | npx wrangler secret put TC_SECRET
-          # Without this the Worker falls back to the local simulated host on 127.0.0.1,
-          # so every production upload would fail with image_host_unreachable.
+          # The image host and its credential live in the standalone facade
+          # (media-proxy/worker.js); this Worker only stores the URL it hands back.
+          # Without MEDIA_HOST_URL the browser would be pointed at the local simulation
+          # on 127.0.0.1, so every upload would fail.
           if [ -z "$MEDIA_HOST_URL_VALUE" ]; then
             echo "::error::repo secret MEDIA_HOST_URL is empty"
             exit 1

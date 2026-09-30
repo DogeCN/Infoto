@@ -1,0 +1,13 @@
+name = "infoto-media-proxy"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+# Create the namespace once, then uncomment and fill in the id:
+#   npx wrangler kv namespace create MEDIA_KV
+#
+# [[kv_namespaces]]
+# binding = "MEDIA_KV"
+# id = "<your namespace id>"
+
+[observability]
+enabled = true
