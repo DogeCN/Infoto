@@ -2,7 +2,16 @@
 // syncs, and is corrected by the next full server snapshot. Pure reducers live here so
 // they are unit-testable without a browser; the store binds them to reactive state and the engine.
 
-import type { Announcement, Feedback, Op, Photo, ReactPayload, VotePayload } from '$shared/types';
+import type {
+  Announcement,
+  Feedback,
+  LocaleCode,
+  Op,
+  Photo,
+  Poll,
+  ReactPayload,
+  VotePayload,
+} from '$shared/types';
 
 /** add/remove `userId` in a JSON mark array; idempotent (contains check first). */
 export function toggleId(list: number[], userId: number, add: boolean): number[] {
@@ -67,15 +76,17 @@ function resolveOpPhoto(photos: Photo[], op: Op): Photo | null {
   return photos.find((p) => p.sha256 === op.targetSha) ?? null;
 }
 
-/** Reapply queued marks, reactions, votes, and deletions over a snapshot. Upload and feedback rows are managed separately. */
+/** Reapply queued marks, reactions, poll votes, and deletions over a snapshot. Upload and feedback rows are managed separately. */
 export function reapplyQueued(
   photos: Photo[],
   announcements: Announcement[],
+  polls: Poll[],
   queued: Op[],
   selfId: number,
-): { photos: Photo[]; announcements: Announcement[] } {
+): { photos: Photo[]; announcements: Announcement[]; polls: Poll[] } {
   let p = photos;
   let a = announcements;
+  let pollRows = polls;
   for (const op of queued) {
     const photo = resolveOpPhoto(p, op);
     switch (op.type) {
@@ -100,7 +111,12 @@ export function reapplyQueued(
         break;
       case 'vote':
         if (op.target != null)
-          a = applyVote(a, op.target, selfId, (op.payload as VotePayload | null)?.option ?? null);
+          pollRows = applyVote(
+            pollRows,
+            op.target,
+            selfId,
+            (op.payload as VotePayload | null)?.options ?? [],
+          );
         break;
       case 'react':
         if (op.target != null)
@@ -110,20 +126,23 @@ export function reapplyQueued(
         break; // upload / fb_create — see doc comment
     }
   }
-  return { photos: p, announcements: a };
+  return { photos: p, announcements: a, polls: pollRows };
 }
 
-/** Optimistically set / retract the single vote of `userId` on one announcement. */
+/** Optimistically replace one user's selected options for a poll. */
 export function applyVote(
-  anns: Announcement[],
-  annId: number,
+  polls: Poll[],
+  pollId: number,
   userId: number,
-  option: number | null,
-): Announcement[] {
-  return anns.map((a) => {
-    if (a.id !== annId) return a;
-    const others = a.votes.filter((v) => v.userId !== userId);
-    return { ...a, votes: option === null ? others : [...others, { userId, option }] };
+  options: number[],
+): Poll[] {
+  return polls.map((poll) => {
+    if (poll.id !== pollId) return poll;
+    const others = poll.votes.filter((vote) => vote.userId !== userId);
+    return {
+      ...poll,
+      votes: [...others, ...options.map((option) => ({ userId, option }))],
+    };
   });
 }
 
@@ -147,13 +166,11 @@ export function applyAnnCreate(
   tempId: number,
   title: string,
   contentMd: string,
+  locale: LocaleCode,
   now: number,
 ): Announcement[] {
   const sort = anns.reduce((m, a) => Math.max(m, a.sort), -1) + 1;
-  return [
-    ...anns,
-    { id: tempId, title, contentMd, sort, updatedAt: now, reactions: [], votes: [] },
-  ];
+  return [...anns, { id: tempId, title, contentMd, locale, sort, updatedAt: now, reactions: [] }];
 }
 
 export function applyAnnUpdate(
@@ -168,6 +185,39 @@ export function applyAnnUpdate(
 
 export function applyAnnDelete(anns: Announcement[], id: number): Announcement[] {
   return anns.filter((a) => a.id !== id);
+}
+
+export function applyPollCreate(
+  polls: Poll[],
+  tempId: number,
+  title: string,
+  options: string[],
+  allowMultiple: boolean,
+  locale: LocaleCode,
+): Poll[] {
+  const sort = polls.reduce((max, poll) => Math.max(max, poll.sort), -1) + 1;
+  return [...polls, { id: tempId, title, options, allowMultiple, locale, sort, votes: [] }];
+}
+
+export function applyPollUpdate(
+  polls: Poll[],
+  id: number,
+  title: string,
+  options: string[],
+  allowMultiple: boolean,
+): Poll[] {
+  return polls.map((poll) => {
+    if (poll.id !== id) return poll;
+    const definitionChanged =
+      allowMultiple !== poll.allowMultiple ||
+      options.length !== poll.options.length ||
+      options.some((option, index) => option !== poll.options[index]);
+    return { ...poll, title, options, allowMultiple, votes: definitionChanged ? [] : poll.votes };
+  });
+}
+
+export function applyPollDelete(polls: Poll[], id: number): Poll[] {
+  return polls.filter((poll) => poll.id !== id);
 }
 
 /** Order submitted IDs first, preserve omitted rows, and renumber sort values consecutively. */
@@ -234,11 +284,12 @@ export function applyFbCreate(
   tempId: number,
   userId: number,
   contentMd: string,
+  locale: LocaleCode,
   now: number,
 ): Feedback[] {
   // Same rule as the server's INSERT: one below the current minimum → newest on top.
   const minSort = list.reduce((min, item) => Math.min(min, item.sort), 0);
-  return [{ id: tempId, userId, contentMd, createdAt: now, sort: minSort - 1 }, ...list];
+  return [{ id: tempId, userId, contentMd, createdAt: now, locale, sort: minSort - 1 }, ...list];
 }
 
 export function applyFbDelete(list: Feedback[], id: number): Feedback[] {

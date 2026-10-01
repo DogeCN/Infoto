@@ -12,6 +12,7 @@ const feedback = (id: number, sort: number, contentMd = `fb-${id}`): Feedback =>
   userId: 0,
   contentMd,
   createdAt: id,
+  locale: 'en-US',
   sort,
 });
 

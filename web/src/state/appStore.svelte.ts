@@ -2,20 +2,33 @@
 // state. Every write goes op-log → /sync: mutate local state optimistically, append the
 // op, let the engine submit.
 
-import type { Announcement, Feedback, Op, Photo, SyncResponse } from '$shared/types';
-import { copy } from '$shared/copy';
+import type {
+  Announcement,
+  Feedback,
+  LocaleCode,
+  Op,
+  Photo,
+  Poll,
+  SyncResponse,
+} from '$shared/types';
+import { activeLocale, copy } from '$shared/copy';
 import type { EngineState, SyncEngine, SyncSnapshotContext } from '../core/engine';
 import { toast } from 'svelte-sonner';
 import * as ops from '../core/ops';
 import {
   ANN_TIMEOUT,
   FB_TIMEOUT,
+  POLL_TIMEOUT,
   createAnnouncement,
+  createPoll,
   deleteAnnouncement,
   deleteFeedback,
+  deletePoll,
   reorderAnnouncements,
   reorderFeedback,
+  reorderPolls,
   updateAnnouncement,
+  updatePoll,
 } from '../core/api/adminClient';
 
 /** Allocate descending temporary IDs for optimistic announcements and feedback. */
@@ -92,12 +105,16 @@ class AppState {
   selfId = $state<number>(readCachedSelfId());
   photos = $state<Photo[]>([]);
   announcements = $state<Announcement[]>([]);
+  polls = $state<Poll[]>([]);
   feedback = $state<Feedback[]>([]);
+  contentLocale = $state<LocaleCode>(activeLocale());
   /** Upload facade from the last /sync response. */
   mediaHostUrl = $state<string>('');
 
   private tempIdMap = new Map<number, number>();
   private pendingReorder: { ids: number[]; previousIds: number[] } | null = null;
+  private pollTempIdMap = new Map<number, number>();
+  private pendingPollReorder: { ids: number[]; previousIds: number[] } | null = null;
   private engineUnsubscribe: (() => void) | null = null;
 
   /** Optimistic marks on photos whose row does not exist server-side yet, keyed by sha256
@@ -137,6 +154,19 @@ class AppState {
     });
   }
 
+  /** Clear language-scoped content before requesting the matching snapshot. */
+  setContentLocale(locale: LocaleCode): void {
+    if (this.contentLocale === locale) return;
+    this.contentLocale = locale;
+    this.announcements = [];
+    this.polls = [];
+    this.feedback = [];
+    this.pendingReorder = null;
+    this.pendingPollReorder = null;
+    this.tempIdMap.clear();
+    this.pollTempIdMap.clear();
+  }
+
   /** Apply one authoritative full snapshot. */
   applySync(r: SyncResponse, context?: SyncSnapshotContext): void {
     this.selfId = r.selfId;
@@ -149,19 +179,24 @@ class AppState {
     } catch {
       /* storage blocked */
     }
-    // A snapshot computed before our just-appended ops reached the server must not
-    // revert the optimistic state: re-fold every op still queued in the oplog.
     const refolded = ops.reapplyQueued(
       r.photos,
       r.announcements,
+      r.polls,
       context?.queuedOps ?? [],
       r.selfId,
     );
     this.photos = refolded.photos;
+    // A locale can change while an older request is in flight. Its unrelated localized
+    // rows must not leak into the newly selected language while the next sync is queued.
+    if (r.locale !== this.contentLocale) return;
 
-    // Keep pending creates alongside authoritative announcements until completion or rollback.
-    const unconfirmed = this.announcements.filter((announcement) => announcement.id < 0);
-    this.announcements = [...refolded.announcements, ...unconfirmed].sort(
+    const unconfirmedAnnouncements = this.announcements.filter((item) => item.id < 0);
+    this.announcements = [...refolded.announcements, ...unconfirmedAnnouncements].sort(
+      (a, b) => a.sort - b.sort || a.id - b.id,
+    );
+    const unconfirmedPolls = this.polls.filter((item) => item.id < 0);
+    this.polls = [...refolded.polls, ...unconfirmedPolls].sort(
       (a, b) => a.sort - b.sort || a.id - b.id,
     );
 
@@ -267,26 +302,29 @@ class AppState {
 
   // Admin writes optimistically update one row and commit or roll it back after the response.
 
-  annCreate(title: string, contentMd: string): void {
+  annCreate(title: string, contentMd: string, locale: LocaleCode = this.contentLocale): void {
     const tempId = takeTempId();
     this.announcements = ops.applyAnnCreate(
       this.announcements,
       tempId,
       title,
       contentMd,
+      locale,
       Date.now(),
     );
     void (async () => {
       try {
         const created = await createAnnouncement(title, contentMd);
+        if (this.contentLocale !== locale) return;
         this.tempIdMap.set(tempId, created.id);
         this.announcements = this.announcements.map((a) => (a.id === tempId ? created : a));
         this.flushPendingReorder();
       } catch (error) {
         console.error('[ann] create failed', error);
-        // A create that never reached the server must not linger as a phantom row.
-        this.announcements = this.announcements.filter((a) => a.id !== tempId);
-        if (this.pendingReorder?.ids.includes(tempId)) this.pendingReorder = null;
+        if (this.contentLocale === locale) {
+          this.announcements = this.announcements.filter((a) => a.id !== tempId);
+          if (this.pendingReorder?.ids.includes(tempId)) this.pendingReorder = null;
+        }
         toast.error(copy.admin.announcement.publishFailed, {
           description: adminFailHint(error, ANN_TIMEOUT),
         });
@@ -304,7 +342,7 @@ class AppState {
         console.error('[ann] update failed', error);
         // Restore only the edited row: a snapshot may have landed meanwhile, and a
         // whole-array rollback would discard those unrelated changes.
-        if (previous) {
+        if (previous && this.contentLocale === previous.locale) {
           this.announcements = this.announcements.map((a) => (a.id === id ? previous : a));
         }
         toast.error(copy.admin.announcement.saveFailed, {
@@ -324,7 +362,11 @@ class AppState {
       } catch (error) {
         console.error('[ann] delete failed', error);
         // Restore the deleted row at its prior position unless a snapshot already restored it.
-        if (previous && !this.announcements.some((a) => a.id === id)) {
+        if (
+          previous &&
+          this.contentLocale === previous.locale &&
+          !this.announcements.some((a) => a.id === id)
+        ) {
           const next = [...this.announcements];
           next.splice(Math.min(index, next.length), 0, previous);
           this.announcements = next;
@@ -337,11 +379,12 @@ class AppState {
   }
 
   annReorder(orderedIds: number[]): void {
+    const locale = this.contentLocale;
     const previousIds = this.announcements.map((announcement) => announcement.id);
     this.announcements = ops.applyReorder(this.announcements, orderedIds);
     const resolved = this.resolveIds(orderedIds);
     if (resolved.every((id) => id > 0)) {
-      void this.submitReorder(resolved, previousIds);
+      void this.submitReorder(resolved, previousIds, locale);
       return;
     }
     // A just-created row still carries a temp id: keep the new order locally —
@@ -361,17 +404,135 @@ class AppState {
     this.pendingReorder = null;
     // Clear temporary-ID mappings after all referenced creates complete.
     this.tempIdMap.clear();
-    void this.submitReorder(resolved, pending.previousIds);
+    void this.submitReorder(resolved, pending.previousIds, this.contentLocale);
   }
 
-  private async submitReorder(ids: number[], previousIds: number[]): Promise<void> {
+  private async submitReorder(
+    ids: number[],
+    previousIds: number[],
+    locale: LocaleCode,
+  ): Promise<void> {
     try {
       await reorderAnnouncements(ids);
     } catch (error) {
       console.error('[ann] reorder failed', error);
-      this.announcements = ops.applyReorder(this.announcements, previousIds);
+      if (this.contentLocale === locale)
+        this.announcements = ops.applyReorder(this.announcements, previousIds);
       toast.error(copy.admin.announcement.reorderFailed, {
         description: copy.admin.announcement.reorderRollback,
+      });
+    }
+  }
+
+  pollCreate(
+    title: string,
+    options: string[],
+    allowMultiple: boolean,
+    locale: LocaleCode = this.contentLocale,
+  ): void {
+    const tempId = takeTempId();
+    this.polls = ops.applyPollCreate(this.polls, tempId, title, options, allowMultiple, locale);
+    void (async () => {
+      try {
+        const created = await createPoll(title, options, allowMultiple);
+        if (this.contentLocale !== locale) return;
+        this.pollTempIdMap.set(tempId, created.id);
+        this.polls = this.polls.map((poll) => (poll.id === tempId ? created : poll));
+        this.flushPendingPollReorder();
+      } catch (error) {
+        console.error('[poll] create failed', error);
+        if (this.contentLocale === locale) {
+          this.polls = this.polls.filter((poll) => poll.id !== tempId);
+          if (this.pendingPollReorder?.ids.includes(tempId)) this.pendingPollReorder = null;
+        }
+        toast.error(copy.admin.poll.publishFailed, {
+          description: adminFailHint(error, POLL_TIMEOUT),
+        });
+      }
+    })();
+  }
+
+  pollUpdate(id: number, title: string, options: string[], allowMultiple: boolean): void {
+    const previous = this.polls.find((poll) => poll.id === id);
+    this.polls = ops.applyPollUpdate(this.polls, id, title, options, allowMultiple);
+    void (async () => {
+      try {
+        await updatePoll(id, title, options, allowMultiple);
+      } catch (error) {
+        console.error('[poll] update failed', error);
+        if (previous && this.contentLocale === previous.locale) {
+          this.polls = this.polls.map((poll) => (poll.id === id ? previous : poll));
+        }
+        toast.error(copy.admin.poll.saveFailed, {
+          description: adminFailHint(error, POLL_TIMEOUT),
+        });
+      }
+    })();
+  }
+
+  pollDelete(id: number): void {
+    const index = this.polls.findIndex((poll) => poll.id === id);
+    const previous = index >= 0 ? this.polls[index] : undefined;
+    this.polls = ops.applyPollDelete(this.polls, id);
+    void (async () => {
+      try {
+        await deletePoll(id);
+      } catch (error) {
+        console.error('[poll] delete failed', error);
+        if (
+          previous &&
+          this.contentLocale === previous.locale &&
+          !this.polls.some((poll) => poll.id === id)
+        ) {
+          const next = [...this.polls];
+          next.splice(Math.min(index, next.length), 0, previous);
+          this.polls = next;
+        }
+        toast.error(copy.admin.poll.deleteFailed, {
+          description: adminFailHint(error, POLL_TIMEOUT),
+        });
+      }
+    })();
+  }
+
+  pollReorder(orderedIds: number[]): void {
+    const locale = this.contentLocale;
+    const previousIds = this.polls.map((poll) => poll.id);
+    this.polls = ops.applyReorder(this.polls, orderedIds);
+    const resolved = this.resolvePollIds(orderedIds);
+    if (resolved.every((id) => id > 0)) {
+      void this.submitPollReorder(resolved, previousIds, locale);
+      return;
+    }
+    this.pendingPollReorder = { ids: orderedIds, previousIds };
+  }
+
+  private resolvePollIds(ids: number[]): number[] {
+    return ids.map((id) => this.pollTempIdMap.get(id) ?? id);
+  }
+
+  private flushPendingPollReorder(): void {
+    const pending = this.pendingPollReorder;
+    if (!pending) return;
+    const resolved = this.resolvePollIds(pending.ids);
+    if (!resolved.every((id) => id > 0)) return;
+    this.pendingPollReorder = null;
+    this.pollTempIdMap.clear();
+    void this.submitPollReorder(resolved, pending.previousIds, this.contentLocale);
+  }
+
+  private async submitPollReorder(
+    ids: number[],
+    previousIds: number[],
+    locale: LocaleCode,
+  ): Promise<void> {
+    try {
+      await reorderPolls(ids);
+    } catch (error) {
+      console.error('[poll] reorder failed', error);
+      if (this.contentLocale === locale) this.polls = ops.applyReorder(this.polls, previousIds);
+      toast.error(copy.admin.poll.reorderFailed, {
+        description: adminFailHint(error, POLL_TIMEOUT),
       });
     }
   }
@@ -381,17 +542,24 @@ class AppState {
     void this.submit({ type: 'react', target: annId, payload: { emoji } });
   }
 
-  vote(annId: number, option: number | null): void {
-    this.announcements = ops.applyVote(this.announcements, annId, this.selfId, option);
-    void this.submit({ type: 'vote', target: annId, payload: { option } });
+  vote(pollId: number, options: number[]): void {
+    this.polls = ops.applyVote(this.polls, pollId, this.selfId, options);
+    void this.submit({ type: 'vote', target: pollId, payload: { options } });
   }
 
   // Feedback
 
-  fbCreate(contentMd: string): void {
+  fbCreate(contentMd: string, locale: LocaleCode = this.contentLocale): void {
     const tempId = takeTempId();
-    this.feedback = ops.applyFbCreate(this.feedback, tempId, this.selfId, contentMd, Date.now());
-    void this.submit({ type: 'fb_create', payload: { contentMd } });
+    this.feedback = ops.applyFbCreate(
+      this.feedback,
+      tempId,
+      this.selfId,
+      contentMd,
+      locale,
+      Date.now(),
+    );
+    void this.submit({ type: 'fb_create', payload: { contentMd, locale } });
   }
 
   fbDelete(id: number): void {
@@ -404,7 +572,11 @@ class AppState {
       } catch (error) {
         console.error('[fb] delete failed', error);
         // Restore only the deleted row, preserving unrelated snapshot changes.
-        if (previous && !this.feedback.some((f) => f.id === id)) {
+        if (
+          previous &&
+          this.contentLocale === previous.locale &&
+          !this.feedback.some((f) => f.id === id)
+        ) {
           const next = [...this.feedback];
           next.splice(Math.min(index, next.length), 0, previous);
           this.feedback = next;
@@ -418,6 +590,7 @@ class AppState {
 
   /** Manual (root-only) display order. Rows seen on /admin always carry real ids. */
   fbReorder(orderedIds: number[]): void {
+    const locale = this.contentLocale;
     const previousIds = this.feedback.map((item) => item.id);
     this.feedback = ops.applyReorder(this.feedback, orderedIds);
     const persisted = orderedIds.filter((id) => id > 0);
@@ -426,7 +599,8 @@ class AppState {
         await reorderFeedback(persisted);
       } catch (error) {
         console.error('[fb] reorder failed', error);
-        this.feedback = ops.applyReorder(this.feedback, previousIds);
+        if (this.contentLocale === locale)
+          this.feedback = ops.applyReorder(this.feedback, previousIds);
         toast.error(copy.admin.feedback.reorderFailed, {
           description: adminFailHint(error, FB_TIMEOUT),
         });
@@ -437,6 +611,7 @@ class AppState {
   /** Clear local state after SQL import and wait for a full snapshot. */
   resetAfterImport(): void {
     this.announcements = [];
+    this.polls = [];
     this.feedback = [];
   }
 }

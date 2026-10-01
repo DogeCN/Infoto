@@ -23,10 +23,11 @@ export const EXPORT_COLUMNS = {
     'dislikes',
     'reports',
   ],
-  announcements: ['id', 'title', 'content_md', 'sort', 'updated_at'],
+  announcements: ['id', 'title', 'content_md', 'locale', 'sort', 'updated_at'],
   reactions: ['ann_id', 'user_id', 'emoji'],
-  votes: ['ann_id', 'user_id', 'option'],
-  feedback: ['id', 'user_id', 'content_md', 'created_at', 'sort'],
+  polls: ['id', 'title', 'options', 'allow_multiple', 'locale', 'sort'],
+  votes: ['poll_id', 'user_id', 'option'],
+  feedback: ['id', 'user_id', 'content_md', 'created_at', 'locale', 'sort'],
 } as const;
 
 export const MIGRATE_TABLES = Object.keys(EXPORT_COLUMNS);

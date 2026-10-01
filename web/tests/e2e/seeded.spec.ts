@@ -11,13 +11,13 @@ async function enter(page: Page, role = 'root') {
   if (role === 'root') {
     const response = await page.request.post('/sync', {
       headers: { Cookie: 'uuid=00000000-0000-0000-0000-000000000000' },
-      data: { ops: [] },
+      data: { locale: 'en-US', ops: [] },
     });
     expect(response.ok()).toBe(true);
     expect((await response.json()).selfId).toBe(0);
   } else {
     const response = await page.request.post('/sync', {
-      data: { ops: [], turnstileToken: 'seeded-e2e' },
+      data: { locale: 'en-US', ops: [], turnstileToken: 'seeded-e2e' },
     });
     expect(response.ok()).toBe(true);
   }
@@ -25,7 +25,7 @@ async function enter(page: Page, role = 'root') {
   await expect(page.locator('main img').first()).toBeVisible();
 }
 async function snapshot(page: Page): Promise<SyncResponse> {
-  const response = await page.request.post('/sync', { data: { ops: [] } });
+  const response = await page.request.post('/sync', { data: { locale: 'en-US', ops: [] } });
   expect(response.ok()).toBe(true);
   return response.json();
 }
@@ -87,19 +87,51 @@ test('seeded gallery supports filters, video playback, nested buttons and downlo
   expect(errors).toEqual([]);
 });
 
-test('votes, reactions and feedback persist through real sync and reload', async ({ page }) => {
+test('independent polls, reactions and feedback persist through real sync and reload', async ({
+  page,
+}) => {
   await enter(page);
   const before = await snapshot(page);
-  const poll = before.announcements.find((a) => a.contentMd.includes(':::vote'))!;
-  const originalVote = poll.votes.find((v) => v.userId === before.selfId)?.option ?? null;
-  const originalReaction = poll.reactions.find((r) => r.userId === before.selfId)?.emoji ?? '';
+  const pollTitle = `Local review poll ${Date.now()}`;
+  const announcementTitle = `Local review announcement ${Date.now()}`;
+  const optionA = `First choice ${Date.now()}`;
+  const optionB = `Second choice ${Date.now()}`;
   const text = `Local review feedback ${Date.now()}`;
+  let pollId: number | undefined;
+  let announcementId: number | undefined;
+
   try {
+    const pollResponse = await page.request.post('/admin/polls', {
+      data: {
+        title: pollTitle,
+        options: [optionA, optionB],
+        allowMultiple: true,
+        locale: 'en-US',
+      },
+    });
+    expect(pollResponse.ok()).toBe(true);
+    const poll = ((await pollResponse.json()) as { poll: SyncResponse['polls'][number] }).poll;
+    pollId = poll.id;
+
+    const announcementResponse = await page.request.post('/admin/announcements', {
+      data: {
+        title: announcementTitle,
+        contentMd: `Choose below.\n\n::vote:${poll.id}`,
+        locale: 'en-US',
+      },
+    });
+    expect(announcementResponse.ok()).toBe(true);
+    announcementId = (
+      (await announcementResponse.json()) as { announcement: SyncResponse['announcements'][number] }
+    ).announcement.id;
+
+    await page.reload();
+    await expect(page.locator('main img').first()).toBeVisible();
     await page.getByRole('button', { name: 'Announcements', exact: true }).click();
     const sidebar = page.getByRole('dialog', { name: 'Announcements' });
     await expect(sidebar.getByRole('button', { name: 'Add reaction', exact: true })).toHaveCount(0);
-    await sidebar.getByRole('button', { name: poll.title, exact: true }).click();
-    await sidebar.getByRole('button', { name: /^自然风光/ }).click();
+    await sidebar.getByRole('button', { name: announcementTitle, exact: true }).click();
+    await sidebar.getByRole('button', { name: new RegExp(optionB) }).click();
     await sidebar.getByRole('button', { name: 'Add reaction', exact: true }).click();
     await sidebar.getByRole('button', { name: '🔥', exact: true }).click();
     await sidebar.getByPlaceholder('Write your suggestion').fill(text);
@@ -110,11 +142,15 @@ test('votes, reactions and feedback persist through real sync and reload', async
     await sync(page);
     await page.reload();
     await expect(page.locator('main img').first()).toBeVisible();
+
     const after = await snapshot(page);
-    const saved = after.announcements.find((a) => a.id === poll.id)!;
-    expect(saved.votes.find((v) => v.userId === before.selfId)?.option).toBe(1);
-    expect(saved.reactions.find((r) => r.userId === before.selfId)?.emoji).toBe('🔥');
-    expect(after.feedback.some((f) => f.contentMd === text)).toBe(true);
+    const savedPoll = after.polls.find((item) => item.id === pollId)!;
+    const savedAnnouncement = after.announcements.find((item) => item.id === announcementId)!;
+    expect(savedPoll.votes).toContainEqual({ userId: before.selfId, option: 1 });
+    expect(savedAnnouncement.contentMd).toContain(`::vote:${pollId}`);
+    expect(savedAnnouncement.reactions).toContainEqual({ userId: before.selfId, emoji: '🔥' });
+    expect(after.feedback.some((item) => item.contentMd === text)).toBe(true);
+
     await page.goto('/admin');
     await page.getByRole('tab', { name: 'Feedback', exact: true }).click();
     await page.getByRole('searchbox', { name: 'Search feedback' }).fill(text);
@@ -123,19 +159,16 @@ test('votes, reactions and feedback persist through real sync and reload', async
     await row.getByRole('button', { name: 'Delete feedback' }).click();
     await expect(row).toHaveCount(0);
     await expect
-      .poll(async () => (await snapshot(page)).feedback.some((f) => f.contentMd === text))
+      .poll(async () => (await snapshot(page)).feedback.some((item) => item.contentMd === text))
       .toBe(false);
   } finally {
-    await page.request.post('/sync', {
-      data: {
-        ops: [
-          { type: 'vote', target: poll.id, payload: { option: originalVote } },
-          { type: 'react', target: poll.id, payload: { emoji: originalReaction } },
-        ],
-      },
-    });
-    for (const f of (await snapshot(page)).feedback.filter((f) => f.contentMd === text))
-      await page.request.delete(`/admin/feedback/${f.id}`);
+    if (announcementId !== undefined)
+      await page.request.delete(`/admin/announcements/${announcementId}`);
+    if (pollId !== undefined) await page.request.delete(`/admin/polls/${pollId}`);
+    for (const feedback of (await snapshot(page)).feedback.filter(
+      (item) => item.contentMd === text,
+    ))
+      await page.request.delete(`/admin/feedback/${feedback.id}`);
   }
 });
 

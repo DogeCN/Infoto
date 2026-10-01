@@ -55,6 +55,7 @@ const config = {
       // Proxy admin API endpoints while retaining the SPA fallback for /admin.
       '/admin/migrate': proxy(),
       '/admin/announcements': proxy(),
+      '/admin/polls': proxy(),
       '/admin/feedback': proxy(),
     },
   },

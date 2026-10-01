@@ -97,6 +97,14 @@
   let gestureMoved = false;
   let pinchStartDist = 0;
   let pinchStartScale = 1;
+  let ctrlZoomPointer: number | null = null;
+  let ctrlZoomCenter = { x: 0, y: 0 };
+  let ctrlZoomOrigin = { x: 0, y: 0 };
+  let ctrlZoomStartMidpoint = { x: 0, y: 0 };
+  let ctrlZoomStartDistance = 0;
+  let ctrlZoomStartScale = 1;
+  let ctrlZoomStartX = 0;
+  let ctrlZoomStartY = 0;
   const active = new Map<number, { x: number; y: number }>();
   let downPoint = { x: 0, y: 0 };
   /** Viewport-scaled thresholds for the gesture in flight (set on pointerdown). */
@@ -149,9 +157,44 @@
   }
 
   function onPointerDown(e: PointerEvent) {
-    if (showMenu) return;
+    if (showMenu || ctrlZoomPointer !== null || e.button !== 0) return;
     hintAt = scaledThreshold(HINT_THRESHOLD);
     triggerAt = scaledThreshold(SWIPE_THRESHOLD);
+
+    if (e.pointerType === 'mouse' && e.ctrlKey && (e.target as Element).closest('.lb-box')) {
+      const stageRect = stageEl?.getBoundingClientRect();
+      const wrapRect = wrapEl?.getBoundingClientRect();
+      if (stageRect && wrapRect) {
+        const cardCenter = {
+          x: (wrapRect.left + wrapRect.right) / 2,
+          y: (wrapRect.top + wrapRect.bottom) / 2,
+        };
+        const stageCenter = {
+          x: stageRect.left + stageRect.width / 2,
+          y: stageRect.top + stageRect.height / 2,
+        };
+        ctrlZoomPointer = e.pointerId;
+        ctrlZoomCenter = cardCenter;
+        ctrlZoomOrigin = stageCenter;
+        ctrlZoomStartMidpoint = {
+          x: (cardCenter.x + e.clientX) / 2,
+          y: (cardCenter.y + e.clientY) / 2,
+        };
+        ctrlZoomStartDistance = Math.max(
+          12,
+          Math.hypot(cardCenter.x - e.clientX, cardCenter.y - e.clientY),
+        );
+        ctrlZoomStartScale = scale;
+        ctrlZoomStartX = zoomX;
+        ctrlZoomStartY = zoomY;
+        downPoint = { x: e.clientX, y: e.clientY };
+        active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+        e.preventDefault();
+        return;
+      }
+    }
+
     active.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (active.size === 1) {
       dragging = true;
@@ -170,6 +213,37 @@
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (ctrlZoomPointer === e.pointerId) {
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const distance = Math.max(
+        12,
+        Math.hypot(ctrlZoomCenter.x - e.clientX, ctrlZoomCenter.y - e.clientY),
+      );
+      const distanceRatio = distance / ctrlZoomStartDistance;
+      const midpoint = {
+        x: (ctrlZoomCenter.x + e.clientX) / 2,
+        y: (ctrlZoomCenter.y + e.clientY) / 2,
+      };
+      scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, ctrlZoomStartScale * distanceRatio));
+      if (scale <= MIN_SCALE + 0.01) {
+        zoomX = 0;
+        zoomY = 0;
+      } else {
+        const ratio = scale / ctrlZoomStartScale;
+        zoomX =
+          midpoint.x -
+          ctrlZoomOrigin.x -
+          (ctrlZoomStartMidpoint.x - ctrlZoomOrigin.x - ctrlZoomStartX) * ratio;
+        zoomY =
+          midpoint.y -
+          ctrlZoomOrigin.y -
+          (ctrlZoomStartMidpoint.y - ctrlZoomOrigin.y - ctrlZoomStartY) * ratio;
+        clampPan();
+      }
+      gestureMoved = true;
+      applyWrap();
+      return;
+    }
     if (!active.has(e.pointerId)) return;
     const start = active.get(e.pointerId)!;
     const dx = e.clientX - start.x;
@@ -302,6 +376,15 @@
   }
 
   function onPointerUp(e: PointerEvent) {
+    if (ctrlZoomPointer === e.pointerId) {
+      active.delete(e.pointerId);
+      ctrlZoomPointer = null;
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+      dragging = false;
+      panning = false;
+      applyWrap(0, 0, true);
+      return;
+    }
     const start = active.get(e.pointerId);
     active.delete(e.pointerId);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
@@ -433,6 +516,19 @@
     onNavigate?.(currentIndex < photos.length - 1 ? currentIndex + 1 : 0);
   }
 
+  function handleStageClick(event: MouseEvent): void {
+    if (showMenu || gestureMoved) return;
+    const target = event.target;
+    if (
+      !(target instanceof Element) ||
+      target.closest('button, a, input, textarea, select, [data-lb-controls], .lb-box')
+    )
+      return;
+    const midpoint = (stageEl?.clientWidth ?? window.innerWidth) / 2;
+    if (event.clientX < midpoint) goPrev();
+    else goNext();
+  }
+
   // On switch: reset transforms and mute (wrap may be unmounted; the effect
   // after mount covers it).
   $effect(() => {
@@ -542,16 +638,17 @@
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
     onpointercancel={onPointerUp}
+    onclick={handleStageClick}
     ondblclick={onDblClick}
     use:wheelZoom
   >
     <!-- Top bar info: bare text top-left, more/close top-right -->
     <div
+      data-lb-controls
       class="absolute inset-x-3 top-3 z-10 flex items-start justify-between md:inset-x-4 md:top-4"
       onpointerdown={(e) => e.stopPropagation()}
     >
       <div class="lb-meta flex items-center gap-3 text-base">
-        <span class="tabular-nums text-white/90">{currentIndex + 1} / {photos.length}</span>
         <Tooltip text={isLiked ? copy.lightbox.unlike : copy.lightbox.like} side="bottom">
           <button
             aria-label={isLiked ? copy.lightbox.unlike : copy.lightbox.like}
@@ -740,6 +837,7 @@
 
     <!-- Bottom bar info: dimensions/size bottom-left, prev/next bottom-right -->
     <div
+      data-lb-controls
       class="absolute inset-x-3 bottom-3 z-10 flex items-end justify-between md:inset-x-4 md:bottom-4"
       onpointerdown={(e) => e.stopPropagation()}
     >
@@ -765,6 +863,9 @@
             <ChevronLeft class="size-6" />
           </button>
         </Tooltip>
+        <span class="lb-meta min-w-14 text-center text-xs tabular-nums text-white/80">
+          {currentIndex + 1} / {photos.length}
+        </span>
         <Tooltip text={copy.lightbox.next}>
           <button
             aria-label={copy.lightbox.next}

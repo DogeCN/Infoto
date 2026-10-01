@@ -69,6 +69,9 @@
   );
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
+  let cardEl: HTMLDivElement | undefined = $state(undefined);
+  let cardAnimation: Animation | null = null;
+  let previousBox: { x: number; y: number; width: number; height: number } | null = null;
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
   // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
   // every /sync keeps the loaded image visible; the browser caches decoding by URL itself.
@@ -82,6 +85,57 @@
     if (url) {
       loadFailed = false;
     }
+  });
+
+  // FLIP each card between computed waterfall boxes. The live visual rect is read
+  // before canceling an in-flight animation, so rapid reflows continue from where
+  // the card is actually rendered instead of snapping back to a stale endpoint.
+  $effect(() => {
+    const next = { x, y, width, height };
+    const previous = previousBox;
+    previousBox = next;
+    const element = cardEl;
+    if (!element || !previous) return;
+    if (
+      previous.x === next.x &&
+      previous.y === next.y &&
+      previous.width === next.width &&
+      previous.height === next.height
+    )
+      return;
+
+    const from = element.getBoundingClientRect();
+    cardAnimation?.cancel();
+    cardAnimation = null;
+    const to = element.getBoundingClientRect();
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    const sx = to.width > 0 ? from.width / to.width : 1;
+    const sy = to.height > 0 ? from.height / to.height : 1;
+    if (
+      Math.abs(dx) < 0.25 &&
+      Math.abs(dy) < 0.25 &&
+      Math.abs(sx - 1) < 0.002 &&
+      Math.abs(sy - 1) < 0.002
+    )
+      return;
+
+    const animation = element.animate(
+      [
+        { transform: `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})` },
+        { transform: 'translate3d(0, 0, 0) scale(1, 1)' },
+      ],
+      { duration: 220, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
+    );
+    cardAnimation = animation;
+    void animation.finished.then(
+      () => {
+        if (cardAnimation === animation) cardAnimation = null;
+      },
+      () => undefined,
+    );
   });
 
   // A failed load is surfaced as a uniform "ERROR" glitch — the real HTTP status is
@@ -120,6 +174,7 @@
 
   onDestroy(() => {
     cancelLongPress();
+    cardAnimation?.cancel();
   });
 
   /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
@@ -137,10 +192,11 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
+  bind:this={cardEl}
   class="absolute overflow-hidden rounded-[14px] bg-card cursor-pointer border transition-[border-color,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)] {selected
     ? 'border-2 border-primary'
     : 'border-white/0 hover:border-white/10'}"
-  style="left: {x}px; top: {y}px; width: {width}px; height: {height}px"
+  style="left: {x}px; top: {y}px; width: {width}px; height: {height}px; transform-origin: top left"
   role="button"
   aria-label={copy.lightbox.preview}
   aria-pressed={multiMode ? selected : undefined}

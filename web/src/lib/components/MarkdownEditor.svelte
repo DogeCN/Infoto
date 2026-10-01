@@ -2,24 +2,15 @@
   // Markdown editor with a toolbar and a split live preview. Images go through
   // the shared upload pipeline; the returned URL is inserted at the remembered
   // caret so edits made while an upload is in flight do not move it.
-  import {
-    Bold,
-    Italic,
-    Strikethrough,
-    Quote,
-    Code,
-    List,
-    Link,
-    ImagePlus,
-    Vote,
-  } from '@lucide/svelte';
+  import { Bold, Italic, Strikethrough, Quote, Code, List, Link, ImagePlus } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { cn } from '$base/lib/ui';
   import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';
   import VoteBlock from './VoteBlock.svelte';
+  import type { Poll } from '$shared/types';
   import {
-    splitVote,
+    splitPollReferences,
     insertImageAt,
     insertMarkdownBlock,
     mapOffsetThroughEdit,
@@ -36,6 +27,9 @@
     /** Pick and upload an image; returns the hosted URL (via /upload proxy). */
     onPickImage?: () => Promise<string | null>;
     onChange?: (v: string) => void;
+    /** Current language's poll registry powers embedded live previews. */
+    polls?: Poll[];
+    selfId?: number;
     /** File name shown on the in-flight upload card (defaults to "image"). */
     uploadName?: string;
     /** Live snapshot of that upload (its phase drives the failed-state retry link). */
@@ -49,6 +43,8 @@
     placeholder = '',
     onPickImage,
     onChange,
+    polls = [],
+    selfId = -1,
     uploadName = '',
     uploadTask = null,
     onRetryUpload,
@@ -165,14 +161,10 @@
       run: () => surround('[', '](https://)', copy.editor.tools.link),
     },
     { icon: ImagePlus, title: copy.editor.tools.image, run: () => void pickImage(), image: true },
-    {
-      icon: Vote,
-      title: copy.editor.tools.vote,
-      run: () => insertBlock(':::vote Option A | Option B'),
-    },
   ];
 
-  let previewVote = $derived(splitVote(value));
+  let previewParts = $derived(splitPollReferences(value));
+  let pollMap = $derived(new Map(polls.map((poll) => [poll.id, poll])));
 </script>
 
 <div class="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
@@ -252,15 +244,27 @@
   >
     {#if value.trim()}
       <div class="flex flex-col gap-4">
-        {#if previewVote.before.trim()}
-          <MarkdownView content={previewVote.before} allowImages class="text-muted-foreground" />
-        {/if}
-        {#if previewVote.options.length >= 2}
-          <VoteBlock options={previewVote.options} votes={[]} selfId={-1} />
-        {/if}
-        {#if previewVote.after.trim()}
-          <MarkdownView content={previewVote.after} allowImages class="text-muted-foreground" />
-        {/if}
+        {#each previewParts as part, index (`${index}:${part.type}`)}
+          {#if part.type === 'markdown'}
+            {#if part.content.trim()}
+              <MarkdownView content={part.content} allowImages class="text-muted-foreground" />
+            {/if}
+          {:else if pollMap.has(part.id)}
+            {@const poll = pollMap.get(part.id)!}
+            <section class="space-y-2">
+              <h4 class="text-sm font-medium text-foreground">{poll.title}</h4>
+              <VoteBlock
+                options={poll.options}
+                votes={poll.votes}
+                allowMultiple={poll.allowMultiple}
+                interactive={false}
+                {selfId}
+              />
+            </section>
+          {:else}
+            <MarkdownView content={`::vote:${part.id}`} allowImages class="text-muted-foreground" />
+          {/if}
+        {/each}
       </div>
     {:else}
       <p class="text-sm text-muted-foreground">{copy.editor.previewEmpty}</p>

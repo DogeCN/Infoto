@@ -21,6 +21,7 @@
     hideLabel?: boolean;
     size?: 'sm' | 'md';
     ariaLabel?: string;
+    onWidths?: (info: { shown: number; shownIsLabelled: boolean; labelDelta: number }) => void;
   }
 
   let {
@@ -31,6 +32,7 @@
     hideLabel = false,
     size = 'md',
     ariaLabel,
+    onWidths,
   }: Props<T> = $props();
 
   // Sliding indicator: tracks the geometry of the active item's button. An action records the
@@ -58,11 +60,42 @@
     if (el) indicator = { x: el.offsetLeft, w: el.offsetWidth };
   }
 
+  let rootEl: HTMLDivElement | undefined = $state(undefined);
+
+  function measureWidths(): void {
+    const root = rootEl;
+    if (!root || !onWidths) return;
+    const labelDelta = [...root.querySelectorAll<HTMLElement>('[data-tab-label]')].reduce(
+      (sum, label) => {
+        const button = label.closest('button');
+        const gap = button ? Number.parseFloat(getComputedStyle(button).columnGap) || 0 : 0;
+        const hasIcon = !!button?.querySelector('svg');
+        return sum + label.offsetWidth + (hasIcon ? gap : 0);
+      },
+      0,
+    );
+    onWidths({ shown: root.offsetWidth, shownIsLabelled: !hideLabel, labelDelta });
+  }
+
   $effect(() => {
-    // Update indicator geometry when selection or item labels change.
     void value;
     void items;
+    void hideLabel;
+    void size;
     if (value !== undefined) syncIndicator(value);
+    const root = rootEl;
+    if (!root) return;
+    let raf = requestAnimationFrame(measureWidths);
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(measureWidths);
+    });
+    observer.observe(root);
+    for (const label of root.querySelectorAll('[data-tab-label]')) observer.observe(label);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
   });
 
   function onKeydown(event: KeyboardEvent, index: number) {
@@ -100,6 +133,7 @@
 </script>
 
 <div
+  bind:this={rootEl}
   role="tablist"
   aria-label={ariaLabel}
   class="relative flex items-center gap-1 rounded-full border border-border bg-card/80 p-1"
@@ -123,7 +157,7 @@
       class={cn(
         'relative z-10 inline-flex items-center rounded-full py-1.5 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
         size === 'md' ? 'px-3.5' : 'px-3',
-        hideLabel ? 'gap-1.5' : 'gap-2',
+        'gap-2',
         active ? 'text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
       )}
       title={item.label}
@@ -131,7 +165,13 @@
       onclick={() => pick(item.value)}
     >
       {#if Icon}<Icon class="size-[calc(var(--bar-h)*0.25)]" />{/if}
-      {#if !hideLabel}<span>{item.label}</span>{/if}
+      <span
+        data-tab-label
+        aria-hidden={hideLabel}
+        class={hideLabel ? 'absolute left-0 top-full invisible whitespace-nowrap' : 'relative'}
+      >
+        {item.label}
+      </span>
     </button>
   {/each}
 </div>

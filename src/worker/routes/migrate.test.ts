@@ -28,16 +28,31 @@ async function rootCookie(app: TestApp): Promise<string> {
   const created = await app.request('http://localhost/admin/announcements', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ title: 't', contentMd: `md\\slash --- ; /* c */ it's` }),
+    body: JSON.stringify({
+      title: 't',
+      contentMd: `md\\slash --- ; /* c */ it's`,
+      locale: 'en-US',
+    }),
   });
   assert.equal(created.status, 200);
+  const pollResponse = await app.request('http://localhost/admin/polls', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({
+      title: 'Question',
+      options: ['A', 'B'],
+      allowMultiple: false,
+      locale: 'en-US',
+    }),
+  });
+  const pollId = ((await pollResponse.json()) as { poll: { id: number } }).poll.id;
   await sync(
     app,
     {
       ops: [
         { type: 'react', target: 1, payload: { emoji: '🔥' } },
-        { type: 'vote', target: 1, payload: { option: 1 } },
-        { type: 'fb_create', payload: { contentMd: 'fb' } },
+        { type: 'vote', target: pollId, payload: { options: [1] } },
+        { type: 'fb_create', payload: { contentMd: 'fb', locale: 'en-US' } },
       ],
     },
     cookie,
@@ -86,6 +101,7 @@ test('export → import round-trip restores rows', async () => {
   assert.equal(before.photos, 1);
   assert.equal(before.announcements, 1);
   assert.equal(before.reactions, 1);
+  assert.equal(before.polls, 1);
   assert.equal(before.votes, 1);
   assert.equal(before.feedback, 1);
 
@@ -122,7 +138,7 @@ test('export → import round-trip restores rows', async () => {
   );
   // votes must survive too — it is part of MIGRATE_TABLES and the export dump
   const vote = await db
-    .prepare('SELECT option FROM votes WHERE ann_id = 1 AND user_id = 0')
+    .prepare('SELECT option FROM votes WHERE poll_id = 1 AND user_id = 0')
     .first<{ option: number }>('option');
   assert.equal(vote, 1);
   assert.deepEqual(await counts(db), before);
