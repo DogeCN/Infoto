@@ -67,75 +67,73 @@ function parseMultipart(buf, boundary) {
 
 // The browser uploads here from the page origin, so the dev stand-in must answer CORS
 // exactly like the real facade does — otherwise dev fails for a reason production would not.
+// Mirrored from media-proxy/worker.js. Two of these are load-bearing:
+//   - max-age: without it the browser re-preflights every upload here, while production
+//     caches the preflight for a day.
+//   - JSON error envelopes: the client parses a failure body as JSON, so a plain-text reply
+//     surfaces as bad_response instead of the real status.
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': 'content-type',
+  'access-control-max-age': '86400',
 };
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
+  const json = (body, status) => {
+    res.writeHead(status, { ...CORS, 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(body));
+  };
+
+  // The facade exposes exactly two routes. Serving stored files is a stand-in extra — the
+  // real facade hands back a CDN URL and never serves bytes itself.
+  const isKnownRoute = url.pathname === '/upload' || url.pathname === '/health';
 
   if (req.method === 'OPTIONS') {
+    if (!isKnownRoute) return json({ error: 'not_found' }, 404);
     res.writeHead(204, CORS).end();
     return;
   }
 
-  if (req.method === 'GET') {
-    const fname = safeFilename(url.pathname.slice(1));
-    if (!fname) {
-      res.writeHead(400).end('bad filename');
-      return;
-    }
-    const fp = path.join(MEDIA_DIR, fname);
-    if (!existsSync(fp) || !statSync(fp).isFile()) {
-      res.writeHead(404).end('not found');
-      return;
-    }
-    const ext = path.extname(fname).toLowerCase();
-    const mime = MIME_BY_EXT[ext] ?? 'application/octet-stream';
-    res.writeHead(200, {
-      ...CORS,
-      'content-type': mime,
-      'cache-control': 'public, max-age=31536000, immutable',
-    });
-    res.end(readFileSync(fp));
+  if (req.method === 'GET' && url.pathname === '/health') {
+    json({ ok: true }, 200);
     return;
   }
 
-  if (req.method === 'POST' && url.pathname === '/upload') {
+  if (url.pathname === '/upload') {
+    if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
     const ct = req.headers['content-type'] ?? '';
     const bm = /boundary=(.+)/.exec(ct);
-    if (!bm) {
-      res
-        .writeHead(400, { ...CORS, 'content-type': 'application/json' })
-        .end('{"error":"bad_content_type"}');
-      return;
-    }
+    if (!bm) return json({ error: 'bad_content_type' }, 400);
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
       const buf = Buffer.concat(chunks);
       const files = parseMultipart(buf, bm[1]);
       const file = files.find((f) => f.field === 'file');
-      if (!file || !file.filename) {
-        res
-          .writeHead(400, { ...CORS, 'content-type': 'application/json' })
-          .end('{"error":"no_file"}');
-        return;
-      }
+      if (!file || !file.filename) return json({ error: 'no_file' }, 400);
       const ext = path.extname(file.filename).toLowerCase();
       const id = crypto.randomBytes(16).toString('hex');
       const stored = `${id}${ext}`;
       writeFileSync(path.join(MEDIA_DIR, stored), file.data);
-      const publicUrl = `http://127.0.0.1:${PORT}/${stored}`;
-      res.writeHead(200, { ...CORS, 'content-type': 'application/json' });
-      res.end(JSON.stringify({ url: publicUrl, data: publicUrl }));
+      // Same envelope as the facade: the client reads `data` and nothing else.
+      json({ data: `http://127.0.0.1:${PORT}/${stored}` }, 200);
     });
     return;
   }
 
-  res.writeHead(404).end('not found');
+  const fname = safeFilename(url.pathname.slice(1));
+  if (!fname) return json({ error: 'bad_filename' }, 400);
+  const fp = path.join(MEDIA_DIR, fname);
+  if (!existsSync(fp) || !statSync(fp).isFile()) return json({ error: 'not_found' }, 404);
+  const mime = MIME_BY_EXT[path.extname(fname).toLowerCase()] ?? 'application/octet-stream';
+  res.writeHead(200, {
+    ...CORS,
+    'content-type': mime,
+    'cache-control': 'public, max-age=31536000, immutable',
+  });
+  res.end(readFileSync(fp));
 });
 
 server.listen(PORT, '127.0.0.1', () => {
