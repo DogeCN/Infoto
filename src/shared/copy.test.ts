@@ -4,6 +4,7 @@ import {
   activeLocale,
   copy,
   DEFAULT_LOCALE,
+  isLocaleCode,
   enUS,
   fmt,
   locales,
@@ -113,5 +114,32 @@ describe('copy', () => {
     setActiveLocale('fr-FR' as LocaleCode);
     expect(activeLocale()).toBe('zh-CN');
     setActiveLocale('en-US');
+  });
+
+  // This predicate is the only thing deciding which tags are real: the schema columns carry
+  // no CHECK, so an accepted tag reaches `locale` columns and the snapshot's WHERE clause
+  // verbatim. Prototype keys are the case worth pinning -- `value in locales` would accept
+  // them and quietly widen the set of tags that pass.
+  it('accepts only registered locale tags', () => {
+    for (const code of Object.keys(locales)) {
+      expect(isLocaleCode(code)).toBe(true);
+    }
+    for (const value of ['fr-FR', 'zh', 'zh-Hans-CN', 'EN-US', 'en-US ', '', 'en_US']) {
+      expect(isLocaleCode(value)).toBe(false);
+    }
+    for (const value of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      expect(isLocaleCode(value)).toBe(false);
+    }
+    for (const value of [null, undefined, 0, 1, true, {}, [], ['en-US'], Symbol('en-US')]) {
+      expect(isLocaleCode(value)).toBe(false);
+    }
+  });
+
+  // Narrowing has to survive the call, since every caller assigns straight from the guard.
+  it('narrows an unknown value to LocaleCode', () => {
+    const raw: unknown = 'zh-CN';
+    if (!isLocaleCode(raw)) throw new Error('expected a registered tag');
+    const narrowed: LocaleCode = raw;
+    expect(narrowed).toBe('zh-CN');
   });
 });

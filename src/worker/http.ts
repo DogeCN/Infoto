@@ -2,8 +2,7 @@
 // identity gate, id validation and `sort` renumbering.
 
 import type { Context, MiddlewareHandler } from 'hono';
-import type { LocaleCode } from '../shared/types.ts';
-import { locales } from '../shared/copy.ts';
+import { isLocaleCode } from '../shared/copy.ts';
 import type { Db } from './db.ts';
 import { ROOT_ID, resolveUser } from './identity.ts';
 
@@ -63,10 +62,8 @@ export function reorderHandler(db: Db, table: SortTable) {
   return async (c: Context): Promise<Response> => {
     const body = await readJson<{ ids?: unknown; locale?: unknown }>(c);
     const ids = bodyIds(body);
-    const locale =
-      typeof body?.locale === 'string' && Object.hasOwn(locales, body.locale)
-        ? (body.locale as LocaleCode)
-        : null;
+    const raw = body?.locale;
+    const locale = isLocaleCode(raw) ? raw : null;
     if (ids.length === 0 || !locale) return badRequest(c);
     const rows = await db
       .prepare(`SELECT id FROM ${table} WHERE locale = ? ORDER BY sort ASC`)
