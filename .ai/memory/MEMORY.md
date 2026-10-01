@@ -67,13 +67,13 @@
 
 ---
 
-## Web Fonts (2026-09-27)
+## Web Fonts (2026-10-01)
 
-- Do not use `fonts.googleapis.cn`. It is unstable and is not a source.
-- Race two stylesheets; the first successful load is applied and the other `<link>` is removed. Official: `fonts.googleapis.com` / `fonts.gstatic.com`. USTC mirror: `fonts.proxy.ustclug.org` / `fonts-gstatic.proxy.ustclug.org` (USTCLUG reverse proxy; `mirrors.ustc.edu.cn` does not currently list these hosts in its reverse-proxy table).
-- One helper, `src/shared/fonts.ts`. Vite injects it at `<!-- font-race -->` in `web/index.html`. The Worker error page inlines the same helper. Families and weights stay as they were (`display=swap`).
-- Error-page CSP must name both CSS hosts and both file hosts. The race script is static — never interpolate the request into it.
-- If both hosts fail, `system-ui` / `-apple-system` / `sans-serif` remain the fallback. Do not vendor Noto Sans SC to paper over a dead host.
+- Official host only: `fonts.googleapis.com` / `fonts.gstatic.com`, one stylesheet link, no race and no script. `display=swap` keeps text readable on `system-ui` while it loads. Do not use `fonts.googleapis.cn`; it is unstable and not a source.
+- **Do not add a font mirror without verifying it end to end.** The USTCLUG mirror that ADR 0006 raced was adopted from a published hostname and never tested — it failed at TLS negotiation, not HTTP (`SSL_ERROR_NO_CIPHER_OVERLAP` in Firefox, `HandshakeFailure` from OpenSSL, while TCP 443 connected). So the race only ever produced a console error and no redundancy. TCP-connecting proves nothing about a font mirror.
+- One helper, `src/shared/fonts.ts`. Vite injects it at `<!-- fonts -->` in `web/index.html`; the Worker error page inlines the same helper. Families and weights unchanged.
+- Error-page CSP names the CSS host and the file host, and carries **no `script-src`** — the page has no JavaScript now that the race script is gone. Do not re-add `'unsafe-inline'` for script-src.
+- Do not vendor Noto Sans SC to paper over a dead host.
 
 ---
 

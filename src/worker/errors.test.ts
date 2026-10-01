@@ -28,14 +28,12 @@ describe('worker error pages', () => {
     expect(await notFoundPage().text()).toContain('Not Found');
     const en = await notFoundPage(request('en-US')).text();
     expect(en).not.toContain('fonts.googleapis.cn');
+    expect(en).not.toContain('ustclug.org');
     expect(en).toContain('https://fonts.googleapis.com/css2?');
-    expect(en).toContain('https://fonts.proxy.ustclug.org/css2?');
-    expect(en).toContain('https://fonts-gstatic.proxy.ustclug.org');
-    const script = en.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? '';
-    expect(script).toContain('fonts.proxy.ustclug.org');
-    expect(script).not.toContain('does not exist');
-    expect(notFoundPage(request('en-US')).headers.get('Content-Security-Policy')).not.toContain(
-      'fonts.googleapis.cn',
-    );
+    // No race script, so the error page carries no JavaScript at all.
+    expect(en).not.toMatch(/<script/i);
+    const csp = notFoundPage(request('en-US')).headers.get('Content-Security-Policy');
+    expect(csp).not.toContain('fonts.googleapis.cn');
+    expect(csp).not.toContain('script-src');
   });
 });

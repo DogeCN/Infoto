@@ -1,7 +1,11 @@
 # 0006: Web Fonts Race the Official Host Against the USTC Mirror
 
 - **Date**: 2026-09-27
-- **Status**: Accepted
+- **Status**: Superseded by 0006-revised — the USTC mirror's TLS handshake fails against
+  current clients (`SSL_ERROR_NO_CIPHER_OVERLAP` in Firefox, `HandshakeFailure` from
+  OpenSSL), so the losing half of the race only ever produced a console error. The race is
+  removed and the official host is used alone. Recorded for history; see 0006-revised for
+  the current decision.
 - **Context**: The SPA and the Worker error pages loaded Inter, Noto Sans SC, and (on error pages) Space Grotesk from `fonts.googleapis.cn`. That host is unstable. The official CSS host is `fonts.googleapis.com`, with files on `fonts.gstatic.com`. Visitors who cannot reach the official host still need the same families, including CJK glyphs from Noto Sans SC. Self-hosting the variable CJK face would add a large asset to every deploy.
 - **Decision**: Race two stylesheet URLs and apply the first one that loads. Remove the loser so its font files are not used. Delete every `fonts.googleapis.cn` reference.
   - Official: `https://fonts.googleapis.com` CSS, `https://fonts.gstatic.com` files.
