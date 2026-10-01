@@ -1,11 +1,28 @@
-/** Sign uploads for the image host and return validated public media URLs. */
+/**
+ * Standalone image-host facade — upload proxy only.
+ *
+ * The browser POSTs the artifact here; this worker signs the request with TC_SECRET and
+ * forwards it to the upstream image host, then hands back the URL the upstream returned.
+ * No KV, no user identity: the facade is a thin, stateless relay, so it can be swapped
+ * or replaced without any migration on the album side.
+ *
+ * Deploy: `wrangler deploy` from this directory. Required: secret TC_SECRET.
+ *
+ * Routes:
+ *   POST /upload   multipart `file` -> 200 { data: <upstream url> }
+ *   GET /health    liveness probe
+ *
+ * CORS is wide open because the facade is a public endpoint by design. Anyone can spend
+ * the upstream's quota; rate-limit it at the Cloudflare dashboard (WAF / rate limiting
+ * rules) if that matters.
+ */
 
 const UPSTREAM_UPLOAD = 'https://tc.0147258.xyz/upload';
 
-/** Response headers forwarded from the image host. */
+/** Response headers worth relaying: rate-limit hints explain a rejection like upstream does. */
 const RELAY_HEADERS = ['content-type', 'retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining'];
 
-/** Encode a byte buffer as unpadded base64url. */
+/** base64url of a byte buffer, sliced so a large buffer cannot overflow the argument limit. */
 function b64u(buf) {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let binary = '';
@@ -17,7 +34,7 @@ function b64u(buf) {
 
 const enc = (obj) => b64u(new TextEncoder().encode(JSON.stringify(obj)));
 
-/** Create an HS256 upload token with a timestamp claim. */
+/** HS256 JWT over `{alg,typ}` and `{timestamp}`, signed with the shared secret. */
 async function makeTcToken(secret) {
   const input = `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({ timestamp: Date.now() })}`;
   const key = await crypto.subtle.importKey(
@@ -37,7 +54,8 @@ const json = (body, status = 200) =>
     headers: corsHeaders({ 'content-type': 'application/json; charset=utf-8' }),
   });
 
-/** CORS origin used by upload clients. */
+/** Any origin may upload: the facade is a public endpoint and the upstream stays
+ *  protected by TC_SECRET. Tighten ALLOWED_ORIGIN if the deployment has a fixed domain. */
 const ALLOWED_ORIGIN = '*';
 
 function corsHeaders(extra) {
@@ -61,7 +79,8 @@ function isPublicHttps(url) {
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
   const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
   if (host === '' || host.startsWith('[')) return false;
-  // Reject dotted IPv4 and numeric host representations.
+  // Reject any purely numeric host: dotted IPv4, decimal (2130706433), or hex (0x7f000001).
+  // These bypass the dotted-IPv4 check and may resolve to loopback/internal addresses.
   if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || /^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
     return false;
   }
@@ -94,7 +113,7 @@ async function handleUpload(request, env) {
     return json({ error: 'image_host_unreachable' }, 502);
   }
 
-  // Preserve upstream status codes and response headers.
+  // Relay the status and the reason headers; the body is the upstream JSON either way.
   const headers = corsHeaders({});
   for (const name of RELAY_HEADERS) {
     const value = upstream.headers.get(name);

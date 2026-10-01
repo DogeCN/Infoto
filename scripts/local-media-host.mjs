@@ -65,7 +65,8 @@ function parseMultipart(buf, boundary) {
   return files;
 }
 
-// Match the facade CORS response for browser upload requests.
+// The browser uploads here from the page origin, so the dev stand-in must answer CORS
+// exactly like the real facade does — otherwise dev fails for a reason production would not.
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, OPTIONS',

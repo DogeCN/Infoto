@@ -22,7 +22,11 @@ function localDbFiles() {
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
 }
 
-/** Check whether the active local D1 database contains the schema probe table. */
+/**
+ * True when the local D1 already carries the schema.
+ * Deliberately conservative — every "I can't tell" path returns false, because
+ * the only consequence is a redundant (harmless) apply.
+ */
 export function hasLocalSchema() {
   const files = localDbFiles();
   if (files.length !== 1) return false; // no DB yet, or an ambiguous rename
