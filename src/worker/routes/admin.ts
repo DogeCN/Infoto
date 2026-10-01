@@ -1,7 +1,12 @@
 // Root-only admin write APIs. Snapshot reads come from /sync and are scoped to the active locale.
 
 import { Hono, type Context } from 'hono';
-import type { Announcement, LocaleCode, Poll } from '../../shared/types.ts';
+import {
+  MAX_POLL_OPTIONS,
+  type Announcement,
+  type LocaleCode,
+  type Poll,
+} from '../../shared/types.ts';
 import { isLocaleCode } from '../../shared/copy.ts';
 import type { AppEnv } from '../app.ts';
 import { badRequest, idParam, readJson, reorderHandler, rootGate } from '../http.ts';
@@ -43,7 +48,7 @@ function readPollDraft(c: Context): Promise<{
       !title ||
       title.length > 200 ||
       options.length < 2 ||
-      options.length > 100 ||
+      options.length > MAX_POLL_OPTIONS ||
       options.some((option) => option.length === 0 || option.length > 200) ||
       typeof body?.allowMultiple !== 'boolean' ||
       !locale

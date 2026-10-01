@@ -4,8 +4,7 @@
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import type { SegmentedItem } from '$lib/components/SegmentedControl.svelte';
   import { copy } from '$lib/i18n.svelte';
-
-  export type SortKey = 'latest' | 'hottest' | 'random';
+  import type { SortKey } from '../../core/gallery';
 
   interface Props {
     sortKey?: SortKey;

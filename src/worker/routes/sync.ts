@@ -7,6 +7,7 @@ import type { AppEnv } from '../app.ts';
 import type { Db } from '../db.ts';
 import {
   MEDIA_TYPE,
+  MAX_POLL_OPTIONS,
   MAX_SYNC_OPS,
   type Announcement,
   type Feedback,
@@ -25,9 +26,6 @@ import { LOCAL_MEDIA_HOST_URL, isAllowedMediaUrl } from './media.ts';
 /** Text fields an anonymous op may carry. */
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_EMOJI_LENGTH = 16;
-/** Maximum number of options accepted by one poll. */
-const MAX_VOTE_OPTIONS = 100;
-
 /** Mark column holding the user ids that applied a mark. */
 type MarkColumn = 'likes' | 'dislikes' | 'reports';
 
@@ -149,8 +147,7 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
       const type = mediaType(p.type);
       if (!sha256 || !url || width === null || height === null || size === null) return;
       if (type === null) return;
-      // Must match the read proxy's rule, or a locally uploaded photo is stored and then
-      // refused by /l/:id36 (or, before this was shared, dropped right here).
+      // Keep upload URL validation consistent with the read proxy.
       if (!isAllowedMediaUrl(env, url)) return;
       if (await env.db.prepare('SELECT id FROM photos WHERE sha256 = ?').bind(sha256).first())
         return;
@@ -231,7 +228,7 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
         return;
       }
       const rawOptions = record(op.payload).options;
-      if (!Array.isArray(rawOptions) || rawOptions.length > MAX_VOTE_OPTIONS) return;
+      if (!Array.isArray(rawOptions) || rawOptions.length > MAX_POLL_OPTIONS) return;
       const options: number[] = [];
       for (const raw of rawOptions) {
         const option = count(raw);

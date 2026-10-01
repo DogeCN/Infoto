@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, extname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   acceptLanguages,
@@ -15,6 +18,58 @@ import {
   type LocaleCode,
   type PluralMessage,
 } from './copy.ts';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const SOURCE_EXTENSIONS = new Set([
+  '.cjs',
+  '.css',
+  '.html',
+  '.js',
+  '.json',
+  '.mjs',
+  '.sql',
+  '.svelte',
+  '.toml',
+  '.ts',
+  '.yaml',
+  '.yml',
+]);
+const IGNORED_DIRECTORIES = new Set([
+  '.ai',
+  '.arena',
+  '.cache',
+  '.git',
+  '.local',
+  '.next',
+  '.nuxt',
+  '.output',
+  '.pytest_cache',
+  '.svelte-kit',
+  '.turbo',
+  '.venv',
+  '.vite',
+  '.wrangler',
+  '__pycache__',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+  'playwright-report',
+  'target',
+  'test-results',
+]);
+
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory).flatMap((name) => {
+    const path = resolve(directory, name);
+    const stats = statSync(path);
+    if (stats.isDirectory()) {
+      return IGNORED_DIRECTORIES.has(name) ? [] : sourceFiles(path);
+    }
+    return SOURCE_EXTENSIONS.has(extname(name)) ? [path] : [];
+  });
+}
 
 function paths(value: unknown, prefix = ''): string[] {
   if (typeof value !== 'object' || value === null || isPluralLeaf(value)) return [prefix];
@@ -34,6 +89,14 @@ function read(table: Copy, leaf: string): unknown {
 }
 
 describe('copy', () => {
+  it('keeps localized Han text inside the shared copy module', () => {
+    const copyPath = resolve(ROOT, 'src/shared/copy.ts');
+    for (const path of sourceFiles(ROOT)) {
+      if (path === copyPath) continue;
+      expect(readFileSync(path, 'utf8'), relative(ROOT, path)).not.toMatch(/[\u3400-\u9fff]/u);
+    }
+  });
+
   it('keeps every locale table aligned with en-US and actually translated', () => {
     const source = paths(enUS).sort();
     const allowed = new Set([
@@ -94,6 +157,8 @@ describe('copy', () => {
 
   it('negotiates an exact shipped tag and follows the active locale', () => {
     expect(acceptLanguages('zh-CN;q=0.9, en-US, fr-FR;q=0')).toEqual(['en-US', 'zh-CN']);
+    expect(acceptLanguages('en-US;q=0.8, zh-CN;q=1.1, fr-FR;q=0')).toEqual(['en-US']);
+    expect(acceptLanguages('en-US;q=0.9, zh-CN;q=0.1234')).toEqual(['en-US']);
     expect(acceptLanguages(null)).toEqual([]);
     expect(acceptLanguages('')).toEqual([]);
     expect(pickLocale(['fr-FR', 'zh-CN', 'en-US'])).toBe('zh-CN');
@@ -108,18 +173,15 @@ describe('copy', () => {
     expect(copy.settings.language).toBe('Language');
     expect(plural(1, { one: '{n} vote', other: '{n} votes' })).toBe('{n} vote');
     setActiveLocale('zh-CN');
-    expect(copy.settings.language).toBe('语言');
+    expect(copy.settings.language).toBe(locales['zh-CN'].settings.language);
     expect(copy.sync).toBe(locales['zh-CN'].sync);
-    expect(plural(1, { other: '{n} 票' })).toBe('{n} 票');
+    expect(plural(2, locales['zh-CN'].vote.count)).toBe(locales['zh-CN'].vote.count.other);
     setActiveLocale('fr-FR' as LocaleCode);
     expect(activeLocale()).toBe('zh-CN');
     setActiveLocale('en-US');
   });
 
-  // This predicate is the only thing deciding which tags are real: the schema columns carry
-  // no CHECK, so an accepted tag reaches `locale` columns and the snapshot's WHERE clause
-  // verbatim. Prototype keys are the case worth pinning -- `value in locales` would accept
-  // them and quietly widen the set of tags that pass.
+  // Reject keys that are not registered as own properties of the locale table.
   it('accepts only registered locale tags', () => {
     for (const code of Object.keys(locales)) {
       expect(isLocaleCode(code)).toBe(true);
@@ -135,7 +197,7 @@ describe('copy', () => {
     }
   });
 
-  // Narrowing has to survive the call, since every caller assigns straight from the guard.
+  // Preserve the type predicate at its call site.
   it('narrows an unknown value to LocaleCode', () => {
     const raw: unknown = 'zh-CN';
     if (!isLocaleCode(raw)) throw new Error('expected a registered tag');

@@ -64,20 +64,7 @@ export async function resolveUser(
   return findUserByUuid(db, parseCookies(cookieHeader)[COOKIE_NAME]);
 }
 
-/**
- * Insert a new identity, giving it id = COALESCE(MAX(id), -1) + 1 so the first visitor
- * gets 0.
- *
- * The id is computed by the INSERT itself, not read first. Reading `MAX(id)` and then
- * inserting is a read-then-write, so two visitors arriving together both read the same
- * maximum and collide on the primary key — the previous version caught that violation and
- * retried, which handled two or three simultaneous first visits but threw on the fourth,
- * and an untested ceiling is the kind of thing that fails exactly when a shared album is
- * being opened by a group. Letting SQLite serialize the whole statement removes the window
- * instead of papering over it.
- *
- * The row is then read back by uuid, which is unique, so the lookup cannot race.
- */
+/** Insert a user with the next integer ID and retrieve the row by UUID. */
 export async function createUser(db: Db): Promise<UserRow> {
   const uuid = crypto.randomUUID();
   const created_at = Date.now();

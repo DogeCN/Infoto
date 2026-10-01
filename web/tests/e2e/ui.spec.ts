@@ -1,5 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { locales } from '../../../src/shared/copy';
 import type { Announcement, Photo, SyncResponse } from '../../../src/shared/types';
+
+const enCopy = locales['en-US'];
+const zhCopy = locales['zh-CN'];
 
 const photos: Photo[] = Array.from({ length: 9 }, (_, index) => ({
   id: index + 1,
@@ -48,11 +52,11 @@ test.beforeEach(async ({ page }) => {
 test('sidebar traps focus, restores its trigger, and hides inactive controls', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('infoto-sidebar-width-left', 'invalid'));
   await page.goto('/');
-  const trigger = page.getByRole('button', { name: 'Settings', exact: true });
+  const trigger = page.getByRole('button', { name: enCopy.topbar.settings, exact: true });
   await trigger.click();
-  const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });
+  const dialog = page.getByRole('dialog', { name: enCopy.topbar.settings, exact: true });
   await expect(dialog).toBeVisible();
-  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  const close = dialog.getByRole('button', { name: enCopy.sidebar.close, exact: true });
   await expect(close).toBeFocused();
   expect((await dialog.boundingBox())!.width).toBeCloseTo(360, 2);
   for (let i = 0; i < 20; i++) {
@@ -67,18 +71,21 @@ test('sidebar traps focus, restores its trigger, and hides inactive controls', a
 
 test('sort tabs support keyboard selection and locale changes', async ({ page }) => {
   await page.goto('/');
-  const latest = page.getByRole('tab', { name: 'Latest', exact: true });
+  const latest = page.getByRole('tab', { name: enCopy.sort.latest, exact: true });
   await latest.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: 'Hottest', exact: true })).toHaveAttribute(
+  await expect(page.getByRole('tab', { name: enCopy.sort.hottest, exact: true })).toHaveAttribute(
     'aria-selected',
     'true',
   );
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const language = page.getByRole('button', { name: 'Switch to Chinese', exact: true });
-  const arrangement = page.getByRole('button', { name: 'Use equal-height layout', exact: true });
+  await page.getByRole('button', { name: enCopy.topbar.settings, exact: true }).click();
+  const language = page.getByRole('button', { name: enCopy.settings.switchToChinese, exact: true });
+  const arrangement = page.getByRole('button', {
+    name: enCopy.settings.switchToEqualHeight,
+    exact: true,
+  });
   const direction = page.getByRole('button', {
-    name: 'Switch to horizontal scrolling',
+    name: enCopy.settings.switchToHorizontal,
     exact: true,
   });
   const languageBox = (await language.boundingBox())!;
@@ -88,32 +95,32 @@ test('sort tabs support keyboard selection and locale changes', async ({ page })
   expect(arrangementBox.x).toBeLessThan(directionBox.x);
   await arrangement.click();
   await expect(
-    page.getByRole('button', { name: 'Use equal-width layout', exact: true }),
+    page.getByRole('button', { name: enCopy.settings.switchToEqualWidth, exact: true }),
   ).toBeVisible();
   await direction.click();
   await expect(
-    page.getByRole('button', { name: 'Switch to vertical scrolling', exact: true }),
+    page.getByRole('button', { name: enCopy.settings.switchToVertical, exact: true }),
   ).toBeVisible();
   await language.click();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('tab', { name: '最热', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: zhCopy.sort.hottest, exact: true })).toBeVisible();
 });
 
 test('nested media menu handles Escape without closing the lightbox', async ({ page }) => {
   await page.goto('/');
   await page.locator('main img').first().click();
-  const lightbox = page.getByRole('dialog', { name: 'Media preview' });
+  const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
   await expect(lightbox).toBeVisible();
-  await lightbox.getByRole('button', { name: 'More', exact: true }).click();
-  const menu = page.getByRole('dialog', { name: 'Photo actions' });
+  await lightbox.getByRole('button', { name: enCopy.lightbox.more, exact: true }).click();
+  const menu = page.getByRole('dialog', { name: enCopy.lightbox.actions });
   await expect(menu).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
   await expect(lightbox).toBeVisible();
   expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
-  await lightbox.getByRole('button', { name: 'More', exact: true }).click();
-  await menu.getByRole('button', { name: 'Copy original', exact: true }).click();
+  await lightbox.getByRole('button', { name: enCopy.lightbox.more, exact: true }).click();
+  await menu.getByRole('button', { name: enCopy.lightbox.copyOriginal, exact: true }).click();
   await page.keyboard.press('Escape');
   await expect(lightbox).toHaveCount(0);
   expect(await page.evaluate(() => document.body.style.overflow)).toBe('');
@@ -122,12 +129,15 @@ test('nested media menu handles Escape without closing the lightbox', async ({ p
 test('narrow top bar switches its two screens with a horizontal swipe', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto('/');
-  const header = page.locator('header[aria-label="Gallery controls"]');
-  const more = header.getByRole('button', { name: 'More', exact: true }).first();
+  const header = page.locator(`header[aria-label="${enCopy.topbar.controlsLabel}"]`);
+  const more = header.getByRole('button', { name: enCopy.topbar.more, exact: true }).first();
   await expect(more).toBeVisible();
   const moreBox = (await more.boundingBox())!;
   expect(moreBox.x + moreBox.width).toBeLessThanOrEqual(320);
-  const announcements = header.getByRole('button', { name: 'Announcements', exact: true });
+  const announcements = header.getByRole('button', {
+    name: enCopy.topbar.announcements,
+    exact: true,
+  });
   const before = await announcements.boundingBox();
   expect(before).not.toBeNull();
   expect(before!.x).toBeGreaterThanOrEqual(320);
@@ -145,8 +155,8 @@ test('narrow top bar switches its two screens with a horizontal swipe', async ({
 
 test('layout slider makes the sidebars and scrim transparent while dragging', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await page.getByRole('button', { name: enCopy.topbar.settings, exact: true }).click();
+  const settings = page.getByRole('dialog', { name: enCopy.topbar.settings, exact: true });
   const slider = settings
     .locator('svg.lucide-ruler')
     .locator('xpath=following-sibling::div')
@@ -157,7 +167,9 @@ test('layout slider makes the sidebars and scrim transparent while dragging', as
   await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
   await page.mouse.down();
   const scrim = page.locator('[data-layout-scrim]');
-  const announcements = page.locator('[role="dialog"][aria-label="Announcements"]');
+  const announcements = page.locator(
+    `[role="dialog"][aria-label="${enCopy.sidebar.announcementsTitle}"]`,
+  );
   await expect.poll(() => settings.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
   await expect.poll(() => scrim.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
   await expect
@@ -175,11 +187,11 @@ test('lightbox pages from the black mask, keeps its counter between arrows, and 
   await mockAlbum(page, [photos[0]!, photos[1]!]);
   await page.goto('/');
   await page.locator('main img').first().click();
-  const lightbox = page.getByRole('dialog', { name: 'Media preview' });
+  const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
   await expect(lightbox.locator('img.lb-media')).toBeVisible();
 
-  const previous = lightbox.getByRole('button', { name: 'Previous', exact: true });
-  const next = lightbox.getByRole('button', { name: 'Next', exact: true });
+  const previous = lightbox.getByRole('button', { name: enCopy.lightbox.prev, exact: true });
+  const next = lightbox.getByRole('button', { name: enCopy.lightbox.next, exact: true });
   const counter = lightbox.getByText('1 / 2', { exact: true });
   const previousBox = (await previous.boundingBox())!;
   const nextBox = (await next.boundingBox())!;
@@ -219,8 +231,8 @@ test('gallery and sidebars fit narrow viewports', async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
     await page.goto('/');
     await expect(page.locator('main img').first()).toBeVisible();
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });
+    await page.getByRole('button', { name: enCopy.topbar.settings, exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: enCopy.topbar.settings, exact: true });
     await expect(dialog).toBeVisible();
     expect((await dialog.boundingBox())!.width).toBeLessThanOrEqual(width);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
@@ -248,9 +260,9 @@ test('failed image uploads retain retry and dismissal controls', async ({ page }
     mimeType: 'image/png',
     buffer: Buffer.alloc(0),
   });
-  const retry = page.getByRole('button', { name: 'Retry upload', exact: true });
+  const retry = page.getByRole('button', { name: enCopy.photoCard.retry, exact: true });
   await expect(retry).toBeVisible({ timeout: 15_000 });
-  await page.getByRole('button', { name: 'Remove', exact: true }).click();
+  await page.getByRole('button', { name: enCopy.uploadPanel.remove, exact: true }).click();
   await expect(retry).toHaveCount(0);
   expect(errors).toEqual([]);
 });
@@ -272,11 +284,11 @@ test('reaction picker escapes clipping and dismisses before its sidebar', async 
   for (const width of [1280, 390, 320]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Announcements', exact: true }).click();
-    const sidebar = page.getByRole('dialog', { name: 'Announcements', exact: true });
+    await page.getByRole('button', { name: enCopy.topbar.announcements, exact: true }).click();
+    const sidebar = page.getByRole('dialog', { name: enCopy.topbar.announcements, exact: true });
     await sidebar.getByRole('button', { name: 'Short announcement', exact: true }).click();
-    const add = sidebar.getByRole('button', { name: 'Add reaction', exact: true });
-    const picker = sidebar.getByRole('dialog', { name: 'Add reaction', exact: true });
+    const add = sidebar.getByRole('button', { name: enCopy.reactions.add, exact: true });
+    const picker = sidebar.getByRole('dialog', { name: enCopy.reactions.add, exact: true });
     await add.click();
     await expect(picker).toBeVisible();
     await expect(picker.getByRole('button')).toHaveCount(8);
@@ -301,7 +313,7 @@ test('reaction picker escapes clipping and dismisses before its sidebar', async 
     await expect(sidebar).toBeVisible();
     await expect(add).toBeFocused();
     await add.click();
-    await sidebar.getByPlaceholder('Write your suggestion').click();
+    await sidebar.getByPlaceholder(enCopy.announcements.feedbackPlaceholder).click();
     await expect(picker).toBeHidden();
     for (const emoji of ['👍', '👎', '❤️', '😂', '😮', '😢', '🔥', '🤔']) {
       await add.click();
@@ -326,11 +338,11 @@ test('photo actions have no visible header, all hover, and open Lens through the
   await mockAlbum(page, [{ ...photos[0]!, id: 1296 }]);
   await page.goto('/');
   await page.locator('main img').first().click();
-  const lightbox = page.getByRole('dialog', { name: 'Media preview' });
-  await lightbox.getByRole('button', { name: 'More', exact: true }).click();
-  const menu = page.getByRole('dialog', { name: 'Photo actions' });
+  const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
+  await lightbox.getByRole('button', { name: enCopy.lightbox.more, exact: true }).click();
+  const menu = page.getByRole('dialog', { name: enCopy.lightbox.actions });
   await expect(menu).toBeVisible();
-  await expect(menu.getByText('Photo actions', { exact: true })).toHaveCount(0);
+  await expect(menu.getByText(enCopy.lightbox.actions, { exact: true })).toHaveCount(0);
   const actions = menu.locator('button, a');
   await expect(actions).toHaveCount(7);
   expect(
@@ -394,7 +406,7 @@ test('failed sync attempts stop until the next explicit trigger', async ({ page 
   });
   await page.goto('/');
   await expect.poll(() => requests).toBe(1);
-  await expect(page.getByRole('button', { name: 'Sync', exact: true })).toHaveAttribute(
+  await expect(page.getByRole('button', { name: enCopy.sync.button, exact: true })).toHaveAttribute(
     'aria-busy',
     'false',
   );
@@ -407,9 +419,9 @@ test('failed sync attempts stop until the next explicit trigger', async ({ page 
   });
   expect(requests).toBe(1);
   status = 429;
-  await page.getByRole('button', { name: 'Sync', exact: true }).click();
+  await page.getByRole('button', { name: enCopy.sync.button, exact: true }).click();
   await expect.poll(() => requests).toBe(2);
-  await expect(page.getByRole('button', { name: 'Sync', exact: true })).toHaveAttribute(
+  await expect(page.getByRole('button', { name: enCopy.sync.button, exact: true })).toHaveAttribute(
     'aria-busy',
     'false',
   );
@@ -469,7 +481,7 @@ test('verification failures stay stopped and manual sync can recover', async ({ 
       },
     });
   });
-  const sync = page.getByRole('button', { name: 'Sync', exact: true });
+  const sync = page.getByRole('button', { name: enCopy.sync.button, exact: true });
   await page.goto('/');
   await expect.poll(() => requests).toBe(1);
   await expect(sync).toHaveAttribute('aria-busy', 'false');

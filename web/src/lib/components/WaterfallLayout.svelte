@@ -79,22 +79,9 @@
   let containerW = $state(0);
   /** Canvas inset: the scroll container is full-width (scrollbar at the viewport edge), whitespace comes from the canvas margin. */
   let padX = $derived(Math.max(8, Math.min(16, Math.round(containerW * 0.02))));
-  /** Extra breathing room above the first row, on top of the bar's own height.
-   *
-   *  Zero on purpose. The bar is 56–64px tall but its controls are only ~20px, so it
-   *  already carries ~16px of padding above and below the icons; adding more here just
-   *  widened the empty band the bar looked like it was padding. The bar is transparent at
-   *  rest and translucent once scrolled, so photos are meant to meet it, not float below it.
-   */
+  /** Additional spacing below the measured top bar. */
   const TOP_GAP = 0;
-  /** Top spacing: exactly the bar's height, so the first row clears it without a gap.
-   *
-   *  Derived from the bar's own height rather than guessed from a width percentage: the
-   *  old `containerW * 0.08` clamped to 48–80px was an independent formula, and below
-   *  ~750px it fell under the bar's actual height, so the first row sat underneath it.
-   *  Both elements are full width, so the scroll container's width is the same input the
-   *  bar measures and `barHeight()` yields the identical number.
-   */
+  /** Reserve the measured bar height before the first gallery row. */
   let padTop = $derived(Math.ceil(barHeight(containerW) + TOP_GAP));
 
   // Uniform grid zoom preserves cell geometry and gap proportions.
@@ -202,9 +189,7 @@
     const w = containerW;
     const d = dir;
     const s = strategy;
-    // Zoom is a uniform scale: the gap scales with the cells, so a 50% view is
-    // genuinely the whole layout at half size rather than the same cells in a
-    // tighter row.
+    // Scale the layout gap with the zoom level.
     const g = Math.max(0, Math.round(gap * zoom));
     if (w <= 0 || items.length === 0) {
       // Cancel pending layout work when the list becomes empty.

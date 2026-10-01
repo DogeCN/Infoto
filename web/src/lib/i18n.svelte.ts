@@ -1,28 +1,26 @@
 /** Reactive page locale and copy, initialized from the stored preference or browser languages. */
-import { locales, pickLocale, setActiveLocale, type Copy, type LocaleCode } from '$shared/copy';
+import {
+  isLocaleCode,
+  locales,
+  pickLocale,
+  setActiveLocale,
+  type Copy,
+  type LocaleCode,
+} from '$shared/copy';
 
 const STORAGE_KEY = 'infoto-locale';
 
 type Reader = Pick<Storage, 'getItem'>;
 type Writer = Pick<Storage, 'setItem'>;
 
-/** Storage is absent in SSR/worker contexts and may be blocked in private mode. */
-function currentReader(storage: Reader | undefined): Reader | undefined {
-  return storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
-}
-
-function currentWriter(storage: Writer | undefined): Writer | undefined {
-  return storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
-}
-
-function isLocaleCode(value: unknown): value is LocaleCode {
-  return typeof value === 'string' && Object.hasOwn(locales, value);
+function browserStorage(): Storage | undefined {
+  return typeof localStorage === 'undefined' ? undefined : localStorage;
 }
 
 /** The user's stored choice if it names a locale this build ships, else the browser default. */
 export function detectLocale(storage?: Reader): LocaleCode {
   try {
-    const raw = currentReader(storage)?.getItem(STORAGE_KEY);
+    const raw = (storage ?? browserStorage())?.getItem(STORAGE_KEY);
     if (isLocaleCode(raw)) return raw;
   } catch {
     // Use the browser locale when storage is unavailable.
@@ -60,7 +58,7 @@ export function setLocale(code: LocaleCode, storage?: Writer): void {
   Object.assign(copy, locales[code]);
   syncLang(code);
   try {
-    currentWriter(storage)?.setItem(STORAGE_KEY, code);
+    (storage ?? browserStorage())?.setItem(STORAGE_KEY, code);
   } catch {
     // The locale remains active when persistence is unavailable.
   }

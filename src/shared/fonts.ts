@@ -1,12 +1,4 @@
-// Web fonts. A single stylesheet; `display=swap` keeps text readable with the system fallback
-// while it loads.
-//
-// Google publishes a `.cn` endpoint for the same API, and it is the one worth using here. The
-// stylesheet is a small part of the cost; the family resolves to 108 woff2 files of which 101
-// are Noto Sans SC unicode-range subsets, and those are what a page actually waits on. Measured
-// over 14 of those subsets, the `.cn` file host returned them in 45s with no failures against
-// 102s and two failures for the global host. This is Google's own China domain rather than a
-// third-party mirror, so it stays a single source and the CSP gains no extra host.
+// Load the application fonts from one stylesheet with a system-font fallback.
 
 /** Google Fonts CSS host, China endpoint. */
 export const FONT_CSS_HOST = 'https://fonts.googleapis.cn';
@@ -41,8 +33,7 @@ export function injectFonts(html: string): string {
   return html.replace('</head>', `${block}</head>`);
 }
 
-/** CSP for a page whose only external assets are these font sources. There is no script,
- *  so `script-src` is left off entirely rather than opened with 'unsafe-inline'. */
+/** CSP for an error page that loads only the configured font assets. */
 export function fontPageCsp(): string {
   return `default-src 'none'; style-src 'unsafe-inline' ${FONT_CSS_HOST}; font-src ${FONT_FILE_HOST}; connect-src ${FONT_CSS_HOST} ${FONT_FILE_HOST}`;
 }

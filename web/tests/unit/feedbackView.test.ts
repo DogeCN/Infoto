@@ -12,7 +12,7 @@ const feedback: Feedback[] = [
     locale: 'en-US',
     sort: 1,
   },
-  { id: 12, userId: 3, contentMd: '导出更快', createdAt: 3, locale: 'zh-CN', sort: 2 },
+  { id: 12, userId: 3, contentMd: 'Faster exports', createdAt: 3, locale: 'zh-CN', sort: 2 },
 ];
 
 describe('admin feedback view', () => {
@@ -20,7 +20,7 @@ describe('admin feedback view', () => {
     expect(filterFeedback(feedback, '  SEARCH ').map((item) => item.id)).toEqual([10]);
     expect(filterFeedback(feedback, '20').map((item) => item.id)).toEqual([11]);
     expect(filterFeedback(feedback, '12').map((item) => item.id)).toEqual([12]);
-    expect(filterFeedback(feedback, '导出').map((item) => item.id)).toEqual([12]);
+    expect(filterFeedback(feedback, 'exports').map((item) => item.id)).toEqual([12]);
     const result = filterFeedback(feedback, '  ');
     expect(result).toEqual(feedback);
     expect(result).not.toBe(feedback);

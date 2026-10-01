@@ -44,7 +44,7 @@
           <Tooltip text={copy.admin.poll.copySyntax}>
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+              class="icon-button p-2 disabled:opacity-40"
               aria-label={copy.admin.poll.copySyntax}
               disabled={poll.id < 0}
               onclick={() => void copySyntax(poll.id)}
@@ -55,7 +55,7 @@
           <Tooltip text={copy.admin.poll.edit}>
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+              class="icon-button p-2 disabled:opacity-40"
               aria-label={copy.admin.poll.edit}
               disabled={poll.id < 0}
               onclick={() => onEdit(poll)}
@@ -66,7 +66,7 @@
           <Tooltip text={copy.admin.poll.delete}>
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"
+              class="icon-button icon-button--danger p-2 disabled:opacity-40"
               aria-label={copy.admin.poll.deleteAria}
               disabled={poll.id < 0}
               onclick={() => onDelete(poll.id)}

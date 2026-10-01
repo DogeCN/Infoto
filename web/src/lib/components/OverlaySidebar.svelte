@@ -117,7 +117,7 @@
   <!-- Full-screen scrim (covers the top bar): dims everything while open, layered above the
        top bar but below the sidebar itself -->
   <div
-    class="fixed inset-0 z-[47] bg-black/50 backdrop-blur-sm transition-opacity duration-200 ease-[var(--ease-exit)]"
+    class="fixed inset-0 z-[47] bg-black/50 backdrop-blur-sm transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
     data-layout-scrim
     style="opacity: {previewTransparent ? 0 : 1}"
     role="presentation"
@@ -162,7 +162,7 @@
       <h2 class="text-lg font-semibold tracking-tight">{title}</h2>
     </div>
     <button
-      class="flex items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-all duration-200 hover:bg-background hover:text-foreground hover:scale-105 active:scale-95"
+      class="icon-button rounded-lg p-1.5 hover:scale-105 active:scale-95"
       onclick={close}
       title={copy.sidebar.close}
       aria-label={copy.sidebar.close}

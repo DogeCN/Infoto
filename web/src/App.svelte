@@ -1,7 +1,6 @@
 <script lang="ts">
   import EmptyState from '$lib/components/EmptyState.svelte';
   import TopBar from '$lib/components/TopBar.svelte';
-  import type { SortKey } from '$lib/components/SortTabs.svelte';
   import OverlaySidebar from '$lib/components/OverlaySidebar.svelte';
   import WaterfallLayout from '$lib/components/WaterfallLayout.svelte';
   import UploadPanel from '$lib/components/UploadPanel.svelte';
@@ -13,6 +12,7 @@
   import { Settings as SettingsIcon, Megaphone, Upload } from '@lucide/svelte';
   import { toastOptions } from '$base/lib/ui';
   import { getEngine } from './core/engine';
+  import { shuffle, sortPhotos, type SortDirections, type SortKey } from './core/gallery';
   import {
     ensureIdentity,
     renderTurnstile,
@@ -87,19 +87,17 @@
         : TOAST_EDGE_GAP,
   );
 
-  // Layout settings (from SettingsPanel). Seeded from the same factory defaults the
-  // panel persists against, so the first frame cannot disagree with a stored value.
+  // Persisted layout and filter state.
   const loadedSettings = loadSettings();
   let layout = $state<LayoutSettings>(loadedSettings.layout);
   let filters = $state<FilterSettings>(loadedSettings.filters);
   let filterCount = $state(0);
 
-  // Sort state: latest / hottest / random; each key remembers its own direction —
-  // switching away and back keeps it (newest↔oldest, hottest↔coldest saved separately)
+  // Keep chronological and reaction sort directions independently.
   let sortKey = $state<SortKey>('latest');
   let latestAsc = $state(false);
   let hottestAsc = $state(false);
-  let sortDirs = $derived<Partial<Record<SortKey, boolean>>>({
+  let sortDirs = $derived<SortDirections>({
     latest: latestAsc,
     hottest: hottestAsc,
     random: false,
@@ -108,13 +106,12 @@
 
   let verificationTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Inbound verification: after a 401 the captcha renders centered in the empty
-   *  waterfall; `done` = token in, kept until the handshake ends. */
+  /** State for the identity verification overlay. */
   type VerifyState = 'idle' | 'loading' | 'done';
   let verifyState = $state<VerifyState>('idle');
   let turnstileEl = $state<HTMLDivElement | undefined>(undefined);
 
-  /** Resolve verification within the engine's single attempt, preserving its queued operations. */
+  /** Retry a sync request with an identity token when required. */
   async function syncWithIdentity(
     request: SyncRequest,
     io?: SyncClientIo,
@@ -166,15 +163,14 @@
   });
 
   // Forward photo operations by SHA-256 to the optimistic store and durable operation log.
-  /** Ids in a selection → the photos' hashes, resolved against both lists. */
+  /** Resolve selected card IDs to photo hashes. */
   function shasOf(ids: number[]): string[] {
-    const all = [...uploads.pendingPhotos, ...visiblePhotos];
-    const out: string[] = [];
-    for (const id of ids) {
-      const sha = all.find((p) => p.id === id)?.sha256;
-      if (sha) out.push(sha);
+    const selected = new Set(ids);
+    const shas = new Set<string>();
+    for (const photo of [...uploads.pendingPhotos, ...visiblePhotos]) {
+      if (selected.has(photo.id)) shas.add(photo.sha256);
     }
-    return out;
+    return [...shas];
   }
   function handleLike(photo: Photo) {
     store.toggleMark(photo.sha256, 'like');
@@ -193,7 +189,7 @@
     if (shas.length === 0) return;
     store.deletePhotos(shas);
   }
-  /** Bulk unmark: undo like / dislike / request-delete (unmarked items are idempotent no-ops). */
+  /** Clear every mark from the selected photos. */
   function handleUnmarkSelected(ids: number[]) {
     const shas = shasOf(ids);
     if (shas.length === 0) return;
@@ -201,10 +197,10 @@
     store.setMarkMany(shas, 'dislike', false);
     store.setMarkMany(shas, 'report', false);
   }
-  /** Downloads go through core/download: single files as {id36}.{ext}, multiple
-   *  files packed into download.zip, numbered in current visible order. */
+  /** Download one photo or package the current selection. */
   async function handleDownloadSelected(ids: number[]) {
-    const picked = visiblePhotos.filter((p) => ids.includes(p.id));
+    const selected = new Set(ids);
+    const picked = visiblePhotos.filter((photo) => selected.has(photo.id));
     if (picked.length === 0) return;
     try {
       if (picked.length === 1) await downloadOne(picked[0]!);
@@ -221,9 +217,7 @@
     }
   }
 
-  // Skip visiblePhotos when only layout changed. settings.filters keeps the same
-  // reference, and recomputing it reflows the waterfall.
-  let _prevFilterRef: import('./settings').FilterSettings | undefined;
+  let previousFilterSettings: FilterSettings | undefined;
   function handleSettingsChange(s: Settings) {
     layout = {
       dir: s.layout.dir,
@@ -231,65 +225,28 @@
       band: s.layout.band,
       gap: s.layout.gap,
     };
-    // Update only when the filters object reference actually changes (layout-only
-    // changes don't trigger it)
-    if (s.filters !== _prevFilterRef) {
-      _prevFilterRef = s.filters;
+    if (s.filters !== previousFilterSettings) {
+      previousFilterSettings = s.filters;
       filters = { ...s.filters, types: new Set(s.filters.types) };
     }
   }
 
-  // Sort + filter → the photos handed to the waterfall (filter logic lives in
-  // settings.ts, pure and testable)
-  let visiblePhotos = $derived.by(() => {
-    let list = applyFilters(store.photos, filters, store.selfId);
-
-    if (sortKey === 'latest') {
-      list = [...list].sort((a, b) =>
-        latestAsc ? a.createdAt - b.createdAt : b.createdAt - a.createdAt,
-      );
-    } else if (sortKey === 'hottest') {
-      const heat = (p: (typeof list)[number]) => p.likes.length - p.dislikes.length;
-      list = [...list].sort((a, b) => (hottestAsc ? heat(a) - heat(b) : heat(b) - heat(a)));
-    } else {
-      // random: reorder by the current shuffled index
-      const map = new Map(list.map((p) => [p.id, p]));
-      const ordered = randomOrder
-        .map((id) => map.get(id))
-        .filter((p): p is (typeof list)[number] => !!p);
-      const orderedIds = new Set(randomOrder);
-      const rest = list.filter((p) => !orderedIds.has(p.id));
-      list = [...ordered, ...rest];
-    }
-    return list;
-  });
+  let visiblePhotos = $derived.by(() =>
+    sortPhotos(applyFilters(store.photos, filters, store.selfId), sortKey, sortDirs, randomOrder),
+  );
 
   function onSortChange(key: SortKey) {
-    if (key === sortKey && key !== 'random') {
-      // Click again → reverse (newest↔oldest / hottest↔coldest); direction
-      // remembered per key
+    if (key === sortKey) {
       if (key === 'hottest') hottestAsc = !hottestAsc;
-      else latestAsc = !latestAsc;
-    } else if (key === 'random' && key === sortKey) {
-      randomOrder = shuffle(store.photos.map((p) => p.id)); // re-shuffle
-    } else {
-      // Switching sort keys: keep each key's last direction, don't reset it
-      sortKey = key;
-      if (key === 'random') randomOrder = shuffle(store.photos.map((p) => p.id));
+      else if (key === 'latest') latestAsc = !latestAsc;
+      return;
     }
+    sortKey = key;
+    if (key === 'random') randomOrder = shuffle(store.photos.map((photo) => photo.id));
   }
 
-  function shuffle<T>(arr: T[]): T[] {
-    const a = [...arr];
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j]!, a[i]!];
-    }
-    return a;
-  }
-  /** Top-bar "Random" clicked again → re-shuffle (Fisher-Yates, every click). */
   function handleReshuffle() {
-    randomOrder = shuffle(store.photos.map((p) => p.id));
+    randomOrder = shuffle(store.photos.map((photo) => photo.id));
     sortKey = 'random';
   }
 
@@ -300,7 +257,10 @@
   }
   function toggleRight() {
     rightOpen = !rightOpen;
-    if (rightOpen) leftOpen = false;
+    if (rightOpen) {
+      leftOpen = false;
+      layoutPreview = false;
+    }
   }
   function handleMultiSelect() {
     multiMode = !multiMode;
@@ -318,7 +278,7 @@
     uploads.addFiles(files);
     input.value = '';
   }
-  /** Panel row remove button: cancel anywhere in the flow (queue, token wait, transcode). */
+  /** Cancel an upload from any pipeline stage. */
   function handleRemoveUpload(jobId: string) {
     uploads.cancel(jobId);
   }
@@ -331,7 +291,7 @@
     void engine.sync();
   }
 
-  // Announcement ops: react / vote / feedback → op-log → /sync pipeline
+  // Submit announcement reactions, poll votes, and feedback.
   function handleReact(annId: number, emoji: string | null) {
     store.react(annId, emoji);
   }
@@ -352,7 +312,7 @@
   onchange={handleFileChange}
 />
 
-<div class="flex h-screen overflow-hidden bg-background">
+<div class="flex h-dvh overflow-hidden bg-background">
   <!-- Left Sidebar (Settings) -->
   <OverlaySidebar
     bind:open={leftOpen}
@@ -397,7 +357,7 @@
       {#if verifyState !== 'idle'}
         <div
           data-verify
-          class="absolute inset-0 z-10 grid place-items-center bg-background transition-opacity duration-300 ease-[var(--ease-exit)] {verifyState ===
+          class="absolute inset-0 z-10 grid place-items-center bg-background transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-exit)] {verifyState ===
           'done'
             ? 'pointer-events-none opacity-0'
             : 'opacity-100'}"
@@ -407,9 +367,7 @@
         </div>
       {/if}
 
-      <!-- Uploads must stay visible even on an empty album: the first upload of a
-           new account would land in this branch with nowhere to render, and a
-           failed first upload needs its retry card. -->
+      <!-- Keep upload cards visible while the gallery has no settled photos. -->
       {#if visiblePhotos.length === 0 && uploads.pendingPhotos.length === 0}
         <EmptyState
           icon={Upload}
@@ -472,9 +430,7 @@
     hidden={multiMode}
   />
 
-  <!-- Toast notifications: bottom-left (keeps image subjects clear); color, radius, and font all use site tokens -->
-  <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->
-  <!-- Expanded toast stack with measured clearance above the upload panel or selection bar. -->
+  <!-- Toast placement accounts for the upload panel and selection bar. -->
   <Toaster
     class="toast-stack"
     position="bottom-left"

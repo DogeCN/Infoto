@@ -1,6 +1,6 @@
--- Infoto data model.
--- users.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT): first insert gets id 0.
--- IF NOT EXISTS keeps fresh and local schema application idempotent.
+-- Core application tables.
+-- User IDs use SQLite's implicit integer primary-key assignment.
+-- IF NOT EXISTS keeps schema application idempotent.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   uuid TEXT UNIQUE NOT NULL,
@@ -48,9 +48,7 @@ CREATE TABLE IF NOT EXISTS votes (
   option INTEGER NOT NULL,
   PRIMARY KEY (poll_id, user_id, option)
 );
--- sort: manual (root-only) display order, lowest first. Unique by construction —
--- an insert takes MIN(sort) - 1 and a reorder renumbers the whole list 0…n-1 — so
--- the snapshot orders by sort alone with no tiebreak fallback.
+-- Manual display order, ascending; write operations maintain unique contiguous ranks.
 CREATE TABLE IF NOT EXISTS feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,

@@ -161,8 +161,7 @@ export class UploadPipeline {
     for (const l of this.editorListeners) l(t);
   }
 
-  /** Build a progress snapshot from a SharedWorker status message, falling back to a
-   *  previously-recorded file name (the cross-tab echo may omit it) or the job id. */
+  /** Build a progress snapshot using the cached file name or job ID as fallback. */
   private snapshotFrom(m: JobStatusMessage): PipelineTaskSnapshot {
     return {
       jobId: m.jobId,
@@ -273,9 +272,7 @@ export class UploadPipeline {
     }, SW_RESTART_BACKOFF_MS);
   }
 
-  /** A job left the SharedWorker (cancelJob): drop the row in every holding tab and
-   *  settle an in-flight editor waiter. AbortError, not a plain Error: the owner treats
-   *  it as "cancelled on purpose" and stays quiet instead of flashing a failure. */
+  /** Remove a job from every page and reject any pending editor upload with AbortError. */
   private handleJobRemoved(jobId: string): void {
     const waiter = this.editorWaiters.get(jobId);
     if (waiter) {

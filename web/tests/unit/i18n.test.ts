@@ -36,15 +36,15 @@ describe('i18n', () => {
       const before = JSON.stringify(locales);
       setLocale('zh-CN');
       expect(getLocale()).toBe('zh-CN');
-      expect(copy.settings.language).toBe('语言');
+      expect(copy.settings.language).toBe(locales['zh-CN'].settings.language);
       expect(activeLocale()).toBe('zh-CN');
-      expect(moduleCopy.settings.language).toBe('语言');
+      expect(moduleCopy.settings.language).toBe(locales['zh-CN'].settings.language);
       setLocale('en-US');
       expect(copy.settings.language).toBe('Language');
       setLocale('zh-CN');
       expect(JSON.stringify(locales)).toBe(before);
       expect(locales['en-US'].settings.language).toBe('Language');
-      expect(locales['zh-CN'].settings.language).toBe('语言');
+      expect(locales['zh-CN'].settings.language).toBe(copy.settings.language);
 
       const store = fakeStorage();
       setLocale('zh-CN', store);
