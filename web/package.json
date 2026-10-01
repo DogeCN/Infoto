@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Infoto SPA (built into ../dist, served by the Worker ASSETS binding)",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
