@@ -4,7 +4,7 @@ import { defineConfig, type Plugin, type UserConfig } from 'vite';
 import type { InlineConfig } from 'vitest/node';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
-import { injectFontRace } from '../src/shared/fonts.ts';
+import { injectFonts } from '../src/shared/fonts.ts';
 
 // Forward same-origin API requests to the local Worker.
 const backend = 'http://127.0.0.1:8787';
@@ -23,17 +23,17 @@ const alias = {
   $lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
 };
 
-function fontRacePlugin(): Plugin {
+function fontsPlugin(): Plugin {
   return {
-    name: 'font-race',
+    name: 'fonts',
     transformIndexHtml(html) {
-      return injectFontRace(html);
+      return injectFonts(html);
     },
   };
 }
 
 const config = {
-  plugins: [fontRacePlugin(), tailwindcss(), svelte()],
+  plugins: [fontsPlugin(), tailwindcss(), svelte()],
   resolve: { alias },
   // Pre-bundle worker dependencies before the first browser session.
   optimizeDeps: { include: ['mediabunny', 'hash-wasm'] },

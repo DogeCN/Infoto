@@ -42,17 +42,14 @@
     toast.error(copy.sync.failed, { description: copy.sync.queuedRetry });
   }
 
-  let syncing = $state(true);
   const store = createAppStore();
   const engine = getEngine({
     postSyncFn: syncWithIdentity,
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
-      syncing = false;
     },
     onError: (phase, e) => {
       console.error('[sync]', phase, e);
-      syncing = false;
       notifySyncFailure();
     },
   });
@@ -152,7 +149,6 @@
 
   onMount(() => {
     void engine.init().catch((error) => {
-      syncing = false;
       console.error('[sync] init', error);
       notifySyncFailure();
     });
@@ -400,12 +396,7 @@
       <!-- Uploads must stay visible even on an empty album: the first upload of a
            new account would land in this branch with nowhere to render, and a
            failed first upload needs its retry card. -->
-      {#if syncing && store.photos.length === 0}
-        <div class="flex flex-col items-center justify-center py-24">
-          <div class="size-12 animate-pulse rounded-full bg-muted"></div>
-          <p class="mt-4 text-sm text-muted-foreground">{copy.gallery.loading}</p>
-        </div>
-      {:else if visiblePhotos.length === 0 && uploads.pendingPhotos.length === 0}
+      {#if visiblePhotos.length === 0 && uploads.pendingPhotos.length === 0}
         <EmptyState
           icon={Upload}
           text={store.photos.length === 0 ? copy.gallery.empty : copy.gallery.emptyFiltered}

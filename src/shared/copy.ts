@@ -120,7 +120,6 @@ export const enUS = {
   },
 
   gallery: {
-    loading: 'Loading…',
     empty: 'No photos yet',
     emptyFiltered: 'No photos match the filters',
     emptyHint: 'Upload your first photo',
@@ -437,7 +436,6 @@ const zhCN: Copy = {
   },
 
   gallery: {
-    loading: '加载中…',
     empty: '还没有照片',
     emptyFiltered: '没有符合筛选的照片',
     emptyHint: '上传第一张照片',
