@@ -27,6 +27,27 @@ test('validates JSON responses and bounds transport failures', async () => {
     await assert.rejects(deleteFeedback(1, io), /feedback_timeout/);
   }
 
+  // JSON transport preserves caller cancellation and network failures.
+  {
+    const controller = new AbortController();
+    const cancelled = new DOMException('cancelled', 'AbortError');
+    const request = requestJson('/sync', { signal: controller.signal }, 'timeout', {
+      origin,
+      timeoutMs: 1000,
+      fetchFn: async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    });
+    controller.abort(cancelled);
+    await assert.rejects(request, (error) => error === cancelled);
+  }
+
   // JSON transport preserves network failures and tolerates non-JSON HTTP errors.
   {
     const offline = new Error('offline');

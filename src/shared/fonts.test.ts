@@ -22,14 +22,11 @@ describe('web fonts', () => {
     const injected = injectFonts(html);
     expect(injected).not.toContain('<!-- fonts -->');
     expect(injected).toContain(fontHeadBlock(APP_FONT_QUERY));
-    // No race, so the head block adds no script. (The page's own module script is
-    // unrelated and stays.)
+    // Font injection adds links without adding scripts.
     expect(fontHeadBlock(APP_FONT_QUERY)).not.toMatch(/<script/i);
   });
 
-  // The stylesheet hardcodes its own file host inside every `src:` url, and the error page's
-  // CSP only allows the host named here. Changing one constant and not the other does not
-  // fall back to a different CDN -- it gets every font file blocked.
+  // Keep stylesheet hosts, file hosts, and CSP sources aligned.
   it('keeps the stylesheet host and the file host a matching pair', () => {
     expect(FONT_CSS_HOST).toBe('https://fonts.googleapis.cn');
     expect(FONT_FILE_HOST).toBe('https://fonts.gstatic.cn');
@@ -39,7 +36,7 @@ describe('web fonts', () => {
     expect(csp).toContain(`font-src ${FONT_FILE_HOST}`);
     expect(csp).toContain(`connect-src ${FONT_CSS_HOST} ${FONT_FILE_HOST}`);
 
-    // Preconnect has to cover both, or the first font file pays a fresh DNS and TLS handshake.
+    // Preconnect to both the stylesheet and font file hosts.
     const block = fontHeadBlock(APP_FONT_QUERY);
     expect(block).toContain(`<link rel="preconnect" href="${FONT_CSS_HOST}" crossorigin>`);
     expect(block).toContain(`<link rel="preconnect" href="${FONT_FILE_HOST}" crossorigin>`);
@@ -48,8 +45,7 @@ describe('web fonts', () => {
   it('keeps the global hosts and the broken mirror out of the page', () => {
     const html = readFileSync(path.join(import.meta.dirname, '..', '..', 'web/index.html'), 'utf8');
     const injected = injectFonts(html);
-    // The mirror's TLS handshake fails (ADR 0006-revised), so naming it buys a console error
-    // on every load and no redundancy.
+    // Keep unconfigured font hosts out of page markup and the CSP.
     for (const retired of ['ustclug.org', 'fonts.googleapis.com', 'fonts.gstatic.com']) {
       expect(injected).not.toContain(retired);
       expect(fontPageCsp()).not.toContain(retired);

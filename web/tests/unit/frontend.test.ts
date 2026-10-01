@@ -118,16 +118,18 @@ describe('frontend ops and filters', () => {
   });
 
   it('splits independent poll references from Markdown and counts reactions in set order', () => {
-    expect(splitPollReferences('说明\n::vote:0\n尾部')).toEqual([
-      { type: 'markdown', content: '说明' },
+    expect(splitPollReferences('opening note\n::vote:0\nclosing note')).toEqual([
+      { type: 'markdown', content: 'opening note' },
       { type: 'poll', id: 0 },
-      { type: 'markdown', content: '尾部' },
+      { type: 'markdown', content: 'closing note' },
     ]);
     expect(splitPollReferences('::vote:12\n::vote:3')).toEqual([
       { type: 'poll', id: 12 },
       { type: 'poll', id: 3 },
     ]);
-    expect(splitPollReferences('纯文本')).toEqual([{ type: 'markdown', content: '纯文本' }]);
+    expect(splitPollReferences('plain text')).toEqual([
+      { type: 'markdown', content: 'plain text' },
+    ]);
     expect(splitPollReferences(':::vote A | B')).toEqual([
       { type: 'markdown', content: ':::vote A | B' },
     ]);

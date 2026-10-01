@@ -7,6 +7,9 @@ export type { LocaleCode } from './copy.ts';
 /** Maximum operations accepted by one sync request. */
 export const MAX_SYNC_OPS = 500;
 
+/** Maximum choices accepted by a poll. */
+export const MAX_POLL_OPTIONS = 100;
+
 /** Media kind encoded in photos.type. */
 export const MEDIA_TYPE = {
   /** Still image (WebP). */
@@ -155,14 +158,14 @@ export interface SyncRequest {
 
 export interface SyncResponse {
   ok: boolean;
-  /** Server millisecond clock, used to correct optimistic timestamps. */
+  /** Server millisecond clock for correcting optimistic timestamps. */
   serverTime: number;
   selfId: number;
   /** Where the browser POSTs artifacts. The standalone facade owns the image host and its
    *  credentials, so this server never sees an upload or a TC_SECRET. */
   mediaHostUrl: string;
   photos: Photo[];
-  /** Locale used to select the remaining localized snapshot fields. */
+  /** Locale for selecting the remaining localized snapshot fields. */
   locale: LocaleCode;
   announcements: Announcement[];
   polls: Poll[];

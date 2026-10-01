@@ -200,7 +200,7 @@ export function applyFilters(photos: Photo[], f: FilterSettings, selfId: number)
 /** Count active filters for the top-bar badge. */
 export function countActiveFilters(f: FilterSettings): number {
   let c = 0;
-  if (f.types.size < 3) c++;
+  if (f.types.size < MEDIA_TYPES.length) c++;
   if (f.ownedByMe !== 'off') c++;
   if (f.likedByMe !== 'off') c++;
   if (f.dislikedByMe !== 'off') c++;

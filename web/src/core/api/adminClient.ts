@@ -1,7 +1,5 @@
-// Transport and endpoints for root-only admin writes. Reads come from the locale-scoped /sync snapshot.
-
 import type { Announcement, Poll } from '$shared/types';
-import { activeLocale, copy, fmt } from '$shared/copy';
+import { activeLocale, copy, fmt, type Copy } from '$shared/copy';
 import { requestJson, type RequestIo } from './request';
 
 export type AdminApiIo = RequestIo;
@@ -9,46 +7,98 @@ export const ANN_TIMEOUT = 'announcement_timeout';
 export const FB_TIMEOUT = 'feedback_timeout';
 export const POLL_TIMEOUT = 'poll_timeout';
 
-function adminWrite(
-  path: string,
+type AdminResource = 'announcement' | 'poll' | 'feedback';
+type AdminAction = 'create' | 'update' | 'delete' | 'reorder';
+type ApiErrorKey = keyof Copy['api'];
+
+interface ResourceConfig {
+  path: string;
+  timeout: string;
+  errors: Partial<Record<AdminAction, ApiErrorKey>>;
+}
+
+const RESOURCES: Record<AdminResource, ResourceConfig> = {
+  announcement: {
+    path: '/admin/announcements',
+    timeout: ANN_TIMEOUT,
+    errors: {
+      create: 'announcementCreateFailed',
+      update: 'announcementUpdateFailed',
+      delete: 'announcementDeleteFailed',
+      reorder: 'announcementReorderFailed',
+    },
+  },
+  poll: {
+    path: '/admin/polls',
+    timeout: POLL_TIMEOUT,
+    errors: {
+      create: 'pollCreateFailed',
+      update: 'pollUpdateFailed',
+      delete: 'pollDeleteFailed',
+      reorder: 'pollReorderFailed',
+    },
+  },
+  feedback: {
+    path: '/admin/feedback',
+    timeout: FB_TIMEOUT,
+    errors: {
+      delete: 'feedbackDeleteFailed',
+      reorder: 'feedbackReorderFailed',
+    },
+  },
+};
+
+async function adminWrite(
+  resource: AdminResource,
+  action: AdminAction,
   method: 'POST' | 'PUT' | 'DELETE',
+  suffix: string,
   body: unknown,
-  timeoutId: string,
   io: AdminApiIo,
-) {
-  return requestJson(
-    path,
+): Promise<unknown> {
+  const config = RESOURCES[resource];
+  const { response, data } = await requestJson(
+    `${config.path}${suffix}`,
     {
       method,
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     },
-    timeoutId,
+    config.timeout,
     io,
   );
+  if (!response.ok) {
+    const errorKey = config.errors[action];
+    if (!errorKey) throw new Error(`unsupported_${resource}_${action}`);
+    throw new Error(fmt(copy.api[errorKey], { status: response.status }));
+  }
+  return data;
 }
 
-const ANN_PATH = '/admin/announcements';
-const POLL_PATH = '/admin/polls';
-const FB_PATH = '/admin/feedback';
+function created<T>(data: unknown, field: 'announcement' | 'poll'): T {
+  if (!data || typeof data !== 'object' || !('ok' in data) || data.ok !== true) {
+    throw new Error('invalid_response');
+  }
+  const result = data as Record<string, unknown>;
+  const value = result[field];
+  if (!value || typeof value !== 'object') throw new Error('invalid_response');
+  return value as T;
+}
 
-/** Create and resolve the real id the server assigned. */
 export async function createAnnouncement(
   title: string,
   contentMd: string,
   io: AdminApiIo = {},
 ): Promise<Announcement> {
-  const { response: res, data } = await adminWrite(
-    ANN_PATH,
+  const data = await adminWrite(
+    'announcement',
+    'create',
     'POST',
+    '',
     { title, contentMd, locale: activeLocale() },
-    ANN_TIMEOUT,
     io,
   );
-  if (!res.ok) throw new Error(fmt(copy.api.announcementCreateFailed, { status: res.status }));
-  const result = data as { ok?: boolean; announcement?: Announcement } | null;
-  if (result?.ok !== true || !result.announcement) throw new Error('invalid_response');
-  return result.announcement;
+  return created<Announcement>(data, 'announcement');
 }
 
 export async function updateAnnouncement(
@@ -57,37 +107,29 @@ export async function updateAnnouncement(
   contentMd: string,
   io: AdminApiIo = {},
 ): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${ANN_PATH}/${id}`,
+  await adminWrite(
+    'announcement',
+    'update',
     'PUT',
+    `/${id}`,
     { title, contentMd, locale: activeLocale() },
-    ANN_TIMEOUT,
     io,
   );
-  if (!res.ok) throw new Error(fmt(copy.api.announcementUpdateFailed, { status: res.status }));
 }
 
 export async function deleteAnnouncement(id: number, io: AdminApiIo = {}): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${ANN_PATH}/${id}`,
-    'DELETE',
-    undefined,
-    ANN_TIMEOUT,
-    io,
-  );
-  if (!res.ok) throw new Error(fmt(copy.api.announcementDeleteFailed, { status: res.status }));
+  await adminWrite('announcement', 'delete', 'DELETE', `/${id}`, undefined, io);
 }
 
-/** ids are real server ids; sort is assigned by index within the active language. */
 export async function reorderAnnouncements(ids: number[], io: AdminApiIo = {}): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${ANN_PATH}/reorder`,
+  await adminWrite(
+    'announcement',
+    'reorder',
     'POST',
+    '/reorder',
     { ids, locale: activeLocale() },
-    ANN_TIMEOUT,
     io,
   );
-  if (!res.ok) throw new Error(fmt(copy.api.announcementReorderFailed, { status: res.status }));
 }
 
 export async function createPoll(
@@ -96,17 +138,15 @@ export async function createPoll(
   allowMultiple: boolean,
   io: AdminApiIo = {},
 ): Promise<Poll> {
-  const { response: res, data } = await adminWrite(
-    POLL_PATH,
+  const data = await adminWrite(
+    'poll',
+    'create',
     'POST',
+    '',
     { title, options, allowMultiple, locale: activeLocale() },
-    POLL_TIMEOUT,
     io,
   );
-  if (!res.ok) throw new Error(fmt(copy.api.pollCreateFailed, { status: res.status }));
-  const result = data as { ok?: boolean; poll?: Poll } | null;
-  if (result?.ok !== true || !result.poll) throw new Error('invalid_response');
-  return result.poll;
+  return created<Poll>(data, 'poll');
 }
 
 export async function updatePoll(
@@ -116,58 +156,28 @@ export async function updatePoll(
   allowMultiple: boolean,
   io: AdminApiIo = {},
 ): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${POLL_PATH}/${id}`,
+  await adminWrite(
+    'poll',
+    'update',
     'PUT',
+    `/${id}`,
     { title, options, allowMultiple, locale: activeLocale() },
-    POLL_TIMEOUT,
     io,
   );
-  if (!res.ok) throw new Error(fmt(copy.api.pollUpdateFailed, { status: res.status }));
 }
 
 export async function deletePoll(id: number, io: AdminApiIo = {}): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${POLL_PATH}/${id}`,
-    'DELETE',
-    undefined,
-    POLL_TIMEOUT,
-    io,
-  );
-  if (!res.ok) throw new Error(fmt(copy.api.pollDeleteFailed, { status: res.status }));
+  await adminWrite('poll', 'delete', 'DELETE', `/${id}`, undefined, io);
 }
 
 export async function reorderPolls(ids: number[], io: AdminApiIo = {}): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${POLL_PATH}/reorder`,
-    'POST',
-    { ids, locale: activeLocale() },
-    POLL_TIMEOUT,
-    io,
-  );
-  if (!res.ok) throw new Error(fmt(copy.api.pollReorderFailed, { status: res.status }));
+  await adminWrite('poll', 'reorder', 'POST', '/reorder', { ids, locale: activeLocale() }, io);
 }
 
-/** Delete one feedback row. Idempotent server-side, so a repeat is harmless. */
 export async function deleteFeedback(id: number, io: AdminApiIo = {}): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${FB_PATH}/${id}`,
-    'DELETE',
-    undefined,
-    FB_TIMEOUT,
-    io,
-  );
-  if (!res.ok) throw new Error(fmt(copy.api.feedbackDeleteFailed, { status: res.status }));
+  await adminWrite('feedback', 'delete', 'DELETE', `/${id}`, undefined, io);
 }
 
-/** ids are real server ids; sort is assigned by index within the active language. */
 export async function reorderFeedback(ids: number[], io: AdminApiIo = {}): Promise<void> {
-  const { response: res } = await adminWrite(
-    `${FB_PATH}/reorder`,
-    'POST',
-    { ids, locale: activeLocale() },
-    FB_TIMEOUT,
-    io,
-  );
-  if (!res.ok) throw new Error(fmt(copy.api.feedbackReorderFailed, { status: res.status }));
+  await adminWrite('feedback', 'reorder', 'POST', '/reorder', { ids, locale: activeLocale() }, io);
 }

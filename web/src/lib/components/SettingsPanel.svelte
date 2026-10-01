@@ -22,7 +22,7 @@
   import { cn } from '$base/lib/ui';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
   import { MAX_BAND, MIN_BAND } from '$base/lib/band';
-  import type { Component } from 'svelte';
+  import { onDestroy, type Component } from 'svelte';
   import type { LocaleCode, MediaType, Photo } from '$shared/types';
   import {
     defaultSettings,
@@ -142,19 +142,31 @@
   }
 
   let shakingType = $state<MediaType | null>(null);
-  // Derive localized labels reactively.
-  const TYPE_LABELS = $derived<Record<number, string>>({
-    0: copy.settings.typeImage,
-    1: copy.settings.typeAnimated,
-    2: copy.settings.typeVideo,
-  });
+  let shakeTimer: ReturnType<typeof setTimeout> | undefined;
+  const TYPE_OPTIONS = $derived<ReadonlyArray<{ type: MediaType; label: string; icon: Component }>>(
+    [
+      { type: 0, label: copy.settings.typeImage, icon: Image },
+      { type: 1, label: copy.settings.typeAnimated, icon: ImagePlay },
+      { type: 2, label: copy.settings.typeVideo, icon: Video },
+    ],
+  );
+
+  function finishTypeFeedback(type: MediaType): void {
+    if (shakingType !== type) return;
+    clearTimeout(shakeTimer);
+    shakeTimer = undefined;
+    shakingType = null;
+  }
+
+  onDestroy(() => clearTimeout(shakeTimer));
 
   function toggleType(t: MediaType) {
     const next = new Set(settings.filters.types);
     if (next.has(t)) {
       if (next.size === 1) {
-        // The last type stays: shake the button, flash destructive, explain via toast.
         shakingType = t;
+        clearTimeout(shakeTimer);
+        shakeTimer = setTimeout(() => finishTypeFeedback(t), 200);
         toast.error(copy.settings.keepOneType);
         return;
       }
@@ -205,7 +217,7 @@
         <button
           aria-label={copy.settings.resetFilters}
           type="button"
-          class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
+          class="icon-button size-7"
           onclick={resetFilters}
         >
           <RotateCcw class="size-3.5" />
@@ -276,65 +288,31 @@
         />
       </div>
 
-      <!-- Types: three toggles, at least one remains -->
+      <!-- Media type filters -->
       <div class="flex items-center gap-1">
-        <Tooltip text={TYPE_LABELS[0]!} side="bottom">
-          <button
-            aria-label={TYPE_LABELS[0]!}
-            type="button"
-            class={cn(
-              'inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-              shakingType === 0
-                ? 'bg-destructive text-white'
-                : settings.filters.types.has(0)
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-            )}
-            style={shakingType === 0 ? 'animation: shakeX 200ms both' : ''}
-            onanimationend={() => shakingType === 0 && (shakingType = null)}
-            onclick={() => toggleType(0)}
-          >
-            <Image class="size-4" />
-          </button>
-        </Tooltip>
-        <Tooltip text={TYPE_LABELS[1]!} side="bottom">
-          <button
-            aria-label={TYPE_LABELS[1]!}
-            type="button"
-            class={cn(
-              'inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-              shakingType === 1
-                ? 'bg-destructive text-white'
-                : settings.filters.types.has(1)
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-            )}
-            style={shakingType === 1 ? 'animation: shakeX 200ms both' : ''}
-            onanimationend={() => shakingType === 1 && (shakingType = null)}
-            onclick={() => toggleType(1)}
-          >
-            <ImagePlay class="size-4" />
-          </button>
-        </Tooltip>
-        <Tooltip text={TYPE_LABELS[2]!} side="bottom">
-          <button
-            aria-label={TYPE_LABELS[2]!}
-            type="button"
-            class={cn(
-              'inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-              shakingType === 2
-                ? 'bg-destructive text-white'
-                : settings.filters.types.has(2)
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-            )}
-            style={shakingType === 2 ? 'animation: shakeX 200ms both' : ''}
-            onanimationend={() => shakingType === 2 && (shakingType = null)}
-            onclick={() => toggleType(2)}
-          >
-            <Video class="size-4" />
-          </button>
-        </Tooltip>
+        {#each TYPE_OPTIONS as option (option.type)}
+          {@const selected = settings.filters.types.has(option.type)}
+          {@const Icon = option.icon}
+          <Tooltip text={option.label} side="bottom">
+            <button
+              type="button"
+              aria-label={option.label}
+              aria-pressed={selected}
+              class={cn(
+                'inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
+                shakingType === option.type
+                  ? 'shake-feedback bg-destructive text-white'
+                  : selected
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+              )}
+              onanimationend={() => finishTypeFeedback(option.type)}
+              onclick={() => toggleType(option.type)}
+            >
+              <Icon class="size-4" />
+            </button>
+          </Tooltip>
+        {/each}
       </div>
     </div>
   </section>
@@ -349,7 +327,7 @@
         <button
           aria-label={copy.settings.resetLayout}
           type="button"
-          class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
+          class="icon-button size-7"
           onclick={resetLayout}
         >
           <RotateCcw class="size-3.5" />

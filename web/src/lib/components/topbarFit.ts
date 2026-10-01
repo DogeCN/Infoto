@@ -31,17 +31,7 @@ export function barHeight(barWidth: number): number {
   return BAR_HEIGHT_MIN + (BAR_HEIGHT_MAX - BAR_HEIGHT_MIN) * ramp(barWidth);
 }
 
-/**
- * Sizes that must grow with the bar, as fractions of its height.
- *
- * Without this the bar simply got taller while every control kept its fixed size, so the
- * extra pixels read as padding below the bar rather than as a larger bar. Icons are
- * 0.3125 of the height (20px at BAR_HEIGHT_MAX, matching the old fixed `size-5`), and the
- * count badge is 0.25 (16px, matching `size-4`).
- *
- * Exported so components read them as `calc(var(--bar-h) * …)` — one custom property on
- * the header carries the whole ramp.
- */
+/** Icon and badge dimensions as fractions of the measured bar height. */
 export const BAR_ICON_RATIO = 0.3125;
 export const BAR_BADGE_RATIO = 0.25;
 
@@ -67,10 +57,7 @@ export interface BarRequirements {
   paged: number;
 }
 
-/**
- * Extra slack required before the bar returns to a roomier mode.
- * Without it, thresholds a pixel apart flip-flop on sub-pixel width noise.
- */
+/** Spare width required before switching to a roomier density. */
 export const BAR_HYSTERESIS_PX = 24;
 
 /** Minimum spare width for a fitting layout, below the hysteresis threshold. */

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { Poll } from '$shared/types';
+  import { CheckSquare, Plus, Trash2 } from '@lucide/svelte';
+  import { fmt } from '$shared/copy';
+  import { MAX_POLL_OPTIONS, type Poll } from '$shared/types';
+  import TriStateToggle from '$lib/components/TriStateToggle.svelte';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
@@ -11,20 +14,36 @@
 
   let { poll, onSave, onCancel }: Props = $props();
   let title = $state(untrack(() => poll?.title ?? ''));
-  let optionsText = $state(untrack(() => poll?.options.join('\n') ?? ''));
-  let allowMultiple = $state(untrack(() => poll?.allowMultiple ?? false));
-  let options = $derived(
-    optionsText
-      .split(/\r?\n/)
-      .map((option) => option.trim())
-      .filter(Boolean),
+  let nextOptionId = 0;
+  let options = $state(
+    untrack(() => (poll?.options ?? ['', '']).map((value) => ({ id: nextOptionId++, value }))),
   );
-  let canSave = $derived(title.trim().length > 0 && options.length >= 2);
+  let allowMultiple = $state(untrack(() => poll?.allowMultiple ?? false));
+  let canSave = $derived(
+    title.trim().length > 0 &&
+      options.length >= 2 &&
+      options.length <= MAX_POLL_OPTIONS &&
+      options.every((option) => option.value.trim().length > 0),
+  );
+
+  function addOption(): void {
+    if (options.length >= MAX_POLL_OPTIONS) return;
+    options = [...options, { id: nextOptionId++, value: '' }];
+  }
+
+  function removeOption(id: number): void {
+    if (options.length <= 2) return;
+    options = options.filter((option) => option.id !== id);
+  }
 
   function submit(event: SubmitEvent): void {
     event.preventDefault();
     if (!canSave) return;
-    onSave(title.trim(), options, allowMultiple);
+    onSave(
+      title.trim(),
+      options.map((option) => option.value.trim()),
+      allowMultiple,
+    );
   }
 
   function onKeydown(event: KeyboardEvent): void {
@@ -46,39 +65,62 @@
   <form class="flex min-h-0 flex-1 flex-col" onsubmit={submit}>
     <div class="min-h-0 flex-1 overflow-y-auto px-4 py-5 md:px-8 md:py-6">
       <div class="mx-auto flex max-w-3xl flex-col gap-5">
-        <label class="space-y-2 text-sm font-medium">
-          <span>{copy.admin.editor.pollTitle}</span>
+        <label class="block">
+          <span class="sr-only">{copy.admin.editor.pollTitle}</span>
           <input
             bind:value={title}
             required
             maxlength="200"
             type="text"
-            aria-label={copy.admin.editor.pollTitle}
             placeholder={copy.admin.editor.pollTitle}
-            class="w-full rounded-md border border-input bg-background px-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="field-control"
           />
         </label>
 
-        <label class="space-y-2 text-sm font-medium">
-          <span>{copy.admin.editor.pollOptions}</span>
-          <textarea
-            bind:value={optionsText}
-            rows="8"
-            aria-label={copy.admin.editor.pollOptions}
-            placeholder={copy.admin.editor.pollOptionsHint}
-            class="w-full resize-y rounded-md border border-input bg-muted px-3 py-2.5 text-sm leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          ></textarea>
-          <span class="block text-xs font-normal text-muted-foreground"
-            >{copy.admin.editor.pollOptionsHint}</span
+        <fieldset class="space-y-3">
+          <legend class="sr-only">{copy.admin.editor.pollOptions}</legend>
+          <div class="space-y-2">
+            {#each options as option, index (option.id)}
+              <div class="flex items-center gap-2">
+                <input
+                  bind:value={option.value}
+                  required
+                  maxlength="200"
+                  type="text"
+                  aria-label={fmt(copy.admin.editor.pollOptionLabel, { number: index + 1 })}
+                  placeholder={fmt(copy.admin.editor.pollOptionLabel, { number: index + 1 })}
+                  class="field-control min-w-0 flex-1"
+                />
+                <button
+                  type="button"
+                  class="icon-button icon-button--danger size-9 shrink-0 disabled:opacity-40"
+                  aria-label={fmt(copy.admin.editor.removePollOption, { number: index + 1 })}
+                  disabled={options.length <= 2}
+                  onclick={() => removeOption(option.id)}
+                >
+                  <Trash2 class="size-4" />
+                </button>
+              </div>
+            {/each}
+          </div>
+          <button
+            type="button"
+            class="action-button action-button--secondary disabled:opacity-40"
+            aria-label={copy.admin.editor.addPollOption}
+            disabled={options.length >= MAX_POLL_OPTIONS}
+            onclick={addOption}
           >
-        </label>
+            <Plus class="size-4" />
+            {copy.admin.editor.addPollOption}
+          </button>
+        </fieldset>
 
-        <label
-          class="flex w-fit cursor-pointer items-center gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-sm"
-        >
-          <input bind:checked={allowMultiple} type="checkbox" class="size-4 accent-primary" />
-          <span>{copy.admin.editor.pollAllowMultiple}</span>
-        </label>
+        <TriStateToggle
+          label={copy.admin.editor.pollAllowMultiple}
+          icon={CheckSquare}
+          state={allowMultiple ? 'only' : 'off'}
+          onCycle={() => (allowMultiple = !allowMultiple)}
+        />
         {#if poll}
           <p class="text-xs text-muted-foreground">{copy.admin.poll.editResetVotesHint}</p>
         {/if}
@@ -86,17 +128,13 @@
     </div>
 
     <div class="flex shrink-0 justify-end gap-2 border-t border-border px-4 py-3 md:px-6">
-      <button
-        type="button"
-        class="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:bg-secondary/80"
-        onclick={onCancel}
-      >
+      <button type="button" class="action-button action-button--secondary" onclick={onCancel}>
         {copy.admin.editor.cancel}
       </button>
       <button
         type="submit"
         disabled={!canSave}
-        class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+        class="action-button action-button--primary disabled:opacity-50"
       >
         {copy.admin.editor.save}
       </button>

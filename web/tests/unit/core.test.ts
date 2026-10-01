@@ -17,7 +17,7 @@ describe('keepalivePrefix', () => {
     const big: Op = {
       type: 'fb_create',
       target: null,
-      payload: { contentMd: '测'.repeat(2000) + '🔥' },
+      payload: { contentMd: '€'.repeat(2000) + '🔥' },
     };
     const fit = keepalivePrefix([like(1), big, big, like(2)], 8_000);
     expect(fit!.ops).toEqual([like(1), big]);

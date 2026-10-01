@@ -1,6 +1,4 @@
-// Persisted target column width, in CSS pixels. The layout engine derives the
-// column count from this width and the measured cross size. A narrow viewport
-// can therefore show one column; that is the stored width, not a second default.
+// Target column width in CSS pixels. The layout derives the column count from the measured cross size.
 
 export const MIN_BAND = 100;
 export const MAX_BAND = 800;

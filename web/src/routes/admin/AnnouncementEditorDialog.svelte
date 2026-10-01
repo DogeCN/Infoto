@@ -152,7 +152,7 @@
             type="text"
             placeholder={copy.admin.editor.titlePlaceholder}
             aria-label={copy.admin.editor.titlePlaceholder}
-            class="w-full rounded-md border border-input bg-background px-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="field-control"
           />
         </div>
         <div class="min-h-0 flex-1">
@@ -170,17 +170,13 @@
     </div>
 
     <div class="flex shrink-0 justify-end gap-2 border-t border-border px-4 py-3 md:px-6">
-      <button
-        type="button"
-        class="rounded-md bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:bg-secondary/80"
-        onclick={handleCancel}
-      >
+      <button type="button" class="action-button action-button--secondary" onclick={handleCancel}>
         {copy.admin.editor.cancel}
       </button>
       <button
         type="submit"
         disabled={!canSave}
-        class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+        class="action-button action-button--primary disabled:opacity-50"
       >
         {uploadBusy ? copy.admin.editor.uploading : copy.admin.editor.save}
       </button>

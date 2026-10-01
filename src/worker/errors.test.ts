@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { locales } from '../shared/copy.ts';
 import { notFoundPage, serverErrorPage } from './errors.ts';
 
 const request = (acceptLanguage?: string): Request =>
@@ -14,8 +15,8 @@ describe('worker error pages', () => {
     expect(zh.headers.get('Content-Language')).toBe('zh-CN');
     const zhBody = await zh.text();
     expect(zhBody).toContain('<html lang="zh-CN">');
-    expect(zhBody).toContain('页面不存在或已被移除');
-    expect(zhBody).toContain('返回首页');
+    expect(zhBody).toContain(locales['zh-CN'].errorPage.workerNotFoundMessage);
+    expect(zhBody).toContain(locales['zh-CN'].errorPage.backHome);
 
     const weighted = await serverErrorPage(request('zh-CN;q=0.2, en-US;q=0.9')).text();
     expect(weighted).toContain('The server hiccupped');
