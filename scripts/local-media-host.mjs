@@ -77,6 +77,9 @@ const CORS = {
   'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': 'content-type',
   'access-control-max-age': '86400',
+  // Mirrors the facade: the rate-limit hints it relays are unreadable cross-origin
+  // without this, since only safelisted response headers survive by default.
+  'access-control-expose-headers': 'retry-after, x-ratelimit-limit, x-ratelimit-remaining',
 };
 
 const server = createServer((req, res) => {

@@ -22,6 +22,16 @@ const UPSTREAM_UPLOAD = 'https://tc.0147258.xyz/upload';
 /** Response headers worth relaying: rate-limit hints explain a rejection like upstream does. */
 const RELAY_HEADERS = ['content-type', 'retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining'];
 
+/** Which of those a cross-origin caller may actually read.
+ *
+ *  Derived from RELAY_HEADERS so the two cannot drift apart. Only the safelisted response
+ *  headers survive a cross-origin read by default -- Cache-Control, Content-Language,
+ *  Content-Length, Content-Type, Expires, Last-Modified, Pragma -- so relaying
+ *  `retry-after` and the `x-ratelimit-*` hints achieved nothing until these were exposed:
+ *  the browser hid every one of them from the page.
+ */
+const EXPOSED_HEADERS = RELAY_HEADERS.filter((name) => name !== 'content-type').join(', ');
+
 /** base64url of a byte buffer, sliced so a large buffer cannot overflow the argument limit. */
 function b64u(buf) {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -64,6 +74,7 @@ function corsHeaders(extra) {
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'access-control-allow-headers': 'content-type',
     'access-control-max-age': '86400',
+    'access-control-expose-headers': EXPOSED_HEADERS,
     ...extra,
   };
 }
