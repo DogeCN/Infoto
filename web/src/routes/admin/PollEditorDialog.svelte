@@ -103,24 +103,28 @@
               </div>
             {/each}
           </div>
-          <button
-            type="button"
-            class="action-button action-button--secondary disabled:opacity-40"
-            aria-label={copy.admin.editor.addPollOption}
-            disabled={options.length >= MAX_POLL_OPTIONS}
-            onclick={addOption}
-          >
-            <Plus class="size-4" />
-            {copy.admin.editor.addPollOption}
-          </button>
+          <!-- Add-option and the multi-select toggle share a row so the toggle sizes to its
+               label instead of stretching across the dialog as a block child. -->
+          <div class="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              class="action-button action-button--secondary disabled:opacity-40"
+              aria-label={copy.admin.editor.addPollOption}
+              disabled={options.length >= MAX_POLL_OPTIONS}
+              onclick={addOption}
+            >
+              <Plus class="size-4" />
+              {copy.admin.editor.addPollOption}
+            </button>
+            <TriStateToggle
+              label={copy.admin.editor.pollAllowMultiple}
+              icon={CheckSquare}
+              state={allowMultiple ? 'only' : 'off'}
+              onCycle={() => (allowMultiple = !allowMultiple)}
+            />
+          </div>
         </fieldset>
 
-        <TriStateToggle
-          label={copy.admin.editor.pollAllowMultiple}
-          icon={CheckSquare}
-          state={allowMultiple ? 'only' : 'off'}
-          onCycle={() => (allowMultiple = !allowMultiple)}
-        />
         {#if poll}
           <p class="text-xs text-muted-foreground">{copy.admin.poll.editResetVotesHint}</p>
         {/if}
