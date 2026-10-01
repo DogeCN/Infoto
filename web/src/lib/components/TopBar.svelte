@@ -97,6 +97,11 @@
     if (!info.shown) return;
     labelledPillW = info.shownIsLabelled ? info.shown : info.shown + info.labelDelta;
     iconPillW = info.shownIsLabelled ? info.shown - info.labelDelta : info.shown;
+    // Re-evaluate the density here rather than waiting for the header observer. Switching
+    // language changes the pill labels, which resizes the pill but not the header, so
+    // nothing else would re-run the fit calculation and the bar kept a mode chosen for
+    // the previous label widths.
+    remeasure();
   }
 
   // Measure the pager arrow because its width scales with the bar height.
