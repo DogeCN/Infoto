@@ -36,7 +36,7 @@
           <Tooltip text={copy.admin.announcement.edit}>
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+              class="icon-button p-2"
               aria-label={copy.admin.announcement.editAria}
               onclick={() => onEdit(announcement)}
             >
@@ -46,7 +46,7 @@
           <Tooltip text={copy.admin.announcement.delete}>
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+              class="icon-button icon-button--danger p-2"
               aria-label={copy.admin.announcement.deleteAria}
               onclick={() => onDelete(announcement.id)}
             >

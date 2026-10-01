@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Render the selected density and measure the label-width delta in an independent normal-flow clone.
-  import type { SortKey } from './SortTabs.svelte';
+  // Render the selected density and measure the alternate label layout.
+  import type { SortKey } from '../../core/gallery';
   import SortTabs from './SortTabs.svelte';
 
   interface Props {

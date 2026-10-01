@@ -1,11 +1,22 @@
 // Exercise image and video uploads, size limits, retries, cross-tab progress, and pagehide synchronization.
 import { expect, test, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
+import { fmt, locales } from '../../../src/shared/copy';
 import { passGate } from './helpers';
 
-/** Locate the upload action by its localized accessible name. */
-const uploadButton = (page: Page) =>
-  page.locator('header button[title="Upload"], header button[title="上传"]');
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const localizedPattern = (values: string[]): RegExp =>
+  new RegExp(`^(?:${values.map(escapeRegExp).join('|')})$`);
+const copyTables = Object.values(locales);
+const uploadLabel = localizedPattern(copyTables.map((table) => table.topbar.upload));
+const retryLabel = localizedPattern(copyTables.map((table) => table.photoCard.retry));
+const duplicateLabel = new RegExp(
+  copyTables
+    .map((table) => escapeRegExp(fmt(table.upload.duplicate, { fileName: 'e2e.jpg' })))
+    .join('|'),
+);
+
+const uploadButton = (page: Page) => page.getByRole('button', { name: uploadLabel, exact: true });
 
 /** Transcode-panel row for a given file name (visible while the job is active). */
 const taskRow = (page: Page, name: string) => page.getByText(name, { exact: true });
@@ -128,7 +139,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await uploadButton(page).click();
     await chooser2;
     await dupLog;
-    await expect(page.getByText(/e2e\.jpg (already exists|已存在)/).last()).toBeVisible();
+    await expect(page.getByText(duplicateLabel).last()).toBeVisible();
     await page.locator('header button:has(svg.lucide-refresh-cw)').click();
     await expect.poll(count, { timeout: 30_000 }).toBe(before); // The duplicate upload leaves the photo count unchanged.
   });
@@ -190,7 +201,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await expect(page.locator('button:has(svg.lucide-rotate-ccw)').first()).toBeVisible({
       timeout: 120_000,
     });
-    await expect(page.getByRole('button', { name: /retry upload|重试上传/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: retryLabel, exact: true })).toBeVisible();
   });
 
   test('cross-tab: page A uploads, page B sees it (SharedWorker + BroadcastChannel + sync)', async ({

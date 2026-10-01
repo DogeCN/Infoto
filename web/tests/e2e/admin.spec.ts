@@ -1,12 +1,17 @@
 import { expect, test } from '@playwright/test';
+import { fmt, locales, plural } from '../../../src/shared/copy';
 import type { Poll, SyncResponse } from '../../../src/shared/types';
+
+const locale = 'zh-CN';
+const copy = locales[locale];
+const voteCount = (count: number): string => fmt(plural(count, copy.vote.count, locale), { count });
 
 const previewPoll: Poll = {
   id: 42,
-  title: '现有投票',
-  options: ['选项甲', '选项乙'],
+  title: 'Existing poll',
+  options: ['Choice A', 'Choice B'],
   allowMultiple: true,
-  locale: 'zh-CN',
+  locale,
   sort: 0,
   votes: [
     { userId: 4, option: 0 },
@@ -28,7 +33,7 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
         selfId: 0,
         mediaHostUrl: 'https://facade.test',
         photos: [],
-        locale: 'zh-CN',
+        locale,
         announcements: [],
         polls: [previewPoll],
         feedback: [],
@@ -36,40 +41,45 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
     });
   });
   await page.goto('/admin');
-  await page.getByRole('button', { name: '新增公告' }).click();
+  await page.getByRole('button', { name: copy.admin.newAnnouncement }).click();
 
-  const dialog = page.getByRole('dialog', { name: '标题', exact: true });
+  const dialog = page.getByRole('dialog', {
+    name: copy.admin.editor.titlePlaceholder,
+    exact: true,
+  });
   await expect(dialog).toBeVisible();
-  const save = dialog.getByRole('button', { name: '保存' });
+  const save = dialog.getByRole('button', { name: copy.admin.editor.save });
   await expect(save).toBeDisabled();
 
-  const title = dialog.getByLabel('标题');
+  const title = dialog.getByLabel(copy.admin.editor.titlePlaceholder);
   const editor = dialog.locator('textarea');
-  await title.fill('测试公告');
+  await title.fill('Test announcement');
   await expect(save).toBeDisabled();
 
   await editor.fill('hello');
   await editor.evaluate((element: HTMLTextAreaElement) => {
     element.setSelectionRange(0, 5);
   });
-  await dialog.getByRole('button', { name: '粗体' }).click();
+  await dialog.getByRole('button', { name: copy.editor.tools.bold }).click();
   await expect(editor).toHaveValue('**hello**');
-  await expect(dialog.getByRole('button', { name: '投票', exact: true })).toHaveCount(0);
+  await expect(
+    dialog.getByRole('button', { name: copy.admin.tabs.polls, exact: true }),
+  ).toHaveCount(0);
 
   await editor.fill(
-    '::vote:42\n正文\n![安全图片](https://example.com/image.png)\n![危险图片](javascript:alert(1))\n[危险链接](javascript:alert(1))',
+    '::vote:42\nBody\n![Safe image](https://example.com/image.png)\n![Unsafe image](javascript:alert(1))\n[Unsafe link](javascript:alert(1))',
   );
-  const preview = dialog.getByLabel('实时预览');
-  await expect(preview.getByRole('heading', { name: '现有投票' })).toBeVisible();
+  const preview = dialog.getByLabel(copy.editor.previewAria);
+  await expect(preview.getByRole('heading', { name: previewPoll.title })).toBeVisible();
   await expect(preview).toContainText('67%');
-  await expect(preview).toContainText('2 票');
+  await expect(preview).toContainText(voteCount(2));
   await expect(preview).not.toContainText('::vote:42');
   await expect(preview.locator('img')).toHaveCount(1);
   await expect(preview.locator('img')).toHaveAttribute('src', 'https://example.com/image.png');
   await expect(preview.locator('a[href^="javascript:"]')).toHaveCount(0);
   await expect(save).toBeEnabled();
 
-  await dialog.getByRole('button', { name: '取消' }).last().click();
+  await dialog.getByRole('button', { name: copy.admin.editor.cancel }).last().click();
   await expect(dialog).toBeHidden();
 });
 
@@ -89,7 +99,7 @@ test('admin manages independent multiple-choice polls and copies stable referenc
         selfId: 0,
         mediaHostUrl: 'https://facade.test',
         photos: [],
-        locale: 'zh-CN',
+        locale,
         announcements: [],
         polls: [previewPoll],
         feedback: [],
@@ -115,27 +125,65 @@ test('admin manages independent multiple-choice polls and copies stable referenc
     await route.fulfill({ json: { ok: true, poll } });
   });
   await page.goto('/admin');
-  await page.getByRole('tab', { name: '投票', exact: true }).click();
+  const adminTabs = page.getByRole('tablist', { name: copy.admin.sectionLabel });
+  await expect(adminTabs).toBeVisible();
+  const [tabsBox, localeBox] = await Promise.all([
+    adminTabs.boundingBox(),
+    page.getByRole('button', { name: copy.settings.switchToEnglish }).boundingBox(),
+  ]);
+  expect(tabsBox).not.toBeNull();
+  expect(localeBox).not.toBeNull();
+  expect(localeBox!.x).toBeGreaterThan(tabsBox!.x + tabsBox!.width);
+  expect(localeBox!.x).toBeLessThan((await page.evaluate(() => window.innerWidth)) / 2);
+  await page.getByRole('tab', { name: copy.admin.tabs.polls, exact: true }).click();
 
   const existingRow = page.getByRole('listitem').filter({ hasText: previewPoll.title });
   await expect(existingRow).toContainText('67%');
-  await expect(existingRow).toContainText('2 票');
+  await expect(existingRow).toContainText(voteCount(2));
 
-  await page.getByRole('button', { name: '新增投票', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '新增投票', exact: true });
-  await dialog.getByRole('textbox', { name: '投票问题' }).fill('新建多选投票');
-  await dialog.getByRole('textbox', { name: '选项' }).fill('甲\n乙');
-  await dialog.getByLabel('允许多选').check();
+  await page.getByRole('button', { name: copy.admin.newPoll, exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: copy.admin.newPoll, exact: true });
+  await dialog
+    .getByRole('textbox', { name: copy.admin.editor.pollTitle })
+    .fill('New multi-choice poll');
+  const optionOne = dialog.getByRole('textbox', {
+    name: fmt(copy.admin.editor.pollOptionLabel, { number: 1 }),
+  });
+  const optionTwo = dialog.getByRole('textbox', {
+    name: fmt(copy.admin.editor.pollOptionLabel, { number: 2 }),
+  });
+  await expect(dialog.getByRole('textbox')).toHaveCount(3);
+  await expect(
+    dialog.getByRole('button', {
+      name: fmt(copy.admin.editor.removePollOption, { number: 1 }),
+    }),
+  ).toBeDisabled();
+  await optionOne.fill('Option A');
+  await optionTwo.fill('Option B');
+  await dialog.getByRole('button', { name: copy.admin.editor.addPollOption }).click();
+  const optionThree = dialog.getByRole('textbox', {
+    name: fmt(copy.admin.editor.pollOptionLabel, { number: 3 }),
+  });
+  await optionThree.fill('Option C');
+  await dialog
+    .getByRole('button', { name: fmt(copy.admin.editor.removePollOption, { number: 3 }) })
+    .click();
+  await expect(dialog.getByRole('textbox')).toHaveCount(3);
+  await dialog.getByRole('button', { name: copy.admin.editor.pollAllowMultiple }).click();
   const createRequest = page.waitForRequest(
     (request) => new URL(request.url()).pathname === '/admin/polls' && request.method() === 'POST',
   );
-  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await dialog.getByRole('button', { name: copy.admin.editor.save, exact: true }).click();
   const request = await createRequest;
-  expect(request.postDataJSON()).toMatchObject({ allowMultiple: true, locale: 'zh-CN' });
+  expect(request.postDataJSON()).toMatchObject({
+    allowMultiple: true,
+    locale,
+    options: ['Option A', 'Option B'],
+  });
 
-  const row = page.getByRole('listitem').filter({ hasText: '新建多选投票' });
+  const row = page.getByRole('listitem').filter({ hasText: 'New multi-choice poll' });
   await expect(row).toBeVisible();
-  await expect(row).toContainText('多选');
+  await expect(row).toContainText(copy.admin.poll.multipleAnswers);
   await page.evaluate(() => {
     const target = window as unknown as { __testClipboard?: { value: string } };
     target.__testClipboard = { value: '' };
@@ -148,7 +196,7 @@ test('admin manages independent multiple-choice polls and copies stable referenc
       },
     });
   });
-  await row.getByRole('button', { name: '复制 Markdown 代码' }).click();
+  await row.getByRole('button', { name: copy.admin.poll.copySyntax }).click();
   await expect
     .poll(() =>
       page.evaluate(

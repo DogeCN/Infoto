@@ -131,10 +131,10 @@ test('announcements and feedback snapshots are isolated by requested locale', as
   const { app } = makeApp();
   const { root, guest } = await twoIdentities(app);
   await annCreate(app, root, 'English', 'body', 'en-US');
-  await annCreate(app, root, '中文', '内容', 'zh-CN');
+  await annCreate(app, root, 'Localized announcement', 'Localized content', 'zh-CN');
   await postOps(app, guest, [
     fbCreate('English suggestion', 'en-US'),
-    fbCreate('中文建议', 'zh-CN'),
+    fbCreate('Localized suggestion', 'zh-CN'),
   ]);
 
   const english = await snap(app, root);
@@ -156,11 +156,11 @@ test('announcements and feedback snapshots are isolated by requested locale', as
   ).json()) as Awaited<ReturnType<typeof snap>>;
   assert.deepEqual(
     chinese.announcements.map((item) => item.title),
-    ['中文'],
+    ['Localized announcement'],
   );
   assert.deepEqual(
     chinese.feedback.map((item) => item.contentMd),
-    ['中文建议'],
+    ['Localized suggestion'],
   );
 });
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { fmt, locales } from '../../../src/shared/copy';
 import { setLocale } from '../../src/lib/i18n.svelte';
 import { formatRelativeTime, formatSmartAbsolute } from '../../src/base/lib/format';
 
@@ -19,9 +20,14 @@ describe('time labels', () => {
       expect(formatRelativeTime(reference - 400 * 86_400_000, reference)).toBe('1 year ago');
       expect(formatRelativeTime(reference + 60_000, reference)).toBe('Just now');
       setLocale('zh-CN');
-      expect(formatRelativeTime(reference, reference - 59_999)).toBe('刚刚');
-      expect(formatRelativeTime(reference - 60_000, reference)).toBe('1 分钟前');
-      expect(formatRelativeTime(reference - 8 * 86_400_000, reference)).toBe('8 天前');
+      const zhTime = locales['zh-CN'].time;
+      expect(formatRelativeTime(reference, reference - 59_999)).toBe(zhTime.justNow);
+      expect(formatRelativeTime(reference - 60_000, reference)).toBe(
+        fmt(zhTime.minutesAgo.other, { n: 1 }),
+      );
+      expect(formatRelativeTime(reference - 8 * 86_400_000, reference)).toBe(
+        fmt(zhTime.daysAgo.other, { n: 8 }),
+      );
       setLocale('en-US');
       expect(formatRelativeTime(reference - 8 * 86_400_000, reference)).toBe('8 days ago');
     }
@@ -37,7 +43,7 @@ describe('time labels', () => {
       expect(full).not.toContain('-');
       setLocale('zh-CN');
       expect(formatSmartAbsolute(new Date(2026, 8, 24, 14, 30).getTime(), now)).toBe(
-        '9月24日 14:30',
+        fmt(locales['zh-CN'].time.monthDay, { month: 9, day: 24, clock: '14:30' }),
       );
       setLocale('en-US');
     }

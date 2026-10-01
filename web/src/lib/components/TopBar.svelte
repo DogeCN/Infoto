@@ -8,7 +8,7 @@
   import PagerArrow from './PagerArrow.svelte';
   import SegmentedControl, { type SegmentedItem } from './SegmentedControl.svelte';
   import LocaleToggle from './LocaleToggle.svelte';
-  import type { SortKey } from './SortTabs.svelte';
+  import type { SortDirections, SortKey } from '../../core/gallery';
   import { BAR_PAD, barCssVars, barHeight, resolveBarMode, type BarMode } from './topbarFit';
   import { scroll } from '../../state/scroll.svelte';
   import { copy } from '$lib/i18n.svelte';
@@ -17,7 +17,7 @@
     variant?: 'home' | 'admin';
     sortKey?: SortKey;
     /** Secondary direction (newest↔oldest, hottest↔coldest), remembered per sort item. */
-    sortDirs?: Partial<Record<SortKey, boolean>>;
+    sortDirs?: SortDirections;
     onSortChange?: (key: SortKey) => void;
     onSortReshuffle?: () => void;
     onSettingsClick?: () => void;
@@ -99,20 +99,17 @@
     iconPillW = info.shownIsLabelled ? info.shown - info.labelDelta : info.shown;
   }
 
-  // Measured, not assumed. The pager arrow's chevron is sized from `--bar-h`, so the button
-  // is 16px of `p-2` plus a 17.5–20px icon and changes with the bar. A fixed 36 only held at
-  // the tallest bar and overstated the requirement everywhere else, which delayed the switch
-  // to paged mode until the row had genuinely stopped fitting.
+  // Measure the pager arrow because its width scales with the bar height.
   let arrowProbeEl: HTMLElement | undefined = $state(undefined);
   let groupProbeEl: HTMLElement | undefined = $state(undefined);
   let leftExtraW = $state(0);
+  let localeW = $state(0);
   let rightBtnsW = $state(0);
   let arrowW = $state(0);
+  let localeProbeEl: HTMLElement | undefined = $state(undefined);
 
   $effect(() => {
-    // `--bar-h` scales every control, so the group widths move whenever the bar's width does.
-    // Reading them without this dependency left the fit calculation working from the widths
-    // measured at the previous bar size.
+    // Measure control groups after the bar dimensions or admin labels change.
     void barW;
     void variant;
     void adminItems;
@@ -122,8 +119,14 @@
     const probe = groupProbeEl;
     if (!probe) return;
     const widths = [...probe.children].map((child) => (child as HTMLElement).offsetWidth);
-    if (widths[0]) leftExtraW = widths[0];
-    if (widths[1]) rightBtnsW = widths[1];
+    if (variant === 'admin') {
+      const locale = localeProbeEl?.offsetWidth ?? 0;
+      if (locale) localeW = locale;
+      if (widths[2]) rightBtnsW = widths[2];
+    } else {
+      if (widths[0]) leftExtraW = widths[0];
+      if (widths[1]) rightBtnsW = widths[1];
+    }
     const arrow = arrowProbeEl?.offsetWidth ?? 0;
     if (arrow) arrowW = arrow;
   });
@@ -132,17 +135,17 @@
     const width = barW;
     const isAdmin = variant === 'admin';
     if (!width || !labelledPillW || !iconPillW || !rightBtnsW || !arrowW || !rowEl) return;
-    if (!isAdmin && !leftExtraW) return;
+    if (isAdmin ? !localeW : !leftExtraW) return;
 
     const padX = 2 * BAR_PAD;
     const gap = parseFloat(getComputedStyle(rowEl).columnGap) || 0;
-    const singleGaps = isAdmin ? 2 : 3;
-    const pagedFirstGaps = isAdmin ? 2 : 3;
+    const singleGaps = 3;
+    const pagedFirstGaps = 3;
     const pagedSecondGaps = 2;
     const single = (pill: number): number =>
-      padX + pill + (isAdmin ? 0 : leftExtraW) + rightBtnsW + singleGaps * gap;
+      padX + pill + (isAdmin ? localeW : leftExtraW) + rightBtnsW + singleGaps * gap;
     const pagedNeed = Math.max(
-      padX + iconPillW + (isAdmin ? 0 : leftExtraW) + arrowW + pagedFirstGaps * gap,
+      padX + iconPillW + (isAdmin ? localeW : leftExtraW) + arrowW + pagedFirstGaps * gap,
       padX + arrowW + rightBtnsW + pagedSecondGaps * gap,
     );
 
@@ -253,7 +256,7 @@
   <div class="relative">
     <button
       type="button"
-      class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+      class="icon-button p-2"
       class:text-primary={settingsActive}
       onclick={onSettingsClick}
       title={copy.topbar.settings}
@@ -274,7 +277,7 @@
 {#snippet homeRightGroup()}
   <button
     type="button"
-    class="relative flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+    class="icon-button relative p-2"
     class:text-primary={announcementActive}
     onclick={onAnnouncementClick}
     title={copy.topbar.announcements}
@@ -284,7 +287,7 @@
   </button>
   <button
     type="button"
-    class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+    class="icon-button p-2"
     class:text-primary={multiSelectActive}
     onclick={onMultiSelectClick}
     title={copy.topbar.multiSelect}
@@ -294,7 +297,7 @@
   </button>
   <button
     type="button"
-    class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-primary"
+    class="icon-button p-2 hover:text-primary"
     onclick={onUploadClick}
     title={copy.topbar.upload}
     aria-label={copy.topbar.upload}
@@ -322,13 +325,19 @@
   />
 {/snippet}
 
+{#snippet adminNavGroup()}
+  <div class="flex shrink-0 items-center gap-1">
+    {@render adminNav()}
+    <LocaleToggle variant="topbar" onChange={onLocaleChange} />
+  </div>
+{/snippet}
+
 {#snippet adminActionGroup()}
   <div class="flex shrink-0 items-center gap-1">
-    <LocaleToggle variant="topbar" onChange={onLocaleChange} />
     {#if adminCreateLabel}
       <button
         type="button"
-        class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+        class="icon-button p-2"
         class:text-primary={adminCreateActive}
         onclick={onAdminCreateClick}
         title={adminCreateLabel}
@@ -352,6 +361,9 @@
 >
   {#if variant === 'admin'}
     {@render adminNav()}
+    <div bind:this={localeProbeEl} class="flex shrink-0 items-center">
+      <LocaleToggle variant="topbar" onChange={onLocaleChange} />
+    </div>
     {@render adminActionGroup()}
   {:else}
     {@render leftGroup()}
@@ -385,7 +397,7 @@
     >
       {#if variant === 'admin'}
         <div use:row class="flex h-full w-1/2 shrink-0 items-center gap-1" style={rowStyle}>
-          {@render adminNav()}
+          {@render adminNavGroup()}
           <div class="flex-1"></div>
           <div class="shrink-0"><PagerArrow {screen} onToggle={toggleScreen} /></div>
         </div>
@@ -419,7 +431,7 @@
     </div>
   {:else if variant === 'admin'}
     <div use:row class="flex h-full items-center gap-1" style={rowStyle}>
-      {@render adminNav()}
+      {@render adminNavGroup()}
       <div class="flex-1"></div>
       {@render adminActionGroup()}
     </div>

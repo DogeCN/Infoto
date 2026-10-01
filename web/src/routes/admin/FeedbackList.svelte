@@ -49,7 +49,7 @@
       type="search"
       placeholder={copy.admin.feedback.searchPlaceholder}
       aria-label={copy.admin.feedback.searchAria}
-      class="ml-auto h-9 w-full max-w-xs rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      class="field-control ml-auto h-9 max-w-xs px-3 py-0"
     />
   </div>
 
@@ -75,7 +75,7 @@
           <Tooltip text={copy.admin.feedback.delete}>
             <button
               type="button"
-              class="inline-flex shrink-0 items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+              class="icon-button icon-button--danger shrink-0 p-2"
               aria-label={copy.admin.feedback.deleteAria}
               onclick={() => onDelete(feedbackItem.id)}
             >

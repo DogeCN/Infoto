@@ -97,8 +97,7 @@ let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
 let mediaHostUrl: string | undefined;
 
 function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
-  // Cancelled jobs (record already deleted from `jobs`) stay silent — otherwise
-  // late progress/result notifications would resurrect the row they just dropped.
+  // Ignore progress updates for cancelled jobs.
   if (rec.cancelled) return;
   const message: JobStatusMessage = {
     t: 'jobStatus',

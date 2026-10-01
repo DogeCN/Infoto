@@ -14,6 +14,10 @@ export async function requestJson(
   io: RequestIo = {},
 ): Promise<{ response: Response; data: unknown }> {
   const controller = new AbortController();
+  const externalSignal = init.signal ?? undefined;
+  const abortFromCaller = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromCaller();
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
   const timer = setTimeout(() => controller.abort(), io.timeoutMs ?? REQUEST_TIMEOUT_MS);
   try {
     const response = await (io.fetchFn ?? fetch)(`${io.origin ?? location.origin}${path}`, {
@@ -30,9 +34,12 @@ export async function requestJson(
     }
     return { response, data };
   } catch (error) {
-    if (controller.signal.aborted) throw new Error(timeoutId, { cause: error });
+    if (controller.signal.aborted && !externalSignal?.aborted) {
+      throw new Error(timeoutId, { cause: error });
+    }
     throw error;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromCaller);
   }
 }

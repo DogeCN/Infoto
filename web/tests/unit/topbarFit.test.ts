@@ -85,13 +85,12 @@ describe('top bar fit', () => {
     }
   });
 
-  // A taller bar with unchanged control sizes reads as padding below the bar, which is
-  // what the fixed size-5 icons looked like. Everything inside must track the ramp.
+  // Scale control dimensions with the measured bar height.
   it('scales the controls with the bar instead of leaving empty space', () => {
     expect(BAR_ICON_RATIO).toBeCloseTo(20 / BAR_HEIGHT_MAX);
     expect(BAR_BADGE_RATIO).toBeCloseTo(16 / BAR_HEIGHT_MAX);
 
-    // At full size the derived numbers are exactly the old fixed pixel values.
+    // Verify control dimensions at the maximum bar height.
     expect(barIconSize(1600)).toBeCloseTo(20);
     expect(barIconSize(4000)).toBeCloseTo(20);
     expect(barIconSize(320)).toBeCloseTo(BAR_HEIGHT_MIN * BAR_ICON_RATIO);
@@ -108,9 +107,7 @@ describe('top bar fit', () => {
     expect(barCssVars(900)).toContain('--bar-h:');
   });
 
-  // The waterfall's top inset used to be its own width percentage (48-80px) and fell
-  // below the bar's height on narrow screens, so the first row sat under the bar. It now
-  // equals the bar height exactly: enough to clear it, no floating gap.
+  // Place the first gallery row immediately after the measured bar height.
   it('keeps the waterfall inset level with the bar at every width', () => {
     const TOP_GAP = 0;
     for (let w = 320; w <= 2560; w += 7) {

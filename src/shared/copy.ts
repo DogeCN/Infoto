@@ -57,8 +57,10 @@ export function acceptLanguages(header: string | null | undefined): string[] {
     if (!tag) continue;
     let q = 1;
     for (const bit of bits.slice(1)) {
-      const match = /^q\s*=\s*([0-9.]+)$/i.exec(bit.trim());
-      if (match) q = Number(match[1]);
+      const value = bit.trim();
+      if (!/^q\s*=/i.test(value)) continue;
+      const match = /^q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/i.exec(value);
+      q = match ? Number(match[1]) : 0;
     }
     if (q > 0) ranked.push({ tag, q });
   }
@@ -335,7 +337,9 @@ export const enUS = {
       save: 'Save',
       pollTitle: 'Poll question',
       pollOptions: 'Options',
-      pollOptionsHint: 'Enter one choice per line (at least two)',
+      pollOptionLabel: 'Option {number}',
+      addPollOption: 'Add option',
+      removePollOption: 'Remove option {number}',
       pollAllowMultiple: 'Allow multiple choices',
     },
   },
@@ -686,7 +690,9 @@ const zhCN: Copy = {
       save: '保存',
       pollTitle: '投票问题',
       pollOptions: '选项',
-      pollOptionsHint: '每行输入一个选项（至少两个）',
+      pollOptionLabel: '选项 {number}',
+      addPollOption: '添加选项',
+      removePollOption: '移除选项 {number}',
       pollAllowMultiple: '允许多选',
     },
   },
@@ -741,8 +747,7 @@ const zhCN: Copy = {
   },
 
   errorPage: {
-    // Deliberately untranslated: these are the fixed English heading/title of the
-    // status page, not prose. See the allowlist in copy.test.ts.
+    // Keep status page headings and accessibility titles in English.
     pageHeading: 'PAGE NOT FOUND',
     notFoundMessage: '您访问的页面不存在',
     backHome: '返回首页',
@@ -768,24 +773,14 @@ const zhCN: Copy = {
 
 // ---- registry -------------------------------------------------------------------
 
-/**
- * Tag → table. Keys are the exact tags found in `navigator.languages`; `LocaleCode`
- * is derived from this record, so registering a new locale is a one-line change here
- * and nowhere else.
- */
+/** Locale tables keyed by their exact language tags. */
 export const locales = { 'en-US': enUS, 'zh-CN': zhCN } satisfies Record<string, Copy>;
 
 export type LocaleCode = keyof typeof locales;
 
 export const DEFAULT_LOCALE: LocaleCode = 'en-US';
 
-/** Narrow an untrusted value to a registered locale tag.
- *
- *  One predicate for the whole codebase. Locale validation was open-coded three times -- as a
- *  ternary in `http.ts`, as `readLocale` in `admin.ts`, and as `localeCode` in `sync.ts` -- and
- *  the schema columns carry no CHECK either, so this is the only place that decides which tags
- *  are real. Adding a language means adding it to `locales` and nothing else.
- */
+/** Narrow an unknown value to a registered locale tag. */
 export function isLocaleCode(value: unknown): value is LocaleCode {
   return typeof value === 'string' && Object.hasOwn(locales, value);
 }

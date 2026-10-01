@@ -3,18 +3,7 @@ import assert from 'node:assert/strict';
 import { createUser } from '../identity.ts';
 import { makeApp } from '../../testing/app.ts';
 
-/**
- * Simultaneous first visits must not collide on the users primary key.
- *
- * `users.id` is derived from MAX(id) rather than AUTOINCREMENT, so the id has to be
- * computed somewhere. Computing it by reading first leaves a read-then-write window: two
- * visitors reading the same maximum both insert it. The previous implementation caught
- * that violation and retried three times, which covered two or three racers and threw on
- * the fourth — measured, not assumed. The id is now computed inside the INSERT so SQLite
- * serializes the whole statement and there is no window to fall into.
- *
- * The old shape fails this test at 8 racers, so it cannot regress silently.
- */
+/** Ensure concurrent first visits receive distinct, resolvable user identities. */
 test('concurrent first visits each get their own id', async () => {
   const RACERS = 8;
   const { db } = makeApp();
@@ -23,7 +12,7 @@ test('concurrent first visits each get their own id', async () => {
 
   const ids = rows.map((r) => r.id).sort((a, b) => a - b);
   assert.equal(new Set(ids).size, RACERS, 'ids must be distinct');
-  // The first visitor gets 0, so a fresh table yields a contiguous 0..N-1 range.
+  // A fresh table assigns contiguous IDs starting at zero.
   assert.deepEqual(
     ids,
     Array.from({ length: RACERS }, (_, i) => i),
