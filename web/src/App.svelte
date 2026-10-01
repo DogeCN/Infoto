@@ -24,7 +24,7 @@
   import { downloadOne, downloadZip } from './core/download';
   import { createUploadStore } from './state/uploadStore.svelte';
   import type { Photo, SyncRequest } from '$shared/types';
-  import { copy } from '$lib/i18n.svelte';
+  import { copy, getLocale } from '$lib/i18n.svelte';
   import {
     type FilterSettings,
     type LayoutSettings,
@@ -43,6 +43,11 @@
   }
 
   const store = createAppStore();
+  const locale = $derived(getLocale());
+  const localizedAnnouncements = $derived(
+    store.announcements.filter((announcement) => announcement.locale === locale),
+  );
+  const localizedPolls = $derived(store.polls.filter((poll) => poll.locale === locale));
   const engine = getEngine({
     postSyncFn: syncWithIdentity,
     onSyncResponse: (r, context) => {
@@ -61,6 +66,10 @@
   let leftOpen = $state(false);
   let rightOpen = $state(false);
   let multiMode = $state(false);
+  let layoutPreviewTransparent = $state(false);
+  $effect(() => {
+    if (!leftOpen) layoutPreviewTransparent = false;
+  });
   /** Wide layout: the upload panel moves to the bottom-right, clear of bottom-left toasts. */
   let wideLayout = $state(false);
   $effect(() => {
@@ -328,11 +337,11 @@
   function handleReact(annId: number, emoji: string | null) {
     store.react(annId, emoji);
   }
-  function handleVote(annId: number, option: number | null) {
-    store.vote(annId, option);
+  function handleVote(pollId: number, options: number[]) {
+    store.vote(pollId, options);
   }
   function handleFeedback(contentMd: string) {
-    store.fbCreate(contentMd);
+    store.fbCreate(contentMd, locale);
   }
 </script>
 
@@ -347,7 +356,12 @@
 
 <div class="flex h-screen overflow-hidden bg-background">
   <!-- Left Sidebar (Settings) -->
-  <OverlaySidebar bind:open={leftOpen} side="left" title={copy.sidebar.settingsTitle}>
+  <OverlaySidebar
+    bind:open={leftOpen}
+    side="left"
+    title={copy.sidebar.settingsTitle}
+    previewTransparent={layoutPreviewTransparent}
+  >
     {#snippet icon()}
       <SettingsIcon class="size-5 text-primary" />
     {/snippet}
@@ -355,6 +369,7 @@
       onSettingsChange={handleSettingsChange}
       photos={store.photos}
       onFilterCount={(n) => (filterCount = n)}
+      onLayoutPreviewChange={(active) => (layoutPreviewTransparent = active)}
     />
   </OverlaySidebar>
 
@@ -435,7 +450,8 @@
       <Megaphone class="size-5 text-primary" />
     {/snippet}
     <AnnouncementSidebar
-      announcements={store.announcements}
+      announcements={localizedAnnouncements}
+      polls={localizedPolls}
       selfId={store.selfId}
       onReact={handleReact}
       onVote={handleVote}

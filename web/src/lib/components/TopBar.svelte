@@ -62,6 +62,29 @@
   function toggleScreen(): void {
     screen = screen === 0 ? 1 : 0;
   }
+
+  let pagerGesture: { pointerId: number; x: number; y: number } | null = null;
+  function onPagerPointerDown(event: PointerEvent): void {
+    if (!paged || event.pointerType === 'mouse') return;
+    if ((event.target as HTMLElement).closest('button, a, input, textarea, [role="button"]'))
+      return;
+    pagerGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  }
+
+  function onPagerPointerUp(event: PointerEvent): void {
+    const start = pagerGesture;
+    pagerGesture = null;
+    if (!start || start.pointerId !== event.pointerId || !paged) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dx) < 36 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+    screen = dx < 0 ? 1 : 0;
+  }
+
+  function onPagerPointerCancel(event: PointerEvent): void {
+    if (pagerGesture?.pointerId === event.pointerId) pagerGesture = null;
+  }
+
   const paged = $derived(mode === 'paged');
 
   // Interpolate bar height from its measured width without rounding fractional pixels.
@@ -131,7 +154,8 @@
     if (!bar || !labelledPillW || !iconPillW || !leftExtraW || !rightBtnsW || !rowEl) return;
 
     // Use the rendered row gap when calculating the required width.
-    const padX = BAR_PAD;
+    // Required width includes both fixed inline paddings on each rendered row.
+    const padX = BAR_PAD * 2;
     const gap = parseFloat(getComputedStyle(rowEl).columnGap) || 0;
     // Spacing intervals: three in full mode and two on each paged screen.
     const SINGLE_GAPS = 3;
@@ -266,11 +290,16 @@
 </div>
 
 <header
+  role="region"
+  aria-label={copy.topbar.controls}
   bind:this={headerEl}
-  class="fixed top-0 left-0 right-0 z-40 overflow-hidden {scrolled
+  class="fixed top-0 left-0 right-0 z-40 overflow-hidden touch-pan-y {scrolled
     ? 'border-b border-border bg-background/70 backdrop-blur-xl backdrop-saturate-150'
     : 'border-b border-transparent bg-transparent'}"
   style={barStyle}
+  onpointerdown={onPagerPointerDown}
+  onpointerup={onPagerPointerUp}
+  onpointercancel={onPagerPointerCancel}
 >
   {#if paged}
     <!-- Two half-width screens on a double-width sliding track. -->

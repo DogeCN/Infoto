@@ -63,6 +63,7 @@ export async function postSync(body: SyncRequest, io: SyncClientIo = {}): Promis
     !Number.isFinite(obj.serverTime) ||
     !Array.isArray(obj.photos) ||
     !Array.isArray(obj.announcements) ||
+    !Array.isArray(obj.polls) ||
     !Array.isArray(obj.feedback)
   ) {
     throw new Error('invalid_sync_response');

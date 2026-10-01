@@ -1,21 +1,21 @@
 <script lang="ts">
-  import { Megaphone, MessageSquare, Plus } from '@lucide/svelte';
-  import type { Announcement } from '$shared/types';
-  import { copy } from '$lib/i18n.svelte';
+  import type { Announcement, LocaleCode, Poll } from '$shared/types';
+  import { copy, getLocale } from '$lib/i18n.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { Toaster, toast } from 'svelte-sonner';
   import ErrorPage from '$lib/components/ErrorPage.svelte';
-  import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import { toastOptions } from '$base/lib/ui';
   import { getEngine } from '../../core/engine';
   import { postSync, TurnstileRequiredError } from '../../core/api/syncClient';
   import { createAppStore } from '../../state/appStore.svelte';
   import { UploadPipeline, type UploadRow } from '../../transcode/pipeline';
 
-  import AdminMigrateMenu from './AdminMigrateMenu.svelte';
   import AnnouncementEditorDialog from './AnnouncementEditorDialog.svelte';
   import AnnouncementList from './AnnouncementList.svelte';
   import FeedbackList from './FeedbackList.svelte';
+  import PollList from './PollList.svelte';
+  import PollEditorDialog from './PollEditorDialog.svelte';
+  import AdminTopBar from './AdminTopBar.svelte';
 
   const store = createAppStore();
   // Sync-failure toast dedupe: the failure stays until the next success, so a burst of toasts is pointless.
@@ -45,10 +45,19 @@
     onEvent: (line) => console.log('[upload]', line),
   });
 
-  let activeTab = $state<'announcements' | 'feedback'>('announcements');
+  let activeTab = $state<'announcements' | 'feedback' | 'polls'>('announcements');
+  const locale = $derived(getLocale());
+  const localizedAnnouncements = $derived(
+    store.announcements.filter((announcement) => announcement.locale === locale),
+  );
+  const localizedFeedback = $derived(store.feedback.filter((item) => item.locale === locale));
+  const localizedPolls = $derived(store.polls.filter((poll) => poll.locale === locale));
   let initialized = $state(false);
   let editorOpen = $state(false);
   let editingAnnouncement = $state<Announcement | null>(null);
+  let editingLocale = $state<LocaleCode>('en-US');
+  let pollEditorOpen = $state(false);
+  let editingPoll = $state<Poll | null>(null);
   // Editor image uploads share the SharedWorker pipeline with the waterfall
   // (transcode → hash → upload); this row carries their live stage.
   let editorUploadTask = $state<UploadRow | null>(null);
@@ -105,6 +114,7 @@
 
   function openCreateAnnouncement() {
     editingAnnouncement = null;
+    editingLocale = locale;
     editorOpen = true;
   }
 
@@ -119,6 +129,7 @@
 
   function openEditAnnouncement(announcement: Announcement) {
     editingAnnouncement = announcement;
+    editingLocale = announcement.locale;
     editorOpen = true;
   }
 
@@ -135,17 +146,61 @@
 
   function saveAnnouncement(title: string, contentMd: string) {
     if (editingAnnouncement) {
-      store.annUpdate(editingAnnouncement.id, title, contentMd);
+      store.annUpdate(editingAnnouncement.id, title, contentMd, editingLocale);
     } else {
-      store.annCreate(title, contentMd);
+      store.annCreate(title, contentMd, editingLocale);
     }
     closeAnnouncementEditor();
+  }
+
+  function openCreatePoll() {
+    editingPoll = null;
+    pollEditorOpen = true;
+  }
+
+  function openEditPoll(poll: Poll) {
+    editingPoll = poll;
+    pollEditorOpen = true;
+  }
+
+  function toggleCreatePoll() {
+    if (pollEditorOpen && editingPoll === null) {
+      closePollEditor();
+      return;
+    }
+    openCreatePoll();
+  }
+
+  function closePollEditor() {
+    pollEditorOpen = false;
+    editingPoll = null;
+  }
+
+  async function savePoll(title: string, options: string[], allowMultiple: boolean): Promise<void> {
+    if (editingPoll) {
+      await store.pollUpdate(editingPoll.id, title, options, allowMultiple, editingPoll.locale);
+    } else {
+      await store.pollCreate(title, options, allowMultiple, locale);
+    }
+    closePollEditor();
+  }
+
+  async function deletePoll(id: number): Promise<void> {
+    if (!window.confirm(copy.admin.poll.deleteConfirm)) return;
+    try {
+      await store.pollDelete(id);
+    } catch (error) {
+      console.error('[poll] delete failed', error);
+      toast.error(copy.admin.poll.deleteFailed, {
+        description: error instanceof Error ? error.message : copy.admin.fail.network,
+      });
+    }
   }
 
   // Reorder is never blocked by a pending create: the store keeps the new order
   // locally and flushes it as soon as a fresh announcement's real id arrives.
   function handleAnnouncementReorder(ids: number[]): void {
-    store.annReorder(ids);
+    store.annReorder(ids, locale);
   }
 
   async function handleImported(): Promise<{ ok: boolean; message: string }> {
@@ -162,51 +217,36 @@
 
 {#if isRoot}
   <div class="min-h-screen bg-background">
-    <header
-      class="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/80 px-3 backdrop-blur-xl backdrop-saturate-150 md:h-16 md:px-6"
-    >
-      <div class="flex items-center gap-2">
-        <!-- Segmented control: reuses the shared SegmentedControl (sliding-pill animation matches the home SortTabs exactly) -->
-        <SegmentedControl
-          items={[
-            { value: 'announcements', label: copy.admin.tabs.announcements, icon: Megaphone },
-            { value: 'feedback', label: copy.admin.tabs.feedback, icon: MessageSquare },
-          ]}
-          value={activeTab}
-          ariaLabel={copy.admin.sectionLabel}
-          onChange={(v) => (activeTab = v)}
-        />
-      </div>
-
-      <div class="flex items-center gap-1">
-        <!-- Editor toggle (same highlight convention as the home top bar sidebar button): icon turns primary while open -->
-        <button
-          type="button"
-          class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
-          class:text-primary={editorOpen && editingAnnouncement === null}
-          aria-label={copy.admin.newAnnouncement}
-          aria-pressed={editorOpen && editingAnnouncement === null}
-          onclick={toggleCreateAnnouncement}
-        >
-          <Plus class="size-5" />
-        </button>
-        <AdminMigrateMenu onImported={handleImported} />
-      </div>
-    </header>
+    <AdminTopBar
+      {activeTab}
+      onTabChange={(tab) => (activeTab = tab)}
+      onCreate={activeTab === 'polls' ? toggleCreatePoll : toggleCreateAnnouncement}
+      createActive={activeTab === 'polls'
+        ? pollEditorOpen && editingPoll === null
+        : editorOpen && editingAnnouncement === null}
+      onImported={handleImported}
+    />
 
     <main class="w-full px-4 pb-6 pt-20 md:px-8 md:pt-24">
       {#if activeTab === 'announcements'}
         <AnnouncementList
-          announcements={store.announcements}
+          announcements={localizedAnnouncements}
           onEdit={openEditAnnouncement}
           onDelete={(id) => store.annDelete(id)}
           onReorder={handleAnnouncementReorder}
         />
-      {:else}
+      {:else if activeTab === 'feedback'}
         <FeedbackList
-          feedback={store.feedback}
+          feedback={localizedFeedback}
           onDelete={(id) => store.fbDelete(id)}
-          onReorder={(ids) => store.fbReorder(ids)}
+          onReorder={(ids) => store.fbReorder(ids, locale)}
+        />
+      {:else}
+        <PollList
+          polls={localizedPolls}
+          onEdit={openEditPoll}
+          onDelete={(id) => void deletePoll(id)}
+          onReorder={(ids) => store.pollReorder(ids, locale)}
         />
       {/if}
     </main>
@@ -215,6 +255,8 @@
       {#key editingAnnouncement?.id ?? 'new'}
         <AnnouncementEditorDialog
           announcement={editingAnnouncement}
+          polls={store.polls.filter((poll) => poll.locale === editingLocale)}
+          selfId={store.selfId}
           onPickImage={(file) => pipeline.uploadEditorImage(file)}
           onSave={saveAnnouncement}
           onCancel={closeAnnouncementEditor}
@@ -225,6 +267,12 @@
           }}
           onRetryUpload={(jobId) => pipeline.retryEditorUpload(jobId)}
         />
+      {/key}
+    {/if}
+
+    {#if pollEditorOpen}
+      {#key editingPoll?.id ?? 'new-poll'}
+        <PollEditorDialog poll={editingPoll} onSave={savePoll} onCancel={closePollEditor} />
       {/key}
     {/if}
 

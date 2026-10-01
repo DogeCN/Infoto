@@ -137,10 +137,10 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="absolute overflow-hidden rounded-[14px] bg-card cursor-pointer border transition-[border-color,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)] {selected
+  class="waterfall-card absolute left-0 top-0 overflow-hidden rounded-[14px] bg-card cursor-pointer border {selected
     ? 'border-2 border-primary'
     : 'border-white/0 hover:border-white/10'}"
-  style="left: {x}px; top: {y}px; width: {width}px; height: {height}px"
+  style="transform: translate3d({x}px, {y}px, 0); width: {width}px; height: {height}px"
   role="button"
   aria-label={copy.lightbox.preview}
   aria-pressed={multiMode ? selected : undefined}
@@ -360,3 +360,21 @@
     </button>
   {/if}
 </div>
+
+<style>
+  .waterfall-card {
+    will-change: transform, width, height;
+    transition:
+      transform var(--duration-enter) var(--ease-enter),
+      width var(--duration-enter) var(--ease-enter),
+      height var(--duration-enter) var(--ease-enter),
+      border-color var(--duration-exit) var(--ease-exit),
+      opacity var(--duration-enter) var(--ease-enter);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .waterfall-card {
+      transition: none;
+    }
+  }
+</style>

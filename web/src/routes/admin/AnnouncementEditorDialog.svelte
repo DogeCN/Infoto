@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
+  import type { Poll } from '$shared/types';
   import type { UploadRow } from '../../transcode/pipeline';
   import { copy } from '$lib/i18n.svelte';
 
@@ -20,6 +21,8 @@
     onCancelUpload?: () => void;
     /** Retry a failed editor image upload; returns the hosted URL. */
     onRetryUpload?: (jobId: string) => Promise<string>;
+    polls: Poll[];
+    selfId: number;
   }
 
   let {
@@ -30,6 +33,8 @@
     uploadTask = null,
     onCancelUpload,
     onRetryUpload,
+    polls,
+    selfId,
   }: Props = $props();
   let title = $state(untrack(() => announcement?.title ?? ''));
   let contentMd = $state(untrack(() => announcement?.contentMd ?? ''));
@@ -157,6 +162,8 @@
             {uploadName}
             {uploadTask}
             {onRetryUpload}
+            {polls}
+            {selfId}
           />
         </div>
       </div>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { Announcement, Feedback, Photo } from '$shared/types';
+import type { Announcement, Feedback, Photo, Poll } from '$shared/types';
 import * as ops from '../../src/core/ops';
-import { splitVote } from '../../src/core/markdown';
+import { splitVoteReferences } from '../../src/core/markdown';
 import { reactionCounts } from '../../src/core/reactions';
 import {
   applyFilters,
@@ -29,11 +29,23 @@ const photo = (over: Partial<Photo> & { id: number }): Photo => ({
 });
 
 const ann = (over: Partial<Announcement> & { id: number }): Announcement => ({
+  locale: 'en-US',
   title: 't',
   contentMd: 'c',
   sort: 0,
   updatedAt: 0,
   reactions: [],
+  ...over,
+});
+
+const poll = (over: Partial<Poll> & { id: number }): Poll => ({
+  locale: 'en-US',
+  title: 'Question',
+  options: ['A', 'B', 'C'],
+  allowMultiple: true,
+  sort: 0,
+  createdAt: 0,
+  updatedAt: 0,
   votes: [],
   ...over,
 });
@@ -57,50 +69,61 @@ describe('frontend ops and filters', () => {
     expect(ops.markOpType('report', false)).toBe('unreport');
     expect(ops.applyDelete(list, [1]).map((p) => p.id)).toEqual([2, 3]);
 
-    let announcements = [ann({ id: 1 })];
-    announcements = ops.applyVote(announcements, 1, 4, 0);
-    announcements = ops.applyVote(announcements, 1, 4, 2);
-    expect(announcements[0]!.votes).toEqual([{ userId: 4, option: 2 }]);
-    announcements = ops.applyVote(announcements, 1, 4, null);
-    expect(announcements[0]!.votes).toEqual([]);
-    announcements = ops.applyReact(announcements, 1, 4, '👍');
-    announcements = ops.applyReact(announcements, 1, 4, '🔥');
-    expect(announcements[0]!.reactions).toEqual([{ userId: 4, emoji: '🔥' }]);
-    announcements = ops.applyReact(announcements, 1, 4, null);
-    expect(announcements[0]!.reactions).toEqual([]);
+    let polls = [poll({ id: 0 })];
+    polls = ops.applyVote(polls, 0, 4, [0]);
+    polls = ops.applyVote(polls, 0, 4, [1, 2]);
+    expect(polls[0]!.votes).toEqual([
+      { userId: 4, option: 1 },
+      { userId: 4, option: 2 },
+    ]);
+    polls = ops.applyVote(polls, 0, 4, []);
+    expect(polls[0]!.votes).toEqual([]);
+    const announcements = [ann({ id: 1 })];
+    let reacted = ops.applyReact(announcements, 1, 4, '👍');
+    reacted = ops.applyReact(reacted, 1, 4, '🔥');
+    expect(reacted[0]!.reactions).toEqual([{ userId: 4, emoji: '🔥' }]);
+    reacted = ops.applyReact(reacted, 1, 4, null);
+    expect(reacted[0]!.reactions).toEqual([]);
     const reordered = ops.applyReorder(
       [ann({ id: 1, sort: 0 }), ann({ id: 2, sort: 1 }), ann({ id: 3, sort: 2 })],
       [3, 1],
     );
     expect(reordered.map((a) => a.id)).toEqual([3, 1, 2]);
     expect(reordered.map((a) => a.sort)).toEqual([0, 1, 2]);
-    expect(ops.applyAnnCreate([ann({ id: 1, sort: 0 })], -1, 'new', 'body', 123)[1]).toMatchObject({
+    expect(
+      ops.applyAnnCreate([ann({ id: 1, sort: 0 })], -1, 'new', 'body', 'en-US', 123)[1],
+    ).toMatchObject({
       id: -1,
+      locale: 'en-US',
       title: 'new',
       sort: 1,
       updatedAt: 123,
     });
 
     let feedback: Feedback[] = [];
-    feedback = ops.applyFbCreate(feedback, -1, 0, 'hi', 5);
-    expect(feedback).toEqual([{ id: -1, userId: 0, contentMd: 'hi', createdAt: 5, sort: -1 }]);
-    feedback = ops.applyFbCreate(feedback, -2, 0, 'newer', 6);
+    feedback = ops.applyFbCreate(feedback, -1, 0, 'hi', 'en-US', 5);
+    expect(feedback).toEqual([
+      { id: -1, userId: 0, locale: 'en-US', contentMd: 'hi', createdAt: 5, sort: -1 },
+    ]);
+    feedback = ops.applyFbCreate(feedback, -2, 0, 'newer', 'en-US', 6);
     expect(feedback.map((f) => f.sort)).toEqual([-2, -1]);
     expect(ops.applyFbDelete(feedback, -1).map((f) => f.id)).toEqual([-2]);
   });
 
-  it('parses one vote block and counts reactions in set order', () => {
-    const split = splitVote('说明\n:::vote 满意 | 一般 | 不满意\n尾部');
-    expect(split.options).toEqual(['满意', '一般', '不满意']);
-    expect(split.before).toBe('说明');
-    expect(split.after).toBe('尾部');
-    expect(splitVote(':::vote A | B\n说明')).toMatchObject({
-      options: ['A', 'B'],
-      before: '',
-      after: '说明',
-    });
-    expect(splitVote('纯文本')).toMatchObject({ options: [], before: '纯文本', after: '' });
-    expect(splitVote(':::vote A | B\n:::vote C | D').after).toBe(':::vote C | D');
+  it('splits canonical poll references and counts reactions in set order', () => {
+    expect(splitVoteReferences('说明\n::vote:0\n尾部')).toEqual([
+      { type: 'markdown', content: '说明\n' },
+      { type: 'vote', pollId: 0 },
+      { type: 'markdown', content: '\n尾部' },
+    ]);
+    expect(splitVoteReferences('::vote:2 and ::vote:12')).toEqual([
+      { type: 'vote', pollId: 2 },
+      { type: 'markdown', content: ' and ' },
+      { type: 'vote', pollId: 12 },
+    ]);
+    expect(splitVoteReferences('::vote:01 ::vote:-1 ::vote:9007199254740992')).toEqual([
+      { type: 'markdown', content: '::vote:01 ::vote:-1 ::vote:9007199254740992' },
+    ]);
     expect(
       reactionCounts(
         ann({

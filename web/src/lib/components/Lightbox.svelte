@@ -98,6 +98,17 @@
   let pinchStartDist = 0;
   let pinchStartScale = 1;
   const active = new Map<number, { x: number; y: number }>();
+  let ctrlDrag: {
+    pointerId: number;
+    anchorX: number;
+    anchorY: number;
+    startDistance: number;
+    startScale: number;
+    centerX: number;
+    centerY: number;
+    contentX: number;
+    contentY: number;
+  } | null = null;
   let downPoint = { x: 0, y: 0 };
   /** Viewport-scaled thresholds for the gesture in flight (set on pointerdown). */
   let hintAt = HINT_THRESHOLD;
@@ -148,8 +159,45 @@
     return Math.round((base * w) / 768);
   }
 
+  function beginCtrlPinch(e: PointerEvent): void {
+    const stage = stageEl;
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    let anchorX = centerX;
+    let anchorY = centerY;
+    let startDistance = Math.hypot(e.clientX - anchorX, e.clientY - anchorY);
+    if (startDistance < 24) {
+      anchorX -= 48;
+      startDistance = Math.hypot(e.clientX - anchorX, e.clientY - anchorY);
+    }
+    const midpointX = (anchorX + e.clientX) / 2;
+    const midpointY = (anchorY + e.clientY) / 2;
+    const localX = midpointX - centerX;
+    const localY = midpointY - centerY;
+    ctrlDrag = {
+      pointerId: e.pointerId,
+      anchorX,
+      anchorY,
+      startDistance,
+      startScale: scale,
+      centerX,
+      centerY,
+      contentX: (localX - zoomX) / scale,
+      contentY: (localY - zoomY) / scale,
+    };
+    gestureMoved = true;
+    stage.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+  }
+
   function onPointerDown(e: PointerEvent) {
     if (showMenu) return;
+    if (e.button === 0 && e.ctrlKey && e.pointerType === 'mouse') {
+      if ((e.target as HTMLElement).closest('.lb-media')) beginCtrlPinch(e);
+      return;
+    }
     hintAt = scaledThreshold(HINT_THRESHOLD);
     triggerAt = scaledThreshold(SWIPE_THRESHOLD);
     active.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -170,6 +218,27 @@
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (ctrlDrag?.pointerId === e.pointerId) {
+      const start = ctrlDrag;
+      const distanceNow = Math.hypot(e.clientX - start.anchorX, e.clientY - start.anchorY);
+      scale = Math.min(
+        MAX_SCALE,
+        Math.max(MIN_SCALE, start.startScale * (distanceNow / start.startDistance)),
+      );
+      if (scale <= MIN_SCALE + 0.01) {
+        scale = MIN_SCALE;
+        zoomX = 0;
+        zoomY = 0;
+      } else {
+        const midpointX = (start.anchorX + e.clientX) / 2 - start.centerX;
+        const midpointY = (start.anchorY + e.clientY) / 2 - start.centerY;
+        zoomX = midpointX - start.contentX * scale;
+        zoomY = midpointY - start.contentY * scale;
+        clampPan();
+      }
+      applyWrap();
+      return;
+    }
     if (!active.has(e.pointerId)) return;
     const start = active.get(e.pointerId)!;
     const dx = e.clientX - start.x;
@@ -302,6 +371,12 @@
   }
 
   function onPointerUp(e: PointerEvent) {
+    if (ctrlDrag?.pointerId === e.pointerId) {
+      ctrlDrag = null;
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+      applyWrap(0, 0, true);
+      return;
+    }
     const start = active.get(e.pointerId);
     active.delete(e.pointerId);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
@@ -349,6 +424,21 @@
       scale = 2;
       applyWrap(0, 0, true);
     }
+  }
+
+  function onMaskClick(event: MouseEvent): void {
+    if (showMenu || gestureMoved || event.ctrlKey) return;
+    if (!(event.target instanceof Element)) return;
+    if (
+      event.target.closest(
+        'button, a, input, textarea, select, [role="button"], [data-lightbox-ui], .lb-media, .lb-box, .lb-corner',
+      )
+    ) {
+      return;
+    }
+    const midpoint = (stageEl?.clientWidth ?? window.innerWidth) / 2;
+    if (event.clientX < midpoint) goPrev();
+    else goNext();
   }
 
   /** Desktop Ctrl+wheel zoom; passive:false is required to stop browser zoom,
@@ -415,10 +505,6 @@
       case ' ':
         e.preventDefault();
         if (photo?.type === 2) volumeMuted = !volumeMuted;
-        break;
-      case 'Control':
-        // Double-tap Ctrl resets zoom.
-        if (scale > 1.01) resetZoom(true);
         break;
     }
   }
@@ -542,16 +628,17 @@
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
     onpointercancel={onPointerUp}
+    onclick={onMaskClick}
     ondblclick={onDblClick}
     use:wheelZoom
   >
     <!-- Top bar info: bare text top-left, more/close top-right -->
     <div
       class="absolute inset-x-3 top-3 z-10 flex items-start justify-between md:inset-x-4 md:top-4"
+      data-lightbox-ui
       onpointerdown={(e) => e.stopPropagation()}
     >
       <div class="lb-meta flex items-center gap-3 text-base">
-        <span class="tabular-nums text-white/90">{currentIndex + 1} / {photos.length}</span>
         <Tooltip text={isLiked ? copy.lightbox.unlike : copy.lightbox.like} side="bottom">
           <button
             aria-label={isLiked ? copy.lightbox.unlike : copy.lightbox.like}
@@ -741,6 +828,7 @@
     <!-- Bottom bar info: dimensions/size bottom-left, prev/next bottom-right -->
     <div
       class="absolute inset-x-3 bottom-3 z-10 flex items-end justify-between md:inset-x-4 md:bottom-4"
+      data-lightbox-ui
       onpointerdown={(e) => e.stopPropagation()}
     >
       <div class="lb-meta space-y-0.5 text-xs text-white/65">
@@ -765,6 +853,12 @@
             <ChevronLeft class="size-6" />
           </button>
         </Tooltip>
+        <span
+          class="min-w-[3.5rem] text-center text-sm tabular-nums text-white/80"
+          aria-label={copy.lightbox.preview}
+        >
+          {currentIndex + 1} / {photos.length}
+        </span>
         <Tooltip text={copy.lightbox.next}>
           <button
             aria-label={copy.lightbox.next}

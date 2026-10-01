@@ -155,41 +155,27 @@ export function upgradeAnimatedMedia(root: ParentNode): void {
   }
 }
 
-// `:::vote` parsing — a pure, DOM-free helper. Only the first `:::vote` block is
-// used: the data model keeps a single per-user vote per announcement, so an
-// announcement has at most one vote.
+/** Markdown segments separated by canonical poll references. */
+export type VoteReferenceBlock =
+  { type: 'markdown'; content: string } | { type: 'vote'; pollId: number };
 
-/** Vote options with surrounding Markdown for inline placement. */
-export interface SplitVote {
-  options: string[];
-  /** Markdown preceding the vote directive. */
-  before: string;
-  /** Markdown after the `:::vote` line. Later `:::vote` lines stay here as plain text. */
-  after: string;
-}
-
-function extractVoteLine(contentMd: string): { options: string[]; index: number } {
-  const lines = contentMd.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    const m = lines[i].trim().match(/^:::vote\s*(.*)$/);
-    if (!m) continue;
-    const options: string[] = [];
-    for (const part of m[1].split('|')) {
-      const s = part.trim();
-      if (s) options.push(s);
+/** Split Markdown around `::vote:<id>` references without carrying poll data in the text. */
+export function splitVoteReferences(content: string): VoteReferenceBlock[] {
+  const blocks: VoteReferenceBlock[] = [];
+  const reference = /::vote:(0|[1-9]\d*)(?![\w])/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = reference.exec(content))) {
+    const pollId = Number(match[1]);
+    if (!Number.isSafeInteger(pollId)) continue;
+    if (match.index > cursor) {
+      blocks.push({ type: 'markdown', content: content.slice(cursor, match.index) });
     }
-    return { options, index: i };
+    blocks.push({ type: 'vote', pollId });
+    cursor = match.index + match[0].length;
   }
-  return { options: [], index: -1 };
-}
-
-export function splitVote(contentMd: string): SplitVote {
-  const { options, index } = extractVoteLine(contentMd);
-  if (index < 0) return { options: [], before: contentMd, after: '' };
-  const lines = contentMd.split(/\r?\n/);
-  return {
-    options,
-    before: lines.slice(0, index).join('\n'),
-    after: lines.slice(index + 1).join('\n'),
-  };
+  if (cursor < content.length || blocks.length === 0) {
+    blocks.push({ type: 'markdown', content: content.slice(cursor) });
+  }
+  return blocks;
 }

@@ -96,7 +96,7 @@
       disabled={exporting}
       onclick={exportSql}
     >
-      <Download class="size-5" />
+      <Download class="size-[calc(var(--bar-h)*0.3125)]" />
     </button>
   </Tooltip>
 
@@ -108,7 +108,7 @@
       disabled={importing}
       onclick={() => fileInput?.click()}
     >
-      <Upload class="size-5" />
+      <Upload class="size-[calc(var(--bar-h)*0.3125)]" />
     </button>
   </Tooltip>
   <input bind:this={fileInput} type="file" accept=".sql" class="hidden" onchange={importSelected} />

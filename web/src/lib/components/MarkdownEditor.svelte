@@ -2,24 +2,13 @@
   // Markdown editor with a toolbar and a split live preview. Images go through
   // the shared upload pipeline; the returned URL is inserted at the remembered
   // caret so edits made while an upload is in flight do not move it.
-  import {
-    Bold,
-    Italic,
-    Strikethrough,
-    Quote,
-    Code,
-    List,
-    Link,
-    ImagePlus,
-    Vote,
-  } from '@lucide/svelte';
+  import { Bold, Italic, Strikethrough, Quote, Code, List, Link, ImagePlus } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { cn } from '$base/lib/ui';
-  import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';
-  import VoteBlock from './VoteBlock.svelte';
+  import RichMarkdown from './RichMarkdown.svelte';
+  import type { Poll } from '$shared/types';
   import {
-    splitVote,
     insertImageAt,
     insertMarkdownBlock,
     mapOffsetThroughEdit,
@@ -42,6 +31,9 @@
     uploadTask?: UploadRow | null;
     /** Retry a failed editor upload; the parent calls pipeline.retryEditorUpload(jobId). */
     onRetryUpload?: (jobId: string) => Promise<string>;
+    /** Canonical polls available for live result previews. */
+    polls?: Poll[];
+    selfId?: number;
   }
 
   let {
@@ -52,6 +44,8 @@
     uploadName = '',
     uploadTask = null,
     onRetryUpload,
+    polls = [],
+    selfId = -1,
   }: Props = $props();
 
   let textareaEl: HTMLTextAreaElement | undefined = $state(undefined);
@@ -165,14 +159,7 @@
       run: () => surround('[', '](https://)', copy.editor.tools.link),
     },
     { icon: ImagePlus, title: copy.editor.tools.image, run: () => void pickImage(), image: true },
-    {
-      icon: Vote,
-      title: copy.editor.tools.vote,
-      run: () => insertBlock(':::vote Option A | Option B'),
-    },
   ];
-
-  let previewVote = $derived(splitVote(value));
 </script>
 
 <div class="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
@@ -251,17 +238,14 @@
     aria-label={copy.editor.previewAria}
   >
     {#if value.trim()}
-      <div class="flex flex-col gap-4">
-        {#if previewVote.before.trim()}
-          <MarkdownView content={previewVote.before} allowImages class="text-muted-foreground" />
-        {/if}
-        {#if previewVote.options.length >= 2}
-          <VoteBlock options={previewVote.options} votes={[]} selfId={-1} />
-        {/if}
-        {#if previewVote.after.trim()}
-          <MarkdownView content={previewVote.after} allowImages class="text-muted-foreground" />
-        {/if}
-      </div>
+      <RichMarkdown
+        content={value}
+        {polls}
+        {selfId}
+        interactive={false}
+        allowImages
+        class="text-muted-foreground"
+      />
     {:else}
       <p class="text-sm text-muted-foreground">{copy.editor.previewEmpty}</p>
     {/if}

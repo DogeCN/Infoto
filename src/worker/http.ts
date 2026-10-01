@@ -2,11 +2,17 @@
 // identity gate, id validation and `sort` renumbering.
 
 import type { Context, MiddlewareHandler } from 'hono';
+import type { LocaleCode } from '../shared/copy.ts';
+import { locales } from '../shared/copy.ts';
 import type { Db } from './db.ts';
 import { ROOT_ID, resolveUser } from './identity.ts';
 
 /** Tables whose `sort` column holds a manual display order. */
-export type SortTable = 'announcements' | 'feedback';
+export type SortTable = 'announcements' | 'feedback' | 'polls';
+
+function localeCode(value: unknown): value is LocaleCode {
+  return typeof value === 'string' && Object.hasOwn(locales, value);
+}
 
 /** JSON body of `c`, or null when it is missing or malformed. */
 export function readJson<T>(c: Context): Promise<T | null> {
@@ -44,25 +50,38 @@ export function idParam(c: Context): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-/** Distinct positive integer ids out of an `{ ids }` body; anything else is dropped. */
-export function bodyIds(body: { ids?: unknown } | null): number[] {
+/** Non-negative integer path parameter for zero-based poll IDs. */
+export function nonNegativeIdParam(c: Context): number | null {
+  const raw = c.req.param('id') ?? '';
+  if (!/^(0|[1-9]\d*)$/.test(raw)) return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
+/** Distinct integer ids out of an `{ ids }` body; poll IDs may include zero. */
+export function bodyIds(body: { ids?: unknown } | null, allowZero = false): number[] {
   const raw: unknown[] = Array.isArray(body?.ids) ? body.ids : [];
   return [
     ...new Set(
       raw.filter(
-        (id): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0,
+        (id): id is number =>
+          typeof id === 'number' && Number.isSafeInteger(id) && (allowZero ? id >= 0 : id > 0),
       ),
     ),
   ];
 }
 
-/** Place submitted IDs first, preserve the order of omitted rows, and assign consecutive sort values. */
-export function reorderHandler(db: Db, table: SortTable) {
+/** Place submitted locale IDs first, preserve omitted rows, and renumber the locale's list. */
+export function reorderHandler(db: Db, table: SortTable, allowZero = false) {
   return async (c: Context): Promise<Response> => {
-    const ids = bodyIds(await readJson<{ ids?: unknown }>(c));
+    const body = await readJson<{ ids?: unknown; locale?: unknown }>(c);
+    if (!localeCode(body?.locale)) return badRequest(c);
+    const locale = body.locale;
+    const ids = bodyIds(body, allowZero);
     if (ids.length === 0) return badRequest(c);
     const rows = await db
-      .prepare(`SELECT id FROM ${table} ORDER BY sort ASC`)
+      .prepare(`SELECT id FROM ${table} WHERE locale = ? ORDER BY sort ASC, id ASC`)
+      .bind(locale)
       .all<{ id: number }>();
     const rank = new Map(ids.map((id, i) => [id, i]));
     const rest = ids.length;
@@ -70,7 +89,10 @@ export function reorderHandler(db: Db, table: SortTable) {
       .map((row) => row.id)
       .sort((a, b) => (rank.get(a) ?? rest) - (rank.get(b) ?? rest));
     await db.batch(
-      all.map((id, i) => ({ sql: `UPDATE ${table} SET sort = ? WHERE id = ?`, binds: [i, id] })),
+      all.map((id, i) => ({
+        sql: `UPDATE ${table} SET sort = ? WHERE id = ? AND locale = ?`,
+        binds: [i, id, locale],
+      })),
     );
     return c.json({ ok: true });
   };

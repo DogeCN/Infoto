@@ -1,6 +1,6 @@
 <script lang="ts">
   // Step-aligned single-thumb slider with pointer and keyboard controls and change-only emissions.
-  import type { Component } from 'svelte';
+  import { onDestroy, type Component } from 'svelte';
   import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
   import { cn } from '$base/lib/ui';
@@ -25,6 +25,7 @@
     /** Value → display text. */
     format?: (v: number) => string;
     onChange?: (v: number) => void;
+    onDraggingChange?: (active: boolean) => void;
   }
 
   let {
@@ -36,6 +37,7 @@
     icon: Icon,
     format = (v) => String(v),
     onChange,
+    onDraggingChange,
   }: Props = $props();
 
   let span = $derived(Math.max(1, max - min));
@@ -90,6 +92,7 @@
     dragRect = trackEl.getBoundingClientRect();
     trackWidth = dragRect.width;
     drag = true;
+    onDraggingChange?.(true);
     trackEl.setPointerCapture?.(e.pointerId);
     // Clicking the track snaps to that point (no jump when dragging to the end; same formula as dragging)
     if (!(e.target as HTMLElement).closest?.('[data-thumb]')) applyT(tFromClientX(e.clientX));
@@ -102,9 +105,15 @@
   }
 
   function endDrag(): void {
+    if (!drag) return;
     drag = false;
     dragRect = null;
+    onDraggingChange?.(false);
   }
+
+  onDestroy(() => {
+    if (drag) onDraggingChange?.(false);
+  });
 
   // ---- keyboard (the handle is a custom role=slider element) ----------------
   let focus = $state(false);

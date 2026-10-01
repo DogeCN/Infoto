@@ -127,6 +127,7 @@ export const enUS = {
   },
 
   topbar: {
+    controls: 'Gallery controls',
     settings: 'Settings',
     announcements: 'Announcements',
     multiSelect: 'Select',
@@ -158,6 +159,10 @@ export const enUS = {
     interfaceSection: 'Interface',
     resetLayout: 'Reset layout',
     language: 'Language',
+    switchToEnglish: 'Switch language to English',
+    switchToChinese: 'Switch language to Chinese',
+    scrollDirection: 'Scroll direction',
+    arrangement: 'Card arrangement',
     dirVertical: 'Vertical',
     dirHorizontal: 'Horizontal',
     strategyEqualWidth: 'Equal width',
@@ -265,9 +270,33 @@ export const enUS = {
   admin: {
     sectionLabel: 'Admin sections',
     newAnnouncement: 'New announcement',
+    newPoll: 'New poll',
     tabs: {
       announcements: 'Announcements',
       feedback: 'Feedback',
+      polls: 'Polls',
+    },
+    poll: {
+      empty: 'No polls',
+      listLabel: 'Poll list',
+      optionCount: 'options',
+      voteCount: 'selections',
+      saveFailed: 'Failed to save poll',
+      deleteFailed: 'Failed to delete poll',
+      reorderFailed: 'Failed to save poll order',
+      titlePlaceholder: 'Question',
+      optionsPlaceholder: 'One option per line',
+      optionsHint: 'Add at least two options, one on each line.',
+      allowMultiple: 'Allow multiple selections',
+      copyCode: 'Copy Markdown reference',
+      copied: 'Poll reference copied',
+      copyFailed: 'Could not copy poll reference',
+      edit: 'Edit poll',
+      delete: 'Delete poll',
+      deleteAria: 'Delete poll',
+      cannotChangeWithVotes:
+        'Options and selection mode cannot change after votes are cast. Delete this poll and create a new one to reset results.',
+      deleteConfirm: 'Delete this poll and all of its votes?',
     },
     fail: {
       backendTimeout: 'Server not responding. Try again later',
@@ -340,6 +369,7 @@ export const enUS = {
 
   vote: {
     count: { one: '{count} vote', other: '{count} votes' },
+    missing: 'Poll {id} is unavailable',
   },
 
   reactions: {
@@ -374,6 +404,10 @@ export const enUS = {
     announcementReorderFailed: 'announcement reorder failed: HTTP {status}',
     feedbackDeleteFailed: 'feedback delete failed: HTTP {status}',
     feedbackReorderFailed: 'feedback reorder failed: HTTP {status}',
+    pollCreateFailed: 'poll create failed: HTTP {status}',
+    pollUpdateFailed: 'poll update failed: HTTP {status}',
+    pollDeleteFailed: 'poll delete failed: HTTP {status}',
+    pollReorderFailed: 'poll reorder failed: HTTP {status}',
   },
 };
 
@@ -443,6 +477,7 @@ const zhCN: Copy = {
   },
 
   topbar: {
+    controls: '图库操作',
     settings: '设置',
     announcements: '公告',
     multiSelect: '多选',
@@ -474,6 +509,10 @@ const zhCN: Copy = {
     interfaceSection: '界面',
     resetLayout: '重置布局',
     language: '语言',
+    switchToEnglish: '切换为英文',
+    switchToChinese: '切换为中文',
+    scrollDirection: '滚动方向',
+    arrangement: '排列方式',
     dirVertical: '纵向',
     dirHorizontal: '横向',
     strategyEqualWidth: '等宽',
@@ -581,9 +620,32 @@ const zhCN: Copy = {
   admin: {
     sectionLabel: '管理页分区',
     newAnnouncement: '新增公告',
+    newPoll: '新增投票',
     tabs: {
       announcements: '公告',
       feedback: '建议',
+      polls: '投票',
+    },
+    poll: {
+      empty: '暂无投票',
+      listLabel: '投票列表',
+      optionCount: '个选项',
+      voteCount: '个选择',
+      saveFailed: '投票保存失败',
+      deleteFailed: '投票删除失败',
+      reorderFailed: '投票排序保存失败',
+      titlePlaceholder: '问题',
+      optionsPlaceholder: '每行一个选项',
+      optionsHint: '至少添加两个选项，每行一个。',
+      allowMultiple: '允许多选',
+      copyCode: '复制 Markdown 引用',
+      copied: '投票引用已复制',
+      copyFailed: '无法复制投票引用',
+      edit: '编辑投票',
+      delete: '删除投票',
+      deleteAria: '删除投票',
+      cannotChangeWithVotes: '已有投票后不能修改选项或多选设置。请删除此投票并新建以重置结果。',
+      deleteConfirm: '删除此投票及其全部票数？',
     },
     fail: {
       backendTimeout: '后端无响应，请稍后重试',
@@ -656,6 +718,7 @@ const zhCN: Copy = {
 
   vote: {
     count: { other: '{count} 票' },
+    missing: '投票 {id} 不存在',
   },
 
   reactions: {
@@ -692,6 +755,10 @@ const zhCN: Copy = {
     announcementReorderFailed: '公告排序失败：HTTP {status}',
     feedbackDeleteFailed: '建议删除失败：HTTP {status}',
     feedbackReorderFailed: '建议排序失败：HTTP {status}',
+    pollCreateFailed: '投票创建失败：HTTP {status}',
+    pollUpdateFailed: '投票保存失败：HTTP {status}',
+    pollDeleteFailed: '投票删除失败：HTTP {status}',
+    pollReorderFailed: '投票排序失败：HTTP {status}',
   },
 };
 

@@ -2,7 +2,16 @@
 // syncs, and is corrected by the next full server snapshot. Pure reducers live here so
 // they are unit-testable without a browser; the store binds them to reactive state and the engine.
 
-import type { Announcement, Feedback, Op, Photo, ReactPayload, VotePayload } from '$shared/types';
+import type {
+  Announcement,
+  Feedback,
+  LocaleCode,
+  Op,
+  Photo,
+  Poll,
+  ReactPayload,
+  VotePayload,
+} from '$shared/types';
 
 /** add/remove `userId` in a JSON mark array; idempotent (contains check first). */
 export function toggleId(list: number[], userId: number, add: boolean): number[] {
@@ -67,15 +76,17 @@ function resolveOpPhoto(photos: Photo[], op: Op): Photo | null {
   return photos.find((p) => p.sha256 === op.targetSha) ?? null;
 }
 
-/** Reapply queued marks, reactions, votes, and deletions over a snapshot. Upload and feedback rows are managed separately. */
+/** Reapply queued marks, reactions, poll votes, and deletions over a snapshot. Upload and feedback rows are managed separately. */
 export function reapplyQueued(
   photos: Photo[],
   announcements: Announcement[],
+  polls: Poll[],
   queued: Op[],
   selfId: number,
-): { photos: Photo[]; announcements: Announcement[] } {
+): { photos: Photo[]; announcements: Announcement[]; polls: Poll[] } {
   let p = photos;
   let a = announcements;
+  let pollList = polls;
   for (const op of queued) {
     const photo = resolveOpPhoto(p, op);
     switch (op.type) {
@@ -100,7 +111,12 @@ export function reapplyQueued(
         break;
       case 'vote':
         if (op.target != null)
-          a = applyVote(a, op.target, selfId, (op.payload as VotePayload | null)?.option ?? null);
+          pollList = applyVote(
+            pollList,
+            op.target,
+            selfId,
+            (op.payload as VotePayload | null)?.options ?? [],
+          );
         break;
       case 'react':
         if (op.target != null)
@@ -110,20 +126,27 @@ export function reapplyQueued(
         break; // upload / fb_create — see doc comment
     }
   }
-  return { photos: p, announcements: a };
+  return { photos: p, announcements: a, polls: pollList };
 }
 
-/** Optimistically set / retract the single vote of `userId` on one announcement. */
+/** Optimistically replace one user's selected options for one poll. */
 export function applyVote(
-  anns: Announcement[],
-  annId: number,
+  polls: Poll[],
+  pollId: number,
   userId: number,
-  option: number | null,
-): Announcement[] {
-  return anns.map((a) => {
-    if (a.id !== annId) return a;
-    const others = a.votes.filter((v) => v.userId !== userId);
-    return { ...a, votes: option === null ? others : [...others, { userId, option }] };
+  options: number[],
+): Poll[] {
+  return polls.map((poll) => {
+    if (poll.id !== pollId) return poll;
+    const selected = [...new Set(options)].filter(
+      (option) => Number.isSafeInteger(option) && option >= 0 && option < poll.options.length,
+    );
+    const values = poll.allowMultiple ? selected : selected.slice(0, 1);
+    const others = poll.votes.filter((vote) => vote.userId !== userId);
+    return {
+      ...poll,
+      votes: [...others, ...values.map((option) => ({ userId, option }))],
+    };
   });
 }
 
@@ -147,13 +170,14 @@ export function applyAnnCreate(
   tempId: number,
   title: string,
   contentMd: string,
+  locale: LocaleCode,
   now: number,
 ): Announcement[] {
-  const sort = anns.reduce((m, a) => Math.max(m, a.sort), -1) + 1;
-  return [
-    ...anns,
-    { id: tempId, title, contentMd, sort, updatedAt: now, reactions: [], votes: [] },
-  ];
+  const sort =
+    anns
+      .filter((announcement) => announcement.locale === locale)
+      .reduce((max, announcement) => Math.max(max, announcement.sort), -1) + 1;
+  return [...anns, { id: tempId, locale, title, contentMd, sort, updatedAt: now, reactions: [] }];
 }
 
 export function applyAnnUpdate(
@@ -161,9 +185,14 @@ export function applyAnnUpdate(
   id: number,
   title: string,
   contentMd: string,
+  locale: LocaleCode,
   now: number,
 ): Announcement[] {
-  return anns.map((a) => (a.id === id ? { ...a, title, contentMd, updatedAt: now } : a));
+  return anns.map((announcement) =>
+    announcement.id === id
+      ? { ...announcement, locale, title, contentMd, updatedAt: now }
+      : announcement,
+  );
 }
 
 export function applyAnnDelete(anns: Announcement[], id: number): Announcement[] {
@@ -234,11 +263,13 @@ export function applyFbCreate(
   tempId: number,
   userId: number,
   contentMd: string,
+  locale: LocaleCode,
   now: number,
 ): Feedback[] {
-  // Same rule as the server's INSERT: one below the current minimum → newest on top.
-  const minSort = list.reduce((min, item) => Math.min(min, item.sort), 0);
-  return [{ id: tempId, userId, contentMd, createdAt: now, sort: minSort - 1 }, ...list];
+  // Same rule as the server's INSERT: one below this locale's minimum → newest on top.
+  const localeRows = list.filter((item) => item.locale === locale);
+  const minSort = localeRows.reduce((min, item) => Math.min(min, item.sort), 0);
+  return [{ id: tempId, userId, locale, contentMd, createdAt: now, sort: minSort - 1 }, ...list];
 }
 
 export function applyFbDelete(list: Feedback[], id: number): Feedback[] {

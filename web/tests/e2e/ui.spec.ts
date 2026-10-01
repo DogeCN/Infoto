@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { Announcement, Photo, SyncResponse } from '../../../src/shared/types';
+import type { Announcement, Photo, Poll, SyncResponse } from '../../../src/shared/types';
 
 const photos: Photo[] = Array.from({ length: 9 }, (_, index) => ({
   id: index + 1,
@@ -16,7 +16,12 @@ const photos: Photo[] = Array.from({ length: 9 }, (_, index) => ({
   reports: [],
 }));
 
-async function mockAlbum(page: Page, items = photos, announcements: Announcement[] = []) {
+async function mockAlbum(
+  page: Page,
+  items = photos,
+  announcements: Announcement[] = [],
+  polls: Poll[] = [],
+) {
   await page.addInitScript(() => localStorage.setItem('infoto-locale', 'en-US'));
   await page.route('**/sync', (route) =>
     route.fulfill({
@@ -27,6 +32,7 @@ async function mockAlbum(page: Page, items = photos, announcements: Announcement
         mediaHostUrl: 'https://facade.test',
         photos: items,
         announcements,
+        polls,
         feedback: [],
       } satisfies SyncResponse,
     }),
@@ -73,10 +79,76 @@ test('sort tabs support keyboard selection and locale changes', async ({ page })
     'true',
   );
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('button', { name: 'Language', exact: true }).click();
+  await page.getByRole('button', { name: 'Switch language to Chinese', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('tab', { name: '最热', exact: true })).toBeVisible();
+});
+
+test('announcement and poll snapshots stay isolated when switching languages', async ({ page }) => {
+  const announcements: Announcement[] = [
+    {
+      id: 1,
+      locale: 'en-US',
+      title: 'English news',
+      contentMd: 'Choose an option. ::vote:0',
+      sort: 0,
+      updatedAt: 1,
+      reactions: [],
+    },
+    {
+      id: 2,
+      locale: 'zh-CN',
+      title: '中文公告',
+      contentMd: '请选择。 ::vote:1',
+      sort: 0,
+      updatedAt: 2,
+      reactions: [],
+    },
+  ];
+  const polls: Poll[] = [
+    {
+      id: 0,
+      locale: 'en-US',
+      title: 'English poll',
+      options: ['English option'],
+      allowMultiple: false,
+      sort: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      votes: [],
+    },
+    {
+      id: 1,
+      locale: 'zh-CN',
+      title: '中文投票',
+      options: ['中文选项'],
+      allowMultiple: false,
+      sort: 0,
+      createdAt: 2,
+      updatedAt: 2,
+      votes: [],
+    },
+  ];
+  await mockAlbum(page, photos, announcements, polls);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Announcements', exact: true }).click();
+  let sidebar = page.getByRole('dialog', { name: 'Announcements', exact: true });
+  await expect(sidebar.getByRole('button', { name: 'English news', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: '中文公告', exact: true })).toHaveCount(0);
+  await sidebar.getByRole('button', { name: 'English news', exact: true }).click();
+  await expect(sidebar.getByRole('button', { name: 'English option' })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Switch language to Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '公告', exact: true }).click();
+  sidebar = page.getByRole('dialog', { name: '公告', exact: true });
+  await expect(sidebar.getByRole('button', { name: '中文公告', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: 'English news', exact: true })).toHaveCount(0);
+  await sidebar.getByRole('button', { name: '中文公告', exact: true }).click();
+  await expect(sidebar.getByRole('button', { name: '中文选项' })).toBeVisible();
 });
 
 test('nested media menu handles Escape without closing the lightbox', async ({ page }) => {
@@ -96,6 +168,40 @@ test('nested media menu handles Escape without closing the lightbox', async ({ p
   await page.keyboard.press('Escape');
   await expect(lightbox).toHaveCount(0);
   expect(await page.evaluate(() => document.body.style.overflow)).toBe('');
+});
+
+test('lightbox mask halves navigate and Ctrl-drag simulates pinch zoom', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await page.locator('main img').first().click();
+  const lightbox = page.getByRole('dialog', { name: 'Media preview' });
+  const counter = lightbox.getByText('1 / 9', { exact: true });
+  await expect(counter).toBeVisible();
+  const bounds = (await lightbox.boundingBox())!;
+  await page.mouse.click(bounds.x + 4, bounds.y + bounds.height / 2);
+  await expect(lightbox.getByText('9 / 9', { exact: true })).toBeVisible();
+  await page.mouse.click(bounds.x + bounds.width - 4, bounds.y + bounds.height / 2);
+  await expect(counter).toBeVisible();
+
+  const media = lightbox.locator('.lb-media');
+  await expect(media).toBeVisible();
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+  await page.keyboard.down('Control');
+  await page.mouse.move(centerX + 40, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 100, centerY, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.up('Control');
+  await expect
+    .poll(() =>
+      lightbox.locator('.will-change-transform').evaluate((node) => {
+        const matrix = new DOMMatrixReadOnly(getComputedStyle(node).transform);
+        return matrix.a;
+      }),
+    )
+    .toBeGreaterThan(1.2);
+  await page.keyboard.press('Escape');
 });
 
 test('gallery and sidebars fit narrow viewports', async ({ page }) => {
@@ -148,9 +254,9 @@ test('reaction picker escapes clipping and dismisses before its sidebar', async 
       title: 'Short announcement',
       contentMd: '',
       sort: 0,
+      locale: 'en-US',
       updatedAt: Date.now(),
       reactions: [],
-      votes: [],
     },
   ]);
   for (const width of [1280, 390, 320]) {
@@ -346,6 +452,7 @@ test('verification failures stay stopped and manual sync can recover', async ({ 
         serverTime: Date.now(),
         photos,
         announcements: [],
+        polls: [],
         feedback: [],
       },
     });

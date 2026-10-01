@@ -10,11 +10,14 @@ import {
   MAX_SYNC_OPS,
   type Announcement,
   type Feedback,
+  type LocaleCode,
   type MediaType,
   type Op,
   type Photo,
+  type Poll,
   type SyncRequest,
 } from '../../shared/types.ts';
+import { locales } from '../../shared/copy.ts';
 import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '../identity.ts';
 import { verifyTurnstile } from '../turnstile.ts';
 import { LOCAL_MEDIA_HOST_URL, isAllowedMediaUrl } from './media.ts';
@@ -22,7 +25,7 @@ import { LOCAL_MEDIA_HOST_URL, isAllowedMediaUrl } from './media.ts';
 /** Text fields an anonymous op may carry. */
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_EMOJI_LENGTH = 16;
-/** Highest `:::vote` option index an op may name. */
+/** Highest number of option selections accepted in one vote operation. */
 const MAX_VOTE_OPTIONS = 100;
 
 /** Mark column holding the user ids that applied a mark. */
@@ -44,14 +47,26 @@ interface PhotoRow {
 }
 interface AnnRow {
   id: number;
+  locale: LocaleCode;
   title: string;
   content_md: string;
   sort: number;
   updated_at: number;
 }
+interface PollRow {
+  id: number;
+  locale: LocaleCode;
+  title: string;
+  options: string;
+  allow_multiple: number;
+  sort: number;
+  created_at: number;
+  updated_at: number;
+}
 interface FbRow {
   id: number;
   user_id: number;
+  locale: LocaleCode;
   content_md: string;
   created_at: number;
   sort: number;
@@ -62,7 +77,7 @@ interface ReactRow {
   emoji: string;
 }
 interface VoteRow {
-  ann_id: number;
+  poll_id: number;
   user_id: number;
   option: number;
 }
@@ -85,6 +100,8 @@ const text = (v: unknown, max = MAX_TEXT_LENGTH): string | null =>
 /** Non-negative integer, or null. */
 const count = (v: unknown): number | null =>
   typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
+const localeCode = (v: unknown): v is LocaleCode =>
+  typeof v === 'string' && Object.hasOwn(locales, v);
 const mediaType = (v: unknown): MediaType | null =>
   v === MEDIA_TYPE.IMAGE || v === MEDIA_TYPE.ANIMATED || v === MEDIA_TYPE.VIDEO ? v : null;
 
@@ -170,15 +187,17 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
       return;
     }
     case 'fb_create': {
-      const contentMd = text(record(op.payload).contentMd);
-      if (!contentMd) return;
-      // One below the current minimum, so the newest row sorts first.
+      const payload = record(op.payload);
+      const contentMd = text(payload.contentMd);
+      const locale = payload.locale;
+      if (!contentMd || !localeCode(locale)) return;
+      // One below this locale's minimum, so the newest row sorts first.
       await db
         .prepare(
-          `INSERT INTO feedback (user_id, content_md, created_at, sort)
-           VALUES (?, ?, ?, (SELECT COALESCE(MIN(sort), 0) - 1 FROM feedback))`,
+          `INSERT INTO feedback (user_id, locale, content_md, created_at, sort)
+           VALUES (?, ?, ?, ?, (SELECT COALESCE(MIN(sort), 0) - 1 FROM feedback WHERE locale = ?))`,
         )
-        .bind(user.id, contentMd, serverTime)
+        .bind(user.id, locale, contentMd, serverTime, locale)
         .run();
       return;
     }
@@ -200,22 +219,31 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
       return;
     }
     case 'vote': {
-      const annId = op.target;
-      if (annId == null || !(await announcementExists(db, annId))) return;
-      const raw = record(op.payload).option;
-      const option = raw === null ? null : count(raw);
-      if (raw !== null && (option === null || option >= MAX_VOTE_OPTIONS)) return;
-      if (option === null) {
-        await db
-          .prepare('DELETE FROM votes WHERE ann_id = ? AND user_id = ?')
-          .bind(annId, user.id)
-          .run();
-      } else {
-        await db
-          .prepare('INSERT OR REPLACE INTO votes (ann_id, user_id, option) VALUES (?, ?, ?)')
-          .bind(annId, user.id, option)
-          .run();
+      const pollId = count(op.target);
+      if (pollId === null) return;
+      const poll = await db
+        .prepare('SELECT options, allow_multiple FROM polls WHERE id = ?')
+        .bind(pollId)
+        .first<{ options: string; allow_multiple: number }>();
+      if (!poll) return;
+      const optionLabels = JSON.parse(poll.options) as string[];
+      const raw = record(op.payload).options;
+      if (!Array.isArray(raw) || raw.length > MAX_VOTE_OPTIONS) return;
+      const options: number[] = [];
+      for (const value of raw) {
+        const option = count(value);
+        if (option === null || option >= optionLabels.length) return;
+        if (!options.includes(option)) options.push(option);
       }
+      if (poll.allow_multiple !== 1 && options.length > 1) return;
+      const statements = [
+        { sql: 'DELETE FROM votes WHERE poll_id = ? AND user_id = ?', binds: [pollId, user.id] },
+        ...options.map((option) => ({
+          sql: 'INSERT INTO votes (poll_id, user_id, option) VALUES (?, ?, ?)',
+          binds: [pollId, user.id, option],
+        })),
+      ];
+      await db.batch(statements);
       return;
     }
   }
@@ -248,8 +276,8 @@ const rowToPhoto = (r: PhotoRow): Photo => ({
   reports: idList(r.reports),
 });
 
-/** Group rows by `ann_id`, preserving the order the query returned. */
-function groupByAnnId<T>(rows: T[], key: (row: T) => number): Map<number, T[]> {
+/** Group related rows by a numeric record id, preserving query order. */
+function groupById<T>(rows: T[], key: (row: T) => number): Map<number, T[]> {
   const out = new Map<number, T[]>();
   for (const row of rows) {
     const id = key(row);
@@ -266,37 +294,61 @@ async function snapshot(
 ): Promise<{
   photos: Photo[];
   announcements: Announcement[];
+  polls: Poll[];
   feedback: Feedback[];
 }> {
-  const [photoRows, annRows, reactRows, voteRows] = await Promise.all([
+  const [photoRows, annRows, reactRows, pollRows, voteRows] = await Promise.all([
     db.prepare('SELECT * FROM photos ORDER BY id ASC').all<PhotoRow>(),
-    db.prepare('SELECT * FROM announcements ORDER BY sort ASC, id ASC').all<AnnRow>(),
+    db.prepare('SELECT * FROM announcements ORDER BY locale ASC, sort ASC, id ASC').all<AnnRow>(),
     db.prepare('SELECT ann_id, user_id, emoji FROM reactions').all<ReactRow>(),
-    db.prepare('SELECT ann_id, user_id, option FROM votes').all<VoteRow>(),
+    db.prepare('SELECT * FROM polls ORDER BY locale ASC, sort ASC, id ASC').all<PollRow>(),
+    db
+      .prepare('SELECT poll_id, user_id, option FROM votes ORDER BY poll_id, user_id, option')
+      .all<VoteRow>(),
   ]);
-  const reactions = groupByAnnId(reactRows.results, (r) => r.ann_id);
-  const votes = groupByAnnId(voteRows.results, (r) => r.ann_id);
-  const announcements: Announcement[] = annRows.results.map((r) => ({
-    id: r.id,
-    title: r.title,
-    contentMd: r.content_md,
-    sort: r.sort,
-    updatedAt: r.updated_at,
-    reactions: (reactions.get(r.id) ?? []).map((x) => ({ userId: x.user_id, emoji: x.emoji })),
-    votes: (votes.get(r.id) ?? []).map((x) => ({ userId: x.user_id, option: x.option })),
+  const reactions = groupById(reactRows.results, (row) => row.ann_id);
+  const votes = groupById(voteRows.results, (row) => row.poll_id);
+  const announcements: Announcement[] = annRows.results.map((row) => ({
+    id: row.id,
+    locale: row.locale,
+    title: row.title,
+    contentMd: row.content_md,
+    sort: row.sort,
+    updatedAt: row.updated_at,
+    reactions: (reactions.get(row.id) ?? []).map((reaction) => ({
+      userId: reaction.user_id,
+      emoji: reaction.emoji,
+    })),
+  }));
+  const polls: Poll[] = pollRows.results.map((row) => ({
+    id: row.id,
+    locale: row.locale,
+    title: row.title,
+    options: JSON.parse(row.options) as string[],
+    allowMultiple: row.allow_multiple === 1,
+    sort: row.sort,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    votes: (votes.get(row.id) ?? []).map((vote) => ({
+      userId: vote.user_id,
+      option: vote.option,
+    })),
   }));
   let feedback: Feedback[] = [];
   if (selfId === ROOT_ID) {
-    const rows = await db.prepare('SELECT * FROM feedback ORDER BY sort ASC, id ASC').all<FbRow>();
-    feedback = rows.results.map((r) => ({
-      id: r.id,
-      userId: r.user_id,
-      contentMd: r.content_md,
-      createdAt: r.created_at,
-      sort: r.sort,
+    const rows = await db
+      .prepare('SELECT * FROM feedback ORDER BY locale ASC, sort ASC, id ASC')
+      .all<FbRow>();
+    feedback = rows.results.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      locale: row.locale,
+      contentMd: row.content_md,
+      createdAt: row.created_at,
+      sort: row.sort,
     }));
   }
-  return { photos: photoRows.results.map(rowToPhoto), announcements, feedback };
+  return { photos: photoRows.results.map(rowToPhoto), announcements, polls, feedback };
 }
 
 export function syncHandler(env: AppEnv) {

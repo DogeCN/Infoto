@@ -10,6 +10,7 @@ import {
 const feedback = (id: number, sort: number, contentMd = `fb-${id}`): Feedback => ({
   id,
   userId: 0,
+  locale: 'en-US',
   contentMd,
   createdAt: id,
   sort,

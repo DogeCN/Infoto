@@ -1,22 +1,22 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import type { Announcement } from '$shared/types';
+  import type { Announcement, Poll } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
-  import { splitVote } from '../../core/markdown';
+  import RichMarkdown from './RichMarkdown.svelte';
   import MarkdownView from './MarkdownView.svelte';
-  import VoteBlock from './VoteBlock.svelte';
   import ReactionBar from './ReactionBar.svelte';
 
   interface Props {
     announcements: Announcement[];
+    polls: Poll[];
     selfId?: number;
     onReact?: (annId: number, emoji: string | null) => void;
-    onVote?: (annId: number, option: number | null) => void;
+    onVote?: (pollId: number, options: number[]) => void;
     onFeedback?: (contentMd: string) => void;
   }
 
-  let { announcements, selfId = -1, onReact, onVote, onFeedback }: Props = $props();
+  let { announcements, polls, selfId = -1, onReact, onVote, onFeedback }: Props = $props();
 
   let feedbackText = $state('');
   let previewMode = $state(false);
@@ -75,7 +75,6 @@
     {/if}
 
     {#each announcements as ann (ann.id)}
-      {@const vote = splitVote(ann.contentMd)}
       {@const expanded = expandedIds.has(ann.id)}
 
       <div class="overflow-hidden rounded-xl border border-border bg-card">
@@ -106,22 +105,14 @@
         >
           <div class="min-h-0 overflow-hidden">
             <div class="space-y-3 px-4 pb-4 pt-0.5">
-              {#if vote.before.trim()}
-                <MarkdownView content={vote.before} allowImages class="text-muted-foreground" />
-              {/if}
-
-              {#if vote.options.length >= 2}
-                <VoteBlock
-                  options={vote.options}
-                  votes={ann.votes}
-                  {selfId}
-                  onVote={(option) => onVote?.(ann.id, option)}
-                />
-              {/if}
-
-              {#if vote.after.trim()}
-                <MarkdownView content={vote.after} allowImages class="text-muted-foreground" />
-              {/if}
+              <RichMarkdown
+                content={ann.contentMd}
+                {polls}
+                {selfId}
+                allowImages
+                class="text-muted-foreground"
+                onVote={(pollId, options) => onVote?.(pollId, options)}
+              />
 
               <!-- Emoji reaction bar -->
               <ReactionBar

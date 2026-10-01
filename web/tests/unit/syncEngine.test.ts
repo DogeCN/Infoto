@@ -19,6 +19,7 @@ const snapshot = (announcements: SyncResponse['announcements'] = []): SyncRespon
   mediaHostUrl: 'https://facade.test',
   photos: [],
   announcements,
+  polls: [],
   feedback: [],
 });
 
@@ -86,7 +87,7 @@ describe('SyncEngine awaitable sync', () => {
       return requests.length === 1 ? first.promise : second.promise;
     });
     const engine = new SyncEngine({ db, postSyncFn });
-    await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body' } });
+    await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
 
     const active = engine.sync();
     const coalesced = engine.sync();
@@ -99,12 +100,12 @@ describe('SyncEngine awaitable sync', () => {
         snapshot([
           {
             id: 9,
+            locale: 'en-US',
             title: 'new',
             contentMd: 'body',
             sort: 0,
             updatedAt: 1_000,
             reactions: [],
-            votes: [],
           },
         ]),
       ),
@@ -121,12 +122,12 @@ describe('SyncEngine awaitable sync', () => {
         snapshot([
           {
             id: 9,
+            locale: 'en-US',
             title: 't',
             contentMd: 'c',
             sort: 0,
             updatedAt: 1_000,
             reactions: [],
-            votes: [],
           },
         ]),
       ),
@@ -260,7 +261,7 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     const keepalive = deferred<Response>();
     fetchFn.mockImplementation(() => keepalive.promise);
     const e = engine();
-    await e.addOp({ type: 'fb_create', payload: { contentMd: 'body' } });
+    await e.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
     await e.addOp(op(-1));
 
     firePagehide(e);
@@ -437,7 +438,7 @@ describe('SyncEngine in-flight dedup and pagehide flush', () => {
     const e = engine();
     await e.addOp({
       type: 'fb_create',
-      payload: { contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT) },
+      payload: { contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT), locale: 'en-US' },
     });
 
     await e.sync();

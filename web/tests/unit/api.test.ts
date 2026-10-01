@@ -38,6 +38,7 @@ describe('sync and upload clients', () => {
       mediaHostUrl: 'https://facade.test',
       photos: [],
       announcements: [],
+      polls: [],
       feedback: [],
     };
     const ok = vi.fn().mockResolvedValue(okResponse(body));
