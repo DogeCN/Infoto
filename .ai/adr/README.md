@@ -41,8 +41,9 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0004](0004-two-layer-i18n-copy.md)                        | Two-Layer i18n Copy: `$state` vs Live Proxy                    | Accepted                   |
 | [0005](0005-waterfall-target-band-width.md)                | Waterfall Density Controlled by Target Band Width              | Accepted                   |
 | [0006](0006-dual-source-web-fonts.md)                      | Web Fonts Race the Official Host Against the USTC Mirror       | Superseded by 0006-revised |
-| [0006-revised](0006-revised-official-font-host-only.md)    | Web Fonts Load From the Official Host Only                     | Accepted                   |
+| [0006-revised](0006-revised-official-font-host-only.md)    | Web Fonts Load From the Official Host Only                     | Superseded by 0011         |
 | [0007](0007-shared-frontend-lifecycle.md)                  | Shared Frontend Lifecycle and Utility Boundaries               | Accepted                   |
 | [0008](0008-explicit-sync-triggers.md)                     | Synchronization Uses Explicit User and Page-Lifecycle Triggers | Accepted                   |
 | [0009](0009-standalone-image-host-facade.md)               | Image Host as a Standalone Facade                              | Accepted                   |
 | [0010](0010-locale-scoped-content-and-standalone-polls.md) | Locale-Scoped Content and Standalone Multi-Select Polls        | Accepted                   |
+| [0011](0011-web-fonts-google-china-endpoint.md)            | Web Fonts Load From Google's China Endpoint                    | Accepted                   |

@@ -1,10 +1,17 @@
-// Web fonts. A single official stylesheet; `display=swap` keeps text readable with the
-// system fallback while it loads.
+// Web fonts. A single stylesheet; `display=swap` keeps text readable with the system fallback
+// while it loads.
+//
+// Google publishes a `.cn` endpoint for the same API, and it is the one worth using here. The
+// stylesheet is a small part of the cost; the family resolves to 108 woff2 files of which 101
+// are Noto Sans SC unicode-range subsets, and those are what a page actually waits on. Measured
+// over 14 of those subsets, the `.cn` file host returned them in 45s with no failures against
+// 102s and two failures for the global host. This is Google's own China domain rather than a
+// third-party mirror, so it stays a single source and the CSP gains no extra host.
 
-/** Official Google Fonts CSS host. */
-export const FONT_CSS_HOST = 'https://fonts.googleapis.com';
-/** Font files referenced by the official stylesheet. */
-export const FONT_FILE_HOST = 'https://fonts.gstatic.com';
+/** Google Fonts CSS host, China endpoint. */
+export const FONT_CSS_HOST = 'https://fonts.googleapis.cn';
+/** Font files referenced by that stylesheet. */
+export const FONT_FILE_HOST = 'https://fonts.gstatic.cn';
 
 /** SPA families: Inter and Noto Sans SC, weights 400–700. */
 export const APP_FONT_QUERY =

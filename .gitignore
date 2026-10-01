@@ -14,10 +14,4 @@ web/test-results/
 test-results/
 # Seeded sample media (downloaded + transcoded once into the repo for local-DB seeding).
 .local-media/
-<<<<<<< HEAD
-
-=======
-# Throwaway measurement/inspection scripts. AGENTS.md requires these to use the `.tmp-*`
-# prefix so they never reach a commit; without the pattern `git add -A` sweeps them in.
->>>>>>> 9055a9329d3bc00ad3e4c3d118f2d5e533ee19cc
 .tmp-*
