@@ -779,10 +779,21 @@ export type LocaleCode = keyof typeof locales;
 
 export const DEFAULT_LOCALE: LocaleCode = 'en-US';
 
+/** Narrow an untrusted value to a registered locale tag.
+ *
+ *  One predicate for the whole codebase. Locale validation was open-coded three times -- as a
+ *  ternary in `http.ts`, as `readLocale` in `admin.ts`, and as `localeCode` in `sync.ts` -- and
+ *  the schema columns carry no CHECK either, so this is the only place that decides which tags
+ *  are real. Adding a language means adding it to `locales` and nothing else.
+ */
+export function isLocaleCode(value: unknown): value is LocaleCode {
+  return typeof value === 'string' && Object.hasOwn(locales, value);
+}
+
 /** Select the first exact registered locale tag, otherwise the default locale. */
 export function pickLocale(langs?: readonly string[]): LocaleCode {
   for (const lang of langs ?? []) {
-    if (Object.hasOwn(locales, lang)) return lang as LocaleCode;
+    if (isLocaleCode(lang)) return lang;
   }
   return DEFAULT_LOCALE;
 }
@@ -801,7 +812,7 @@ export function activeLocale(): LocaleCode {
 
 /** Set the active locale for plain frontend modules. Worker responses resolve their locale per request. */
 export function setActiveLocale(code: LocaleCode): void {
-  if (Object.hasOwn(locales, code)) active = code;
+  if (isLocaleCode(code)) active = code;
 }
 
 /** Live, non-reactive copy view for plain modules. Svelte components use the reactive copy in lib/i18n.svelte.ts. */

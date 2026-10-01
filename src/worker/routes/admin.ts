@@ -2,13 +2,9 @@
 
 import { Hono, type Context } from 'hono';
 import type { Announcement, LocaleCode, Poll } from '../../shared/types.ts';
-import { locales } from '../../shared/copy.ts';
+import { isLocaleCode } from '../../shared/copy.ts';
 import type { AppEnv } from '../app.ts';
 import { badRequest, idParam, readJson, reorderHandler, rootGate } from '../http.ts';
-
-function readLocale(value: unknown): LocaleCode | null {
-  return typeof value === 'string' && Object.hasOwn(locales, value) ? (value as LocaleCode) : null;
-}
 
 /** Trimmed announcement title/body and explicit language, or null when invalid. */
 function readAnnouncementDraft(
@@ -17,7 +13,8 @@ function readAnnouncementDraft(
   return readJson<{ title?: unknown; contentMd?: unknown; locale?: unknown }>(c).then((body) => {
     const title = typeof body?.title === 'string' ? body.title.trim() : '';
     const contentMd = typeof body?.contentMd === 'string' ? body.contentMd : '';
-    const locale = readLocale(body?.locale);
+    const raw = body?.locale;
+    const locale = isLocaleCode(raw) ? raw : null;
     return title && contentMd && locale ? { title, contentMd, locale } : null;
   });
 }
@@ -40,7 +37,8 @@ function readPollDraft(c: Context): Promise<{
           .filter((option): option is string => typeof option === 'string')
           .map((option) => option.trim())
       : [];
-    const locale = readLocale(body?.locale);
+    const raw = body?.locale;
+    const locale = isLocaleCode(raw) ? raw : null;
     if (
       !title ||
       title.length > 200 ||

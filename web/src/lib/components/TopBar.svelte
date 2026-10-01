@@ -99,12 +99,21 @@
     iconPillW = info.shownIsLabelled ? info.shown - info.labelDelta : info.shown;
   }
 
-  const ARROW_W = 36;
+  // Measured, not assumed. The pager arrow's chevron is sized from `--bar-h`, so the button
+  // is 16px of `p-2` plus a 17.5–20px icon and changes with the bar. A fixed 36 only held at
+  // the tallest bar and overstated the requirement everywhere else, which delayed the switch
+  // to paged mode until the row had genuinely stopped fitting.
+  let arrowProbeEl: HTMLElement | undefined = $state(undefined);
   let groupProbeEl: HTMLElement | undefined = $state(undefined);
   let leftExtraW = $state(0);
   let rightBtnsW = $state(0);
+  let arrowW = $state(0);
 
   $effect(() => {
+    // `--bar-h` scales every control, so the group widths move whenever the bar's width does.
+    // Reading them without this dependency left the fit calculation working from the widths
+    // measured at the previous bar size.
+    void barW;
     void variant;
     void adminItems;
     void adminValue;
@@ -115,12 +124,14 @@
     const widths = [...probe.children].map((child) => (child as HTMLElement).offsetWidth);
     if (widths[0]) leftExtraW = widths[0];
     if (widths[1]) rightBtnsW = widths[1];
+    const arrow = arrowProbeEl?.offsetWidth ?? 0;
+    if (arrow) arrowW = arrow;
   });
 
   function remeasure(): void {
     const width = barW;
     const isAdmin = variant === 'admin';
-    if (!width || !labelledPillW || !iconPillW || !rightBtnsW || !rowEl) return;
+    if (!width || !labelledPillW || !iconPillW || !rightBtnsW || !arrowW || !rowEl) return;
     if (!isAdmin && !leftExtraW) return;
 
     const padX = 2 * BAR_PAD;
@@ -131,8 +142,8 @@
     const single = (pill: number): number =>
       padX + pill + (isAdmin ? 0 : leftExtraW) + rightBtnsW + singleGaps * gap;
     const pagedNeed = Math.max(
-      padX + iconPillW + (isAdmin ? 0 : leftExtraW) + ARROW_W + pagedFirstGaps * gap,
-      padX + ARROW_W + rightBtnsW + pagedSecondGaps * gap,
+      padX + iconPillW + (isAdmin ? 0 : leftExtraW) + arrowW + pagedFirstGaps * gap,
+      padX + arrowW + rightBtnsW + pagedSecondGaps * gap,
     );
 
     const next = resolveBarMode(
@@ -348,6 +359,10 @@
       {@render homeRightGroup()}
     </div>
   {/if}
+  <!-- Same control the live pager renders, so its measured width is the one that counts. -->
+  <div bind:this={arrowProbeEl} class="flex shrink-0 items-center">
+    <PagerArrow {screen} />
+  </div>
 </div>
 
 <header

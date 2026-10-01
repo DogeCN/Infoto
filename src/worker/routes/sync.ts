@@ -19,7 +19,7 @@ import {
 } from '../../shared/types.ts';
 import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '../identity.ts';
 import { verifyTurnstile } from '../turnstile.ts';
-import { locales } from '../../shared/copy.ts';
+import { isLocaleCode } from '../../shared/copy.ts';
 import { LOCAL_MEDIA_HOST_URL, isAllowedMediaUrl } from './media.ts';
 
 /** Text fields an anonymous op may carry. */
@@ -100,8 +100,6 @@ const count = (v: unknown): number | null =>
   typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
 const mediaType = (v: unknown): MediaType | null =>
   v === MEDIA_TYPE.IMAGE || v === MEDIA_TYPE.ANIMATED || v === MEDIA_TYPE.VIDEO ? v : null;
-const localeCode = (v: unknown): v is LocaleCode =>
-  typeof v === 'string' && Object.hasOwn(locales, v);
 
 /** Photo id for an op's `targetSha`, or null when the hash matches no row. */
 async function resolvePhotoId(db: Db, op: Op): Promise<number | null> {
@@ -187,7 +185,7 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
     case 'fb_create': {
       const payload = record(op.payload);
       const contentMd = text(payload.contentMd);
-      const locale = localeCode(payload.locale) ? payload.locale : null;
+      const locale = isLocaleCode(payload.locale) ? payload.locale : null;
       if (!contentMd || !locale) return;
       // One below this locale's current minimum, so the newest row sorts first.
       await db
@@ -375,7 +373,7 @@ export function syncHandler(env: AppEnv) {
     if (!body || typeof body !== 'object' || !Array.isArray(body.ops)) {
       return c.json({ ok: false, error: 'bad_request' }, 400);
     }
-    const locale = localeCode(body.locale) ? body.locale : null;
+    const locale = isLocaleCode(body.locale) ? body.locale : null;
     if (!locale) return c.json({ ok: false, error: 'bad_request' }, 400);
     if (body.ops.length > MAX_SYNC_OPS) {
       return c.json({ ok: false, error: 'too_many_ops' }, 413);
