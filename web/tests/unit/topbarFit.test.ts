@@ -109,11 +109,13 @@ describe('top bar fit', () => {
   });
 
   // The waterfall's top inset used to be its own width percentage (48-80px) and fell
-  // below the bar's height on narrow screens, so the first row sat under the bar.
-  it('keeps the waterfall inset above the bar at every width', () => {
-    const TOP_GAP = 16;
+  // below the bar's height on narrow screens, so the first row sat under the bar. It now
+  // equals the bar height exactly: enough to clear it, no floating gap.
+  it('keeps the waterfall inset level with the bar at every width', () => {
+    const TOP_GAP = 0;
     for (let w = 320; w <= 2560; w += 7) {
-      expect(Math.ceil(barHeight(w) + TOP_GAP)).toBeGreaterThan(barHeight(w));
+      expect(Math.ceil(barHeight(w) + TOP_GAP)).toBeGreaterThanOrEqual(barHeight(w));
+      expect(Math.ceil(barHeight(w) + TOP_GAP) - barHeight(w)).toBeLessThanOrEqual(1);
     }
   });
 });
