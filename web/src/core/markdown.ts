@@ -155,41 +155,27 @@ export function upgradeAnimatedMedia(root: ParentNode): void {
   }
 }
 
-// `:::vote` parsing — a pure, DOM-free helper. Only the first `:::vote` block is
-// used: the data model keeps a single per-user vote per announcement, so an
-// announcement has at most one vote.
+// Vote references are stable IDs owned by the poll manager, never poll content stored in Markdown.
+export type MarkdownPollPart = { type: 'markdown'; content: string } | { type: 'poll'; id: number };
 
-/** Vote options with surrounding Markdown for inline placement. */
-export interface SplitVote {
-  options: string[];
-  /** Markdown preceding the vote directive. */
-  before: string;
-  /** Markdown after the `:::vote` line. Later `:::vote` lines stay here as plain text. */
-  after: string;
-}
-
-function extractVoteLine(contentMd: string): { options: string[]; index: number } {
-  const lines = contentMd.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    const m = lines[i].trim().match(/^:::vote\s*(.*)$/);
-    if (!m) continue;
-    const options: string[] = [];
-    for (const part of m[1].split('|')) {
-      const s = part.trim();
-      if (s) options.push(s);
-    }
-    return { options, index: i };
-  }
-  return { options: [], index: -1 };
-}
-
-export function splitVote(contentMd: string): SplitVote {
-  const { options, index } = extractVoteLine(contentMd);
-  if (index < 0) return { options: [], before: contentMd, after: '' };
-  const lines = contentMd.split(/\r?\n/);
-  return {
-    options,
-    before: lines.slice(0, index).join('\n'),
-    after: lines.slice(index + 1).join('\n'),
+/** Split whole-line `::vote:<id>` references from Markdown, preserving every text block. */
+export function splitPollReferences(contentMd: string): MarkdownPollPart[] {
+  const parts: MarkdownPollPart[] = [];
+  const textLines: string[] = [];
+  const flushText = () => {
+    if (textLines.length > 0) parts.push({ type: 'markdown', content: textLines.join('\n') });
+    textLines.length = 0;
   };
+  for (const line of contentMd.split(/\r?\n/)) {
+    const match = line.match(/^\s*::vote:(\d+)\s*$/);
+    const id = match ? Number(match[1]) : NaN;
+    if (match && Number.isSafeInteger(id)) {
+      flushText();
+      parts.push({ type: 'poll', id });
+    } else {
+      textLines.push(line);
+    }
+  }
+  flushText();
+  return parts;
 }

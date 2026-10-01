@@ -1,7 +1,5 @@
 <script lang="ts">
-  // Announcement vote control: one button per option with a vote-share fill bar.
-  // Semantics: click an option to vote; click the chosen one again to retract (option
-  // null, backend-supported); click another to change the vote.
+  // Poll control: one selected option for single-choice polls, a set for multi-choice polls.
   import type { Vote } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { fmt, plural } from '$shared/copy';
@@ -9,46 +7,62 @@
   interface Props {
     options: string[];
     votes: Vote[];
+    allowMultiple?: boolean;
+    interactive?: boolean;
     selfId?: number;
-    onVote?: (option: number | null) => void;
+    onVote?: (options: number[]) => void;
   }
 
-  let { options, votes, selfId = -1, onVote }: Props = $props();
+  let {
+    options,
+    votes,
+    allowMultiple = false,
+    interactive = true,
+    selfId = -1,
+    onVote,
+  }: Props = $props();
 
-  // Vote count per option & whether it is the highest
   let counts = $derived.by(() => {
-    const c = new Array<number>(options.length).fill(0);
-    for (const v of votes) {
-      if (v.option >= 0 && v.option < options.length) c[v.option]!++;
+    const result = new Array<number>(options.length).fill(0);
+    for (const vote of votes) {
+      if (vote.option >= 0 && vote.option < options.length) result[vote.option]!++;
     }
-    return c;
+    return result;
   });
-
-  let total = $derived(counts.reduce((a, b) => a + b, 0));
+  let total = $derived(counts.reduce((sum, count) => sum + count, 0));
   let max = $derived(counts.length ? Math.max(...counts) : 0);
-  // Option index the current user voted for (-1 = not voted)
-  let chosen = $derived(votes.findLast((v) => v.userId === selfId)?.option ?? -1);
+  let chosen = $derived(
+    new Set(votes.filter((vote) => vote.userId === selfId).map((vote) => vote.option)),
+  );
 
-  function handle(option: number) {
-    onVote?.(chosen === option ? null : option);
+  function handle(option: number): void {
+    if (!interactive || !onVote) return;
+    const next = new Set(chosen);
+    if (next.has(option)) next.delete(option);
+    else if (allowMultiple) next.add(option);
+    else {
+      next.clear();
+      next.add(option);
+    }
+    onVote([...next].sort((a, b) => a - b));
   }
 </script>
 
 <div class="space-y-1.5">
   {#each options as label, idx (idx)}
-    {@const count = counts[idx]}
+    {@const count = counts[idx] ?? 0}
     {@const pct = total ? (count / total) * 100 : 0}
-    {@const isChosen = chosen === idx}
+    {@const isChosen = chosen.has(idx)}
     {@const isWinner = max > 0 && count === max}
-    <!-- Isolate the vote button layers below surrounding sticky controls. -->
     <button
       type="button"
+      aria-pressed={isChosen}
+      disabled={!interactive}
       class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-[var(--duration-exit)] {isChosen
         ? 'border-primary/50 bg-primary/5'
-        : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'}"
+        : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'} disabled:cursor-default"
       onclick={() => handle(idx)}
     >
-      <!-- Fill bar: low-opacity primary, expands with the vote share -->
       <span
         class="vote-fill absolute inset-y-0 left-0 bg-primary/10 transition-[width] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
         style="width: {pct.toFixed(1)}%"

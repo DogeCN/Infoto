@@ -1,15 +1,20 @@
 <script lang="ts">
-  // Fixed top bar with measured full, compact, and two-page densities. Labels collapse before pagination activates.
-  import { Settings, Megaphone, CheckSquare, UploadCloud, Funnel } from '@lucide/svelte';
+  // Fixed top bar with measured full, compact, and two-page densities.
+  import { onDestroy, type Snippet } from 'svelte';
+  import { Settings, Megaphone, CheckSquare, UploadCloud, Funnel, Plus } from '@lucide/svelte';
+  import type { LocaleCode } from '$shared/types';
   import SortPill from './SortPill.svelte';
   import SyncButton from './SyncButton.svelte';
   import PagerArrow from './PagerArrow.svelte';
+  import SegmentedControl, { type SegmentedItem } from './SegmentedControl.svelte';
+  import LocaleToggle from './LocaleToggle.svelte';
   import type { SortKey } from './SortTabs.svelte';
   import { BAR_PAD, barCssVars, barHeight, resolveBarMode, type BarMode } from './topbarFit';
   import { scroll } from '../../state/scroll.svelte';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
+    variant?: 'home' | 'admin';
     sortKey?: SortKey;
     /** Secondary direction (newest↔oldest, hottest↔coldest), remembered per sort item. */
     sortDirs?: Partial<Record<SortKey, boolean>>;
@@ -26,9 +31,18 @@
     settingsActive?: boolean;
     announcementActive?: boolean;
     multiSelectActive?: boolean;
+    adminItems?: ReadonlyArray<SegmentedItem<string>>;
+    adminValue?: string;
+    onAdminChange?: (value: string) => void;
+    onLocaleChange?: (locale: LocaleCode) => void;
+    adminCreateLabel?: string;
+    adminCreateActive?: boolean;
+    onAdminCreateClick?: () => void;
+    adminActions?: Snippet;
   }
 
   let {
+    variant = 'home',
     sortKey = 'latest',
     sortDirs = {},
     onSortChange,
@@ -44,53 +58,37 @@
     settingsActive = false,
     announcementActive = false,
     multiSelectActive = false,
+    adminItems = [],
+    adminValue = '',
+    onAdminChange,
+    onLocaleChange,
+    adminCreateLabel,
+    adminCreateActive = false,
+    onAdminCreateClick,
+    adminActions,
   }: Props = $props();
 
-  // Immersive top bar: transparent with no border at the start of the main axis (scrollTop when
-  // vertical, scrollLeft when horizontal), frosted glass fades in once scrolled.
-  let scrolled = $derived(scroll.y > 8 || scroll.x > 8);
-
-  // Roomiest layout until the first measurement. Guessing low would flash the arrow.
+  // Home is immersive; the admin header stays frosted because its document scrolls behind it.
+  let scrolled = $derived(variant === 'admin' || scroll.y > 8 || scroll.x > 8);
   let mode = $state<BarMode>('full');
-
-  /** Observed bar width driving reactive geometry and density. */
   let barW = $state(0);
-
-  // Paged only — one value, not two booleans: there is no third screen, so an integer
-  // cannot drift into an invalid pairing.
   let screen = $state<0 | 1>(0);
-  function toggleScreen(): void {
-    screen = screen === 0 ? 1 : 0;
-  }
   const paged = $derived(mode === 'paged');
-
-  // Interpolate bar height from its measured width without rounding fractional pixels.
   const barH = $derived(barHeight(barW));
-  // `--bar-h` carries the ramp to every control, so they scale with the bar instead of
-  // leaving the extra pixels as empty space below it.
   const barStyle = $derived(`${barCssVars(barW)};height:${barH}px`);
   const rowStyle = $derived(`padding-left:${BAR_PAD}px;padding-right:${BAR_PAD}px`);
 
-  // ---- measurement -------------------------------------------------------------
   let headerEl: HTMLElement | undefined = $state(undefined);
-  /**
-   * The single-screen row, or a paged screen. An action, not `bind:this`: two nodes
-   * share the variable, and `bind:` would leave a detached element whose padding reads 0.
-   */
   let rowEl: HTMLElement | undefined = $state(undefined);
-  /** Action form: `use:` passes the node, so the element is captured here. */
   function row(node: HTMLElement): { destroy(): void } {
     rowEl = node;
     return { destroy: () => {} };
   }
 
-  /**
-   * Natural width of the labelled pill: the on-screen variant plus the label delta.
-   * A hidden copy reports the containing block, not content width.
-   */
+  // The visible sort pill or admin tabs report the same on-screen width plus the
+  // measured text contribution, avoiding hidden-copy containing-block measurements.
   let labelledPillW = $state(0);
   let iconPillW = $state(0);
-
   function onPillWidths(info: {
     shown: number;
     shownIsLabelled: boolean;
@@ -101,93 +99,143 @@
     iconPillW = info.shownIsLabelled ? info.shown - info.labelDelta : info.shown;
   }
 
-  /**
-   * Arrow width. Absent from the single-screen DOM, and a hidden copy does not report
-   * content width, so this is the button's own box (`p-2` + `size-5`).
-   */
   const ARROW_W = 36;
-
-  /**
-   * Widths of the two fixed-size control groups, read from probes that stay mounted.
-   * The live screen drops one group on a mode switch, so a read there briefly returns 0.
-   */
   let groupProbeEl: HTMLElement | undefined = $state(undefined);
   let leftExtraW = $state(0);
   let rightBtnsW = $state(0);
+
   $effect(() => {
+    void variant;
+    void adminItems;
+    void adminValue;
+    void adminCreateLabel;
+    void adminCreateActive;
     const probe = groupProbeEl;
     if (!probe) return;
-    const [left, right] = [...probe.children].map((c) => (c as HTMLElement).offsetWidth);
-    if (left) leftExtraW = left;
-    if (right) rightBtnsW = right;
+    const widths = [...probe.children].map((child) => (child as HTMLElement).offsetWidth);
+    if (widths[0]) leftExtraW = widths[0];
+    if (widths[1]) rightBtnsW = widths[1];
   });
 
   function remeasure(): void {
-    // The reactive width, not a fresh DOM read: the bar is otherwise measured from stale
-    // geometry and decides from numbers that no longer match what is on screen.
-    const bar = barW;
-    // Everything is required: a stale 0 would read as "fits" and the bar would never
-    // page. `bar` is 0 only before the header is laid out.
-    if (!bar || !labelledPillW || !iconPillW || !leftExtraW || !rightBtnsW || !rowEl) return;
+    const width = barW;
+    const isAdmin = variant === 'admin';
+    if (!width || !labelledPillW || !iconPillW || !rightBtnsW || !rowEl) return;
+    if (!isAdmin && !leftExtraW) return;
 
-    // Use the rendered row gap when calculating the required width.
-    const padX = BAR_PAD;
+    const padX = 2 * BAR_PAD;
     const gap = parseFloat(getComputedStyle(rowEl).columnGap) || 0;
-    // Spacing intervals: three in full mode and two on each paged screen.
-    const SINGLE_GAPS = 3;
-    const PAGED_GAPS = 2;
-
-    // One screen: the flexible spacer absorbs slack, so only the always-present gaps count.
+    const singleGaps = isAdmin ? 2 : 3;
+    const pagedFirstGaps = isAdmin ? 2 : 3;
+    const pagedSecondGaps = 2;
     const single = (pill: number): number =>
-      padX + pill + leftExtraW + rightBtnsW + SINGLE_GAPS * gap;
-    // Paged: two screens, each carrying its own padding; the track must satisfy the wider.
+      padX + pill + (isAdmin ? 0 : leftExtraW) + rightBtnsW + singleGaps * gap;
     const pagedNeed = Math.max(
-      padX + iconPillW + leftExtraW + ARROW_W + PAGED_GAPS * gap,
-      padX + ARROW_W + rightBtnsW + PAGED_GAPS * gap,
+      padX + iconPillW + (isAdmin ? 0 : leftExtraW) + ARROW_W + pagedFirstGaps * gap,
+      padX + ARROW_W + rightBtnsW + pagedSecondGaps * gap,
     );
 
     const next = resolveBarMode(
-      bar,
+      width,
       { full: single(labelledPillW), compact: single(iconPillW), paged: pagedNeed },
       mode,
     );
     if (next === mode) return;
     mode = next;
-    // Leaving paged must not strand the user on a screen that no longer exists.
     if (next !== 'paged' && screen !== 0) screen = 0;
   }
 
-  // Re-measure on width changes and whenever a measured width can have moved (label text
-  // on locale switch, badge counts, sync state). rAF-coalesced: a drag or a rotation
-  // fires a burst of these.
   $effect(() => {
-    if (!headerEl) return;
+    const header = headerEl;
+    if (!header) return;
     let raf = 0;
-    // Update reactive width on every observed size change.
     const schedule = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        const w = headerEl?.clientWidth ?? 0;
-        if (w && w !== barW) barW = w;
+        const width = headerEl?.clientWidth ?? 0;
+        if (width && width !== barW) barW = width;
         remeasure();
       });
     };
-    const ro = new ResizeObserver(schedule);
-    ro.observe(headerEl);
-    // Observe the bar independently of its density-dependent contents.
+    const observer = new ResizeObserver(schedule);
+    observer.observe(header);
     window.addEventListener('resize', schedule);
-    // One late pass: a web-font swap can shift the label widths after first paint.
-    const t = setTimeout(schedule, 250);
+    const timeout = setTimeout(schedule, 250);
     schedule();
     return () => {
       cancelAnimationFrame(raf);
-      clearTimeout(t);
-      ro.disconnect();
+      clearTimeout(timeout);
+      observer.disconnect();
       window.removeEventListener('resize', schedule);
     };
   });
 
-  // Shared control snippets keep measurement probes identical to visible controls.
+  function toggleScreen(): void {
+    screen = screen === 0 ? 1 : 0;
+  }
+
+  // Horizontal pointer swipe toggles the two measured screens. Small movements remain clicks.
+  let stopPagerSwipe = () => {};
+  let suppressClick = false;
+  let suppressTimer: ReturnType<typeof setTimeout> | undefined;
+  function onPagerPointerDown(event: PointerEvent): void {
+    if (!paged || event.button !== 0 || event.target instanceof HTMLInputElement) return;
+    stopPagerSwipe();
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let horizontal = false;
+    let handled = false;
+    const finish = (next: PointerEvent) => {
+      if (next.pointerId !== pointerId) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      stopPagerSwipe = () => {};
+      if (handled) {
+        suppressClick = true;
+        clearTimeout(suppressTimer);
+        suppressTimer = setTimeout(() => (suppressClick = false), 120);
+      }
+    };
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== pointerId) return;
+      const dx = next.clientX - startX;
+      const dy = next.clientY - startY;
+      if (!horizontal) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < 10) return;
+        if (Math.abs(dx) <= Math.abs(dy) * 1.15) {
+          finish(next);
+          return;
+        }
+        horizontal = true;
+      }
+      if (Math.abs(dx) < 42 || handled) return;
+      handled = true;
+      next.preventDefault();
+      if ((screen === 0 && dx < 0) || (screen === 1 && dx > 0)) toggleScreen();
+    };
+    stopPagerSwipe = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  }
+
+  function suppressSwipedClick(event: MouseEvent): void {
+    if (!suppressClick) return;
+    suppressClick = false;
+    clearTimeout(suppressTimer);
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  onDestroy(() => {
+    stopPagerSwipe();
+    clearTimeout(suppressTimer);
+  });
 </script>
 
 {#snippet settingsBtn()}
@@ -212,7 +260,7 @@
   </div>
 {/snippet}
 
-{#snippet rightGroup()}
+{#snippet homeRightGroup()}
   <button
     type="button"
     class="relative flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
@@ -251,70 +299,116 @@
   </div>
 {/snippet}
 
-<!-- Inert, zero-height content-width probe outside the header's flex layout. -->
+{#snippet adminNav()}
+  <SegmentedControl
+    items={adminItems}
+    value={adminValue}
+    onChange={onAdminChange}
+    hideLabel={mode !== 'full'}
+    size="sm"
+    ariaLabel={copy.admin.sectionLabel}
+    onWidths={onPillWidths}
+  />
+{/snippet}
+
+{#snippet adminActionGroup()}
+  <div class="flex shrink-0 items-center gap-1">
+    <LocaleToggle variant="topbar" onChange={onLocaleChange} />
+    {#if adminCreateLabel}
+      <button
+        type="button"
+        class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+        class:text-primary={adminCreateActive}
+        onclick={onAdminCreateClick}
+        title={adminCreateLabel}
+        aria-label={adminCreateLabel}
+        aria-pressed={adminCreateActive}
+      >
+        <Plus class="size-[calc(var(--bar-h)*0.3125)]" />
+      </button>
+    {/if}
+    {#if adminActions}{@render adminActions()}{/if}
+  </div>
+{/snippet}
+
+<!-- Inert, zero-height probes use the same controls as the live bar. -->
 <div
   bind:this={groupProbeEl}
   class="pointer-events-none flex w-max items-center gap-1 opacity-0"
-  style="position: fixed; left: 0; top: 0; height: 0"
+  style="{barCssVars(barW)};position: fixed; left: 0; top: 0; height: 0"
   aria-hidden="true"
   inert
 >
-  {@render leftGroup()}
-  <div class="flex shrink-0 items-center gap-1">
-    {@render rightGroup()}
-  </div>
+  {#if variant === 'admin'}
+    {@render adminNav()}
+    {@render adminActionGroup()}
+  {:else}
+    {@render leftGroup()}
+    <div class="flex shrink-0 items-center gap-1">
+      {@render homeRightGroup()}
+    </div>
+  {/if}
 </div>
 
 <header
   bind:this={headerEl}
-  class="fixed top-0 left-0 right-0 z-40 overflow-hidden {scrolled
+  class="fixed top-0 left-0 right-0 z-40 overflow-hidden touch-pan-y {scrolled
     ? 'border-b border-border bg-background/70 backdrop-blur-xl backdrop-saturate-150'
     : 'border-b border-transparent bg-transparent'}"
   style={barStyle}
+  role="region"
+  aria-label={variant === 'admin' ? copy.admin.toolbarLabel : copy.topbar.controlsLabel}
+  onpointerdown={onPagerPointerDown}
+  onclickcapture={suppressSwipedClick}
 >
   {#if paged}
-    <!-- Two half-width screens on a double-width sliding track. -->
     <div
       class="flex h-full w-[200%] transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] {screen ===
       1
         ? '-translate-x-1/2'
         : 'translate-x-0'}"
     >
-      <div use:row class="flex h-full w-1/2 shrink-0 items-center gap-1" style={rowStyle}>
-        <SortPill
-          {sortKey}
-          dirs={sortDirs}
-          onChange={onSortChange}
-          onReshuffle={onSortReshuffle}
-          showLabels={false}
-          onWidths={onPillWidths}
-        />
-        {@render leftGroup()}
-
-        <div class="flex-1"></div>
-
-        <!-- Fixed-size control on the outer edge of each screen. Width is ARROW_W. -->
-        <div class="shrink-0">
-          <PagerArrow {screen} onToggle={toggleScreen} />
+      {#if variant === 'admin'}
+        <div use:row class="flex h-full w-1/2 shrink-0 items-center gap-1" style={rowStyle}>
+          {@render adminNav()}
+          <div class="flex-1"></div>
+          <div class="shrink-0"><PagerArrow {screen} onToggle={toggleScreen} /></div>
         </div>
-      </div>
-
-      <div class="flex h-full w-1/2 shrink-0 items-center gap-1" style={rowStyle}>
-        <div class="shrink-0">
-          <PagerArrow {screen} onToggle={toggleScreen} />
+        <div class="flex h-full w-1/2 shrink-0 items-center gap-1" style={rowStyle}>
+          <div class="shrink-0"><PagerArrow {screen} onToggle={toggleScreen} /></div>
+          <div class="flex-1"></div>
+          {@render adminActionGroup()}
         </div>
-
-        <!-- Arrow hard left, buttons hard right: screen 2 mirrors screen 1. -->
-        <div class="flex-1"></div>
-
-        <div class="flex shrink-0 items-center gap-1">
-          {@render rightGroup()}
+      {:else}
+        <div use:row class="flex h-full w-1/2 shrink-0 items-center gap-1" style={rowStyle}>
+          <SortPill
+            {sortKey}
+            dirs={sortDirs}
+            onChange={onSortChange}
+            onReshuffle={onSortReshuffle}
+            showLabels={false}
+            onWidths={onPillWidths}
+          />
+          {@render leftGroup()}
+          <div class="flex-1"></div>
+          <div class="shrink-0"><PagerArrow {screen} onToggle={toggleScreen} /></div>
         </div>
-      </div>
+        <div class="flex h-full w-1/2 shrink-0 items-center gap-1" style={rowStyle}>
+          <div class="shrink-0"><PagerArrow {screen} onToggle={toggleScreen} /></div>
+          <div class="flex-1"></div>
+          <div class="flex shrink-0 items-center gap-1">
+            {@render homeRightGroup()}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {:else if variant === 'admin'}
+    <div use:row class="flex h-full items-center gap-1" style={rowStyle}>
+      {@render adminNav()}
+      <div class="flex-1"></div>
+      {@render adminActionGroup()}
     </div>
   {:else}
-    <!-- One screen: the flexible spacer between the groups absorbs the slack, so the
-         bar only needs to hold every control exactly once. -->
     <div use:row class="flex h-full items-center gap-1" style={rowStyle}>
       <SortPill
         {sortKey}
@@ -325,11 +419,9 @@
         onWidths={onPillWidths}
       />
       {@render leftGroup()}
-
       <div class="flex-1"></div>
-
       <div class="flex shrink-0 items-center gap-1">
-        {@render rightGroup()}
+        {@render homeRightGroup()}
       </div>
     </div>
   {/if}

@@ -1,6 +1,13 @@
 // Sync on initialization, pagehide, or explicit request. Unsent operations persist in IndexedDB.
 
-import { MAX_SYNC_OPS, type Op, type SyncRequest, type SyncResponse } from '$shared/types';
+import {
+  MAX_SYNC_OPS,
+  type LocaleCode,
+  type Op,
+  type SyncRequest,
+  type SyncResponse,
+} from '$shared/types';
+import { activeLocale } from '$shared/copy';
 import { postSync } from './api/syncClient';
 import { rebuildCache, appendOp, countOps, openOplogDb, readOps } from './oplog';
 
@@ -11,9 +18,10 @@ export const KEEPALIVE_BODY_LIMIT = 65_536;
 export function keepalivePrefix(
   ops: Op[],
   budget: number = KEEPALIVE_BODY_LIMIT,
+  locale: LocaleCode = activeLocale(),
 ): { ops: Op[]; body: string } | null {
   const enc = new TextEncoder();
-  const wrapper = enc.encode('{"ops":[]}').length;
+  const wrapper = enc.encode(JSON.stringify({ ops: [], locale })).length;
   let bytes = wrapper;
   const picked: Op[] = [];
   const parts: string[] = [];
@@ -28,7 +36,7 @@ export function keepalivePrefix(
     picked.push(op);
     parts.push(s);
   }
-  return { ops: picked, body: `{"ops":[${parts.join(',')}]}` };
+  return { ops: picked, body: JSON.stringify({ ops: picked, locale }) };
 }
 
 export interface EngineIo {
@@ -68,6 +76,7 @@ export class SyncEngine {
   private pending = 0;
   private attempt = 0;
   private activeSync: Promise<SyncAttemptResult> | null = null;
+  private activeSyncLocale: LocaleCode | null = null;
   private inFlightKeys = new Set<IDBValidKey>();
   private pagehideInstalled = false;
   readonly state: EngineState = { syncing: false, pending: 0 };
@@ -181,7 +190,7 @@ export class SyncEngine {
     });
   }
 
-  private async runSync(attempt: number): Promise<SyncAttemptResult> {
+  private async runSync(attempt: number, locale: LocaleCode): Promise<SyncAttemptResult> {
     let available: Awaited<ReturnType<typeof readOps>> = [];
     let confirmedThroughVersion = 0;
     this.syncing = true;
@@ -194,7 +203,7 @@ export class SyncEngine {
       // Reserve the captured queue; later operations stay queued for the next sync.
       for (let offset = 0; offset < Math.max(1, available.length); offset += MAX_SYNC_OPS) {
         const batch = available.slice(offset, offset + MAX_SYNC_OPS);
-        const request: SyncRequest = { ops: batch.map((entry) => entry.op) };
+        const request: SyncRequest = { ops: batch.map((entry) => entry.op), locale };
         const { response } = await (this.io.postSyncFn ?? postSync)(request, {
           keepalive: this.keepaliveEligible(request.ops),
         });
@@ -234,19 +243,27 @@ export class SyncEngine {
     return fit !== null && fit.ops.length === ops.length;
   }
 
-  private beginSync(): Promise<SyncAttemptResult> {
-    const promise = this.runSync(++this.attempt);
+  private beginSync(locale: LocaleCode): Promise<SyncAttemptResult> {
+    this.activeSyncLocale = locale;
+    const promise = this.runSync(++this.attempt, locale);
     this.activeSync = promise;
     const clear = () => {
-      if (this.activeSync === promise) this.activeSync = null;
+      if (this.activeSync === promise) {
+        this.activeSync = null;
+        this.activeSyncLocale = null;
+      }
     };
     void promise.then(clear, clear);
     return promise;
   }
 
-  /** Awaitable manual and site-open sync with request coalescing. */
+  /** Awaitable manual and site-open sync with request coalescing. A language change
+   * queues a fresh localized snapshot immediately after the in-flight one completes. */
   sync(): Promise<SyncAttemptResult> {
-    return this.activeSync ?? this.beginSync();
+    const locale = activeLocale();
+    if (!this.activeSync) return this.beginSync(locale);
+    if (this.activeSyncLocale === locale) return this.activeSync;
+    return this.activeSync.then(() => this.sync());
   }
 
   /** Install the pagehide flush. Visibility changes do not trigger synchronization. */

@@ -23,7 +23,7 @@
   import { createAppStore } from './state/appStore.svelte';
   import { downloadOne, downloadZip } from './core/download';
   import { createUploadStore } from './state/uploadStore.svelte';
-  import type { Photo, SyncRequest } from '$shared/types';
+  import type { LocaleCode, Photo, SyncRequest } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import {
     type FilterSettings,
@@ -60,6 +60,7 @@
 
   let leftOpen = $state(false);
   let rightOpen = $state(false);
+  let layoutPreview = $state(false);
   let multiMode = $state(false);
   /** Wide layout: the upload panel moves to the bottom-right, clear of bottom-left toasts. */
   let wideLayout = $state(false);
@@ -294,6 +295,7 @@
 
   function toggleLeft() {
     leftOpen = !leftOpen;
+    if (!leftOpen) layoutPreview = false;
     if (leftOpen) rightOpen = false;
   }
   function toggleRight() {
@@ -324,15 +326,20 @@
     void engine.sync();
   }
 
+  function handleLocaleChange(locale: LocaleCode) {
+    store.setContentLocale(locale);
+    void engine.sync();
+  }
+
   // Announcement ops: react / vote / feedback → op-log → /sync pipeline
   function handleReact(annId: number, emoji: string | null) {
     store.react(annId, emoji);
   }
-  function handleVote(annId: number, option: number | null) {
-    store.vote(annId, option);
+  function handleVote(pollId: number, options: number[]) {
+    store.vote(pollId, options);
   }
   function handleFeedback(contentMd: string) {
-    store.fbCreate(contentMd);
+    store.fbCreate(contentMd, store.contentLocale);
   }
 </script>
 
@@ -347,7 +354,12 @@
 
 <div class="flex h-screen overflow-hidden bg-background">
   <!-- Left Sidebar (Settings) -->
-  <OverlaySidebar bind:open={leftOpen} side="left" title={copy.sidebar.settingsTitle}>
+  <OverlaySidebar
+    bind:open={leftOpen}
+    side="left"
+    title={copy.sidebar.settingsTitle}
+    previewTransparent={layoutPreview}
+  >
     {#snippet icon()}
       <SettingsIcon class="size-5 text-primary" />
     {/snippet}
@@ -355,6 +367,8 @@
       onSettingsChange={handleSettingsChange}
       photos={store.photos}
       onFilterCount={(n) => (filterCount = n)}
+      onLocaleChange={handleLocaleChange}
+      onLayoutPreviewChange={(preview) => (layoutPreview = preview)}
     />
   </OverlaySidebar>
 
@@ -430,12 +444,18 @@
   </div>
 
   <!-- Right Sidebar (Announcements) -->
-  <OverlaySidebar bind:open={rightOpen} side="right" title={copy.sidebar.announcementsTitle}>
+  <OverlaySidebar
+    bind:open={rightOpen}
+    side="right"
+    title={copy.sidebar.announcementsTitle}
+    previewTransparent={layoutPreview}
+  >
     {#snippet icon()}
       <Megaphone class="size-5 text-primary" />
     {/snippet}
     <AnnouncementSidebar
       announcements={store.announcements}
+      polls={store.polls}
       selfId={store.selfId}
       onReact={handleReact}
       onVote={handleVote}
