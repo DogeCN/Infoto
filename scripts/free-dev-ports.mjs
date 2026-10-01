@@ -1,17 +1,26 @@
 #!/usr/bin/env node
-// Release ports used by the local Worker, Vite server, and media host.
+// Free the ports `npm run dev` binds, so a leftover or half-dead instance cannot make
+// wrangler, Vite, or the local media host fail with EADDRINUSE.
+//
+// Only processes bound to those exact ports are killed — never "every node", which would
+// take down the agent shell bridge along with them. Run automatically as `predev`.
+//
+// A wrangler supervisor respawns its workerd child the moment it dies, so a single kill is
+// not enough: the port is re-checked and re-killed for a few rounds until it stays free.
+// workerd is matched by name because orphaned copies also squat on 8787 after their
+// supervisor is gone, holding a socket nothing will ever release.
 
 import { execFileSync } from 'node:child_process';
 
 const PORTS = [8787, 8788, 5173, 5174];
-/** Maximum attempts to release ports held by restarting processes. */
+/** Rounds of kill-then-recheck; a respawning supervisor needs several. */
 const ROUNDS = 6;
 
 const run = (cmd, args) => {
   try {
     return execFileSync(cmd, args, { encoding: 'utf8', windowsHide: true, stdio: 'pipe' });
   } catch (e) {
-    // Include process identifiers reported by taskkill.
+    // taskkill still narrates what it killed when it exits non-zero.
     return `${e.stdout ?? ''}${e.stderr ?? ''}`;
   }
 };
@@ -35,10 +44,18 @@ function listeners(port) {
     .filter(Boolean);
 }
 
-/** Terminate a process tree and return a parent process ID when available. */
+/**
+ * Kill `pid` and its children, and report the parent it belonged to.
+ *
+ * Killing a listener is not enough for 8787: workerd is a leaf, and the wrangler
+ * supervisor above it respawns it within milliseconds. Neither wmic nor Get-CimInstance is
+ * usable on this host, but taskkill narrates the tree it walked ("... child process of PID
+ * N"), which is the one reliable way left to discover the parent.
+ */
 function killTree(pid) {
   const out = win ? run('taskkill', ['/PID', pid, '/T', '/F']) : run('kill', ['-TERM', pid]);
-  // Parse parent-child relationships from taskkill output.
+  // taskkill narrates every hop: "PID a (child process of PID b) has been terminated".
+  // The topmost parent is the last one named that is not itself listed as a child.
   const pairs = [...out.matchAll(/PID (\d+) \(child process of PID (\d+)\)/g)].map((m) => [
     Number(m[1]),
     Number(m[2]),
@@ -62,10 +79,20 @@ function protectedPids() {
 const keep = protectedPids();
 const freed = [];
 
-/** Check the OS listener table for a port. */
+/**
+ * Whether anything still listens on `port`.
+ *
+ * This reads the OS socket table rather than probing with a bind: Node sets SO_REUSEADDR,
+ * so a probe for 127.0.0.1:5173 *succeeds* while Vite holds 0.0.0.0:5173, which would
+ * report the port free and skip the one process that most often blocks a restart.
+ */
 const isFree = (port) => listeners(port).length === 0;
 
-/** Stop Node.js supervisors above a released listener. */
+/**
+ * Walk up from a killed listener and stop each supervisor we find, so nothing respawns
+ * what we just freed. Only node hosts are considered: cmd.exe / powershell.exe parents
+ * belong to the user's terminal, not to a stale dev run.
+ */
 function stopSupervisor(startPid, depth = 3) {
   let pid = startPid;
   for (let hop = 0; hop < depth && pid; hop++) {
@@ -82,7 +109,8 @@ for (const port of PORTS) {
   for (const pid of listeners(port)) {
     if (keep.has(Number(pid))) continue;
     const parent = killTree(pid);
-    // Stop the Wrangler supervisor for the Worker port.
+    // 8787's listener is workerd with a node supervisor above it; the others are plain
+    // node listeners with nothing to stop.
     if (port === 8787 && parent && !keep.has(Number(parent))) {
       if (processName(parent).toLowerCase() === 'node.exe') stopSupervisor(parent);
     }
