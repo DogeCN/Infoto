@@ -18,14 +18,12 @@
     HardDrive,
     LayoutGrid,
     Funnel,
-    Globe,
-    RefreshCw,
   } from '@lucide/svelte';
   import { cn } from '$base/lib/ui';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
   import { MAX_BAND, MIN_BAND } from '$base/lib/band';
   import type { Component } from 'svelte';
-  import type { MediaType, Photo } from '$shared/types';
+  import type { LocaleCode, MediaType, Photo } from '$shared/types';
   import {
     defaultSettings,
     defaultFilterSettings,
@@ -44,16 +42,25 @@
   import SingleSlider from './SingleSlider.svelte';
   import Tooltip from './Tooltip.svelte';
   import { toast } from 'svelte-sonner';
-  import { copy, getLocale, LOCALE_OPTIONS, setLocale } from '$lib/i18n.svelte';
+  import { copy } from '$lib/i18n.svelte';
+  import LocaleToggle from './LocaleToggle.svelte';
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
     /** Source photos for computing dynamic ranges. */
     photos?: Photo[];
     onFilterCount?: (count: number) => void;
+    onLocaleChange?: (locale: LocaleCode) => void;
+    onLayoutPreviewChange?: (preview: boolean) => void;
   }
 
-  let { onSettingsChange, photos = [], onFilterCount }: Props = $props();
+  let {
+    onSettingsChange,
+    photos = [],
+    onFilterCount,
+    onLocaleChange,
+    onLayoutPreviewChange,
+  }: Props = $props();
   let settings = $state<Settings>(loadSettings());
 
   // Debounced localStorage writes: syncing at 60fps while dragging blocks the
@@ -169,24 +176,20 @@
     };
   }
 
-  function setDir(d: ScrollDir) {
-    settings = { ...settings, layout: { ...settings.layout, dir: d } };
+  function toggleDir() {
+    const dir: ScrollDir = settings.layout.dir === 'v' ? 'h' : 'v';
+    settings = { ...settings, layout: { ...settings.layout, dir } };
   }
-  function setStrategy(s: FillStrategy) {
-    settings = { ...settings, layout: { ...settings.layout, strategy: s } };
+  function toggleStrategy() {
+    const strategy: FillStrategy =
+      settings.layout.strategy === 'shortest' ? 'sequential' : 'shortest';
+    settings = { ...settings, layout: { ...settings.layout, strategy } };
   }
   function setBand(v: number) {
     settings = { ...settings, layout: { ...settings.layout, band: v } };
   }
   function setGap(v: number) {
     settings = { ...settings, layout: { ...settings.layout, gap: v } };
-  }
-
-  /** Step to the next shipped locale, wrapping. Order follows the registry. */
-  function cycleLocale() {
-    const i = LOCALE_OPTIONS.findIndex((o) => o.code === getLocale());
-    const next = LOCALE_OPTIONS[(i + 1) % LOCALE_OPTIONS.length];
-    if (next) setLocale(next.code);
   }
 </script>
 
@@ -355,84 +358,65 @@
     </div>
 
     <div class="mt-4 space-y-3.5 px-1">
-      <!-- Language: one button that cycles, rather than a select. -->
-      <div>
-        <Tooltip text={copy.settings.language} side="bottom">
+      <!-- Language, arrangement, then scroll direction. The extra gap separates language from layout. -->
+      <div class="flex items-center gap-2">
+        <div class="mr-1">
+          <LocaleToggle onChange={onLocaleChange} />
+        </div>
+        <Tooltip
+          text={settings.layout.strategy === 'shortest'
+            ? copy.settings.switchToEqualHeight
+            : copy.settings.switchToEqualWidth}
+          side="bottom"
+        >
           <button
             type="button"
-            class="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:border-ring hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            aria-label={copy.settings.language}
-            disabled={LOCALE_OPTIONS.length < 2}
-            onclick={cycleLocale}
+            class={cn(
+              'inline-flex size-9 items-center justify-center rounded-md transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
+              settings.layout.strategy !== LAYOUT_DEFAULTS.strategy
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+            )}
+            aria-label={settings.layout.strategy === 'shortest'
+              ? copy.settings.switchToEqualHeight
+              : copy.settings.switchToEqualWidth}
+            aria-pressed={settings.layout.strategy === 'sequential'}
+            onclick={toggleStrategy}
           >
-            <Globe class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span class="flex-1 truncate text-left">
-              {LOCALE_OPTIONS.find((o) => o.code === getLocale())?.label ?? getLocale()}
-            </span>
-            {#if LOCALE_OPTIONS.length > 1}
-              <RefreshCw
-                class="size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
-                aria-hidden="true"
-              />
+            {#if settings.layout.strategy === 'shortest'}
+              <Columns3 class="size-4" />
+            {:else}
+              <Rows3 class="size-4" />
             {/if}
           </button>
         </Tooltip>
-      </div>
-
-      <!-- Scroll direction and fill strategy: icon buttons -->
-      <div class="grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          class={cn(
-            'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-            settings.layout.dir === 'v'
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-          )}
-          onclick={() => setDir('v')}
+        <Tooltip
+          text={settings.layout.dir === 'v'
+            ? copy.settings.switchToHorizontal
+            : copy.settings.switchToVertical}
+          side="bottom"
         >
-          <ArrowDownToLine class="size-3.5" />
-          <span class="truncate">{copy.settings.dirVertical}</span>
-        </button>
-        <button
-          type="button"
-          class={cn(
-            'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-            settings.layout.dir === 'h'
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-          )}
-          onclick={() => setDir('h')}
-        >
-          <ArrowRightToLine class="size-3.5" />
-          <span class="truncate">{copy.settings.dirHorizontal}</span>
-        </button>
-        <button
-          type="button"
-          class={cn(
-            'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-            settings.layout.strategy === 'shortest'
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-          )}
-          onclick={() => setStrategy('shortest')}
-        >
-          <Columns3 class="size-3.5" />
-          <span class="truncate">{copy.settings.strategyEqualWidth}</span>
-        </button>
-        <button
-          type="button"
-          class={cn(
-            'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-            settings.layout.strategy === 'sequential'
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-          )}
-          onclick={() => setStrategy('sequential')}
-        >
-          <Rows3 class="size-3.5" />
-          <span class="truncate">{copy.settings.strategyEqualHeight}</span>
-        </button>
+          <button
+            type="button"
+            class={cn(
+              'inline-flex size-9 items-center justify-center rounded-md transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
+              settings.layout.dir !== LAYOUT_DEFAULTS.dir
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+            )}
+            aria-label={settings.layout.dir === 'v'
+              ? copy.settings.switchToHorizontal
+              : copy.settings.switchToVertical}
+            aria-pressed={settings.layout.dir === 'h'}
+            onclick={toggleDir}
+          >
+            {#if settings.layout.dir === 'v'}
+              <ArrowDownToLine class="size-4" />
+            {:else}
+              <ArrowRightToLine class="size-4" />
+            {/if}
+          </button>
+        </Tooltip>
       </div>
 
       <!-- Target band width and gap: single-thumb sliders -->
@@ -445,6 +429,7 @@
         icon={Ruler}
         format={(v) => `${v}px`}
         onChange={setBand}
+        onDragChange={onLayoutPreviewChange}
       />
       <SingleSlider
         min={0}
@@ -455,6 +440,7 @@
         icon={MoveHorizontal}
         format={(v) => `${v}px`}
         onChange={setGap}
+        onDragChange={onLayoutPreviewChange}
       />
     </div>
   </section>

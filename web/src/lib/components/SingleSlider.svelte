@@ -25,6 +25,7 @@
     /** Value → display text. */
     format?: (v: number) => string;
     onChange?: (v: number) => void;
+    onDragChange?: (dragging: boolean) => void;
   }
 
   let {
@@ -36,6 +37,7 @@
     icon: Icon,
     format = (v) => String(v),
     onChange,
+    onDragChange,
   }: Props = $props();
 
   let span = $derived(Math.max(1, max - min));
@@ -90,6 +92,7 @@
     dragRect = trackEl.getBoundingClientRect();
     trackWidth = dragRect.width;
     drag = true;
+    onDragChange?.(true);
     trackEl.setPointerCapture?.(e.pointerId);
     // Clicking the track snaps to that point (no jump when dragging to the end; same formula as dragging)
     if (!(e.target as HTMLElement).closest?.('[data-thumb]')) applyT(tFromClientX(e.clientX));
@@ -102,8 +105,10 @@
   }
 
   function endDrag(): void {
+    if (!drag) return;
     drag = false;
     dragRect = null;
+    onDragChange?.(false);
   }
 
   // ---- keyboard (the handle is a custom role=slider element) ----------------

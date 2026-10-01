@@ -1,6 +1,6 @@
 -- Infoto data model.
 -- users.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT): first insert gets id 0.
--- IF NOT EXISTS keeps re-application idempotent for the deploy workflow.
+-- IF NOT EXISTS keeps fresh and local schema application idempotent.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   uuid TEXT UNIQUE NOT NULL,
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS announcements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   content_md TEXT NOT NULL,
+  locale TEXT NOT NULL,
   sort INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -33,11 +34,19 @@ CREATE TABLE IF NOT EXISTS reactions (
   emoji TEXT NOT NULL,
   PRIMARY KEY (ann_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS polls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  options TEXT NOT NULL,
+  allow_multiple INTEGER NOT NULL,
+  locale TEXT NOT NULL,
+  sort INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS votes (
-  ann_id INTEGER NOT NULL,
+  poll_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
   option INTEGER NOT NULL,
-  PRIMARY KEY (ann_id, user_id)
+  PRIMARY KEY (poll_id, user_id, option)
 );
 -- sort: manual (root-only) display order, lowest first. Unique by construction —
 -- an insert takes MIN(sort) - 1 and a reorder renumbers the whole list 0…n-1 — so
@@ -47,5 +56,6 @@ CREATE TABLE IF NOT EXISTS feedback (
   user_id INTEGER NOT NULL,
   content_md TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  locale TEXT NOT NULL,
   sort INTEGER NOT NULL
 );

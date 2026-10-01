@@ -2,11 +2,13 @@
 // identity gate, id validation and `sort` renumbering.
 
 import type { Context, MiddlewareHandler } from 'hono';
+import type { LocaleCode } from '../shared/types.ts';
+import { locales } from '../shared/copy.ts';
 import type { Db } from './db.ts';
 import { ROOT_ID, resolveUser } from './identity.ts';
 
-/** Tables whose `sort` column holds a manual display order. */
-export type SortTable = 'announcements' | 'feedback';
+/** Tables whose `sort` column holds a manual display order within a locale. */
+export type SortTable = 'announcements' | 'feedback' | 'polls';
 
 /** JSON body of `c`, or null when it is missing or malformed. */
 export function readJson<T>(c: Context): Promise<T | null> {
@@ -59,10 +61,16 @@ export function bodyIds(body: { ids?: unknown } | null): number[] {
 /** Place submitted IDs first, preserve the order of omitted rows, and assign consecutive sort values. */
 export function reorderHandler(db: Db, table: SortTable) {
   return async (c: Context): Promise<Response> => {
-    const ids = bodyIds(await readJson<{ ids?: unknown }>(c));
-    if (ids.length === 0) return badRequest(c);
+    const body = await readJson<{ ids?: unknown; locale?: unknown }>(c);
+    const ids = bodyIds(body);
+    const locale =
+      typeof body?.locale === 'string' && Object.hasOwn(locales, body.locale)
+        ? (body.locale as LocaleCode)
+        : null;
+    if (ids.length === 0 || !locale) return badRequest(c);
     const rows = await db
-      .prepare(`SELECT id FROM ${table} ORDER BY sort ASC`)
+      .prepare(`SELECT id FROM ${table} WHERE locale = ? ORDER BY sort ASC`)
+      .bind(locale)
       .all<{ id: number }>();
     const rank = new Map(ids.map((id, i) => [id, i]));
     const rest = ids.length;
@@ -70,7 +78,10 @@ export function reorderHandler(db: Db, table: SortTable) {
       .map((row) => row.id)
       .sort((a, b) => (rank.get(a) ?? rest) - (rank.get(b) ?? rest));
     await db.batch(
-      all.map((id, i) => ({ sql: `UPDATE ${table} SET sort = ? WHERE id = ?`, binds: [i, id] })),
+      all.map((id, i) => ({
+        sql: `UPDATE ${table} SET sort = ? WHERE id = ? AND locale = ?`,
+        binds: [i, id, locale],
+      })),
     );
     return c.json({ ok: true });
   };

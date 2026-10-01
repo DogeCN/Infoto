@@ -11,7 +11,7 @@ describe('keepalivePrefix', () => {
     const ops = [like(1), like(2), like(3)];
     const whole = keepalivePrefix(ops);
     expect(whole!.ops).toEqual(ops);
-    expect(JSON.parse(whole!.body)).toEqual({ ops });
+    expect(JSON.parse(whole!.body)).toEqual({ ops, locale: 'en-US' });
     expect(bytes(whole!.body)).toBeLessThanOrEqual(KEEPALIVE_BODY_LIMIT);
 
     const big: Op = {

@@ -114,7 +114,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 
     // Assert duplicate detection through pipeline events and the server snapshot.
     const count = async () => {
-      const r = await context.request.post('/sync', { data: { ops: [] } });
+      const r = await context.request.post('/sync', { data: { locale: 'en-US', ops: [] } });
       return ((await r.json()) as { photos: unknown[] }).photos.length;
     };
     const before = await count();
@@ -190,7 +190,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await expect(page.locator('button:has(svg.lucide-rotate-ccw)').first()).toBeVisible({
       timeout: 120_000,
     });
-    await expect(page.getByText('上传失败')).toBeVisible();
+    await expect(page.getByRole('button', { name: /retry upload|重试上传/i })).toBeVisible();
   });
 
   test('cross-tab: page A uploads, page B sees it (SharedWorker + BroadcastChannel + sync)', async ({
@@ -232,6 +232,7 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          locale: 'en-US',
           ops: [{ type: 'fb_create', target: null, payload: { contentMd: 'pagehide-e2e' } }],
         }),
       });

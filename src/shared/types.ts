@@ -1,6 +1,9 @@
 // Infoto shared contract types — used by both runtimes (Worker / local Node)
 // and the frontend.
 
+import type { LocaleCode } from './copy.ts';
+export type { LocaleCode } from './copy.ts';
+
 /** Maximum operations accepted by one sync request. */
 export const MAX_SYNC_OPS = 500;
 
@@ -45,7 +48,7 @@ export interface Reaction {
   emoji: string;
 }
 
-/** One vote row: one option per user per announcement (0-based index). */
+/** One option selection in a poll (0-based index). Multi-select polls have multiple rows per user. */
 export interface Vote {
   userId: number;
   option: number;
@@ -55,11 +58,22 @@ export interface Announcement {
   id: number;
   title: string;
   contentMd: string;
+  locale: LocaleCode;
   /** Display order; normalized to 0…n-1 by the admin reorder API. */
   sort: number;
   /** Millisecond epoch. */
   updatedAt: number;
   reactions: Reaction[];
+}
+
+export interface Poll {
+  id: number;
+  title: string;
+  options: string[];
+  allowMultiple: boolean;
+  locale: LocaleCode;
+  /** Manual display order within this locale. */
+  sort: number;
   votes: Vote[];
 }
 
@@ -70,6 +84,7 @@ export interface Feedback {
   createdAt: number;
   /** Manual (root-only) display order; lowest first. */
   sort: number;
+  locale: LocaleCode;
 }
 
 /** All op kinds accepted by POST /sync (the single write entry point). */
@@ -83,7 +98,7 @@ export type OpType =
   | 'report'
   | 'unreport'
   | 'delete' // root only
-  // vote area (everyone, targets an announcement)
+  // vote area (everyone, targets a poll)
   | 'vote'
   // feedback area (creation only; deletion is DELETE /admin/feedback/:id)
   | 'fb_create' // everyone
@@ -101,9 +116,10 @@ export interface UploadPayload {
   type: MediaType;
 }
 
-/** Payload for `fb_create`. */
+/** Payload for `fb_create`; locale is captured when the user submits the suggestion. */
 export interface FeedbackPayload {
   contentMd: string;
+  locale: LocaleCode;
 }
 
 /** Payload for `react`; empty/absent emoji clears the reaction. */
@@ -111,9 +127,9 @@ export interface ReactPayload {
   emoji?: string | null;
 }
 
-/** Payload for `vote`; option is the 0-based choice index, null retracts the vote. */
+/** Payload for `vote`; all selected 0-based option indexes replace the user's current selections. */
 export interface VotePayload {
-  option: number | null;
+  options: number[];
 }
 
 export type OpPayload =
@@ -122,7 +138,7 @@ export type OpPayload =
 /** One op-log entry, applied by /sync strictly in array order. */
 export interface Op {
   type: OpType;
-  /** Announcement ID for votes and reactions. Photo operations use targetSha instead. */
+  /** Poll ID for votes; announcement ID for reactions. Photo operations use targetSha instead. */
   target?: number | null;
   /** Photo ops: the target photo's sha256. */
   targetSha?: string;
@@ -132,6 +148,8 @@ export interface Op {
 export interface SyncRequest {
   /** Required when no identity exists yet. */
   turnstileToken?: string | null;
+  /** Selects the localized announcements, polls, and root-only feedback snapshot. */
+  locale?: LocaleCode;
   ops: Op[];
 }
 
@@ -144,7 +162,10 @@ export interface SyncResponse {
    *  credentials, so this server never sees an upload or a TC_SECRET. */
   mediaHostUrl: string;
   photos: Photo[];
+  /** Locale used to select the remaining localized snapshot fields. */
+  locale: LocaleCode;
   announcements: Announcement[];
+  polls: Poll[];
   /** Real data for the root user only; empty array for everyone else. */
   feedback: Feedback[];
 }

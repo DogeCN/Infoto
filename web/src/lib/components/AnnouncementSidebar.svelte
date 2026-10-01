@@ -1,22 +1,24 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import type { Announcement } from '$shared/types';
+  import type { Announcement, Poll } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
-  import { splitVote } from '../../core/markdown';
+  import { splitPollReferences } from '../../core/markdown';
   import MarkdownView from './MarkdownView.svelte';
   import VoteBlock from './VoteBlock.svelte';
   import ReactionBar from './ReactionBar.svelte';
 
   interface Props {
     announcements: Announcement[];
+    polls?: Poll[];
     selfId?: number;
     onReact?: (annId: number, emoji: string | null) => void;
-    onVote?: (annId: number, option: number | null) => void;
+    onVote?: (pollId: number, options: number[]) => void;
     onFeedback?: (contentMd: string) => void;
   }
 
-  let { announcements, selfId = -1, onReact, onVote, onFeedback }: Props = $props();
+  let { announcements, polls = [], selfId = -1, onReact, onVote, onFeedback }: Props = $props();
+  let pollMap = $derived(new Map(polls.map((poll) => [poll.id, poll])));
 
   let feedbackText = $state('');
   let previewMode = $state(false);
@@ -75,7 +77,7 @@
     {/if}
 
     {#each announcements as ann (ann.id)}
-      {@const vote = splitVote(ann.contentMd)}
+      {@const parts = splitPollReferences(ann.contentMd)}
       {@const expanded = expandedIds.has(ann.id)}
 
       <div class="overflow-hidden rounded-xl border border-border bg-card">
@@ -106,22 +108,35 @@
         >
           <div class="min-h-0 overflow-hidden">
             <div class="space-y-3 px-4 pb-4 pt-0.5">
-              {#if vote.before.trim()}
-                <MarkdownView content={vote.before} allowImages class="text-muted-foreground" />
-              {/if}
-
-              {#if vote.options.length >= 2}
-                <VoteBlock
-                  options={vote.options}
-                  votes={ann.votes}
-                  {selfId}
-                  onVote={(option) => onVote?.(ann.id, option)}
-                />
-              {/if}
-
-              {#if vote.after.trim()}
-                <MarkdownView content={vote.after} allowImages class="text-muted-foreground" />
-              {/if}
+              {#each parts as part, index (`${ann.id}:${index}`)}
+                {#if part.type === 'markdown'}
+                  {#if part.content.trim()}
+                    <MarkdownView
+                      content={part.content}
+                      allowImages
+                      class="text-muted-foreground"
+                    />
+                  {/if}
+                {:else if pollMap.has(part.id)}
+                  {@const poll = pollMap.get(part.id)!}
+                  <section class="space-y-2" aria-label={poll.title}>
+                    <h4 class="text-sm font-medium text-foreground">{poll.title}</h4>
+                    <VoteBlock
+                      options={poll.options}
+                      votes={poll.votes}
+                      allowMultiple={poll.allowMultiple}
+                      {selfId}
+                      onVote={(options) => onVote?.(poll.id, options)}
+                    />
+                  </section>
+                {:else}
+                  <MarkdownView
+                    content={`::vote:${part.id}`}
+                    allowImages
+                    class="text-muted-foreground"
+                  />
+                {/if}
+              {/each}
 
               <!-- Emoji reaction bar -->
               <ReactionBar

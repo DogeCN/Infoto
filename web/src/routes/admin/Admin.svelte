@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { Megaphone, MessageSquare, Plus } from '@lucide/svelte';
-  import type { Announcement } from '$shared/types';
-  import { copy } from '$lib/i18n.svelte';
   import { onDestroy, untrack } from 'svelte';
+  import type { Announcement, LocaleCode, Poll } from '$shared/types';
+  import { Megaphone, MessageSquare, ChartNoAxesColumn } from '@lucide/svelte';
+  import { copy } from '$lib/i18n.svelte';
   import { Toaster, toast } from 'svelte-sonner';
   import ErrorPage from '$lib/components/ErrorPage.svelte';
-  import SegmentedControl from '$lib/components/SegmentedControl.svelte';
+  import TopBar from '$lib/components/TopBar.svelte';
   import { toastOptions } from '$base/lib/ui';
   import { getEngine } from '../../core/engine';
   import { postSync, TurnstileRequiredError } from '../../core/api/syncClient';
@@ -16,17 +16,17 @@
   import AnnouncementEditorDialog from './AnnouncementEditorDialog.svelte';
   import AnnouncementList from './AnnouncementList.svelte';
   import FeedbackList from './FeedbackList.svelte';
+  import PollEditorDialog from './PollEditorDialog.svelte';
+  import PollList from './PollList.svelte';
 
+  type AdminTab = 'announcements' | 'feedback' | 'polls';
   const store = createAppStore();
-  // Sync-failure toast dedupe: the failure stays until the next success, so a burst of toasts is pointless.
   let syncErrorToastAt = 0;
   const engine = getEngine({
     postSyncFn: postSync,
     onSyncResponse: (response, context) => store.applySync(response, context),
     onError: (phase, error) => {
       console.error('[sync]', phase, error);
-      // 401 (no cookie / expired): confirmed anonymous — leave /admin for the
-      // home first-entry flow instead of waiting out the grace period.
       if (error instanceof TurnstileRequiredError) {
         identityRejected = true;
         return;
@@ -34,36 +34,43 @@
       const now = Date.now();
       if (now - syncErrorToastAt > 10_000) {
         syncErrorToastAt = now;
-        toast.error(copy.sync.failed, {
-          description: copy.sync.dataMayBeStale,
-        });
+        toast.error(copy.sync.failed, { description: copy.sync.dataMayBeStale });
       }
     },
   });
   store.bindEngine(engine);
-  const pipeline = new UploadPipeline({
-    onEvent: (line) => console.log('[upload]', line),
-  });
+  const pipeline = new UploadPipeline({ onEvent: (line) => console.log('[upload]', line) });
 
-  let activeTab = $state<'announcements' | 'feedback'>('announcements');
+  let activeTab = $state<AdminTab>('announcements');
   let initialized = $state(false);
   let editorOpen = $state(false);
   let editingAnnouncement = $state<Announcement | null>(null);
-  // Editor image uploads share the SharedWorker pipeline with the waterfall
-  // (transcode → hash → upload); this row carries their live stage.
+  let pollEditorOpen = $state(false);
+  let editingPoll = $state<Poll | null>(null);
   let editorUploadTask = $state<UploadRow | null>(null);
-  /** Job id of the in-flight editor upload (null when idle/terminal). */
   let editorJobId: string | null = null;
 
-  // `untrack` keeps the guard out of the effect's dependency set, so writing it does
-  // not schedule the second run a plain `if (initialized) return` would.
+  const adminItems = $derived([
+    { value: 'announcements', label: copy.admin.tabs.announcements, icon: Megaphone },
+    { value: 'feedback', label: copy.admin.tabs.feedback, icon: MessageSquare },
+    { value: 'polls', label: copy.admin.tabs.polls, icon: ChartNoAxesColumn },
+  ]);
+  const createLabel = $derived(
+    activeTab === 'announcements'
+      ? copy.admin.newAnnouncement
+      : activeTab === 'polls'
+        ? copy.admin.newPoll
+        : undefined,
+  );
+  const createActive = $derived(
+    (activeTab === 'announcements' && editorOpen && editingAnnouncement === null) ||
+      (activeTab === 'polls' && pollEditorOpen && editingPoll === null),
+  );
+
   $effect(() => {
     if (untrack(() => initialized)) return;
     initialized = true;
     pipeline.start();
-    // No engine.install(): the admin page creates no /sync ops (every write is an
-    // immediate admin-API call), so the pagehide dump has nothing to flush. init()
-    // alone pulls the one snapshot the page needs.
     engine.init().catch(console.error);
   });
 
@@ -88,8 +95,6 @@
   );
 
   const isRoot = $derived(store.selfId === 0);
-
-  // Wait for identity resolution before redirecting non-root visitors; replace the admin history entry.
   let identityRejected = false;
   $effect(() => {
     if (store.selfId !== -1) return;
@@ -103,13 +108,12 @@
     return () => clearTimeout(grace);
   });
 
-  function openCreateAnnouncement() {
+  function openCreateAnnouncement(): void {
     editingAnnouncement = null;
     editorOpen = true;
   }
 
-  /** "New announcement" doubles as the editor toggle: while open in create mode it closes; in edit mode it switches to create. */
-  function toggleCreateAnnouncement() {
+  function toggleCreateAnnouncement(): void {
     if (editorOpen && editingAnnouncement === null) {
       closeAnnouncementEditor();
       return;
@@ -117,13 +121,12 @@
     openCreateAnnouncement();
   }
 
-  function openEditAnnouncement(announcement: Announcement) {
+  function openEditAnnouncement(announcement: Announcement): void {
     editingAnnouncement = announcement;
     editorOpen = true;
   }
 
-  function closeAnnouncementEditor() {
-    // Cancel unfinished editor uploads when closing the editor.
+  function closeAnnouncementEditor(): void {
     if (editorJobId) {
       pipeline.cancel(editorJobId);
       editorJobId = null;
@@ -133,17 +136,57 @@
     editingAnnouncement = null;
   }
 
-  function saveAnnouncement(title: string, contentMd: string) {
-    if (editingAnnouncement) {
-      store.annUpdate(editingAnnouncement.id, title, contentMd);
-    } else {
-      store.annCreate(title, contentMd);
-    }
+  function saveAnnouncement(title: string, contentMd: string): void {
+    if (editingAnnouncement) store.annUpdate(editingAnnouncement.id, title, contentMd);
+    else store.annCreate(title, contentMd);
     closeAnnouncementEditor();
   }
 
-  // Reorder is never blocked by a pending create: the store keeps the new order
-  // locally and flushes it as soon as a fresh announcement's real id arrives.
+  function openCreatePoll(): void {
+    editingPoll = null;
+    pollEditorOpen = true;
+  }
+
+  function toggleCreatePoll(): void {
+    if (pollEditorOpen && editingPoll === null) {
+      closePollEditor();
+      return;
+    }
+    openCreatePoll();
+  }
+
+  function openEditPoll(poll: Poll): void {
+    editingPoll = poll;
+    pollEditorOpen = true;
+  }
+
+  function closePollEditor(): void {
+    pollEditorOpen = false;
+    editingPoll = null;
+  }
+
+  function savePoll(title: string, options: string[], allowMultiple: boolean): void {
+    if (editingPoll) store.pollUpdate(editingPoll.id, title, options, allowMultiple);
+    else store.pollCreate(title, options, allowMultiple);
+    closePollEditor();
+  }
+
+  function handleCreate(): void {
+    if (activeTab === 'announcements') toggleCreateAnnouncement();
+    else if (activeTab === 'polls') toggleCreatePoll();
+  }
+
+  function handleTabChange(value: string): void {
+    if (value === 'announcements' || value === 'feedback' || value === 'polls') activeTab = value;
+  }
+
+  function handleLocaleChange(locale: LocaleCode): void {
+    closeAnnouncementEditor();
+    closePollEditor();
+    store.setContentLocale(locale);
+    void engine.sync();
+  }
+
   function handleAnnouncementReorder(ids: number[]): void {
     store.annReorder(ids);
   }
@@ -162,37 +205,20 @@
 
 {#if isRoot}
   <div class="min-h-screen bg-background">
-    <header
-      class="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/80 px-3 backdrop-blur-xl backdrop-saturate-150 md:h-16 md:px-6"
+    <TopBar
+      variant="admin"
+      {adminItems}
+      adminValue={activeTab}
+      onAdminChange={handleTabChange}
+      onLocaleChange={handleLocaleChange}
+      adminCreateLabel={createLabel}
+      adminCreateActive={createActive}
+      onAdminCreateClick={handleCreate}
     >
-      <div class="flex items-center gap-2">
-        <!-- Segmented control: reuses the shared SegmentedControl (sliding-pill animation matches the home SortTabs exactly) -->
-        <SegmentedControl
-          items={[
-            { value: 'announcements', label: copy.admin.tabs.announcements, icon: Megaphone },
-            { value: 'feedback', label: copy.admin.tabs.feedback, icon: MessageSquare },
-          ]}
-          value={activeTab}
-          ariaLabel={copy.admin.sectionLabel}
-          onChange={(v) => (activeTab = v)}
-        />
-      </div>
-
-      <div class="flex items-center gap-1">
-        <!-- Editor toggle (same highlight convention as the home top bar sidebar button): icon turns primary while open -->
-        <button
-          type="button"
-          class="flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
-          class:text-primary={editorOpen && editingAnnouncement === null}
-          aria-label={copy.admin.newAnnouncement}
-          aria-pressed={editorOpen && editingAnnouncement === null}
-          onclick={toggleCreateAnnouncement}
-        >
-          <Plus class="size-5" />
-        </button>
+      {#snippet adminActions()}
         <AdminMigrateMenu onImported={handleImported} />
-      </div>
-    </header>
+      {/snippet}
+    </TopBar>
 
     <main class="w-full px-4 pb-6 pt-20 md:px-8 md:pt-24">
       {#if activeTab === 'announcements'}
@@ -202,19 +228,29 @@
           onDelete={(id) => store.annDelete(id)}
           onReorder={handleAnnouncementReorder}
         />
-      {:else}
+      {:else if activeTab === 'feedback'}
         <FeedbackList
           feedback={store.feedback}
           onDelete={(id) => store.fbDelete(id)}
           onReorder={(ids) => store.fbReorder(ids)}
         />
+      {:else}
+        <PollList
+          polls={store.polls}
+          selfId={store.selfId}
+          onEdit={openEditPoll}
+          onDelete={(id) => store.pollDelete(id)}
+          onReorder={(ids) => store.pollReorder(ids)}
+        />
       {/if}
     </main>
 
     {#if editorOpen}
-      {#key editingAnnouncement?.id ?? 'new'}
+      {#key editingAnnouncement?.id ?? 'new-announcement'}
         <AnnouncementEditorDialog
           announcement={editingAnnouncement}
+          polls={store.polls}
+          selfId={store.selfId}
           onPickImage={(file) => pipeline.uploadEditorImage(file)}
           onSave={saveAnnouncement}
           onCancel={closeAnnouncementEditor}
@@ -228,12 +264,14 @@
       {/key}
     {/if}
 
-    <!-- No close button: a swipe dismisses the toast (sonner's own gesture). -->
-    <!-- expand: see App.svelte — a swipe-out otherwise leaves the stack stuck open. -->
+    {#if pollEditorOpen}
+      {#key editingPoll?.id ?? 'new-poll'}
+        <PollEditorDialog poll={editingPoll} onSave={savePoll} onCancel={closePollEditor} />
+      {/key}
+    {/if}
+
     <Toaster position="bottom-left" theme="dark" richColors expand {toastOptions} />
   </div>
 {:else if store.selfId >= 1}
-  <!-- Known non-root (confirmed by cache or /sync): show the 404 page -->
   <ErrorPage code={404} />
 {/if}
-<!-- selfId === -1: redirect already triggered; render nothing this frame -->

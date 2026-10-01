@@ -2,6 +2,7 @@
 // is camelCase throughout; no secondary mapping.
 
 import type { SyncRequest, SyncResponse } from '$shared/types';
+import { activeLocale } from '$shared/copy';
 import { requestJson, type RequestIo } from './request';
 
 /** Thrown on 401 turnstile_required; carries the public site key from the body. */
@@ -35,12 +36,13 @@ export interface SyncCallResult {
 
 /** Submit one request; rejected operations remain queued for the next explicit sync trigger. */
 export async function postSync(body: SyncRequest, io: SyncClientIo = {}): Promise<SyncCallResult> {
+  const requestBody: SyncRequest = { ...body, locale: body.locale ?? activeLocale() };
   const { response: res, data } = await requestJson(
     '/sync',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
       keepalive: io.keepalive,
     },
     'sync_timeout',
@@ -61,8 +63,10 @@ export async function postSync(body: SyncRequest, io: SyncClientIo = {}): Promis
     obj.ok !== true ||
     !Number.isSafeInteger(obj.selfId) ||
     !Number.isFinite(obj.serverTime) ||
+    (obj.locale !== 'en-US' && obj.locale !== 'zh-CN') ||
     !Array.isArray(obj.photos) ||
     !Array.isArray(obj.announcements) ||
+    !Array.isArray(obj.polls) ||
     !Array.isArray(obj.feedback)
   ) {
     throw new Error('invalid_sync_response');

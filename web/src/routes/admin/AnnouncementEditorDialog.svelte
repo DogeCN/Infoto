@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
+  import type { Poll } from '$shared/types';
   import type { UploadRow } from '../../transcode/pipeline';
   import { copy } from '$lib/i18n.svelte';
 
@@ -11,6 +12,8 @@
       contentMd: string;
       updatedAt: number;
     } | null;
+    polls?: Poll[];
+    selfId?: number;
     onPickImage: (file: File) => Promise<string>;
     onSave: (title: string, contentMd: string) => void;
     onCancel: () => void;
@@ -24,6 +27,8 @@
 
   let {
     announcement,
+    polls = [],
+    selfId = -1,
     onPickImage,
     onSave,
     onCancel,
@@ -154,6 +159,8 @@
           <MarkdownEditor
             bind:value={contentMd}
             onPickImage={pickImage}
+            {polls}
+            {selfId}
             {uploadName}
             {uploadTask}
             {onRetryUpload}

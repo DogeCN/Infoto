@@ -11,12 +11,14 @@
     title = '',
     icon,
     children,
+    previewTransparent = false,
   }: {
     side?: 'left' | 'right';
     open?: boolean;
     title?: string;
     icon?: Snippet;
     children?: Snippet;
+    previewTransparent?: boolean;
   } = $props();
 
   const MIN_W = 280;
@@ -115,7 +117,9 @@
   <!-- Full-screen scrim (covers the top bar): dims everything while open, layered above the
        top bar but below the sidebar itself -->
   <div
-    class="fixed inset-0 z-[47] bg-black/50 backdrop-blur-sm"
+    class="fixed inset-0 z-[47] bg-black/50 backdrop-blur-sm transition-opacity duration-200 ease-[var(--ease-exit)]"
+    data-layout-scrim
+    style="opacity: {previewTransparent ? 0 : 1}"
     role="presentation"
     onclick={close}
   ></div>
@@ -129,13 +133,13 @@
   inert={!open}
   tabindex="-1"
   use:overlay={{ enabled: open, onClose: close }}
-  class="fixed top-0 z-50 flex h-full w-full flex-col border-border bg-card shadow-2xl shadow-black/40 transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)]"
+  class="fixed top-0 z-50 flex h-full w-full flex-col border-border bg-card shadow-2xl shadow-black/40 transition-[transform,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)]"
   class:left-0={side === 'left'}
   class:right-0={side === 'right'}
   class:translate-x-0={open}
   class:-translate-x-full={side === 'left' && !open}
   class:translate-x-full={side === 'right' && !open}
-  style="--sidebar-w: {width}px"
+  style="--sidebar-w: {width}px; opacity: {previewTransparent ? 0 : 1}"
 >
   <!-- Drag the inner edge to resize (desktop). The button carries the interaction semantics;
        arrow keys adjust the width too. -->
