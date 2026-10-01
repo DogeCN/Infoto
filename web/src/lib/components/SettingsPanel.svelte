@@ -349,12 +349,7 @@
         >
           <button
             type="button"
-            class={cn(
-              'inline-flex size-9 items-center justify-center rounded-md transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-              settings.layout.strategy !== LAYOUT_DEFAULTS.strategy
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-            )}
+            class="inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80"
             aria-label={settings.layout.strategy === 'shortest'
               ? copy.settings.switchToEqualHeight
               : copy.settings.switchToEqualWidth}
@@ -376,12 +371,7 @@
         >
           <button
             type="button"
-            class={cn(
-              'inline-flex size-9 items-center justify-center rounded-md transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-              settings.layout.dir !== LAYOUT_DEFAULTS.dir
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-            )}
+            class="inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80"
             aria-label={settings.layout.dir === 'v'
               ? copy.settings.switchToHorizontal
               : copy.settings.switchToVertical}
