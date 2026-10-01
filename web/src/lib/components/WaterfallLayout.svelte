@@ -14,6 +14,7 @@
   import Lightbox from './Lightbox.svelte';
   import MultiSelectBar from './MultiSelectBar.svelte';
   import { scroll } from '../../state/scroll.svelte';
+  import { barHeight } from './topbarFit';
 
   interface Props {
     photos: Photo[];
@@ -78,8 +79,17 @@
   let containerW = $state(0);
   /** Canvas inset: the scroll container is full-width (scrollbar at the viewport edge), whitespace comes from the canvas margin. */
   let padX = $derived(Math.max(8, Math.min(16, Math.round(containerW * 0.02))));
-  /** Top spacing (accommodates the floating top bar; content can scroll under it for immersion). */
-  let padTop = $derived(Math.max(48, Math.min(80, Math.round(containerW * 0.08))));
+  /** Breathing room between the bar's bottom edge and the first row. */
+  const TOP_GAP = 16;
+  /** Top spacing: clear the floating top bar, then breathe.
+   *
+   *  Derived from the bar's own height rather than guessed from a width percentage: the
+   *  old `containerW * 0.08` clamped to 48–80px was an independent formula, and below
+   *  ~750px it fell under the bar's actual height, so the first row sat underneath it.
+   *  Both elements are full width, so the scroll container's width is the same input the
+   *  bar measures and `barHeight()` yields the identical number.
+   */
+  let padTop = $derived(Math.ceil(barHeight(containerW) + TOP_GAP));
 
   // Uniform grid zoom preserves cell geometry and gap proportions.
   let zoom = $state(1);

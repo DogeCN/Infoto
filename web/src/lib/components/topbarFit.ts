@@ -31,6 +31,33 @@ export function barHeight(barWidth: number): number {
   return BAR_HEIGHT_MIN + (BAR_HEIGHT_MAX - BAR_HEIGHT_MIN) * ramp(barWidth);
 }
 
+/**
+ * Sizes that must grow with the bar, as fractions of its height.
+ *
+ * Without this the bar simply got taller while every control kept its fixed size, so the
+ * extra pixels read as padding below the bar rather than as a larger bar. Icons are
+ * 0.3125 of the height (20px at BAR_HEIGHT_MAX, matching the old fixed `size-5`), and the
+ * count badge is 0.25 (16px, matching `size-4`).
+ *
+ * Exported so components read them as `calc(var(--bar-h) * …)` — one custom property on
+ * the header carries the whole ramp.
+ */
+export const BAR_ICON_RATIO = 0.3125;
+export const BAR_BADGE_RATIO = 0.25;
+
+/** Icon box in px for a given bar width, for callers that need the number rather than CSS. */
+export function barIconSize(barWidth: number): number {
+  return barHeight(barWidth) * BAR_ICON_RATIO;
+}
+
+/**
+ * Custom properties for the bar element. Children inherit `--bar-h`, so the whole control
+ * set scales from one measurement instead of each component re-deriving the ramp.
+ */
+export function barCssVars(barWidth: number): string {
+  return `--bar-h:${barHeight(barWidth)}px`;
+}
+
 export interface BarRequirements {
   /** One screen, sort labels visible. */
   full: number;

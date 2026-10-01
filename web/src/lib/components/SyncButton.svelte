@@ -62,11 +62,11 @@
     onclick={onSync}
   >
     <span bind:this={iconEl} class="inline-flex will-change-transform">
-      <RefreshCw class="size-5" />
+      <RefreshCw class="size-[calc(var(--bar-h)*0.3125)]" />
     </span>
     {#if pendingCount > 0}
       <span
-        class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
+        class="absolute -right-0.5 -top-0.5 flex h-[calc(var(--bar-h)*0.25)] min-w-[calc(var(--bar-h)*0.25)] items-center justify-center rounded-full bg-primary px-1 text-[calc(var(--bar-h)*0.15625)] font-bold text-primary-foreground"
       >
         {pendingCount > 99 ? '99+' : pendingCount}
       </span>
