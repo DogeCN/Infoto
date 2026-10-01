@@ -18,7 +18,10 @@ export default defineConfig({
     {
       // Bootstrap the local D1 (idempotent: schema.sql is IF NOT EXISTS) then
       // serve the Worker. Both run from the repo root.
-      command: 'npm run db:local && npm run dev:worker',
+      // Keep the local Worker on the official Turnstile test keys; the E2E helper
+      // stubs the browser API, and verifyTurnstile accepts this published test secret.
+      command:
+        'npm run db:local && npm run dev:worker -- --var TURNSTILE_SITE_KEY:1x00000000000000000000AA --var TURNSTILE_SECRET_KEY:1x0000000000000000000000000000000AA',
       cwd: '..',
       // Wait on the listening port: the Worker only answers 200 to
       // authenticated POSTs, so a URL probe would read its 404 as "not ready".
@@ -31,6 +34,14 @@ export default defineConfig({
     {
       command: 'npm run dev',
       url: 'http://localhost:5173',
+      reuseExistingServer: true,
+      timeout: 30_000,
+    },
+    {
+      // Pipeline integration tests upload through the local facade stand-in.
+      command: 'npm run dev:media',
+      cwd: '..',
+      port: 8788,
       reuseExistingServer: true,
       timeout: 30_000,
     },

@@ -10,7 +10,7 @@ test.describe('identity & op semantics (local Worker)', () => {
     context,
   }) => {
     // Verify that a sessionless sync returns the verification requirement and site key.
-    const probe = await context.request.post('/sync', { data: { ops: [] } });
+    const probe = await context.request.post('/sync', { data: { locale: 'en-US', ops: [] } });
     const body = (await probe.json().catch(() => ({}))) as {
       error?: string;
       turnstileSiteKey?: string;
@@ -41,6 +41,7 @@ test.describe('identity & op semantics (local Worker)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          locale: 'en-US',
           ops: [
             {
               type: 'upload',
@@ -68,7 +69,7 @@ test.describe('identity & op semantics (local Worker)', () => {
     context,
   }) => {
     const r = await context.request.post('/sync', {
-      data: { ops: [], uuid: '00000000-0000-0000-0000-000000000000' },
+      data: { locale: 'en-US', ops: [], uuid: '00000000-0000-0000-0000-000000000000' },
     });
     const body = (await r.json().catch(() => ({}))) as { error?: string };
     // contract re-check: a forged uuid without a cookie still goes through Turnstile

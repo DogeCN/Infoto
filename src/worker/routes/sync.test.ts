@@ -232,7 +232,7 @@ test('non-root announcement create → 403; like in same batch works; feedback h
         // A guest is not root: the delete is refused, the like still lands.
         { type: 'delete', targetSha: 'p' },
         { type: 'like', targetSha: 'p' },
-        { type: 'fb_create', payload: { contentMd: 'hello' } },
+        { type: 'fb_create', payload: { contentMd: 'hello', locale: 'en-US' } },
       ],
     },
     guestCookie,
@@ -249,97 +249,88 @@ test('non-root announcement create → 403; like in same batch works; feedback h
   assert.equal(asRoot.feedback[0]!.contentMd, 'hello');
 });
 
-test('vote: cast / overwrite / retract; nonexistent target skipped; ann_delete cascades', async () => {
+test('poll votes replace or clear selected options and reject invalid selections', async () => {
   const { app } = makeApp();
   const rootCookie = cookieFrom(await syncNew(app));
-  // announcement creation goes through the admin API (ann_create is not an /sync op)
-  const poll = await app.request('http://localhost/admin/announcements', {
+  const created = await app.request('http://localhost/admin/polls', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: rootCookie },
-    body: JSON.stringify({ title: 'poll', contentMd: ':::vote 好 | 不好' }),
+    body: JSON.stringify({
+      title: 'Question',
+      options: ['Good', 'Okay', 'Bad'],
+      allowMultiple: false,
+      locale: 'en-US',
+    }),
   });
-  assert.equal(poll.status, 200);
+  assert.equal(created.status, 200);
+  const pollId = ((await created.json()) as { poll: { id: number } }).poll.id;
   const guest = cookieFrom(await syncNew(app));
 
-  // any user may vote; target = announcement id, option = 0-based choice
   let snap = (await (
-    await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: 1 } }] }, guest)
+    await sync(app, { ops: [{ type: 'vote', target: pollId, payload: { options: [1] } }] }, guest)
   ).json()) as SyncResponse;
-  assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 1 }]);
+  assert.deepEqual(snap.polls[0]!.votes, [{ userId: 1, option: 1 }]);
 
-  // re-vote overwrites the single per-user row
   snap = (await (
-    await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: 0 } }] }, guest)
+    await sync(app, { ops: [{ type: 'vote', target: pollId, payload: { options: [0] } }] }, guest)
   ).json()) as SyncResponse;
-  assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 0 }]);
+  assert.deepEqual(snap.polls[0]!.votes, [{ userId: 1, option: 0 }]);
 
-  // option null retracts; a second retract is a silent no-op
   snap = (await (
-    await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: null } }] }, guest)
+    await sync(app, { ops: [{ type: 'vote', target: pollId, payload: { options: [] } }] }, guest)
   ).json()) as SyncResponse;
-  assert.deepEqual(snap.announcements[0]!.votes, []);
-  snap = (await (
-    await sync(app, { ops: [{ type: 'vote', target: 1, payload: { option: null } }] }, guest)
-  ).json()) as SyncResponse;
-  assert.deepEqual(snap.announcements[0]!.votes, []);
+  assert.deepEqual(snap.polls[0]!.votes, []);
 
-  // nonexistent announcement → silently skipped (no orphan rows);
-  // malformed option (non-integer) → silently dropped
   snap = (await (
     await sync(
       app,
       {
         ops: [
-          { type: 'vote', target: 999, payload: { option: 0 } },
-          { type: 'vote', target: 1, payload: { option: 1.5 } },
-          { type: 'vote', target: 1, payload: { option: 1 } },
+          { type: 'vote', target: 999, payload: { options: [0] } },
+          { type: 'vote', target: pollId, payload: { options: [1.5] } },
+          { type: 'vote', target: pollId, payload: { options: [3] } },
+          { type: 'vote', target: pollId, payload: { options: [0, 1] } },
+          { type: 'vote', target: pollId, payload: { options: [2] } },
         ],
       },
       guest,
     )
   ).json()) as SyncResponse;
-  assert.deepEqual(snap.announcements[0]!.votes, [{ userId: 1, option: 1 }]);
-
-  // deletion cascades the votes rows too (it goes through the admin API)
-  const del = await app.request('http://localhost/admin/announcements/1', {
-    method: 'DELETE',
-    headers: { Cookie: rootCookie },
-  });
-  assert.equal(del.status, 200);
-  snap = (await (await sync(app, { ops: [] }, rootCookie)).json()) as SyncResponse;
-  assert.equal(snap.announcements.length, 0);
-  const next = await app.request('http://localhost/admin/announcements', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: rootCookie },
-    body: JSON.stringify({ title: 'next', contentMd: 'n' }),
-  });
-  assert.equal(next.status, 200);
-  const fresh = (await (await syncNew(app, rootCookie)).json()) as SyncResponse;
-  assert.deepEqual(fresh.announcements[0]!.votes, []);
-  assert.deepEqual(fresh.announcements[0]!.reactions, []);
+  assert.deepEqual(snap.polls[0]!.votes, [{ userId: 1, option: 2 }]);
 });
 
-test('react and vote embed into the announcement snapshot', async () => {
+test('announcement reactions and poll votes appear in their respective snapshots', async () => {
   const { app } = makeApp();
   const cookie = cookieFrom(await syncNew(app));
   await app.request('http://localhost/admin/announcements', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ title: 'a', contentMd: '1' }),
+    body: JSON.stringify({ title: 'a', contentMd: '::vote:1', locale: 'en-US' }),
   });
+  const poll = await app.request('http://localhost/admin/polls', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({
+      title: 'Question',
+      options: ['A', 'B'],
+      allowMultiple: false,
+      locale: 'en-US',
+    }),
+  });
+  const pollId = ((await poll.json()) as { poll: { id: number } }).poll.id;
   const res = await sync(
     app,
     {
       ops: [
         { type: 'react', target: 1, payload: { emoji: '👍' } },
-        { type: 'vote', target: 1, payload: { option: 0 } },
+        { type: 'vote', target: pollId, payload: { options: [0] } },
       ],
     },
     cookie,
   );
   const json = (await res.json()) as SyncResponse;
   assert.deepEqual(json.announcements[0]!.reactions, [{ userId: 0, emoji: '👍' }]);
-  assert.deepEqual(json.announcements[0]!.votes, [{ userId: 0, option: 0 }]);
+  assert.deepEqual(json.polls[0]!.votes, [{ userId: 0, option: 0 }]);
 });
 
 test('an op list over the per-request cap is refused with 413', async () => {
@@ -555,14 +546,14 @@ test('https Set-Cookie includes Secure; plain http does not', async () => {
   const res = await app.request('https://example.com/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ops: [], turnstileToken: 'ok' }),
+    body: JSON.stringify({ locale: 'en-US', ops: [], turnstileToken: 'ok' }),
   });
   assert.ok((res.headers.get('set-cookie') ?? '').includes('Secure'));
 
   const plain = await app.request('http://192.168.1.10/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ops: [], turnstileToken: 'ok' }),
+    body: JSON.stringify({ locale: 'en-US', ops: [], turnstileToken: 'ok' }),
   });
   assert.ok(!(plain.headers.get('set-cookie') ?? '').includes('Secure'));
 });

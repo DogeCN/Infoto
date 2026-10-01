@@ -26,7 +26,9 @@ async function mockAlbum(page: Page, items = photos, announcements: Announcement
         serverTime: Date.now(),
         mediaHostUrl: 'https://facade.test',
         photos: items,
+        locale: 'en-US',
         announcements,
+        polls: [],
         feedback: [],
       } satisfies SyncResponse,
     }),
@@ -73,7 +75,26 @@ test('sort tabs support keyboard selection and locale changes', async ({ page })
     'true',
   );
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('button', { name: 'Language', exact: true }).click();
+  const language = page.getByRole('button', { name: 'Switch to Chinese', exact: true });
+  const arrangement = page.getByRole('button', { name: 'Use equal-height layout', exact: true });
+  const direction = page.getByRole('button', {
+    name: 'Switch to horizontal scrolling',
+    exact: true,
+  });
+  const languageBox = (await language.boundingBox())!;
+  const arrangementBox = (await arrangement.boundingBox())!;
+  const directionBox = (await direction.boundingBox())!;
+  expect(languageBox.x).toBeLessThan(arrangementBox.x);
+  expect(arrangementBox.x).toBeLessThan(directionBox.x);
+  await arrangement.click();
+  await expect(
+    page.getByRole('button', { name: 'Use equal-width layout', exact: true }),
+  ).toBeVisible();
+  await direction.click();
+  await expect(
+    page.getByRole('button', { name: 'Switch to vertical scrolling', exact: true }),
+  ).toBeVisible();
+  await language.click();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('tab', { name: '最热', exact: true })).toBeVisible();
@@ -96,6 +117,101 @@ test('nested media menu handles Escape without closing the lightbox', async ({ p
   await page.keyboard.press('Escape');
   await expect(lightbox).toHaveCount(0);
   expect(await page.evaluate(() => document.body.style.overflow)).toBe('');
+});
+
+test('narrow top bar switches its two screens with a horizontal swipe', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto('/');
+  const header = page.locator('header[aria-label="Gallery controls"]');
+  const more = header.getByRole('button', { name: 'More', exact: true }).first();
+  await expect(more).toBeVisible();
+  const moreBox = (await more.boundingBox())!;
+  expect(moreBox.x + moreBox.width).toBeLessThanOrEqual(320);
+  const announcements = header.getByRole('button', { name: 'Announcements', exact: true });
+  const before = await announcements.boundingBox();
+  expect(before).not.toBeNull();
+  expect(before!.x).toBeGreaterThanOrEqual(320);
+
+  const bar = (await header.boundingBox())!;
+  const y = bar.y + bar.height / 2;
+  await page.mouse.move(bar.x + bar.width * 0.8, y);
+  await page.mouse.down();
+  await page.mouse.move(bar.x + bar.width * 0.4, y, { steps: 8 });
+  await page.mouse.up();
+  await expect
+    .poll(async () => (await announcements.boundingBox())?.x ?? Number.POSITIVE_INFINITY)
+    .toBeLessThan(320);
+});
+
+test('layout slider makes the sidebars and scrim transparent while dragging', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  const slider = settings
+    .locator('svg.lucide-ruler')
+    .locator('xpath=following-sibling::div')
+    .getByRole('slider');
+  await slider.scrollIntoViewIfNeeded();
+  const track = slider.locator('xpath=..');
+  const rect = (await track.boundingBox())!;
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  await page.mouse.down();
+  const scrim = page.locator('[data-layout-scrim]');
+  const announcements = page.locator('[role="dialog"][aria-label="Announcements"]');
+  await expect.poll(() => settings.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+  await expect.poll(() => scrim.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+  await expect
+    .poll(() => announcements.evaluate((node) => getComputedStyle(node).opacity))
+    .toBe('0');
+  await page.mouse.move(rect.x + rect.width * 0.8, rect.y + rect.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => settings.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+  await expect.poll(() => scrim.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+});
+
+test('lightbox pages from the black mask, keeps its counter between arrows, and supports Ctrl-drag zoom', async ({
+  page,
+}) => {
+  await mockAlbum(page, [photos[0]!, photos[1]!]);
+  await page.goto('/');
+  await page.locator('main img').first().click();
+  const lightbox = page.getByRole('dialog', { name: 'Media preview' });
+  await expect(lightbox.locator('img.lb-media')).toBeVisible();
+
+  const previous = lightbox.getByRole('button', { name: 'Previous', exact: true });
+  const next = lightbox.getByRole('button', { name: 'Next', exact: true });
+  const counter = lightbox.getByText('1 / 2', { exact: true });
+  const previousBox = (await previous.boundingBox())!;
+  const nextBox = (await next.boundingBox())!;
+  const counterBox = (await counter.boundingBox())!;
+  expect(counterBox.x).toBeGreaterThan(previousBox.x + previousBox.width);
+  expect(counterBox.x + counterBox.width).toBeLessThan(nextBox.x);
+
+  const stage = (await lightbox.boundingBox())!;
+  const centerY = stage.y + stage.height / 2;
+  await page.mouse.click(stage.x + 8, centerY);
+  await expect(lightbox.getByText('2 / 2', { exact: true })).toBeVisible();
+  await page.mouse.click(stage.x + stage.width - 8, centerY);
+  await expect(counter).toBeVisible();
+
+  const media = lightbox.locator('img.lb-media');
+  await expect(media).toHaveCSS('opacity', '1');
+  const mediaBox = (await media.boundingBox())!;
+  await page.keyboard.down('Control');
+  await page.mouse.move(mediaBox.x + mediaBox.width / 2 + 60, mediaBox.y + mediaBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    mediaBox.x + mediaBox.width / 2 + 180,
+    mediaBox.y + mediaBox.height / 2 + 20,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await page.keyboard.up('Control');
+  const transform = await lightbox
+    .locator('.will-change-transform')
+    .evaluate((node) => node.style.transform.match(/scale\(([^)]+)\)/)?.[1]);
+  expect(Number(transform)).toBeGreaterThan(1);
+  await expect(counter).toBeVisible();
 });
 
 test('gallery and sidebars fit narrow viewports', async ({ page }) => {
@@ -147,10 +263,10 @@ test('reaction picker escapes clipping and dismisses before its sidebar', async 
       id: 1,
       title: 'Short announcement',
       contentMd: '',
+      locale: 'en-US',
       sort: 0,
       updatedAt: Date.now(),
       reactions: [],
-      votes: [],
     },
   ]);
   for (const width of [1280, 390, 320]) {
@@ -344,8 +460,11 @@ test('verification failures stay stopped and manual sync can recover', async ({ 
         ok: true,
         selfId: 0,
         serverTime: Date.now(),
+        mediaHostUrl: 'https://facade.test',
         photos,
+        locale: 'en-US',
         announcements: [],
+        polls: [],
         feedback: [],
       },
     });

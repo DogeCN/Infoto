@@ -10,6 +10,34 @@ declare global {
 
 export async function prepareGate(page: Page): Promise<void> {
   let delayed = false;
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js*', (route) =>
+    route.fulfill({
+      contentType: 'application/javascript',
+      body: `
+        window.turnstile = (() => {
+          const widgets = new Map();
+          let nextId = 0;
+          return {
+            render(container, options) {
+              const id = String(++nextId);
+              const marker = document.createElement('div');
+              marker.dataset.turnstileMock = 'true';
+              marker.textContent = 'Local verification passed';
+              container.appendChild(marker);
+              widgets.set(id, marker);
+              setTimeout(() => options.callback?.('local-e2e-token'), 25);
+              return id;
+            },
+            reset() {},
+            remove(id) {
+              widgets.get(id)?.remove();
+              widgets.delete(id);
+            },
+          };
+        })();
+      `,
+    }),
+  );
   await page.route('**/sync', async (route) => {
     if (!delayed) {
       delayed = true;
