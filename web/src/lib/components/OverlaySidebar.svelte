@@ -125,6 +125,10 @@
   ></div>
 {/if}
 
+<!-- Layout-preview transparency is carried by the background alpha, never by `opacity` on
+     this panel. An ancestor opacity multiplies through the whole subtree, so a slider thumb
+     inside it could not stay solid while the panel faded, and the thumb is exactly the cue
+     that tells the user the drag is still live while they watch the waterfall reflow. -->
 <div
   role="dialog"
   aria-modal={open ? true : undefined}
@@ -133,13 +137,15 @@
   inert={!open}
   tabindex="-1"
   use:overlay={{ enabled: open, onClose: close }}
-  class="fixed top-0 z-50 flex h-full w-full flex-col border-border bg-card shadow-2xl shadow-black/40 transition-[transform,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)]"
+  class="fixed top-0 z-50 flex h-full w-full flex-col border-border shadow-2xl shadow-black/40 transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)] {previewTransparent
+    ? 'bg-card/45'
+    : 'bg-card'}"
   class:left-0={side === 'left'}
   class:right-0={side === 'right'}
   class:translate-x-0={open}
   class:-translate-x-full={side === 'left' && !open}
   class:translate-x-full={side === 'right' && !open}
-  style="--sidebar-w: {width}px; opacity: {previewTransparent ? 0 : 1}"
+  style="--sidebar-w: {width}px"
 >
   <!-- Drag the inner edge to resize (desktop). The button carries the interaction semantics;
        arrow keys adjust the width too. -->

@@ -265,7 +265,14 @@
     const from = scrollPos - buffer;
     const to = scrollPos + viewportSize + buffer;
     const indices = windowIndices(boxes, order, dir, from, to, maxExtent);
-    return indices.map((i) => ({ box: boxes[i], index: i }));
+    // `boxes` is replaced on a debounce, while `allPhotos` changes the moment a /sync
+    // snapshot lands, so for a frame a laid-out box can name a photo that is already gone.
+    // Rendering one handed PhotoCard an undefined `photo`, and its media load/error handlers
+    // are dispatched against the recorded handler even after teardown -- that read threw on
+    // `$$props.photo.url`. Dropping those boxes keeps the two structures in step.
+    return indices
+      .filter((i) => photoMap.has(boxes[i].id))
+      .map((i) => ({ box: boxes[i], index: i }));
   });
 
   // Marquee hits: computed inside onMove (marqueeRect is only used for rendering)
