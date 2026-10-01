@@ -27,13 +27,17 @@ describe('worker error pages', () => {
     expect(await notFoundPage(request()).text()).toContain('Not Found');
     expect(await notFoundPage().text()).toContain('Not Found');
     const en = await notFoundPage(request('en-US')).text();
-    expect(en).not.toContain('fonts.googleapis.cn');
     expect(en).not.toContain('ustclug.org');
-    expect(en).toContain('https://fonts.googleapis.com/css2?');
+    expect(en).not.toContain('fonts.googleapis.com');
+    expect(en).not.toContain('fonts.gstatic.com');
+    expect(en).toContain('https://fonts.googleapis.cn/css2?');
     // No race script, so the error page carries no JavaScript at all.
     expect(en).not.toMatch(/<script/i);
     const csp = notFoundPage(request('en-US')).headers.get('Content-Security-Policy');
-    expect(csp).not.toContain('fonts.googleapis.cn');
+    expect(csp).not.toContain('fonts.googleapis.com');
+    expect(csp).not.toContain('ustclug.org');
+    // The CSP has to allow the file host too, or every @font-face src is refused.
+    expect(csp).toContain('font-src https://fonts.gstatic.cn');
     expect(csp).not.toContain('script-src');
   });
 });

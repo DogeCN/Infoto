@@ -12,12 +12,10 @@ import {
 } from './fonts.ts';
 
 describe('web fonts', () => {
-  it('links the official stylesheet only, and injects no script', () => {
+  it('links one stylesheet and injects no script', () => {
     expect(fontStylesheetUrl(APP_FONT_QUERY)).toBe(
-      `https://fonts.googleapis.com/css2?${APP_FONT_QUERY}`,
+      `https://fonts.googleapis.cn/css2?${APP_FONT_QUERY}`,
     );
-    expect(FONT_CSS_HOST).toBe('https://fonts.googleapis.com');
-    expect(FONT_FILE_HOST).toBe('https://fonts.gstatic.com');
 
     const html = readFileSync(path.join(import.meta.dirname, '..', '..', 'web/index.html'), 'utf8');
     expect(html).toContain('<!-- fonts -->');
@@ -29,19 +27,36 @@ describe('web fonts', () => {
     expect(fontHeadBlock(APP_FONT_QUERY)).not.toMatch(/<script/i);
   });
 
-  it('keeps every mirror and the retired .cn host out of the page', () => {
+  // The stylesheet hardcodes its own file host inside every `src:` url, and the error page's
+  // CSP only allows the host named here. Changing one constant and not the other does not
+  // fall back to a different CDN -- it gets every font file blocked.
+  it('keeps the stylesheet host and the file host a matching pair', () => {
+    expect(FONT_CSS_HOST).toBe('https://fonts.googleapis.cn');
+    expect(FONT_FILE_HOST).toBe('https://fonts.gstatic.cn');
+
+    const csp = fontPageCsp();
+    expect(csp).toContain(`style-src 'unsafe-inline' ${FONT_CSS_HOST}`);
+    expect(csp).toContain(`font-src ${FONT_FILE_HOST}`);
+    expect(csp).toContain(`connect-src ${FONT_CSS_HOST} ${FONT_FILE_HOST}`);
+
+    // Preconnect has to cover both, or the first font file pays a fresh DNS and TLS handshake.
+    const block = fontHeadBlock(APP_FONT_QUERY);
+    expect(block).toContain(`<link rel="preconnect" href="${FONT_CSS_HOST}" crossorigin>`);
+    expect(block).toContain(`<link rel="preconnect" href="${FONT_FILE_HOST}" crossorigin>`);
+  });
+
+  it('keeps the global hosts and the broken mirror out of the page', () => {
     const html = readFileSync(path.join(import.meta.dirname, '..', '..', 'web/index.html'), 'utf8');
     const injected = injectFonts(html);
-    expect(injected).not.toContain('fonts.googleapis.cn');
-    expect(injected).not.toContain('ustclug.org');
-    expect(fontPageCsp()).not.toContain('ustclug.org');
-    expect(fontPageCsp()).not.toContain('fonts.googleapis.cn');
+    // The mirror's TLS handshake fails (ADR 0006-revised), so naming it buys a console error
+    // on every load and no redundancy.
+    for (const retired of ['ustclug.org', 'fonts.googleapis.com', 'fonts.gstatic.com']) {
+      expect(injected).not.toContain(retired);
+      expect(fontPageCsp()).not.toContain(retired);
+    }
   });
 
   it('leaves script-src out of the error page CSP, since it has no script', () => {
-    const csp = fontPageCsp();
-    expect(csp).not.toContain('script-src');
-    expect(csp).toContain(`style-src 'unsafe-inline' ${FONT_CSS_HOST}`);
-    expect(csp).toContain(`font-src ${FONT_FILE_HOST}`);
+    expect(fontPageCsp()).not.toContain('script-src');
   });
 });

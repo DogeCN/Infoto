@@ -1,7 +1,7 @@
 # 0006-revised: Web Fonts Load From the Official Host Only
 
 - **Date**: 2026-10-01
-- **Status**: Accepted
+- **Status**: Superseded by 0011 — the global host was kept on reasoning about the mirror's failure without ever timing it, and the font files it serves are slow from here. See 0011 for the current decision and the measurements.
 - **Context**: ADR 0006 raced the official Google Fonts stylesheet against the USTCLUG mirror (`fonts.proxy.ustclug.org`) and applied whichever returned first. The mirror was adopted on the strength of the reverse-proxy hostname USTCLUG publishes, without verifying that it actually served those hosts — the original ADR admits the mirror's own index did not list them. In the browser the mirror never won: its CSS request fails during TLS negotiation, not during HTTP. Firefox reports `NS_ERROR_MODULE_SECURITY` / `SSL_ERROR_NO_CIPHER_OVERLAP`, and OpenSSL reports a bare `HandshakeFailure`, while the TCP connection to port 443 succeeds. So the failure is cipher/certificate compatibility, not reachability, and the race spent a request and a console error on every page load while providing no redundancy.
 - **Decision**: Load the official stylesheet and nothing else. Drop the mirror, the race script, and the runtime host list; `src/shared/fonts.ts` now emits preconnects plus one `<link rel="stylesheet">`. `display=swap` is retained, so text renders in `system-ui` until the stylesheet arrives and stays there if it never does.
 - **Consequences**:
