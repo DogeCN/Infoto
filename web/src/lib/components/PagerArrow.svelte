@@ -30,6 +30,6 @@
       : 'rotate-0'}"
   >
     <!-- ChevronLeft points at screen 1; screen 1's rotation turns it the other way. -->
-    <ChevronLeft class="size-5" />
+    <ChevronLeft class="size-[calc(var(--bar-h)*0.3125)]" />
   </span>
 </button>

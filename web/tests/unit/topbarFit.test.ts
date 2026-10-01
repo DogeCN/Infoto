@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BAR_BADGE_RATIO,
   BAR_HEIGHT_MAX,
   BAR_HEIGHT_MIN,
   BAR_HYSTERESIS_PX,
+  BAR_ICON_RATIO,
   BAR_MIN_SLACK_PX,
   BAR_PAD,
+  barCssVars,
   barHeight,
+  barIconSize,
   ramp,
   resolveBarMode,
   type BarMode,
@@ -78,6 +82,38 @@ describe('top bar fit', () => {
       const h = barHeight(w);
       expect(h).toBeGreaterThanOrEqual(prev);
       prev = h;
+    }
+  });
+
+  // A taller bar with unchanged control sizes reads as padding below the bar, which is
+  // what the fixed size-5 icons looked like. Everything inside must track the ramp.
+  it('scales the controls with the bar instead of leaving empty space', () => {
+    expect(BAR_ICON_RATIO).toBeCloseTo(20 / BAR_HEIGHT_MAX);
+    expect(BAR_BADGE_RATIO).toBeCloseTo(16 / BAR_HEIGHT_MAX);
+
+    // At full size the derived numbers are exactly the old fixed pixel values.
+    expect(barIconSize(1600)).toBeCloseTo(20);
+    expect(barIconSize(4000)).toBeCloseTo(20);
+    expect(barIconSize(320)).toBeCloseTo(BAR_HEIGHT_MIN * BAR_ICON_RATIO);
+
+    // Monotonic with the bar, and strictly smaller at the narrow end.
+    expect(barIconSize(2000)).toBeGreaterThan(barIconSize(320));
+    for (let w = 1; w <= 2000; w += 11) {
+      expect(barIconSize(w + 1)).toBeGreaterThanOrEqual(barIconSize(w));
+    }
+    expect(barIconSize(320)).toBeLessThan(barIconSize(1600));
+
+    // One custom property carries the ramp to every descendant.
+    expect(barCssVars(900)).toBe(`--bar-h:${barHeight(900)}px`);
+    expect(barCssVars(900)).toContain('--bar-h:');
+  });
+
+  // The waterfall's top inset used to be its own width percentage (48-80px) and fell
+  // below the bar's height on narrow screens, so the first row sat under the bar.
+  it('keeps the waterfall inset above the bar at every width', () => {
+    const TOP_GAP = 16;
+    for (let w = 320; w <= 2560; w += 7) {
+      expect(Math.ceil(barHeight(w) + TOP_GAP)).toBeGreaterThan(barHeight(w));
     }
   });
 });

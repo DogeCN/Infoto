@@ -104,7 +104,7 @@ Uploads go to a **standalone image-host facade** (`media-proxy/worker.js`, deplo
 8. **No second upload overlay**: The only overlay is `UploadPanel.svelte`; do not create additional ones.
 9. **Time display**: Always use `lib/components/TimeLabel.svelte` as the single entry point.
 10. **Reusable drag-sort list**: Always use `lib/components/ReorderableList.svelte` for new sortable lists.
-11. **Measure, never guess, in responsive layout**: Derive a control's state from a measured value, not a viewport breakpoint — `web/src/lib/components/topbarFit.ts` is the worked example, including the three ways measuring goes wrong (hidden-copy widths, probe placement, and a zero-slack fit).
+11. **Measure, never guess, in responsive layout**: Derive a control's state from a measured value, not a viewport breakpoint — `web/src/lib/components/topbarFit.ts` is the worked example, including the ways measuring goes wrong (hidden-copy widths, probe placement, a zero-slack fit) and the two follow-through traps: a measured height is useless unless the content inside scales with it (a taller bar with fixed-size icons just reads as padding below the bar), and whatever sits below must derive from that height rather than keep its own width formula.
 
 12. **Sync only on explicit user request, page open, or page exit**: no queue threshold, periodic/background retry, visibility-change sync, or HTTP 429 retry. Unconfirmed operations stay in IndexedDB. Admin mutation endpoints remain immediate user-initiated writes.
 

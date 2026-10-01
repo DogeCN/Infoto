@@ -130,7 +130,7 @@
       aria-label={hideLabel ? item.label : undefined}
       onclick={() => pick(item.value)}
     >
-      {#if Icon}<Icon class="size-4" />{/if}
+      {#if Icon}<Icon class="size-[calc(var(--bar-h)*0.25)]" />{/if}
       {#if !hideLabel}<span>{item.label}</span>{/if}
     </button>
   {/each}

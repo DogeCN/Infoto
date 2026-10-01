@@ -5,7 +5,7 @@
   import SyncButton from './SyncButton.svelte';
   import PagerArrow from './PagerArrow.svelte';
   import type { SortKey } from './SortTabs.svelte';
-  import { BAR_PAD, barHeight, resolveBarMode, type BarMode } from './topbarFit';
+  import { BAR_PAD, barCssVars, barHeight, resolveBarMode, type BarMode } from './topbarFit';
   import { scroll } from '../../state/scroll.svelte';
   import { copy } from '$lib/i18n.svelte';
 
@@ -66,6 +66,9 @@
 
   // Interpolate bar height from its measured width without rounding fractional pixels.
   const barH = $derived(barHeight(barW));
+  // `--bar-h` carries the ramp to every control, so they scale with the bar instead of
+  // leaving the extra pixels as empty space below it.
+  const barStyle = $derived(`${barCssVars(barW)};height:${barH}px`);
   const rowStyle = $derived(`padding-left:${BAR_PAD}px;padding-right:${BAR_PAD}px`);
 
   // ---- measurement -------------------------------------------------------------
@@ -197,13 +200,13 @@
       title={copy.topbar.settings}
       aria-label={copy.topbar.settings}
     >
-      <Settings class="size-5" />
+      <Settings class="size-[calc(var(--bar-h)*0.3125)]" />
     </button>
     {#if filterCount > 0}
       <span
-        class="pointer-events-none absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-primary text-primary-foreground"
+        class="pointer-events-none absolute -right-0.5 -top-0.5 flex size-[calc(var(--bar-h)*0.25)] items-center justify-center rounded-full bg-primary text-primary-foreground"
       >
-        <Funnel class="size-2.5" />
+        <Funnel class="size-[calc(var(--bar-h)*0.15625)]" />
       </span>
     {/if}
   </div>
@@ -218,7 +221,7 @@
     title={copy.topbar.announcements}
     aria-label={copy.topbar.announcements}
   >
-    <Megaphone class="size-5" />
+    <Megaphone class="size-[calc(var(--bar-h)*0.3125)]" />
   </button>
   <button
     type="button"
@@ -228,7 +231,7 @@
     title={copy.topbar.multiSelect}
     aria-label={copy.topbar.multiSelect}
   >
-    <CheckSquare class="size-5" />
+    <CheckSquare class="size-[calc(var(--bar-h)*0.3125)]" />
   </button>
   <button
     type="button"
@@ -237,7 +240,7 @@
     title={copy.topbar.upload}
     aria-label={copy.topbar.upload}
   >
-    <UploadCloud class="size-5" />
+    <UploadCloud class="size-[calc(var(--bar-h)*0.3125)]" />
   </button>
 {/snippet}
 
@@ -267,7 +270,7 @@
   class="fixed top-0 left-0 right-0 z-40 overflow-hidden {scrolled
     ? 'border-b border-border bg-background/70 backdrop-blur-xl backdrop-saturate-150'
     : 'border-b border-transparent bg-transparent'}"
-  style="height: {barH}px"
+  style={barStyle}
 >
   {#if paged}
     <!-- Two half-width screens on a double-width sliding track. -->
