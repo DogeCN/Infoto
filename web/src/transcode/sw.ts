@@ -341,6 +341,12 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   if (r.ok) {
     rec.url = r.url;
     rec.phase = 'done';
+    // The resume record only covers an upload interrupted mid-transfer. Once the artifact
+    // has landed there is nothing to resume, and leaving the record replayed the whole
+    // upload on the next page load -- a second /upload for a photo the album already has,
+    // and a second op appended to the op-log each time. Terminal records are capped, so the
+    // pending-op badge settled on that cap and never cleared.
+    if (db) void deletePendingUpload(db, rec.jobId).catch(() => undefined);
     notify(rec);
     return;
   }
