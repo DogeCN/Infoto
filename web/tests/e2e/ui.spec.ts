@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
-import { locales } from '../../../src/shared/copy';
+import assert from 'node:assert/strict';
+import { fmt, locales } from '../../../src/shared/copy';
 import type { Announcement, Photo, SyncResponse } from '../../../src/shared/types';
 
 const enCopy = locales['en-US'];
@@ -319,7 +320,14 @@ test('reaction picker escapes clipping and dismisses before its sidebar', async 
       await add.click();
       await picker.getByRole('button', { name: emoji, exact: true }).click();
       await expect(picker).toBeHidden();
-      await expect(sidebar.getByRole('button', { name: `${emoji} 1`, exact: true })).toBeVisible();
+      // Chips expose the count in an accessible name rather than as bare text, and
+      // report their pressed state, so "👍 1" alone no longer identifies them.
+      await expect(
+        sidebar.getByRole('button', {
+          name: fmt(enCopy.reactions.toggle, { emoji, count: 1 }),
+          exact: true,
+        }),
+      ).toBeVisible();
     }
     await add.click();
     await sidebar.getByRole('button', { name: 'Short announcement', exact: true }).press('Enter');
@@ -345,13 +353,13 @@ test('photo actions have no visible header, all hover, and open Lens through the
   await expect(menu.getByText(enCopy.lightbox.actions, { exact: true })).toHaveCount(0);
   const actions = menu.locator('button, a');
   await expect(actions).toHaveCount(7);
-  expect(
-    new Set(
-      await actions.evaluateAll((nodes) =>
-        nodes.slice(0, 3).map((node) => getComputedStyle(node).color),
-      ),
-    ).size,
-  ).toBe(3);
+  // Neutral items (copy original, copy link, share, Lens) share one muted colour;
+  // colour is reserved for intent — primary for download, destructive for delete.
+  const colours = await actions.evaluateAll((nodes) =>
+    nodes.map((node) => getComputedStyle(node).color),
+  );
+  assert.equal(new Set(colours.slice(0, 4)).size, 1, 'the four neutral actions share one colour');
+  assert.equal(new Set(colours).size, 3, 'neutral, primary and destructive only');
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 844 });
     for (const action of await actions.all()) {
