@@ -76,7 +76,7 @@
       if (dx === 0 && dy === 0) continue;
       const animation = element.animate(
         [{ transform: `translate3d(${dx}px, ${dy}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }],
-        { duration: motionMs('duration-exit'), easing: motionEase('exit') },
+        { duration: motionMs('exit'), easing: motionEase('exit') },
       );
       animations.set(id, animation);
     }
@@ -198,7 +198,7 @@
     else {
       const animation = element.animate(
         [{ transform: element.style.transform }, { transform: 'translate3d(0, 0, 0)' }],
-        { duration: motionMs('duration-exit'), easing: motionEase('exit') },
+        { duration: motionMs('exit'), easing: motionEase('exit') },
       );
       const clearTransform = () => {
         if (dragId === null) element.style.transform = '';

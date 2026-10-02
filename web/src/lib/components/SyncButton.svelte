@@ -42,7 +42,7 @@
     // Stop: finish the current 360-degree turn (or start another), ease out.
     const mod = ((angle % 360) + 360) % 360;
     const target = angle + (mod === 0 ? 360 : 360 - mod);
-    const settleMs = motionMs('duration-enter');
+    const settleMs = motionMs('enter');
     iconEl.style.transition = `transform ${settleMs}ms ${motionEase('enter')}`;
     iconEl.style.transform = `rotate(${target}deg)`;
     // Clear the transition once the turn lands, plus one frame of slack.
