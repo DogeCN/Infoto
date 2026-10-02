@@ -1,7 +1,7 @@
 // Cloudflare Turnstile token verification. A missing secret fails closed: the request
 // is rejected rather than waved through.
 
-const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+export const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const VERIFY_TIMEOUT_MS = 5_000;
 /** Published Cloudflare test secret: any non-empty token is a pass, with no siteverify call. */
 const ALWAYS_PASS_SECRET = '1x0000000000000000000000000000000AA';

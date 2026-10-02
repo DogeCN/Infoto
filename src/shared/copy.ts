@@ -163,12 +163,8 @@ export const enUS = {
     language: 'Language',
     switchToEnglish: 'Switch to English',
     switchToChinese: 'Switch to Chinese',
-    dirVertical: 'Vertical',
-    dirHorizontal: 'Horizontal',
     switchToHorizontal: 'Switch to horizontal scrolling',
     switchToVertical: 'Switch to vertical scrolling',
-    strategyEqualWidth: 'Equal width',
-    strategyEqualHeight: 'Equal height',
     switchToEqualWidth: 'Use equal-width layout',
     switchToEqualHeight: 'Use equal-height layout',
     rangeMin: 'Range minimum',
@@ -197,6 +193,9 @@ export const enUS = {
     dismiss: 'Remove',
     retry: 'Retry upload',
   },
+
+  /** Short glyph shown in place of media that failed to load. */
+  errorGlyph: 'ERROR',
 
   uploadPanel: {
     transcodeTitle: 'Transcoding',
@@ -238,7 +237,6 @@ export const enUS = {
     googleLens: 'Search image',
     download: 'Download',
     delete: 'Delete',
-    loadFailedStatus: 'Failed to load image ({status})',
     loadFailed: 'Failed to load image',
   },
 
@@ -328,7 +326,9 @@ export const enUS = {
       saveFailed: 'Failed to save poll',
       publishFailed: 'Failed to create poll',
       deleteFailed: 'Failed to delete poll',
+      deleteRollback: 'Restored — please retry',
       reorderFailed: 'Failed to save poll order',
+      reorderRollback: 'Original order restored',
     },
     editor: {
       titlePlaceholder: 'Title',
@@ -380,6 +380,8 @@ export const enUS = {
 
   reactions: {
     add: 'Add reaction',
+    /** Accessible name for one reaction chip: emoji plus how many people reacted. */
+    toggle: '{emoji}, {count} so far',
   },
 
   time: {
@@ -517,12 +519,8 @@ const zhCN: Copy = {
     language: '语言',
     switchToEnglish: '切换为英文',
     switchToChinese: '切换为中文',
-    dirVertical: '纵向',
-    dirHorizontal: '横向',
     switchToHorizontal: '切换为横向滚动',
     switchToVertical: '切换为纵向滚动',
-    strategyEqualWidth: '等宽',
-    strategyEqualHeight: '等高',
     switchToEqualWidth: '切换为等宽布局',
     switchToEqualHeight: '切换为等高布局',
     rangeMin: '范围下限',
@@ -551,6 +549,8 @@ const zhCN: Copy = {
     dismiss: '移除此项',
     retry: '重试上传',
   },
+
+  errorGlyph: '加载失败',
 
   uploadPanel: {
     transcodeTitle: '转码进度',
@@ -592,7 +592,6 @@ const zhCN: Copy = {
     googleLens: '谷歌搜图',
     download: '下载',
     delete: '删除',
-    loadFailedStatus: '图片加载失败（{status}）',
     loadFailed: '图片加载失败',
   },
 
@@ -681,7 +680,9 @@ const zhCN: Copy = {
       saveFailed: '投票保存失败',
       publishFailed: '投票创建失败',
       deleteFailed: '投票删除失败',
+      deleteRollback: '已恢复，请重试',
       reorderFailed: '投票排序保存失败',
+      reorderRollback: '已恢复原顺序',
     },
     editor: {
       titlePlaceholder: '标题',
@@ -733,6 +734,7 @@ const zhCN: Copy = {
 
   reactions: {
     add: '添加反应',
+    toggle: '{emoji}，已有 {count} 人',
   },
 
   time: {

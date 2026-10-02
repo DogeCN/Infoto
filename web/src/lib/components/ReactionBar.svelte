@@ -3,6 +3,7 @@
   // reactions, only the add button shows.
   import { SmilePlus } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
+  import { fmt } from '$shared/copy';
   import { cn } from '$base/lib/ui';
   import { reactionCounts } from '../../core/reactions';
   import type { Announcement } from '$shared/types';
@@ -31,8 +32,10 @@
   {#each counts as { emoji, count, selfReacted } (emoji)}
     <button
       type="button"
+      aria-label={fmt(copy.reactions.toggle, { emoji, count })}
+      aria-pressed={selfReacted}
       class={cn(
-        'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
+        'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
         selfReacted
           ? 'border-primary text-primary'
           : 'border-border text-muted-foreground hover:bg-muted',
@@ -48,7 +51,7 @@
     <button
       aria-label={copy.reactions.add}
       type="button"
-      class="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      class="icon-button size-7 rounded-full hover:bg-muted hover:text-foreground"
       bind:this={pickerAnchor}
       popovertarget={pickerId}
     >

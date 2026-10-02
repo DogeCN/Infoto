@@ -78,8 +78,8 @@ test('parseSqlStatements keeps only INSERT', () => {
 		INSERT INTO feedback (id, user_id, content_md, created_at) VALUES (1, 0, 'x', 2);
 	`);
   assert.equal(stmts.length, 2);
-  assert.ok(/^INSERT INTO users/i.test(stmts[0]!));
-  assert.ok(/^INSERT INTO feedback/i.test(stmts[1]!));
+  assert.match(stmts[0]!, /^INSERT INTO users/i);
+  assert.match(stmts[1]!, /^INSERT INTO feedback/i);
 });
 
 test('parseSqlStatements is quote-aware: ; -- /* and quotes inside literals survive', () => {
@@ -166,7 +166,7 @@ test('bad INSERT returns exact statement and leaves all tables intact', async ()
   };
   assert.equal(err.ok, false);
   assert.equal(err.error, 'import_failed');
-  assert.ok(/INSERT INTO photos \(id\) VALUES \(999\)/i.test(err.statement));
+  assert.match(err.statement, /INSERT INTO photos \(id\) VALUES \(999\)/i);
   assert.deepEqual(await counts(db), before);
   const sha = await db.prepare('SELECT sha256 FROM photos').first<{ sha256: string }>('sha256');
   assert.equal(sha, 'aa');

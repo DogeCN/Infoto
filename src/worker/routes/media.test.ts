@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { makeApp } from '../../testing/app.ts';
-import { isStorableMediaUrl } from './media.ts';
+import { isStorableMediaUrl, LOCAL_MEDIA_HOST_URL } from './media.ts';
 
 test('validates media origins, redirect targets, and response isolation', async () => {
   // Media URLs reject local literals, credentials, and trailing-dot local hosts.
@@ -63,8 +63,9 @@ test('validates media origins, redirect targets, and response isolation', async 
     }
   }
   // The local simulated host is plain-HTTP loopback, which the SSRF guard rejects. That
-  // exception applies only while no real host is configured, and never widens to other
-  // loopback URLs once MEDIA_HOST_URL is set.
+  // exception is granted only when no facade is configured, i.e. `npm run dev`; the
+  // deploy workflow exits without MEDIA_HOST_URL, so an unset value in production is a
+  // misconfiguration and must not silently widen the rule.
   {
     const { db, app: local } = makeApp();
     db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
@@ -89,6 +90,16 @@ test('validates media origins, redirect targets, and response isolation', async 
     db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
       VALUES ('t', 'http://127.0.0.1:8788/a.webp', 0, 1, 1, 1, 1, 0)`);
     assert.equal((await prod.request('http://localhost/l/1')).status, 404);
+  }
+
+  // Naming the local simulation explicitly is still a configured host, so the strict
+  // rule applies. Only the *absence* of configuration means local dev; pointing at the
+  // loopback address is a choice a deployment can make, and it gets no exemption.
+  {
+    const { db, app: explicitLoopback } = makeApp({ mediaHostUrl: LOCAL_MEDIA_HOST_URL });
+    db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+      VALUES ('t', 'http://127.0.0.1:8788/a.webp', 0, 1, 1, 1, 1, 0)`);
+    assert.equal((await explicitLoopback.request('http://localhost/l/1')).status, 404);
   }
 
   // A loopback URL sharing the prefix but not the origin stays refused.

@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import type { Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
+  import { motionEase, motionMs } from '$base/lib/motion';
   import {
     ThumbsUp,
     ThumbsDown,
@@ -127,7 +128,7 @@
         { transform: `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})` },
         { transform: 'translate3d(0, 0, 0) scale(1, 1)' },
       ],
-      { duration: 220, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
+      { duration: motionMs('duration-enter'), easing: motionEase('enter') },
     );
     cardAnimation = animation;
     void animation.finished.then(
@@ -138,10 +139,9 @@
     );
   });
 
-  // A failed load is surfaced as a uniform "ERROR" glitch — the real HTTP status is
-  // not reliably obtainable cross-origin (HEAD is CORS-gated), so showing a code
-  // would be misleading.
-  let failStatus = $state('ERROR');
+  // The real HTTP status is not reliably obtainable cross-origin (HEAD is CORS-gated),
+  // so a uniform glyph is shown instead of a misleading code.
+  let failStatus = $derived(copy.errorGlyph);
   // type=1 (animated image without audio track) and type=2 (video with sound) are both
   // video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);
@@ -181,7 +181,6 @@
   function handleMediaError(): void {
     if (overlay?.preview) return;
     loadFailed = true;
-    failStatus = 'ERROR';
   }
 
   function handleClick() {
@@ -190,11 +189,13 @@
   }
 </script>
 
+<!-- The border width stays constant: `border-width` is not in the transition list, so a
+     selected `border-2` would snap 1px while the colour cross-fades. Only colour moves. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   bind:this={cardEl}
-  class="absolute overflow-hidden rounded-[14px] bg-card cursor-pointer border transition-[border-color,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)] {selected
-    ? 'border-2 border-primary'
+  class="absolute overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border transition-[border-color,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)] {selected
+    ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
   style="left: {x}px; top: {y}px; width: {width}px; height: {height}px; transform-origin: top left"
   role="button"
@@ -265,7 +266,7 @@
       <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
         <button
           type="button"
-          class="absolute top-2 right-2 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
+          class="icon-button icon-button--danger absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
           title={copy.photoCard.dismiss}
           aria-label={copy.photoCard.dismiss}
           onclick={(e) => {
@@ -279,7 +280,7 @@
              glyph, so it is comfortable on touch and clearly the way out. -->
         <button
           type="button"
-          class="flex size-14 items-center justify-center rounded-full text-primary/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-primary"
+          class="icon-button size-14 rounded-full text-primary/70 hover:bg-primary/10 hover:text-primary"
           title={copy.photoCard.retry}
           aria-label={copy.photoCard.retry}
           onclick={(e) => {
@@ -346,8 +347,8 @@
       >
         <ThumbsUp
           class="{tight ? 'size-2.5' : 'size-3'} {isLiked
-            ? 'fill-current text-[#f43f5e]'
-            : 'text-[#f43f5e]/60'}"
+            ? 'fill-current text-destructive'
+            : 'text-destructive/60'}"
         />
         <span class="tabular-nums">{photo.likes.length}</span>
       </button>
@@ -365,8 +366,8 @@
       >
         <ThumbsDown
           class="{tight ? 'size-2.5' : 'size-3'} {isDisliked
-            ? 'fill-current text-[#3b82f6]'
-            : 'text-[#3b82f6]/60'}"
+            ? 'fill-current text-dislike'
+            : 'text-dislike/60'}"
         />
         <span class="tabular-nums">{photo.dislikes.length}</span>
       </button>
@@ -384,8 +385,8 @@
       >
         <Flag
           class="{tight ? 'size-2.5' : 'size-3'} {isReported
-            ? 'fill-current text-amber-400'
-            : 'text-amber-400/60'}"
+            ? 'fill-current text-warning'
+            : 'text-warning/60'}"
         />
         <span class="tabular-nums">{photo.reports.length}</span>
       </button>
@@ -396,11 +397,11 @@
   {#if photo.type === 2 && !loadFailed}
     <button
       type="button"
-      class="absolute z-10 flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {tight
+      class="absolute z-10 flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 active:scale-95 {tight
         ? 'bottom-1 right-1'
         : 'bottom-2 right-2'} {volumeMuted
-        ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
-        : 'border-[#22d3ee]/50 bg-[#22d3ee]/20 text-[#22d3ee]'}"
+        ? 'border-white/15 bg-black/55 text-white/70 hover:bg-primary/20'
+        : 'border-primary/50 bg-primary/20 text-primary'}"
       aria-label={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute}
       style="width: {tight ? '1.25rem' : '1.9rem'}; height: {tight ? '1.25rem' : '1.9rem'}"
       onclick={(e) => {
@@ -409,7 +410,7 @@
       }}
     >
       {#if volumeMuted}
-        <VolumeX class="{tight ? 'size-3' : 'size-4'} text-amber-500" />
+        <VolumeX class="{tight ? 'size-3' : 'size-4'} text-warning" />
       {:else}
         <Volume2 class={tight ? 'size-3' : 'size-4'} />
       {/if}

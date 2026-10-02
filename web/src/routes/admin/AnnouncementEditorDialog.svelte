@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import EditorDialog from '$lib/components/EditorDialog.svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
   import type { Poll } from '$shared/types';
   import type { UploadRow } from '../../transcode/pipeline';
@@ -39,7 +40,6 @@
   let title = $state(untrack(() => announcement?.title ?? ''));
   let contentMd = $state(untrack(() => announcement?.contentMd ?? ''));
   let titleInput: HTMLInputElement | undefined = $state(undefined);
-  onMount(() => titleInput?.focus());
   let imageInput: HTMLInputElement | undefined = $state(undefined);
   let uploadBusy = $state(false);
   let uploadName = $state('');
@@ -116,70 +116,45 @@
     onCancel();
   }
 
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') {
-      event.stopPropagation();
-      handleCancel();
-    }
-  }
-
-  function submit(event: SubmitEvent) {
-    event.preventDefault();
-    if (!canSave) return;
+  function submit(): void {
     onSave(title.trim(), contentMd.trim());
   }
 </script>
 
 <input bind:this={imageInput} type="file" accept="image/*,video/*" class="hidden" />
 
-<!-- Non-modal editor panel below the admin navigation. -->
-<div
-  role="dialog"
-  aria-label={copy.admin.editor.titlePlaceholder}
-  tabindex={-1}
-  class="fixed inset-x-0 bottom-0 top-14 z-30 flex flex-col bg-background md:top-16"
-  onkeydown={onKeydown}
+<EditorDialog
+  label={copy.admin.editor.titlePlaceholder}
+  {canSave}
+  saveLabel={uploadBusy ? copy.admin.editor.uploading : copy.admin.editor.save}
+  onSave={submit}
+  onCancel={handleCancel}
 >
-  <form class="flex min-h-0 flex-1 flex-col" onsubmit={submit}>
-    <div class="min-h-0 flex-1 overflow-y-auto px-4 pt-5 pb-4 md:px-8 md:pt-6">
-      <div class="flex h-full flex-col gap-5">
-        <div class="shrink-0">
-          <input
-            id="announcement-title"
-            bind:this={titleInput}
-            bind:value={title}
-            required
-            type="text"
-            placeholder={copy.admin.editor.titlePlaceholder}
-            aria-label={copy.admin.editor.titlePlaceholder}
-            class="field-control"
-          />
-        </div>
-        <div class="min-h-0 flex-1">
-          <MarkdownEditor
-            bind:value={contentMd}
-            onPickImage={pickImage}
-            {polls}
-            {selfId}
-            {uploadName}
-            {uploadTask}
-            {onRetryUpload}
-          />
-        </div>
+  {#snippet body()}
+    <div class="flex h-full flex-col gap-5">
+      <div class="shrink-0">
+        <input
+          id="announcement-title"
+          bind:this={titleInput}
+          bind:value={title}
+          required
+          type="text"
+          placeholder={copy.admin.editor.titlePlaceholder}
+          aria-label={copy.admin.editor.titlePlaceholder}
+          class="field-control"
+        />
+      </div>
+      <div class="min-h-0 flex-1">
+        <MarkdownEditor
+          bind:value={contentMd}
+          onPickImage={pickImage}
+          {polls}
+          {selfId}
+          {uploadName}
+          {uploadTask}
+          {onRetryUpload}
+        />
       </div>
     </div>
-
-    <div class="flex shrink-0 justify-end gap-2 border-t border-border px-4 py-3 md:px-6">
-      <button type="button" class="action-button action-button--secondary" onclick={handleCancel}>
-        {copy.admin.editor.cancel}
-      </button>
-      <button
-        type="submit"
-        disabled={!canSave}
-        class="action-button action-button--primary disabled:opacity-50"
-      >
-        {uploadBusy ? copy.admin.editor.uploading : copy.admin.editor.save}
-      </button>
-    </div>
-  </form>
-</div>
+  {/snippet}
+</EditorDialog>

@@ -91,7 +91,7 @@
   <Tooltip text={exporting ? copy.migrate.exporting : copy.migrate.exportSql}>
     <button
       type="button"
-      class="icon-button p-2 disabled:opacity-50"
+      class="icon-button p-2"
       aria-label={copy.migrate.exportSql}
       disabled={exporting}
       onclick={exportSql}
@@ -103,7 +103,7 @@
   <Tooltip text={importing ? copy.migrate.importing : copy.migrate.importSql}>
     <button
       type="button"
-      class="icon-button p-2 disabled:opacity-50"
+      class="icon-button p-2"
       aria-label={copy.migrate.importSql}
       disabled={importing}
       onclick={() => fileInput?.click()}

@@ -5,12 +5,10 @@
   import { Bold, Italic, Strikethrough, Quote, Code, List, Link, ImagePlus } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { cn } from '$base/lib/ui';
-  import MarkdownView from './MarkdownView.svelte';
   import Tooltip from './Tooltip.svelte';
-  import VoteBlock from './VoteBlock.svelte';
+  import PollReferences from './PollReferences.svelte';
   import type { Poll } from '$shared/types';
   import {
-    splitPollReferences,
     insertImageAt,
     insertMarkdownBlock,
     mapOffsetThroughEdit,
@@ -162,9 +160,6 @@
     },
     { icon: ImagePlus, title: copy.editor.tools.image, run: () => void pickImage(), image: true },
   ];
-
-  let previewParts = $derived(splitPollReferences(value));
-  let pollMap = $derived(new Map(polls.map((poll) => [poll.id, poll])));
 </script>
 
 <div class="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
@@ -179,7 +174,7 @@
             type="button"
             aria-label={tool.title}
             disabled={imageUploading && tool.image}
-            class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
             onclick={tool.run}
           >
             <tool.icon class="size-4" />
@@ -243,29 +238,7 @@
     aria-label={copy.editor.previewAria}
   >
     {#if value.trim()}
-      <div class="flex flex-col gap-4">
-        {#each previewParts as part, index (`${index}:${part.type}`)}
-          {#if part.type === 'markdown'}
-            {#if part.content.trim()}
-              <MarkdownView content={part.content} allowImages class="text-muted-foreground" />
-            {/if}
-          {:else if pollMap.has(part.id)}
-            {@const poll = pollMap.get(part.id)!}
-            <section class="space-y-2">
-              <h4 class="text-sm font-medium text-foreground">{poll.title}</h4>
-              <VoteBlock
-                options={poll.options}
-                votes={poll.votes}
-                allowMultiple={poll.allowMultiple}
-                interactive={false}
-                {selfId}
-              />
-            </section>
-          {:else}
-            <MarkdownView content={`::vote:${part.id}`} allowImages class="text-muted-foreground" />
-          {/if}
-        {/each}
-      </div>
+      <PollReferences content={value} {polls} {selfId} />
     {:else}
       <p class="text-sm text-muted-foreground">{copy.editor.previewEmpty}</p>
     {/if}

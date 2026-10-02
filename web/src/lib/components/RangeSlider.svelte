@@ -1,18 +1,19 @@
 <script lang="ts">
   // Dual-thumb slider with linear or logarithmic mapping, separated handles, and change-only emissions.
-  import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
   import { cn } from '$base/lib/ui';
   import {
     bubblePosition,
     thumbCenter,
     pointerPosition,
-    clamp01,
+    sliderKeyTarget,
     THUMB,
     normalizeRangeValue,
     mapRangeValue,
     type RangeScale,
   } from '$base/lib/slider';
+  import { clamp01 } from '$base/lib/num';
+  import { bubbleTransition } from '$base/lib/motion';
   import { copy } from '$lib/i18n.svelte';
 
   type SliderScale = 'linear' | 'log';
@@ -159,30 +160,10 @@
     const curV = which === 'lo' ? loVal : hiVal;
     // One business-unit step at the current position under the active scale.
     const unit = Math.abs(tFromValue(curV + 1) - tFromValue(curV));
-    let target: number | null = null;
-    const cur = which === 'lo' ? tLo : tHi;
-    switch (e.key) {
-      case 'ArrowLeft':
-      case 'ArrowDown':
-        target = cur - unit;
-        break;
-      case 'ArrowRight':
-      case 'ArrowUp':
-        target = cur + unit;
-        break;
-      case 'PageDown':
-        target = cur - 0.1;
-        break;
-      case 'PageUp':
-        target = cur + 0.1;
-        break;
-      case 'Home':
-        target = which === 'lo' ? 0 : tLo + minGap;
-        break;
-      case 'End':
-        target = which === 'hi' ? 1 : tHi - minGap;
-        break;
-    }
+    const target = sliderKeyTarget(e.key, which === 'lo' ? tLo : tHi, unit, {
+      home: which === 'lo' ? 0 : tLo + minGap,
+      end: which === 'hi' ? 1 : tHi - minGap,
+    });
     if (target === null) return;
     e.preventDefault();
     applyT(which, target);
@@ -222,11 +203,7 @@
         class="pointer-events-none absolute z-30"
         style="left: {bs.left}px; bottom: calc(100% - 2px)"
       >
-        <div
-          bind:clientWidth={bwLo}
-          class="slider-bubble"
-          transition:fly={{ y: 3, duration: 140, easing: cubicOut }}
-        >
+        <div bind:clientWidth={bwLo} class="slider-bubble" transition:fly={bubbleTransition}>
           {format(loVal)}
           <span class="slider-caret" style="left: {bs.tip}px"></span>
         </div>
@@ -239,11 +216,7 @@
         class="pointer-events-none absolute z-30"
         style="left: {bs.left}px; bottom: calc(100% - 2px)"
       >
-        <div
-          bind:clientWidth={bwHi}
-          class="slider-bubble"
-          transition:fly={{ y: 3, duration: 140, easing: cubicOut }}
-        >
+        <div bind:clientWidth={bwHi} class="slider-bubble" transition:fly={bubbleTransition}>
           {format(hiVal)}
           <span class="slider-caret" style="left: {bs.tip}px"></span>
         </div>

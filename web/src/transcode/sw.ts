@@ -1,6 +1,7 @@
 // SharedWorker scheduler for image transcoding, leased video workers, direct editor uploads, and heartbeat cleanup.
 
 import type { MediaType } from '$shared/types';
+import { clamp01 } from '$base/lib/num';
 import {
   artifactExt,
   imagePoolSize,
@@ -12,7 +13,7 @@ import {
 import { postUpload } from '../core/api/uploadClient';
 import {
   deletePendingUpload,
-  lookupSha,
+  isKnownAlbumSha,
   openOplogDb,
   putPendingUpload,
   readPendingUploads,
@@ -137,7 +138,7 @@ function failJob(rec: JobRec, error: string): void {
 /** Measured byte progress. Missing totals and completed stages report no fraction; phase changes signal completion. */
 function notifyBytes(rec: JobRec, total: number, written: number): void {
   if (rec.cancelled || rec.phase !== 'hashing' || total <= 0) return;
-  notify(rec, { fraction: Math.max(0, Math.min(1, written / total)) });
+  notify(rec, { fraction: clamp01(written / total) });
 }
 
 // ---- scheduling ----------------------------------------------------------------
@@ -267,8 +268,8 @@ async function afterStage1(rec: JobRec): Promise<void> {
   if (db && rec.sha256) {
     if (rec.cancelled) return;
     notify(rec, { fraction: undefined });
-    const hit = await lookupSha(db, 'album', rec.sha256).catch(() => undefined);
-    if (hit) {
+    const known = await isKnownAlbumSha(db, rec.sha256).catch(() => false);
+    if (known) {
       rec.phase = 'duplicate';
       notify(rec);
       return;
@@ -679,7 +680,7 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
     case 'videoProgress': {
       const rec = jobs.get(m.jobId);
       // Ignore startup zeroes until video encoding reports measured progress.
-      if (rec && m.fraction > 0) notify(rec, { fraction: Math.max(0, Math.min(1, m.fraction)) });
+      if (rec && m.fraction > 0) notify(rec, { fraction: clamp01(m.fraction) });
       return;
     }
     case 'videoResult': {

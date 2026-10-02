@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
 import type { Feedback } from '$shared/types';
 import {
   applyReorder,
@@ -16,23 +17,33 @@ const feedback = (id: number, sort: number, contentMd = `fb-${id}`): Feedback =>
   sort,
 });
 
-describe('reorder', () => {
-  it('reports one moved order and renumbers without dropping row data', () => {
-    const moved = finalizeReorder(moveReorderToIndex(beginReorder([1, 2, 3], 1), 3));
-    expect(moved.orderedIds).toEqual([2, 3, 1]);
-    expect(finalizeReorder(moved.draft).orderedIds).toBeNull();
-    expect(finalizeReorder(beginReorder([1, 2], 1)).orderedIds).toBeNull();
+test('reorder: reports one moved order and renumbers without dropping row data', () => {
+  const moved = finalizeReorder(moveReorderToIndex(beginReorder([1, 2, 3], 1), 3));
+  assert.deepEqual(moved.orderedIds, [2, 3, 1]);
+  assert.equal(finalizeReorder(moved.draft).orderedIds, null);
+  assert.equal(finalizeReorder(beginReorder([1, 2], 1)).orderedIds, null);
 
-    const out = applyReorder([feedback(10, 0), feedback(11, 1), feedback(12, 2)], [12, 10]);
-    expect(out.map((f) => f.id)).toEqual([12, 10, 11]);
-    expect(out.map((f) => f.sort)).toEqual([0, 1, 2]);
-    const original = [feedback(1, 0), feedback(2, 1), feedback(3, 2)];
-    const rolled = applyReorder(
-      [{ ...original[2]!, contentMd: 'edited' }, original[0]!, original[1]!],
-      [1, 2, 3],
-    );
-    expect(rolled.map((f) => f.id)).toEqual([1, 2, 3]);
-    expect(rolled[2]!.contentMd).toBe('edited');
-    expect(rolled.map((f) => f.sort)).toEqual([0, 1, 2]);
-  });
+  const out = applyReorder([feedback(10, 0), feedback(11, 1), feedback(12, 2)], [12, 10]);
+  assert.deepEqual(
+    out.map((f) => f.id),
+    [12, 10, 11],
+  );
+  assert.deepEqual(
+    out.map((f) => f.sort),
+    [0, 1, 2],
+  );
+  const original = [feedback(1, 0), feedback(2, 1), feedback(3, 2)];
+  const rolled = applyReorder(
+    [{ ...original[2]!, contentMd: 'edited' }, original[0]!, original[1]!],
+    [1, 2, 3],
+  );
+  assert.deepEqual(
+    rolled.map((f) => f.id),
+    [1, 2, 3],
+  );
+  assert.equal(rolled[2]!.contentMd, 'edited');
+  assert.deepEqual(
+    rolled.map((f) => f.sort),
+    [0, 1, 2],
+  );
 });

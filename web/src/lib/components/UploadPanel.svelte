@@ -5,6 +5,8 @@
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
   import type { UploadRow } from '../../transcode/pipeline';
+  import { motionMs } from '$base/lib/motion';
+  import { createHoverIntent } from '$base/lib/hover';
 
   interface Props {
     /** Already filtered by the caller: this panel is stage-agnostic. */
@@ -16,17 +18,19 @@
     /** Multi-select owns the bottom of the screen: its bar is a full-width bottom bar on
      *  a layer above this panel, so the panel slides away while it is up. */
     hidden?: boolean;
-    /** Report measured panel height for toast clearance; hidden or collapsed panels report zero. */
-    onHeight?: (px: number) => void;
+    /** Report measured panel geometry for toast clearance; a hidden or collapsed panel
+     *  reports zero height. `atLeftEdge` marks a panel flush with the viewport's left edge,
+     *  where it sits under the bottom-left toast column. */
+    onGeometry?: (geometry: { height: number; atLeftEdge: boolean }) => void;
   }
 
-  let { tasks, progress, onRemove, hidden = false, onHeight }: Props = $props();
+  let { tasks, progress, onRemove, hidden = false, onGeometry }: Props = $props();
 
   // `$derived`, not a snapshot: the heading follows a language switch.
   const title = $derived(copy.uploadPanel.transcodeTitle);
 
-  /** Matches the row's exit transition, so the shell outlives the last collapse. */
-  const ROW_EXIT_MS = 280;
+  /** Matches the row's collapse transition, so the shell outlives the last collapse. */
+  const ROW_EXIT_MS = motionMs('duration-enter');
 
   // Keep the shell mounted for one transition after the last row leaves — tearing it
   // down on `tasks.length === 0` would cut that row's collapse in half.
@@ -42,13 +46,23 @@
 
   let shellEl = $state<HTMLElement | undefined>(undefined);
 
-  // Observe rendered height and visibility to update toast clearance.
+  /** A panel within this many pixels of the viewport's left edge overlaps the bottom-left
+   *  toast column; the right-aligned desktop panel does not. */
+  const LEFT_EDGE_MAX = 8;
+
+  // Observe rendered geometry and visibility to update toast clearance.
   $effect(() => {
     if (!shellEl) {
-      onHeight?.(0);
+      onGeometry?.({ height: 0, atLeftEdge: false });
       return;
     }
-    const report = () => onHeight?.(hidden ? 0 : shellEl!.offsetHeight);
+    const report = () => {
+      const rect = shellEl!.getBoundingClientRect();
+      onGeometry?.({
+        height: hidden ? 0 : shellEl!.offsetHeight,
+        atLeftEdge: rect.left < LEFT_EDGE_MAX,
+      });
+    };
     report();
     const ro = new ResizeObserver(report);
     ro.observe(shellEl);
@@ -56,11 +70,9 @@
   });
 
   // ---- pointer devices: hover, debounced ---------------------------------
-  /** Leaving waits; entering does not, so an intentional hover feels immediate. */
-  const LEAVE_DELAY_MS = 160;
-  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
   let canHover = $state(false);
   let expanded = $state(false);
+  const intent = createHoverIntent();
 
   // A touch device reports hover: none — it gets the drag instead. Kept reactive: a
   // tablet can gain or lose a mouse mid-session.
@@ -75,23 +87,19 @@
     return () => mq.removeEventListener('change', sync);
   });
 
+  $effect(() => {
+    expanded = intent.hovered() && canHover;
+  });
+
+  // Entering waits for nothing, so an intentional hover feels immediate.
   function onEnter(): void {
-    if (leaveTimer) {
-      clearTimeout(leaveTimer);
-      leaveTimer = undefined;
-    }
-    if (canHover) expanded = true;
+    intent.enter();
   }
   function onLeave(): void {
-    if (!canHover) return;
-    if (leaveTimer) clearTimeout(leaveTimer);
-    leaveTimer = setTimeout(() => {
-      expanded = false;
-      leaveTimer = undefined;
-    }, LEAVE_DELAY_MS);
+    intent.leave();
   }
   onDestroy(() => {
-    if (leaveTimer) clearTimeout(leaveTimer);
+    intent.destroy();
   });
 
   // Touch dragging adjusts the bottom-anchored panel height; release chooses the nearest endpoint.
@@ -151,7 +159,7 @@
     void node;
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     return {
-      duration: reduced ? 0 : 240,
+      duration: reduced ? 0 : motionMs('duration-enter'),
       css: (t: number) => `grid-template-rows: ${t}fr; opacity: ${t}`,
     };
   }
@@ -190,7 +198,7 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="flex items-center gap-2.5 px-4 py-3.5 select-none {canHover
-          ? ''
+          ? 'cursor-pointer'
           : 'cursor-grab touch-none'}"
         role="button"
         tabindex="0"
@@ -262,7 +270,7 @@
                   </div>
                   <button
                     type="button"
-                    class="flex size-4 shrink-0 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
+                    class="icon-button icon-button--danger size-4 shrink-0 rounded-full hover:text-destructive"
                     title={copy.uploadPanel.remove}
                     aria-label={fmt(copy.uploadPanel.removeFile, { fileName: task.fileName })}
                     onclick={() => onRemove(task.jobId)}

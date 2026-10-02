@@ -53,7 +53,7 @@
 </script>
 
 <div
-  class="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between border-t border-border bg-popover/95 px-4 py-3 backdrop-blur-xl backdrop-saturate-150 shadow-[0_-8px_24px_rgba(0,0,0,0.45)]"
+  class="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between border-t border-border bg-popover/95 px-4 py-3 backdrop-blur-xl backdrop-saturate-150 shadow-lift"
   style="transform: translateY({visible ? '0' : '110%'}); visibility: {visible
     ? 'visible'
     : 'hidden'}; transition: transform var(--duration-spring) var(--ease-spring), visibility 0s"
@@ -83,9 +83,7 @@
   <div class="flex items-center gap-1">
     <button
       type="button"
-      class="{btn} h-10 text-success hover:bg-success/10 disabled:opacity-40 {count > 0
-        ? 'gap-1 px-2.5'
-        : 'size-10'}"
+      class="{btn} h-10 text-success hover:bg-success/10 {count > 0 ? 'gap-1 px-2.5' : 'size-10'}"
       onclick={onDownload}
       disabled={count === 0}
       title={copy.multiSelect.download}
@@ -99,7 +97,7 @@
     <!-- Download and delete require a selection; unmark requires an existing user mark. -->
     <button
       type="button"
-      class="{btn} size-10 text-warning hover:bg-warning/10 disabled:opacity-40"
+      class="{btn} size-10 text-warning hover:bg-warning/10"
       onclick={onUnmark}
       disabled={!hasAnyMark}
       title={copy.multiSelect.unmark}
@@ -110,7 +108,7 @@
     {#if selfId === 0}
       <button
         type="button"
-        class="{btn} size-10 text-destructive hover:bg-destructive/10 disabled:opacity-40"
+        class="{btn} size-10 text-destructive hover:bg-destructive/10"
         onclick={onDelete}
         disabled={count === 0}
         title={copy.multiSelect.delete}

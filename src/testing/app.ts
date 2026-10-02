@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Op, SyncResponse } from '../shared/types.ts';
 import { createApp } from '../worker/app.ts';
+import { VERIFY_URL } from '../worker/turnstile.ts';
 import { openLocalDb } from './localDb.ts';
 
 export const TEST_SECRET = 'test-secret';
@@ -14,8 +15,6 @@ export const TEST_SECRET = 'test-secret';
 const schema = readFileSync(path.join(import.meta.dirname, '..', '..', 'schema.sql'), 'utf8');
 
 export type TestApp = ReturnType<typeof createApp>;
-
-const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 
 /** Answer the siteverify endpoint locally; returns a toggle for failure cases. */
 export function stubSiteverify(): (success: boolean) => void {

@@ -23,7 +23,7 @@ test('validates JSON responses and bounds transport failures', async () => {
   {
     const io = { origin, fetchFn: stalledBody, timeoutMs: 5 };
     await assert.rejects(postSync({ ops: [] }, io), /sync_timeout/);
-    await assert.rejects(createAnnouncement('title', 'body', io), /announcement_timeout/);
+    await assert.rejects(createAnnouncement('title', 'body', 'en-US', io), /announcement_timeout/);
     await assert.rejects(deleteFeedback(1, io), /feedback_timeout/);
   }
 
@@ -87,7 +87,7 @@ test('validates JSON responses and bounds transport failures', async () => {
   // Admin create validates its success payload.
   {
     await assert.rejects(
-      createAnnouncement('title', 'body', {
+      createAnnouncement('title', 'body', 'en-US', {
         origin,
         fetchFn: async () => Response.json({ ok: true }),
       }),

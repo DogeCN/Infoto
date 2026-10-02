@@ -3,6 +3,7 @@
   import type { Snippet } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { cn } from '$base/lib/ui';
+  import { motionEaseFn, motionMs } from '$base/lib/motion';
 
   interface Props {
     open: boolean;
@@ -46,6 +47,17 @@
   function handleBackdropClick(event: MouseEvent) {
     if (event.target === event.currentTarget) close();
   }
+
+  const backdrop = $derived({
+    duration: motionMs('duration-exit'),
+    easing: motionEaseFn('exit'),
+  });
+  const panel = $derived({
+    y: 120,
+    duration: motionMs('duration-enter'),
+    easing: motionEaseFn('enter'),
+    opacity: 1,
+  });
 </script>
 
 {#if open}
@@ -53,7 +65,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class={cn('fixed inset-0 z-70 bg-black/50 md:backdrop-blur-sm', className)}
-    transition:fade={{ duration: 180 }}
+    transition:fade={backdrop}
     onclick={handleBackdropClick}
     tabindex="-1"
     use:mountOverlay
@@ -64,7 +76,7 @@
     <!-- Panel: full-width flush to the bottom on mobile, bottom-centered floating on desktop -->
     <div
       class="absolute inset-x-0 bottom-0 md:inset-x-auto md:left-1/2 md:bottom-6 md:w-[min(28rem,calc(100vw-2rem))] md:-translate-x-1/2 rounded-t-[1.5rem] md:rounded-[1.5rem] bg-popover pt-3 shadow-2xl"
-      transition:fly={{ y: 120, duration: 300, opacity: 1 }}
+      transition:fly={panel}
       role="document"
     >
       <!-- Content -->

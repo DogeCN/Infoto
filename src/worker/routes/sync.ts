@@ -21,6 +21,7 @@ import {
 import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '../identity.ts';
 import { verifyTurnstile } from '../turnstile.ts';
 import { isLocaleCode } from '../../shared/copy.ts';
+import { isRecord, safeJsonParse } from '../../shared/json.ts';
 import { LOCAL_MEDIA_HOST_URL, isAllowedMediaUrl } from './media.ts';
 
 /** Text fields an anonymous op may carry. */
@@ -80,16 +81,11 @@ interface VoteRow {
 
 /** User ids out of a JSON mark column; a malformed column reads as an empty list. */
 const idList = (json: string): number[] => {
-  try {
-    const v: unknown = JSON.parse(json);
-    return Array.isArray(v) ? v.filter((n): n is number => typeof n === 'number') : [];
-  } catch {
-    return [];
-  }
+  const v = safeJsonParse<unknown>(json, []);
+  return Array.isArray(v) ? v.filter((n): n is number => typeof n === 'number') : [];
 };
 
-const record = (p: Op['payload']): Record<string, unknown> =>
-  p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : {};
+const record = (p: Op['payload']): Record<string, unknown> => (isRecord(p) ? p : {});
 /** Non-empty string within `max` characters, or null. */
 const text = (v: unknown, max = MAX_TEXT_LENGTH): string | null =>
   typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
@@ -301,11 +297,11 @@ async function snapshot(
   const [photoRows, annRows, pollRows, reactRows, voteRows] = await Promise.all([
     db.prepare('SELECT * FROM photos ORDER BY id ASC').all<PhotoRow>(),
     db
-      .prepare('SELECT * FROM announcements WHERE locale = ? ORDER BY sort ASC, id ASC')
+      .prepare('SELECT * FROM announcements WHERE locale = ? ORDER BY sort ASC')
       .bind(locale)
       .all<AnnRow>(),
     db
-      .prepare('SELECT * FROM polls WHERE locale = ? ORDER BY sort ASC, id ASC')
+      .prepare('SELECT * FROM polls WHERE locale = ? ORDER BY sort ASC')
       .bind(locale)
       .all<PollRow>(),
     db.prepare('SELECT ann_id, user_id, emoji FROM reactions').all<ReactRow>(),
@@ -344,7 +340,7 @@ async function snapshot(
   let feedback: Feedback[] = [];
   if (selfId === ROOT_ID) {
     const rows = await db
-      .prepare('SELECT * FROM feedback WHERE locale = ? ORDER BY sort ASC, id ASC')
+      .prepare('SELECT * FROM feedback WHERE locale = ? ORDER BY sort ASC')
       .bind(locale)
       .all<FbRow>();
     feedback = rows.results.map((r) => ({

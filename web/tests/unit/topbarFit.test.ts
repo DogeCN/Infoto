@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
 import {
+  BADGE_TEXT_RATIO,
   BAR_BADGE_RATIO,
   BAR_HEIGHT_MAX,
   BAR_HEIGHT_MIN,
@@ -9,7 +11,6 @@ import {
   BAR_PAD,
   barCssVars,
   barHeight,
-  barIconSize,
   ramp,
   resolveBarMode,
   type BarMode,
@@ -24,95 +25,110 @@ function trace(widths: number[], start: BarMode = 'full'): BarMode[] {
   return widths.map((w) => (cur = resolveBarMode(w, REQ, cur)));
 }
 
-describe('top bar fit', () => {
-  it('tightens with slack, loosens only after hysteresis, and does not flap', () => {
-    expect(resolveBarMode(1000, REQ, 'full')).toBe('full');
-    expect(resolveBarMode(REQ.full + S, REQ, 'full')).toBe('full');
-    expect(resolveBarMode(REQ.full + S - 1, REQ, 'full')).toBe('compact');
-    expect(resolveBarMode(REQ.full, REQ, 'full')).toBe('compact');
-    expect(resolveBarMode(REQ.compact + S, REQ, 'compact')).toBe('compact');
-    expect(resolveBarMode(REQ.compact + S - 1, REQ, 'compact')).toBe('paged');
-    expect(resolveBarMode(0, REQ, 'paged')).toBe('full');
-    expect(resolveBarMode(-1, REQ, 'paged')).toBe('full');
-    expect(resolveBarMode(NaN, REQ, 'paged')).toBe('full');
+test('top bar fit: tightens with slack, loosens only after hysteresis, and does not flap', () => {
+  assert.equal(resolveBarMode(1000, REQ, 'full'), 'full');
+  assert.equal(resolveBarMode(REQ.full + S, REQ, 'full'), 'full');
+  assert.equal(resolveBarMode(REQ.full + S - 1, REQ, 'full'), 'compact');
+  assert.equal(resolveBarMode(REQ.full, REQ, 'full'), 'compact');
+  assert.equal(resolveBarMode(REQ.compact + S, REQ, 'compact'), 'compact');
+  assert.equal(resolveBarMode(REQ.compact + S - 1, REQ, 'compact'), 'paged');
+  assert.equal(resolveBarMode(0, REQ, 'paged'), 'full');
+  assert.equal(resolveBarMode(-1, REQ, 'paged'), 'full');
+  assert.equal(resolveBarMode(NaN, REQ, 'paged'), 'full');
 
-    expect(resolveBarMode(REQ.full + H, REQ, 'compact')).toBe('full');
-    expect(resolveBarMode(700, REQ, 'compact')).toBe('full');
-    expect(resolveBarMode(REQ.compact + H, REQ, 'paged')).toBe('compact');
-    expect(resolveBarMode(REQ.full + H, REQ, 'paged')).toBe('full');
-    expect(resolveBarMode(REQ.full + S, REQ, 'compact')).toBe('compact');
-    expect(resolveBarMode(REQ.compact + S, REQ, 'paged')).toBe('paged');
+  assert.equal(resolveBarMode(REQ.full + H, REQ, 'compact'), 'full');
+  assert.equal(resolveBarMode(700, REQ, 'compact'), 'full');
+  assert.equal(resolveBarMode(REQ.compact + H, REQ, 'paged'), 'compact');
+  assert.equal(resolveBarMode(REQ.full + H, REQ, 'paged'), 'full');
+  assert.equal(resolveBarMode(REQ.full + S, REQ, 'compact'), 'compact');
+  assert.equal(resolveBarMode(REQ.compact + S, REQ, 'paged'), 'paged');
 
-    expect(trace([700, 500, 400, 300])).toEqual(['full', 'full', 'compact', 'paged']);
-    expect(trace([300, 400, 500, 700], 'paged').at(-1)).toBe('full');
-    const down = trace(Array.from({ length: 600 }, (_, i) => 600 - i));
-    expect(down.filter((m, i) => i > 0 && m !== down[i - 1])).toEqual(['compact', 'paged']);
-    for (const start of ['full', 'compact'] as const) {
-      expect(new Set(trace([483, 482, 481, 480, 479, 478], start)).size).toBe(1);
+  assert.deepEqual(trace([700, 500, 400, 300]), ['full', 'full', 'compact', 'paged']);
+  assert.equal(trace([300, 400, 500, 700], 'paged').at(-1), 'full');
+  const down = trace(Array.from({ length: 600 }, (_, i) => 600 - i));
+  assert.deepEqual(
+    down.filter((m, i) => i > 0 && m !== down[i - 1]),
+    ['compact', 'paged'],
+  );
+  for (const start of ['full', 'compact'] as const) {
+    assert.equal(new Set(trace([483, 482, 481, 480, 479, 478], start)).size, 1);
+  }
+  for (let w = 200; w <= 700; w += 7) {
+    for (const start of ['full', 'compact', 'paged'] as const) {
+      const once = resolveBarMode(w, REQ, start);
+      assert.equal(resolveBarMode(w, REQ, once), once);
     }
-    for (let w = 200; w <= 700; w += 7) {
-      for (const start of ['full', 'compact', 'paged'] as const) {
-        const once = resolveBarMode(w, REQ, start);
-        expect(resolveBarMode(w, REQ, once)).toBe(once);
-      }
-    }
-  });
+  }
+});
 
-  it('ramps height continuously and keeps padding fixed', () => {
-    expect(BAR_PAD).toBe(12);
-    expect(ramp(320)).toBe(0);
-    expect(ramp(480)).toBe(0);
-    expect(ramp(1600)).toBe(1);
-    expect(ramp(4000)).toBe(1);
-    expect(ramp(NaN)).toBe(1);
-    expect(barHeight(320)).toBe(BAR_HEIGHT_MIN);
-    expect(barHeight(480)).toBe(BAR_HEIGHT_MIN);
-    expect(barHeight(0)).toBe(BAR_HEIGHT_MIN);
-    expect(barHeight(1600)).toBe(BAR_HEIGHT_MAX);
-    expect(barHeight(4000)).toBe(BAR_HEIGHT_MAX);
-    expect(barHeight(600)).toBeGreaterThan(BAR_HEIGHT_MIN);
-    expect(barHeight(600)).toBeLessThan(BAR_HEIGHT_MAX);
-    expect(Number.isInteger(barHeight(600))).toBe(false);
-    expect(Math.abs(barHeight(1040) - barHeight(940))).toBeLessThanOrEqual(1);
-    for (let w = 300; w < 1800; w++) {
-      expect(Math.abs(barHeight(w + 1) - barHeight(w))).toBeLessThanOrEqual(1);
-    }
-    let prev = barHeight(0);
-    for (let w = 1; w <= 2000; w += 13) {
-      const h = barHeight(w);
-      expect(h).toBeGreaterThanOrEqual(prev);
-      prev = h;
-    }
-  });
+test('top bar fit: ramps height continuously and keeps padding fixed', () => {
+  assert.equal(BAR_PAD, 12);
+  assert.equal(ramp(320), 0);
+  assert.equal(ramp(480), 0);
+  assert.equal(ramp(1600), 1);
+  assert.equal(ramp(4000), 1);
+  assert.equal(ramp(NaN), 1);
+  assert.equal(barHeight(320), BAR_HEIGHT_MIN);
+  assert.equal(barHeight(480), BAR_HEIGHT_MIN);
+  assert.equal(barHeight(0), BAR_HEIGHT_MIN);
+  assert.equal(barHeight(1600), BAR_HEIGHT_MAX);
+  assert.equal(barHeight(4000), BAR_HEIGHT_MAX);
+  assert.ok(barHeight(600) > BAR_HEIGHT_MIN);
+  assert.ok(barHeight(600) < BAR_HEIGHT_MAX);
+  assert.equal(Number.isInteger(barHeight(600)), false);
+  assert.ok(Math.abs(barHeight(1040) - barHeight(940)) <= 1);
+  for (let w = 300; w < 1800; w++) {
+    assert.ok(Math.abs(barHeight(w + 1) - barHeight(w)) <= 1);
+  }
+  let prev = barHeight(0);
+  for (let w = 1; w <= 2000; w += 13) {
+    const h = barHeight(w);
+    assert.ok(h >= prev);
+    prev = h;
+  }
+});
 
-  // Scale control dimensions with the measured bar height.
-  it('scales the controls with the bar instead of leaving empty space', () => {
-    expect(BAR_ICON_RATIO).toBeCloseTo(20 / BAR_HEIGHT_MAX);
-    expect(BAR_BADGE_RATIO).toBeCloseTo(16 / BAR_HEIGHT_MAX);
+// Scale control dimensions with the measured bar height.
+test('top bar fit: scales the controls with the bar instead of leaving empty space', () => {
+  assert.ok(Math.abs(BAR_ICON_RATIO - 20 / BAR_HEIGHT_MAX) < 0.5 * 10 ** -2);
+  assert.ok(Math.abs(BAR_BADGE_RATIO - 16 / BAR_HEIGHT_MAX) < 0.5 * 10 ** -2);
 
-    // Verify control dimensions at the maximum bar height.
-    expect(barIconSize(1600)).toBeCloseTo(20);
-    expect(barIconSize(4000)).toBeCloseTo(20);
-    expect(barIconSize(320)).toBeCloseTo(BAR_HEIGHT_MIN * BAR_ICON_RATIO);
+  // The bar publishes one measurement; every derived control size rides on it.
+  const vars = (width: number): Record<string, number> =>
+    Object.fromEntries(
+      barCssVars(width)
+        .split(';')
+        .map((entry) => {
+          const [name, value] = entry.split(':');
+          return [name!, Number.parseFloat(value!)];
+        }),
+    );
 
-    // Monotonic with the bar, and strictly smaller at the narrow end.
-    expect(barIconSize(2000)).toBeGreaterThan(barIconSize(320));
-    for (let w = 1; w <= 2000; w += 11) {
-      expect(barIconSize(w + 1)).toBeGreaterThanOrEqual(barIconSize(w));
-    }
-    expect(barIconSize(320)).toBeLessThan(barIconSize(1600));
+  for (const width of [320, 900, 1600, 4000]) {
+    const v = vars(width);
+    const h = barHeight(width);
+    assert.ok(Math.abs(v['--bar-h'] - h) < 0.5 * 10 ** -2);
+    assert.ok(Math.abs(v['--bar-icon'] - h * BAR_ICON_RATIO) < 0.5 * 10 ** -2);
+    assert.ok(Math.abs(v['--bar-badge'] - h * BAR_BADGE_RATIO) < 0.5 * 10 ** -2);
+    assert.ok(
+      Math.abs(v['--bar-badge-text'] - h * BAR_BADGE_RATIO * BADGE_TEXT_RATIO) < 0.5 * 10 ** -2,
+    );
+  }
 
-    // One custom property carries the ramp to every descendant.
-    expect(barCssVars(900)).toBe(`--bar-h:${barHeight(900)}px`);
-    expect(barCssVars(900)).toContain('--bar-h:');
-  });
+  // The icon lands on 20px at the tallest bar and stays strictly smaller when narrow.
+  assert.ok(Math.abs(vars(1600)['--bar-icon'] - 20) < 0.5 * 10 ** -2);
+  assert.ok(Math.abs(vars(4000)['--bar-icon'] - 20) < 0.5 * 10 ** -2);
+  assert.ok(vars(2000)['--bar-icon'] > vars(320)['--bar-icon']!);
+  for (let w = 1; w <= 2000; w += 11) {
+    assert.ok(vars(w + 1)['--bar-icon'] >= vars(w)['--bar-icon']!);
+  }
+});
 
-  // Place the first gallery row immediately after the measured bar height.
-  it('keeps the waterfall inset level with the bar at every width', () => {
-    const TOP_GAP = 0;
-    for (let w = 320; w <= 2560; w += 7) {
-      expect(Math.ceil(barHeight(w) + TOP_GAP)).toBeGreaterThanOrEqual(barHeight(w));
-      expect(Math.ceil(barHeight(w) + TOP_GAP) - barHeight(w)).toBeLessThanOrEqual(1);
-    }
-  });
+// Place the first gallery row immediately after the measured bar height.
+test('top bar fit: keeps the waterfall inset level with the bar at every width', () => {
+  const TOP_GAP = 0;
+  for (let w = 320; w <= 2560; w += 7) {
+    assert.ok(Math.ceil(barHeight(w) + TOP_GAP) >= barHeight(w));
+    assert.ok(Math.ceil(barHeight(w) + TOP_GAP) - barHeight(w) <= 1);
+  }
 });

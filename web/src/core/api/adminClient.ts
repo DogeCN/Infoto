@@ -1,5 +1,11 @@
-import type { Announcement, Poll } from '$shared/types';
-import { activeLocale, copy, fmt, type Copy } from '$shared/copy';
+/**
+ * Shared admin JSON transport. Locale is supplied by the caller on every write.
+ *
+ * Reading it from the UI here instead would be a second source of truth: the store keys its
+ * optimistic rows on `contentLocale`, so a write could land in a different language list.
+ */
+import type { Announcement, LocaleCode, Poll } from '$shared/types';
+import { copy, fmt, type Copy } from '$shared/copy';
 import { requestJson, type RequestIo } from './request';
 
 export type AdminApiIo = RequestIo;
@@ -85,9 +91,15 @@ function created<T>(data: unknown, field: 'announcement' | 'poll'): T {
   return value as T;
 }
 
+/**
+ * Every write carries the locale of the collection it belongs to, supplied by the caller.
+ * Reading it from the UI here instead would be a second source of truth: the store keys its
+ * optimistic rows on `contentLocale`, and a write could land in a different language list.
+ */
 export async function createAnnouncement(
   title: string,
   contentMd: string,
+  locale: LocaleCode,
   io: AdminApiIo = {},
 ): Promise<Announcement> {
   const data = await adminWrite(
@@ -95,7 +107,7 @@ export async function createAnnouncement(
     'create',
     'POST',
     '',
-    { title, contentMd, locale: activeLocale() },
+    { title, contentMd, locale },
     io,
   );
   return created<Announcement>(data, 'announcement');
@@ -105,37 +117,29 @@ export async function updateAnnouncement(
   id: number,
   title: string,
   contentMd: string,
+  locale: LocaleCode,
   io: AdminApiIo = {},
 ): Promise<void> {
-  await adminWrite(
-    'announcement',
-    'update',
-    'PUT',
-    `/${id}`,
-    { title, contentMd, locale: activeLocale() },
-    io,
-  );
+  await adminWrite('announcement', 'update', 'PUT', `/${id}`, { title, contentMd, locale }, io);
 }
 
 export async function deleteAnnouncement(id: number, io: AdminApiIo = {}): Promise<void> {
   await adminWrite('announcement', 'delete', 'DELETE', `/${id}`, undefined, io);
 }
 
-export async function reorderAnnouncements(ids: number[], io: AdminApiIo = {}): Promise<void> {
-  await adminWrite(
-    'announcement',
-    'reorder',
-    'POST',
-    '/reorder',
-    { ids, locale: activeLocale() },
-    io,
-  );
+export async function reorderAnnouncements(
+  ids: number[],
+  locale: LocaleCode,
+  io: AdminApiIo = {},
+): Promise<void> {
+  await adminWrite('announcement', 'reorder', 'POST', '/reorder', { ids, locale }, io);
 }
 
 export async function createPoll(
   title: string,
   options: string[],
   allowMultiple: boolean,
+  locale: LocaleCode,
   io: AdminApiIo = {},
 ): Promise<Poll> {
   const data = await adminWrite(
@@ -143,7 +147,7 @@ export async function createPoll(
     'create',
     'POST',
     '',
-    { title, options, allowMultiple, locale: activeLocale() },
+    { title, options, allowMultiple, locale },
     io,
   );
   return created<Poll>(data, 'poll');
@@ -154,6 +158,7 @@ export async function updatePoll(
   title: string,
   options: string[],
   allowMultiple: boolean,
+  locale: LocaleCode,
   io: AdminApiIo = {},
 ): Promise<void> {
   await adminWrite(
@@ -161,7 +166,7 @@ export async function updatePoll(
     'update',
     'PUT',
     `/${id}`,
-    { title, options, allowMultiple, locale: activeLocale() },
+    { title, options, allowMultiple, locale },
     io,
   );
 }
@@ -170,14 +175,22 @@ export async function deletePoll(id: number, io: AdminApiIo = {}): Promise<void>
   await adminWrite('poll', 'delete', 'DELETE', `/${id}`, undefined, io);
 }
 
-export async function reorderPolls(ids: number[], io: AdminApiIo = {}): Promise<void> {
-  await adminWrite('poll', 'reorder', 'POST', '/reorder', { ids, locale: activeLocale() }, io);
+export async function reorderPolls(
+  ids: number[],
+  locale: LocaleCode,
+  io: AdminApiIo = {},
+): Promise<void> {
+  await adminWrite('poll', 'reorder', 'POST', '/reorder', { ids, locale }, io);
 }
 
 export async function deleteFeedback(id: number, io: AdminApiIo = {}): Promise<void> {
   await adminWrite('feedback', 'delete', 'DELETE', `/${id}`, undefined, io);
 }
 
-export async function reorderFeedback(ids: number[], io: AdminApiIo = {}): Promise<void> {
-  await adminWrite('feedback', 'reorder', 'POST', '/reorder', { ids, locale: activeLocale() }, io);
+export async function reorderFeedback(
+  ids: number[],
+  locale: LocaleCode,
+  io: AdminApiIo = {},
+): Promise<void> {
+  await adminWrite('feedback', 'reorder', 'POST', '/reorder', { ids, locale }, io);
 }

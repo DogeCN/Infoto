@@ -1,4 +1,4 @@
-// Durable operations and purpose-scoped media hashes in IndexedDB. Confirmed operations are removed after synchronization.
+// Durable operations and the album's known media hashes in IndexedDB. Confirmed operations are removed after synchronization.
 
 import type { Op, Photo } from '$shared/types';
 
@@ -9,13 +9,6 @@ const CACHE_STORE = 'metaCache';
 /** Survivable upload jobs: enough metadata to resume an upload after a page reload
  *  (the artifact itself is in OPFS). */
 const RESUME_STORE = 'pendingUploads';
-
-export interface ShaEntry {
-  sha256: string;
-  purpose: 'album' | 'editor';
-  photoId: number | null;
-  url?: string;
-}
 
 export interface PendingUploadRecord {
   jobId: string;
@@ -127,63 +120,22 @@ export function readPendingUploads(db: IDBDatabase): Promise<PendingUploadRecord
 
 // ---- sha cache -----------------------------------------------------------------
 
-function cacheKey(purpose: ShaEntry['purpose'], sha256: string): string {
-  return `${purpose}:${sha256}`;
-}
-
-export function lookupSha(
-  db: IDBDatabase,
-  purpose: ShaEntry['purpose'],
-  sha256: string,
-): Promise<ShaEntry | undefined> {
+/** True when this sha256 already belongs to a photo in the album. */
+export function isKnownAlbumSha(db: IDBDatabase, sha256: string): Promise<boolean> {
   return withStore(
     db,
     CACHE_STORE,
     'readonly',
-    (store) => store.get(cacheKey(purpose, sha256)) as IDBRequest<ShaEntry | undefined>,
-  );
+    (store) => store.getKey(sha256) as IDBRequest<IDBValidKey | undefined>,
+  ).then((key) => key !== undefined);
 }
 
-export function putSha(
-  db: IDBDatabase,
-  purpose: ShaEntry['purpose'],
-  sha256: string,
-  photoId: number | null,
-  url?: string,
-): Promise<void> {
-  return withStore(db, CACHE_STORE, 'readwrite', (store) =>
-    store.put({ sha256, purpose, photoId, ...(url ? { url } : {}) }, cacheKey(purpose, sha256)),
-  ).then(() => undefined);
-}
-
-/** Rebuild the album entries from the current snapshot, keeping editor entries. */
+/** Replace the cache with the snapshot's hashes; the snapshot is the only authority. */
 export function rebuildCache(db: IDBDatabase, photos: Photo[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(CACHE_STORE, 'readwrite');
-    const store = tx.objectStore(CACHE_STORE);
-    const request = store.openCursor();
-    const editorEntries: ShaEntry[] = [];
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (cursor) {
-        const entry = cursor.value as ShaEntry;
-        if (entry.purpose === 'editor') editorEntries.push(entry);
-        cursor.continue();
-        return;
-      }
-      store.clear();
-      for (const photo of photos) {
-        store.put(
-          { sha256: photo.sha256, purpose: 'album', photoId: photo.id, url: photo.url },
-          cacheKey('album', photo.sha256),
-        );
-      }
-      for (const entry of editorEntries) {
-        store.put(entry, cacheKey('editor', entry.sha256));
-      }
-    };
-    request.onerror = () => reject(request.error ?? new Error('metaCache scan failed'));
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('metaCache rebuild failed'));
+  return withStore(db, CACHE_STORE, 'readwrite', (store) => {
+    const cleared = store.clear();
+    // Queued after the clear, so every snapshot hash lands in an emptied store.
+    for (const photo of photos) store.put(1, photo.sha256);
+    return cleared;
   });
 }

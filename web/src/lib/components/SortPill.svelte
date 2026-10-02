@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Render the selected density and measure the alternate label layout.
+  // Render the selected density and report the alternate label layout's width.
   import type { SortKey } from '../../core/gallery';
+  import { measurePillWidths, type PillWidths } from './pillMeasure';
   import SortTabs from './SortTabs.svelte';
 
   interface Props {
@@ -26,64 +27,25 @@
     onWidths,
   }: Props = $props();
 
-  let shownEl: HTMLElement | undefined = $state(undefined);
-  /** Measured width difference between labelled and icon-only variants, refreshed on label changes. */
-  let labelDelta = $state(0);
-
-  /** Dependency key for label text. The delta itself is read from the DOM. */
+  /** Dependency key for label text: the delta itself is measured from the DOM. */
   function labelsKey(sortKey: SortKey, dirs: Partial<Record<SortKey, boolean>>): string {
-    return `${sortKey}:${JSON.stringify(dirs)}`;
+    return `${sortKey}:${JSON.stringify(dirs)}:${document.documentElement.lang}`;
   }
 
-  function measureDelta(): void {
-    const seg = shownEl?.querySelector('[role=tablist]');
-    if (!seg) return;
-    // Clone the tablist and force the *opposite* label shape, laid out in normal flow.
-    const other = seg.cloneNode(true) as HTMLElement;
-    const wantLabels = !showLabels;
-    for (const span of other.querySelectorAll('span')) {
-      // Icon-only variant has no label spans; labelled variant has one per tab.
-      if (wantLabels) continue;
-      span.remove();
-    }
-    if (wantLabels) {
-      for (const tab of other.querySelectorAll('[role=tab]')) {
-        const label = tab.getAttribute('title') ?? '';
-        if (!label) continue;
-        const span = document.createElement('span');
-        span.textContent = label;
-        tab.appendChild(span);
-      }
-    }
-    const probe = document.createElement('div');
-    probe.style.cssText =
-      'position:absolute;left:-99999px;top:0;width:max-content;visibility:hidden';
-    probe.appendChild(other);
-    document.body.appendChild(probe);
-    const otherW = Math.ceil(probe.firstElementChild!.getBoundingClientRect().width);
-    probe.remove();
-    const thisW = Math.ceil(seg.getBoundingClientRect().width);
-    const delta = otherW - thisW;
-    if (delta !== labelDelta) labelDelta = delta;
-  }
-
-  // Refresh the delta when label text can change, not when showLabels flips.
-  // A density change is a consequence of the measurement and must not re-trigger it.
-  $effect(() => {
+  // Refresh when the label text can change, not when showLabels flips. A density change is
+  // a consequence of the measurement and must not re-trigger it.
+  const measure = $derived.by(() => {
     void labelsKey(sortKey, dirs);
-    void document.documentElement.lang;
-    if (shownEl) measureDelta();
-  });
-
-  $effect(() => {
-    if (!shownEl) return;
-    const w = Math.ceil(shownEl.getBoundingClientRect().width);
-    onWidths?.({ shown: w, shownIsLabelled: showLabels, labelDelta });
+    return {
+      labelled: showLabels,
+      deps: labelsKey(sortKey, dirs),
+      onWidths: (info: PillWidths) => onWidths?.(info),
+    };
   });
 </script>
 
 <div class="shrink-0">
-  <div bind:this={shownEl}>
+  <div use:measurePillWidths={measure}>
     <SortTabs {sortKey} {dirs} {onChange} {onReshuffle} hideLabel={!showLabels} />
   </div>
 </div>

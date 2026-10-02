@@ -6,6 +6,7 @@ import {
   windowIndices,
   type LayoutItem,
 } from '../../src/base/lib/layout.ts';
+import { DEFAULT_BAND, MIN_BAND } from '../../src/base/lib/band.ts';
 
 const items = (specs: [number, number][]): LayoutItem[] =>
   specs.map(([w, h], i) => ({ id: i + 1, w, h }));
@@ -127,5 +128,23 @@ test('lays out media and computes visible ranges', async () => {
     for (const [i, b] of res.boxes.entries()) {
       assert.equal(got.has(i), b.y + b.h >= 500 && b.y <= 1400);
     }
+  }
+
+  // The band is a target width: a narrower band packs more columns at the same cross size.
+  {
+    const photos = Array.from({ length: 12 }, (_, id) => ({ id, w: 4, h: 3 }));
+    const columns = (band: number) =>
+      new Set(
+        computeLayout(photos, {
+          dir: 'v',
+          strategy: 'shortest',
+          cross: 1200,
+          band,
+          gap: 12,
+        }).boxes.map((box) => Math.round(box.x)),
+      ).size;
+    assert.ok(columns(MIN_BAND) > columns(DEFAULT_BAND));
+    assert.equal(columns(DEFAULT_BAND), 4);
+    assert.equal(columns(400), 3);
   }
 });

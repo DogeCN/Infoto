@@ -63,13 +63,13 @@
   role="dialog"
   aria-label={copy.reactions.add}
   use:position
-  class="fixed m-0 w-[168px] rounded-lg border border-border bg-popover p-1 text-foreground shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
+  class="fixed m-0 w-[168px] rounded-lg border border-border bg-popover p-1 text-foreground shadow-md"
 >
   <div class="grid grid-cols-4 gap-1">
     {#each EMOJI_SET as emoji (emoji)}
       <button
         type="button"
-        class="flex size-8 items-center justify-center rounded-md text-base transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10"
+        class="flex size-8 items-center justify-center rounded-md text-base transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-foreground/10 focus-visible:bg-foreground/10"
         onclick={() => {
           onPick?.(emoji);
           picker.hidePopover();

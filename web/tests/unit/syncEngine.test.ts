@@ -1,10 +1,16 @@
 import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, test, vi, type Mock } from 'vitest';
+import assert from 'node:assert/strict';
 
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import type { SyncCallResult, SyncClientIo } from '../../src/core/api/syncClient';
 import { clearOps, openOplogDb, readOps } from '../../src/core/oplog';
-import { type EngineIo, KEEPALIVE_BODY_LIMIT, SyncEngine } from '../../src/core/engine';
+import {
+  type EngineIo,
+  KEEPALIVE_BODY_LIMIT,
+  keepalivePrefix,
+  SyncEngine,
+} from '../../src/core/engine';
 
 const op = (target: number): Op => ({
   type: 'react',
@@ -41,7 +47,7 @@ type PostSyncMock = Mock<(body: SyncRequest, io?: SyncClientIo) => Promise<SyncC
 type ErrorSink = Mock<(phase: 'submit' | 'pagehide', error: unknown) => void>;
 type ArrangeCtx = { db: IDBDatabase; fetchFn: FetchMock };
 
-/** Every onError call the engine made, normalised for a single toEqual. */
+/** Every onError call the engine made, reduced to comparable phase/message pairs. */
 const reports = (sink: ErrorSink): Array<{ phase: string; message: string }> =>
   sink.mock.calls.map(([phase, error]) => ({ phase, message: (error as Error).message }));
 
@@ -63,7 +69,62 @@ class StubDocument extends ListenerHub {
   visibilityState: DocumentVisibilityState = 'visible';
 }
 
+const bytes = (s: string) => new TextEncoder().encode(s).length;
+
 let db: IDBDatabase;
+
+// Fixtures shared by the in-flight dedup and pagehide flush cases.
+let sink: ErrorSink;
+let fetchFn: FetchMock;
+let postSyncFn: PostSyncMock;
+/** Every op the default postSync accepted — the runSync-side dedup recorder. */
+let submitted: Op[];
+let windowStub: StubWindow;
+let documentStub: StubDocument;
+
+/** Stand in for the stubbed `window` / `document` and their spies for one case. */
+const arrangeFlushFixtures = (): void => {
+  submitted = [];
+  sink = vi.fn<(phase: 'submit' | 'pagehide', error: unknown) => void>();
+  fetchFn = vi
+    .fn<(...args: Parameters<typeof fetch>) => Promise<Response>>()
+    .mockResolvedValue(new Response(null, { status: 200 }));
+  postSyncFn = vi.fn((body: SyncRequest) => {
+    submitted.push(...body.ops);
+    return Promise.resolve(result(snapshot()));
+  });
+  windowStub = new StubWindow();
+  documentStub = new StubDocument();
+  vi.stubGlobal('window', windowStub);
+  vi.stubGlobal('document', documentStub);
+};
+
+const engine = (io: EngineIo = {}): SyncEngine =>
+  new SyncEngine({ db, fetchFn, postSyncFn, onError: sink, ...io });
+
+const installed = new WeakSet<SyncEngine>();
+/** Fire pagehide through `install()` — never reach into private methods. */
+const firePagehide = (e: SyncEngine): void => {
+  if (!installed.has(e)) {
+    e.install(windowStub as unknown as Window);
+    installed.add(e);
+  }
+  windowStub.dispatch('pagehide');
+};
+
+/** Await an oplog read issued *after* a dispatch — same-store transactions run
+ * in creation order, so this resolves once the pagehide dump has decided. */
+const pagehideReadDone = async (): Promise<void> => {
+  await readOps(db);
+};
+
+const dumpAndReports = async (
+  e: SyncEngine,
+): Promise<Array<{ phase: string; message: string }>> => {
+  firePagehide(e);
+  await vi.waitFor(() => assert.ok(sink.mock.calls.length > 0));
+  return reports(sink);
+};
 
 beforeEach(async () => {
   db = await openOplogDb();
@@ -78,428 +139,433 @@ afterEach(() => {
   }
 });
 
-describe('SyncEngine awaitable sync', () => {
-  it('coalesces callers and retains concurrent edits for the next sync', async () => {
-    const first = deferred<SyncCallResult>();
-    const second = deferred<SyncCallResult>();
-    const requests: SyncRequest[] = [];
-    const postSyncFn = vi.fn((body: SyncRequest) => {
-      requests.push(body);
-      return requests.length === 1 ? first.promise : second.promise;
-    });
-    const engine = new SyncEngine({ db, postSyncFn });
-    await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
+/** The flush cases leave stubbed globals behind; nothing else does. */
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
-    const active = engine.sync();
-    const coalesced = engine.sync();
-    await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(1));
-    expect(coalesced).toBe(active);
-
-    await engine.addOp(op(-1));
-    first.resolve(
-      result(
-        snapshot([
-          {
-            id: 9,
-            title: 'new',
-            contentMd: 'body',
-            locale: 'en-US',
-            sort: 0,
-            updatedAt: 1_000,
-            reactions: [],
-          },
-        ]),
-      ),
-    );
-    await expect(active).resolves.toMatchObject({ ok: true });
-    expect((await readOps(db)).map((entry) => entry.op)).toEqual([op(-1)]);
-    const nextSync = engine.sync();
-    await vi.waitFor(() => expect(postSyncFn).toHaveBeenCalledTimes(2));
-
-    expect(requests[0]!.ops).toHaveLength(1);
-    expect(requests[1]!.ops).toEqual([{ type: 'react', target: -1, payload: { emoji: '👍' } }]);
-    second.resolve(
-      result(
-        snapshot([
-          {
-            id: 9,
-            title: 't',
-            contentMd: 'c',
-            locale: 'en-US',
-            sort: 0,
-            updatedAt: 1_000,
-            reactions: [],
-          },
-        ]),
-      ),
-    );
-
-    await expect(active).resolves.toMatchObject({ ok: true });
-    await expect(nextSync).resolves.toMatchObject({ ok: true });
+test('SyncEngine awaitable sync: coalesces callers and retains concurrent edits for the next sync', async () => {
+  const first = deferred<SyncCallResult>();
+  const second = deferred<SyncCallResult>();
+  const requests: SyncRequest[] = [];
+  const postSyncFn = vi.fn((body: SyncRequest) => {
+    requests.push(body);
+    return requests.length === 1 ? first.promise : second.promise;
   });
+  const engine = new SyncEngine({ db, postSyncFn });
+  await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
 
-  it('retains failed operations without timers and retries only on the next manual request', async () => {
-    const postSyncFn = vi.fn().mockRejectedValue(new Error('offline'));
-    const engine = new SyncEngine({ db, postSyncFn });
-    await engine.addOp({ type: 'like', target: 2 });
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    try {
-      expect((await engine.sync()).ok).toBe(false);
-      await vi.advanceTimersByTimeAsync(120_000);
-      expect(postSyncFn).toHaveBeenCalledTimes(1);
-      expect(vi.getTimerCount()).toBe(0);
-      expect((await readOps(db)).map((entry) => entry.op)).toEqual([{ type: 'like', target: 2 }]);
-      postSyncFn.mockResolvedValue(result(snapshot()));
-      expect((await engine.sync()).ok).toBe(true);
-      expect(postSyncFn).toHaveBeenCalledTimes(2);
-      expect(await readOps(db)).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
-    }
+  const active = engine.sync();
+  const coalesced = engine.sync();
+  await vi.waitFor(() => assert.equal(postSyncFn.mock.calls.length, 1));
+  assert.equal(coalesced, active);
+
+  await engine.addOp(op(-1));
+  first.resolve(
+    result(
+      snapshot([
+        {
+          id: 9,
+          title: 'new',
+          contentMd: 'body',
+          locale: 'en-US',
+          sort: 0,
+          updatedAt: 1_000,
+          reactions: [],
+        },
+      ]),
+    ),
+  );
+  assert.equal((await active).ok, true);
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => entry.op),
+    [op(-1)],
+  );
+  const nextSync = engine.sync();
+  await vi.waitFor(() => assert.equal(postSyncFn.mock.calls.length, 2));
+
+  assert.equal(requests[0]!.ops.length, 1);
+  assert.deepEqual(requests[1]!.ops, [{ type: 'react', target: -1, payload: { emoji: '👍' } }]);
+  second.resolve(
+    result(
+      snapshot([
+        {
+          id: 9,
+          title: 't',
+          contentMd: 'c',
+          locale: 'en-US',
+          sort: 0,
+          updatedAt: 1_000,
+          reactions: [],
+        },
+      ]),
+    ),
+  );
+
+  assert.equal((await active).ok, true);
+  assert.equal((await nextSync).ok, true);
+});
+
+test('SyncEngine awaitable sync: retains failed operations without timers and retries only on the next manual request', async () => {
+  const postSyncFn = vi.fn().mockRejectedValue(new Error('offline'));
+  const engine = new SyncEngine({ db, postSyncFn });
+  await engine.addOp({ type: 'like', target: 2 });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    assert.equal((await engine.sync()).ok, false);
+    await vi.advanceTimersByTimeAsync(120_000);
+    assert.equal(postSyncFn.mock.calls.length, 1);
+    assert.equal(vi.getTimerCount(), 0);
+    assert.deepEqual(
+      (await readOps(db)).map((entry) => entry.op),
+      [{ type: 'like', target: 2 }],
+    );
+    postSyncFn.mockResolvedValue(result(snapshot()));
+    assert.equal((await engine.sync()).ok, true);
+    assert.equal(postSyncFn.mock.calls.length, 2);
+    assert.equal((await readOps(db)).length, 0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('SyncEngine awaitable sync: reports confirmation only through the ops the request actually carried', async () => {
+  const engine = new SyncEngine({
+    db,
+    postSyncFn: vi.fn().mockResolvedValue(result(snapshot())),
   });
+  const first = await engine.addOp(op(-1));
+  const second = await engine.addOp(op(-2));
+  assert.ok(second > first);
 
-  it('reports confirmation only through the ops the request actually carried', async () => {
-    const engine = new SyncEngine({
-      db,
-      postSyncFn: vi.fn().mockResolvedValue(result(snapshot())),
-    });
-    const first = await engine.addOp(op(-1));
-    const second = await engine.addOp(op(-2));
-    expect(second).toBeGreaterThan(first);
+  // Confirm only the highest operation key carried by the request.
+  assert.deepEqual(await engine.sync(), { ok: true, confirmedThroughVersion: second });
+});
 
-    // Confirm only the highest operation key carried by the request.
-    await expect(engine.sync()).resolves.toEqual({
-      ok: true,
-      confirmedThroughVersion: second,
-    });
+test('SyncEngine in-flight dedup and pagehide flush: install() wires the pagehide dump only — hiding the tab is not a trigger', async () => {
+  arrangeFlushFixtures();
+  const e = engine();
+  e.install(windowStub as unknown as Window);
+  await e.addOp(op(-1));
+
+  windowStub.dispatch('pagehide');
+  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
+  assert.equal(fetchFn.mock.calls[0]![1]?.keepalive, true);
+
+  // Tab visibility changes do not send durable operations.
+  documentStub.visibilityState = 'hidden';
+  documentStub.dispatch('visibilitychange');
+  await pagehideReadDone();
+  assert.equal(postSyncFn.mock.calls.length, 0);
+});
+
+test('SyncEngine in-flight dedup and pagehide flush: a sync requested while the document is hidden goes out keepalive', async () => {
+  arrangeFlushFixtures();
+  const e = engine();
+  await e.addOp(op(-1));
+  documentStub.visibilityState = 'hidden';
+
+  await e.sync();
+
+  assert.equal(postSyncFn.mock.calls.length, 1);
+  assert.deepEqual(postSyncFn.mock.calls[0]![1], { keepalive: true });
+});
+
+test('SyncEngine in-flight dedup and pagehide flush: does not resubmit ops a pagehide keepalive already carries', async () => {
+  arrangeFlushFixtures();
+  const keepalive = deferred<Response>();
+  fetchFn.mockImplementation(() => keepalive.promise);
+  const e = engine();
+  await e.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
+  await e.addOp(op(-1));
+
+  firePagehide(e);
+  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
+  const carried = (JSON.parse(fetchFn.mock.calls[0]![1]?.body as string) as SyncRequest).ops;
+  assert.equal(carried.length, 2);
+
+  assert.equal((await e.sync()).ok, true);
+  const carriedJson = new Set(carried.map((o) => JSON.stringify(o)));
+  assert.deepEqual(
+    submitted.filter((o) => carriedJson.has(JSON.stringify(o))),
+    [],
+  );
+  assert.equal((await readOps(db)).length, 2); // still queued: the keepalive has not settled
+
+  keepalive.resolve(new Response(null, { status: 200 }));
+  await vi.waitFor(async () => {
+    assert.equal((await readOps(db)).length, 0);
   });
 });
 
-describe('SyncEngine in-flight dedup and pagehide flush', () => {
-  let sink: ErrorSink;
-  let fetchFn: FetchMock;
-  let postSyncFn: PostSyncMock;
-  /** Every op the default postSync accepted — the runSync-side dedup recorder. */
-  let submitted: Op[];
-  let windowStub: StubWindow;
-  let documentStub: StubDocument;
+test('SyncEngine in-flight dedup and pagehide flush: clears only the ops the keepalive sent when one lands mid-flight', async () => {
+  arrangeFlushFixtures();
+  const keepalive = deferred<Response>();
+  fetchFn.mockImplementation(() => keepalive.promise);
+  const e = engine();
+  await e.addOp(op(-1));
 
-  beforeEach(() => {
-    submitted = [];
-    sink = vi.fn<(phase: 'submit' | 'pagehide', error: unknown) => void>();
-    fetchFn = vi
-      .fn<(...args: Parameters<typeof fetch>) => Promise<Response>>()
-      .mockResolvedValue(new Response(null, { status: 200 }));
-    postSyncFn = vi.fn((body: SyncRequest) => {
+  firePagehide(e);
+  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
+  const queued: Op = { type: 'like', target: 2 };
+  await e.addOp(queued);
+
+  keepalive.resolve(new Response(null, { status: 200 }));
+  await vi.waitFor(async () => {
+    assert.equal((await readOps(db)).length, 1);
+  });
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => entry.op),
+    [queued],
+  );
+});
+
+test('SyncEngine in-flight dedup and pagehide flush: drops an op owned by an active sync from the pagehide dump', async () => {
+  arrangeFlushFixtures();
+  const syncCall = deferred<SyncCallResult>();
+  const e = engine({
+    postSyncFn: (body) => {
       submitted.push(...body.ops);
-      return Promise.resolve(result(snapshot()));
-    });
-    windowStub = new StubWindow();
-    documentStub = new StubDocument();
-    vi.stubGlobal('window', windowStub);
-    vi.stubGlobal('document', documentStub);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const engine = (io: EngineIo = {}): SyncEngine =>
-    new SyncEngine({ db, fetchFn, postSyncFn, onError: sink, ...io });
-
-  const installed = new WeakSet<SyncEngine>();
-  /** Fire pagehide through `install()` — never reach into private methods. */
-  const firePagehide = (e: SyncEngine): void => {
-    if (!installed.has(e)) {
-      e.install(windowStub as unknown as Window);
-      installed.add(e);
-    }
-    windowStub.dispatch('pagehide');
-  };
-
-  /** Await an oplog read issued *after* a dispatch — same-store transactions run
-   * in creation order, so this resolves once the pagehide dump has decided. */
-  const pagehideReadDone = async (): Promise<void> => {
-    await readOps(db);
-  };
-
-  const dumpAndReports = async (
-    e: SyncEngine,
-  ): Promise<Array<{ phase: string; message: string }>> => {
-    firePagehide(e);
-    await vi.waitFor(() => expect(sink).toHaveBeenCalled());
-    return reports(sink);
-  };
-
-  it('install() wires the pagehide dump only — hiding the tab is not a trigger', async () => {
-    const e = engine();
-    e.install(windowStub as unknown as Window);
-    await e.addOp(op(-1));
-
-    windowStub.dispatch('pagehide');
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    expect(fetchFn.mock.calls[0]![1]).toMatchObject({ keepalive: true });
-
-    // Tab visibility changes do not send durable operations.
-    documentStub.visibilityState = 'hidden';
-    documentStub.dispatch('visibilitychange');
-    await pagehideReadDone();
-    expect(postSyncFn).not.toHaveBeenCalled();
-  });
-
-  it('a sync requested while the document is hidden goes out keepalive', async () => {
-    const e = engine();
-    await e.addOp(op(-1));
-    documentStub.visibilityState = 'hidden';
-
-    await e.sync();
-
-    expect(postSyncFn).toHaveBeenCalledTimes(1);
-    expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: true });
-  });
-
-  it('does not resubmit ops a pagehide keepalive already carries', async () => {
-    const keepalive = deferred<Response>();
-    fetchFn.mockImplementation(() => keepalive.promise);
-    const e = engine();
-    await e.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
-    await e.addOp(op(-1));
-
-    firePagehide(e);
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    const carried = (JSON.parse(fetchFn.mock.calls[0]![1]?.body as string) as SyncRequest).ops;
-    expect(carried).toHaveLength(2);
-
-    await expect(e.sync()).resolves.toMatchObject({ ok: true });
-    const carriedJson = new Set(carried.map((o) => JSON.stringify(o)));
-    expect(submitted.filter((o) => carriedJson.has(JSON.stringify(o)))).toEqual([]);
-    expect(await readOps(db)).toHaveLength(2); // still queued: the keepalive has not settled
-
-    keepalive.resolve(new Response(null, { status: 200 }));
-    await vi.waitFor(async () => {
-      expect(await readOps(db)).toHaveLength(0);
-    });
-  });
-
-  it('clears only the ops the keepalive sent when one lands mid-flight', async () => {
-    const keepalive = deferred<Response>();
-    fetchFn.mockImplementation(() => keepalive.promise);
-    const e = engine();
-    await e.addOp(op(-1));
-
-    firePagehide(e);
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    const queued: Op = { type: 'like', target: 2 };
-    await e.addOp(queued);
-
-    keepalive.resolve(new Response(null, { status: 200 }));
-    await vi.waitFor(async () => {
-      expect(await readOps(db)).toHaveLength(1);
-    });
-    expect((await readOps(db)).map((entry) => entry.op)).toEqual([queued]);
-  });
-
-  it('drops an op owned by an active sync from the pagehide dump', async () => {
-    const syncCall = deferred<SyncCallResult>();
-    const e = engine({
-      postSyncFn: (body) => {
-        submitted.push(...body.ops);
-        return syncCall.promise;
-      },
-    });
-    const only = op(-1);
-    await e.addOp(only);
-
-    const attempt = e.sync();
-    await vi.waitFor(() => expect(submitted).toEqual([only]));
-
-    firePagehide(e);
-    await pagehideReadDone();
-    expect(fetchFn).not.toHaveBeenCalled();
-
-    syncCall.resolve(result(snapshot()));
-    await expect(attempt).resolves.toMatchObject({ ok: true });
-    expect(await readOps(db)).toHaveLength(0);
-  });
-
-  it('does not double-send when pagehide fires twice during a keepalive', async () => {
-    const keepalive = deferred<Response>();
-    fetchFn.mockImplementation(() => keepalive.promise);
-    const e = engine();
-    await e.addOp(op(-1));
-
-    firePagehide(e);
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-
-    firePagehide(e);
-    await pagehideReadDone();
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-
-    keepalive.resolve(new Response(null, { status: 200 }));
-    await vi.waitFor(async () => {
-      expect(await readOps(db)).toHaveLength(0);
-    });
-
-    firePagehide(e); // nothing queued anymore
-    await pagehideReadDone();
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-  });
-
-  const fetchFailures: Array<{
-    name: string;
-    arrange: (ctx: ArrangeCtx) => void;
-    expected: { phase: string; message: unknown };
-  }> = [
-    {
-      name: 'a synchronously throwing fetch',
-      arrange: ({ fetchFn: f }) =>
-        f.mockImplementation(() => {
-          throw new Error('fetch exploded');
-        }),
-      expected: { phase: 'pagehide', message: 'fetch exploded' },
+      return syncCall.promise;
     },
-    {
-      name: 'a rejected keepalive request',
-      arrange: ({ fetchFn: f }) => f.mockImplementation(() => Promise.reject(new Error('offline'))),
-      expected: { phase: 'pagehide', message: 'offline' },
-    },
-    {
-      name: 'a non-ok response',
-      arrange: ({ fetchFn: f }) =>
-        f.mockImplementation(() => Promise.resolve(new Response('nope', { status: 500 }))),
-      expected: { phase: 'pagehide', message: 'pagehide flush rejected: HTTP 500' },
-    },
-  ];
-
-  it.each(fetchFailures)(
-    'reports $name, keeps the op, and lets the next dump retry',
-    async ({ arrange, expected }) => {
-      const e = engine();
-      await e.addOp(op(-1));
-      arrange({ db, fetchFn });
-
-      expect(await dumpAndReports(e)).toEqual([expected]);
-      expect((await readOps(db)).map((entry) => entry.op)).toEqual([op(-1)]);
-
-      firePagehide(e);
-      await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
-    },
-  );
-
-  const oplogFailures: Array<{
-    name: string;
-    arrange: (ctx: ArrangeCtx) => void;
-    expected: { phase: string; message: unknown };
-  }> = [
-    {
-      name: 'a failed oplog read',
-      arrange: ({ db: d }) => {
-        d.close();
-      },
-      expected: { phase: 'pagehide', message: expect.any(String) },
-    },
-    {
-      name: 'a failed oplog clear',
-      arrange: ({ db: d, fetchFn: f }) => {
-        f.mockImplementation(() => {
-          d.close(); // 200 comes back, but the connection the clear needs is gone
-          return Promise.resolve(new Response(null, { status: 200 }));
-        });
-      },
-      expected: { phase: 'pagehide', message: expect.any(String) },
-    },
-  ];
-
-  it.each(oplogFailures)(
-    'reports $name instead of swallowing it',
-    async ({ arrange, expected }) => {
-      const e = engine();
-      await e.addOp(op(-1));
-      arrange({ db, fetchFn });
-
-      expect(await dumpAndReports(e)).toEqual([expected]);
-    },
-  );
-
-  it('passes keepalive only for a sync started on a hidden document', async () => {
-    const e = engine();
-    await e.addOp(op(-1));
-
-    await e.sync();
-    expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: false });
-
-    documentStub.visibilityState = 'hidden';
-    await e.addOp(op(-2));
-    await e.sync();
-    expect(postSyncFn.mock.calls[1]![1]).toEqual({ keepalive: true });
   });
+  const only = op(-1);
+  await e.addOp(only);
 
-  it('falls back to a plain request when a hidden batch busts the keepalive cap', async () => {
-    documentStub.visibilityState = 'hidden';
-    const e = engine();
-    await e.addOp({
-      type: 'fb_create',
-      payload: { contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT) },
-    });
+  const attempt = e.sync();
+  await vi.waitFor(() => assert.deepEqual(submitted, [only]));
 
-    await e.sync();
-    expect(postSyncFn.mock.calls[0]![1]).toEqual({ keepalive: false });
-    expect(await readOps(db)).toHaveLength(0);
-  });
+  firePagehide(e);
+  await pagehideReadDone();
+  assert.equal(fetchFn.mock.calls.length, 0);
+
+  syncCall.resolve(result(snapshot()));
+  assert.equal((await attempt).ok, true);
+  assert.equal((await readOps(db)).length, 0);
 });
 
-describe('SyncEngine batch limits', () => {
-  it('keeps a large backlog local until tab initialization drains bounded batches', async () => {
-    const { MAX_SYNC_OPS } = await import('$shared/types');
-    const postSyncFn = vi.fn().mockResolvedValue(result(snapshot()));
-    const onSyncResponse = vi.fn();
-    const engine = new SyncEngine({ db, postSyncFn, onSyncResponse });
-    for (let i = 0; i < MAX_SYNC_OPS + 3; i++) await engine.addOp(op(i));
-    expect(postSyncFn).not.toHaveBeenCalled();
-    expect(engine.state.pending).toBe(503);
-    await engine.init();
-    expect((await engine.sync()).ok).toBe(true);
-    expect(postSyncFn.mock.calls.map(([body]) => body.ops.length)).toEqual([MAX_SYNC_OPS, 3]);
-    expect(onSyncResponse.mock.calls[0][1].queuedOps).toEqual([op(500), op(501), op(502)]);
-    expect(await readOps(db)).toHaveLength(0);
+test('SyncEngine in-flight dedup and pagehide flush: does not double-send when pagehide fires twice during a keepalive', async () => {
+  arrangeFlushFixtures();
+  const keepalive = deferred<Response>();
+  fetchFn.mockImplementation(() => keepalive.promise);
+  const e = engine();
+  await e.addOp(op(-1));
+
+  firePagehide(e);
+  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
+
+  firePagehide(e);
+  await pagehideReadDone();
+  assert.equal(fetchFn.mock.calls.length, 1);
+
+  keepalive.resolve(new Response(null, { status: 200 }));
+  await vi.waitFor(async () => {
+    assert.equal((await readOps(db)).length, 0);
   });
 
-  it('keeps the unconfirmed suffix when a later batch fails', async () => {
-    const { appendOp } = await import('../../src/core/oplog');
-    for (let i = 0; i < 501; i++) await appendOp(db, op(i));
-    const entries = await readOps(db);
-    const postSyncFn = vi
-      .fn()
-      .mockResolvedValueOnce(result(snapshot()))
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValue(result(snapshot()));
-    const engine = new SyncEngine({ db, postSyncFn });
-    expect(await engine.sync()).toMatchObject({
-      ok: false,
-      confirmedThroughVersion: entries[499].key,
-    });
-    expect((await readOps(db)).map((entry) => entry.op)).toEqual([op(500)]);
-    await engine.sync();
-    expect(await readOps(db)).toHaveLength(0);
+  firePagehide(e); // nothing queued anymore
+  await pagehideReadDone();
+  assert.equal(fetchFn.mock.calls.length, 1);
+});
+
+const fetchFailures: Array<{
+  name: string;
+  arrange: (ctx: ArrangeCtx) => void;
+  verify: (reported: Array<{ phase: string; message: string }>) => void;
+}> = [
+  {
+    name: 'a synchronously throwing fetch',
+    arrange: ({ fetchFn: f }) =>
+      f.mockImplementation(() => {
+        throw new Error('fetch exploded');
+      }),
+    verify: (reported) =>
+      assert.deepEqual(reported, [{ phase: 'pagehide', message: 'fetch exploded' }]),
+  },
+  {
+    name: 'a rejected keepalive request',
+    arrange: ({ fetchFn: f }) => f.mockImplementation(() => Promise.reject(new Error('offline'))),
+    verify: (reported) => assert.deepEqual(reported, [{ phase: 'pagehide', message: 'offline' }]),
+  },
+  {
+    name: 'a non-ok response',
+    arrange: ({ fetchFn: f }) =>
+      f.mockImplementation(() => Promise.resolve(new Response('nope', { status: 500 }))),
+    verify: (reported) =>
+      assert.deepEqual(reported, [
+        { phase: 'pagehide', message: 'pagehide flush rejected: HTTP 500' },
+      ]),
+  },
+];
+
+test.each(fetchFailures)(
+  'SyncEngine in-flight dedup and pagehide flush: reports $name, keeps the op, and lets the next dump retry',
+  async ({ arrange, verify }) => {
+    arrangeFlushFixtures();
+    const e = engine();
+    await e.addOp(op(-1));
+    arrange({ db, fetchFn });
+
+    verify(await dumpAndReports(e));
+    assert.deepEqual(
+      (await readOps(db)).map((entry) => entry.op),
+      [op(-1)],
+    );
+
+    firePagehide(e);
+    await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 2));
+  },
+);
+
+const oplogFailures: Array<{
+  name: string;
+  arrange: (ctx: ArrangeCtx) => void;
+}> = [
+  {
+    name: 'a failed oplog read',
+    arrange: ({ db: d }) => {
+      d.close();
+    },
+  },
+  {
+    name: 'a failed oplog clear',
+    arrange: ({ db: d, fetchFn: f }) => {
+      f.mockImplementation(() => {
+        d.close(); // 200 comes back, but the connection the clear needs is gone
+        return Promise.resolve(new Response(null, { status: 200 }));
+      });
+    },
+  },
+];
+
+test.each(oplogFailures)(
+  'SyncEngine in-flight dedup and pagehide flush: reports $name instead of swallowing it',
+  async ({ arrange }) => {
+    arrangeFlushFixtures();
+    const e = engine();
+    await e.addOp(op(-1));
+    arrange({ db, fetchFn });
+
+    const reported = await dumpAndReports(e);
+    assert.equal(reported.length, 1);
+    assert.equal(reported[0]!.phase, 'pagehide');
+    assert.equal(typeof reported[0]!.message, 'string');
+  },
+);
+
+test('SyncEngine in-flight dedup and pagehide flush: passes keepalive only for a sync started on a hidden document', async () => {
+  arrangeFlushFixtures();
+  const e = engine();
+  await e.addOp(op(-1));
+
+  await e.sync();
+  assert.deepEqual(postSyncFn.mock.calls[0]![1], { keepalive: false });
+
+  documentStub.visibilityState = 'hidden';
+  await e.addOp(op(-2));
+  await e.sync();
+  assert.deepEqual(postSyncFn.mock.calls[1]![1], { keepalive: true });
+});
+
+test('SyncEngine in-flight dedup and pagehide flush: falls back to a plain request when a hidden batch busts the keepalive cap', async () => {
+  arrangeFlushFixtures();
+  documentStub.visibilityState = 'hidden';
+  const e = engine();
+  await e.addOp({
+    type: 'fb_create',
+    payload: { contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT) },
   });
 
-  it('limits pagehide batches by count as well as bytes', async () => {
-    const { keepalivePrefix } = await import('../../src/core/engine');
-    expect(keepalivePrefix(Array.from({ length: 600 }, (_, i) => op(i)))?.ops).toHaveLength(500);
-  });
+  await e.sync();
+  assert.deepEqual(postSyncFn.mock.calls[0]![1], { keepalive: false });
+  assert.equal((await readOps(db)).length, 0);
+});
 
-  it('reports storage failures and releases the syncing state', async () => {
-    const onError = vi.fn();
-    const engine = new SyncEngine({ db, onError });
-    db.close();
-    vi.useFakeTimers();
-    try {
-      expect((await engine.sync()).ok).toBe(false);
-      expect(engine.state.syncing).toBe(false);
-      expect(onError).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-    }
-  });
+test('SyncEngine batch limits: keeps a large backlog local until tab initialization drains bounded batches', async () => {
+  const { MAX_SYNC_OPS } = await import('$shared/types');
+  const postSyncFn = vi.fn().mockResolvedValue(result(snapshot()));
+  const onSyncResponse = vi.fn();
+  const engine = new SyncEngine({ db, postSyncFn, onSyncResponse });
+  for (let i = 0; i < MAX_SYNC_OPS + 3; i++) await engine.addOp(op(i));
+  assert.equal(postSyncFn.mock.calls.length, 0);
+  assert.equal(engine.state.pending, 503);
+  await engine.init();
+  assert.equal((await engine.sync()).ok, true);
+  assert.deepEqual(
+    postSyncFn.mock.calls.map(([body]) => body.ops.length),
+    [MAX_SYNC_OPS, 3],
+  );
+  assert.deepEqual(onSyncResponse.mock.calls[0][1].queuedOps, [op(500), op(501), op(502)]);
+  assert.equal((await readOps(db)).length, 0);
+});
+
+test('SyncEngine batch limits: keeps the unconfirmed suffix when a later batch fails', async () => {
+  const { appendOp } = await import('../../src/core/oplog');
+  for (let i = 0; i < 501; i++) await appendOp(db, op(i));
+  const entries = await readOps(db);
+  const postSyncFn = vi
+    .fn()
+    .mockResolvedValueOnce(result(snapshot()))
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue(result(snapshot()));
+  const engine = new SyncEngine({ db, postSyncFn });
+  const failed = await engine.sync();
+  assert.equal(failed.ok, false);
+  assert.equal(failed.confirmedThroughVersion, entries[499].key);
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => entry.op),
+    [op(500)],
+  );
+  await engine.sync();
+  assert.equal((await readOps(db)).length, 0);
+});
+
+test('SyncEngine batch limits: limits pagehide batches by count as well as bytes', async () => {
+  assert.equal(keepalivePrefix(Array.from({ length: 600 }, (_, i) => op(i)))?.ops.length, 500);
+});
+
+test('SyncEngine batch limits: reports storage failures and releases the syncing state', async () => {
+  const onError = vi.fn();
+  const engine = new SyncEngine({ db, onError });
+  db.close();
+  vi.useFakeTimers();
+  try {
+    assert.equal((await engine.sync()).ok, false);
+    assert.equal(engine.state.syncing, false);
+    assert.equal(onError.mock.calls.length, 1);
+  } finally {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
+test('keepalivePrefix: sends the longest prefix that fits the browser body cap', () => {
+  assert.equal(KEEPALIVE_BODY_LIMIT, 65_536);
+  const ops = [op(1), op(2), op(3)];
+  const whole = keepalivePrefix(ops);
+  assert.deepEqual(whole!.ops, ops);
+  assert.deepEqual(JSON.parse(whole!.body), { ops, locale: 'en-US' });
+  assert.ok(bytes(whole!.body) <= KEEPALIVE_BODY_LIMIT);
+
+  // Accounting is in UTF-8 bytes, not characters: multi-byte payloads cost more.
+  const big: Op = {
+    type: 'fb_create',
+    target: null,
+    payload: { contentMd: '€'.repeat(2000) + '🔥' },
+  };
+  const fit = keepalivePrefix([op(1), big, big, op(2)], 8_000);
+  assert.deepEqual(fit!.ops, [op(1), big]);
+  assert.ok(bytes(fit!.body) <= 8_000);
+  assert.ok(
+    bytes(`{"ops":[${JSON.stringify(op(1))},${JSON.stringify(big)},${JSON.stringify(big)}]}`) >
+      8_000,
+  );
+
+  const giant: Op = {
+    type: 'fb_create',
+    target: null,
+    payload: { contentMd: 'x'.repeat(70_000) },
+  };
+  assert.equal(keepalivePrefix([giant]), null);
+  assert.deepEqual(keepalivePrefix([op(1), giant])!.ops, [op(1)]);
 });

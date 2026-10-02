@@ -6,6 +6,7 @@
   import Tooltip from './Tooltip.svelte';
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
+  import { motionEase, motionMs } from '$base/lib/motion';
 
   interface Props {
     pendingCount?: number;
@@ -18,6 +19,9 @@
   let iconEl = $state<HTMLElement | undefined>(undefined);
   let angle = 0;
   let lastT: number | undefined;
+
+  /** One frame of slack before the transition is dropped, so the turn is never cut short. */
+  const FRAME_MS = 32;
 
   $effect(() => {
     if (!iconEl) return;
@@ -38,13 +42,15 @@
     // Stop: finish the current 360-degree turn (or start another), ease out.
     const mod = ((angle % 360) + 360) % 360;
     const target = angle + (mod === 0 ? 360 : 360 - mod);
-    iconEl.style.transition = 'transform 300ms var(--ease-enter)';
+    const settleMs = motionMs('duration-enter');
+    iconEl.style.transition = `transform ${settleMs}ms ${motionEase('enter')}`;
     iconEl.style.transform = `rotate(${target}deg)`;
+    // Clear the transition once the turn lands, plus one frame of slack.
     const timer = setTimeout(() => {
       angle = target % 360;
       lastT = undefined;
       if (iconEl) iconEl.style.transition = '';
-    }, 320);
+    }, settleMs + FRAME_MS);
     return () => clearTimeout(timer);
   });
 </script>
@@ -56,17 +62,15 @@
       ? fmt(copy.sync.pendingCount, { count: pendingCount })
       : copy.sync.button}
     aria-busy={isSyncing}
-    class="relative flex items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground {isSyncing
-      ? 'text-primary'
-      : ''}"
+    class="icon-button relative p-2 {isSyncing ? 'text-primary' : ''}"
     onclick={onSync}
   >
     <span bind:this={iconEl} class="inline-flex will-change-transform">
-      <RefreshCw class="size-[calc(var(--bar-h)*0.3125)]" />
+      <RefreshCw class="size-[var(--bar-icon)]" />
     </span>
     {#if pendingCount > 0}
       <span
-        class="absolute -right-0.5 -top-0.5 flex h-[calc(var(--bar-h)*0.25)] min-w-[calc(var(--bar-h)*0.25)] items-center justify-center rounded-full bg-primary px-1 text-[calc(var(--bar-h)*0.15625)] font-bold text-primary-foreground"
+        class="absolute -right-0.5 -top-0.5 flex size-[var(--bar-badge)] items-center justify-center rounded-full bg-primary px-1 text-[var(--bar-badge-text)] font-bold text-primary-foreground"
       >
         {pendingCount > 99 ? '99+' : pendingCount}
       </span>

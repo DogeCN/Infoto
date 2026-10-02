@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, test, vi } from 'vitest';
+import assert from 'node:assert/strict';
 import { UploadPipeline, type PipelineTaskSnapshot } from '../../src/transcode/pipeline';
 
 // Verify direct editor upload progress, failure classification, and cancellation.
@@ -41,86 +42,97 @@ function png(): File {
   return new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
 }
 
-describe('editor upload progress', () => {
-  beforeEach(() => {
-    vi.stubGlobal('SharedWorker', FakeSharedWorker);
-    vi.stubGlobal('window', { addEventListener: () => undefined });
-    vi.stubGlobal('navigator', { deviceMemory: 8, hardwareConcurrency: 8 });
+beforeEach(() => {
+  vi.stubGlobal('SharedWorker', FakeSharedWorker);
+  vi.stubGlobal('window', { addEventListener: () => undefined });
+  vi.stubGlobal('navigator', { deviceMemory: 8, hardwareConcurrency: 8 });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+test('editor upload progress: surfaces the upload leg and ignores another page', async () => {
+  const { pipeline, port } = setup();
+  const rows: PipelineTaskSnapshot[] = [];
+  pipeline.onEditorTask((t) => rows.push(t));
+  const promise = pipeline.uploadEditorImage(png());
+  assert.equal(rows[0].phase, 'queued');
+  assert.equal(rows[0].fileName, 'shot.png');
+  assert.equal(rows[0].purpose, 'editor');
+  assert.equal(
+    port.sent.some((m) => m['t'] === 'addJob'),
+    true,
+  );
+  const jobId = jobIdOf(port);
+  status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.42 });
+  status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.8 });
+  assert.equal(rows.at(-1)?.fraction, 0.8);
+  status(port, {
+    t: 'jobStatus',
+    jobId: 'someone-elses-job',
+    purpose: 'editor',
+    phase: 'uploading',
+    fraction: 0.5,
   });
-  afterEach(() => {
-    vi.unstubAllGlobals();
+  assert.equal(rows.filter((r) => r.phase === 'queued').length, 1);
+  status(port, {
+    t: 'jobStatus',
+    jobId,
+    purpose: 'editor',
+    phase: 'done',
+    url: 'https://host/a.webp',
+  });
+  assert.equal(await promise, 'https://host/a.webp');
+});
+
+test('editor upload progress: words failures as uploads, aborts on cancel, and retries', async () => {
+  const failed = setup();
+  const first = failed.pipeline.uploadEditorImage(png());
+  const failedId = jobIdOf(failed.port);
+  status(failed.port, {
+    t: 'jobStatus',
+    jobId: failedId,
+    purpose: 'editor',
+    phase: 'failed',
+    error: 'timeout',
+  });
+  await assert.rejects(first, /Upload timed out/);
+
+  const cancelled = setup();
+  const pending = cancelled.pipeline.uploadEditorImage(png());
+  const cancelId = jobIdOf(cancelled.port);
+  cancelled.pipeline.cancel(cancelId);
+  const cancelRequest = cancelled.port.sent.at(-1);
+  assert.equal(cancelRequest?.['t'], 'cancelJob');
+  assert.equal(cancelRequest?.['jobId'], cancelId);
+  status(cancelled.port, { t: 'jobRemoved', jobId: cancelId });
+  await assert.rejects(pending, (error: unknown) => {
+    assert.equal((error as Error).name, 'AbortError');
+    return true;
   });
 
-  it('surfaces the upload leg and ignores another page', async () => {
-    const { pipeline, port } = setup();
-    const rows: PipelineTaskSnapshot[] = [];
-    pipeline.onEditorTask((t) => rows.push(t));
-    const promise = pipeline.uploadEditorImage(png());
-    expect(rows[0]).toMatchObject({ phase: 'queued', fileName: 'shot.png', purpose: 'editor' });
-    expect(port.sent.some((m) => m['t'] === 'addJob')).toBe(true);
-    const jobId = jobIdOf(port);
-    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.42 });
-    status(port, { t: 'jobStatus', jobId, purpose: 'editor', phase: 'uploading', fraction: 0.8 });
-    expect(rows.at(-1)?.fraction).toBe(0.8);
-    status(port, {
-      t: 'jobStatus',
-      jobId: 'someone-elses-job',
-      purpose: 'editor',
-      phase: 'uploading',
-      fraction: 0.5,
-    });
-    expect(rows.filter((r) => r.phase === 'queued')).toHaveLength(1);
-    status(port, {
-      t: 'jobStatus',
-      jobId,
-      purpose: 'editor',
-      phase: 'done',
-      url: 'https://host/a.webp',
-    });
-    await expect(promise).resolves.toBe('https://host/a.webp');
+  const retried = setup();
+  const attempt = retried.pipeline.uploadEditorImage(png());
+  const retryId = jobIdOf(retried.port);
+  status(retried.port, {
+    t: 'jobStatus',
+    jobId: retryId,
+    purpose: 'editor',
+    phase: 'failed',
+    error: 'timeout',
   });
-
-  it('words failures as uploads, aborts on cancel, and retries', async () => {
-    const failed = setup();
-    const first = failed.pipeline.uploadEditorImage(png());
-    const failedId = jobIdOf(failed.port);
-    status(failed.port, {
-      t: 'jobStatus',
-      jobId: failedId,
-      purpose: 'editor',
-      phase: 'failed',
-      error: 'timeout',
-    });
-    await expect(first).rejects.toThrow('Upload timed out');
-
-    const cancelled = setup();
-    const pending = cancelled.pipeline.uploadEditorImage(png());
-    const cancelId = jobIdOf(cancelled.port);
-    cancelled.pipeline.cancel(cancelId);
-    expect(cancelled.port.sent.at(-1)).toMatchObject({ t: 'cancelJob', jobId: cancelId });
-    status(cancelled.port, { t: 'jobRemoved', jobId: cancelId });
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-
-    const retried = setup();
-    const attempt = retried.pipeline.uploadEditorImage(png());
-    const retryId = jobIdOf(retried.port);
-    status(retried.port, {
-      t: 'jobStatus',
-      jobId: retryId,
-      purpose: 'editor',
-      phase: 'failed',
-      error: 'timeout',
-    });
-    await expect(attempt).rejects.toThrow('Upload timed out');
-    const retry = retried.pipeline.retryEditorUpload(retryId);
-    expect(retried.port.sent.at(-1)).toMatchObject({ t: 'retryJob', jobId: retryId });
-    status(retried.port, {
-      t: 'jobStatus',
-      jobId: retryId,
-      purpose: 'editor',
-      phase: 'done',
-      url: 'https://host/b.webp',
-    });
-    await expect(retry).resolves.toBe('https://host/b.webp');
+  await assert.rejects(attempt, /Upload timed out/);
+  const retry = retried.pipeline.retryEditorUpload(retryId);
+  const retryRequest = retried.port.sent.at(-1);
+  assert.equal(retryRequest?.['t'], 'retryJob');
+  assert.equal(retryRequest?.['jobId'], retryId);
+  status(retried.port, {
+    t: 'jobStatus',
+    jobId: retryId,
+    purpose: 'editor',
+    phase: 'done',
+    url: 'https://host/b.webp',
   });
+  assert.equal(await retry, 'https://host/b.webp');
 });

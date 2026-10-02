@@ -24,17 +24,14 @@ export function keepalivePrefix(
   const wrapper = enc.encode(JSON.stringify({ ops: [], locale })).length;
   let bytes = wrapper;
   const picked: Op[] = [];
-  const parts: string[] = [];
   for (const op of ops.slice(0, MAX_SYNC_OPS)) {
-    const s = JSON.stringify(op);
-    const n = enc.encode(s).length + (picked.length > 0 ? 1 : 0); // comma
-    if (bytes + n > budget) {
+    const size = enc.encode(JSON.stringify(op)).length + (picked.length > 0 ? 1 : 0); // comma
+    if (bytes + size > budget) {
       if (picked.length === 0) return null; // first op alone is oversize
       break;
     }
-    bytes += n;
+    bytes += size;
     picked.push(op);
-    parts.push(s);
   }
   return { ops: picked, body: JSON.stringify({ ops: picked, locale }) };
 }
