@@ -49,12 +49,12 @@
   }
 
   const backdrop = $derived({
-    duration: motionMs('duration-exit'),
+    duration: motionMs('exit'),
     easing: motionEaseFn('exit'),
   });
   const panel = $derived({
     y: 120,
-    duration: motionMs('duration-enter'),
+    duration: motionMs('enter'),
     easing: motionEaseFn('enter'),
     opacity: 1,
   });

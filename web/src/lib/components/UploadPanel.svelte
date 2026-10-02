@@ -30,7 +30,7 @@
   const title = $derived(copy.uploadPanel.transcodeTitle);
 
   /** Matches the row's collapse transition, so the shell outlives the last collapse. */
-  const ROW_EXIT_MS = motionMs('duration-enter');
+  const ROW_EXIT_MS = motionMs('enter');
 
   // Keep the shell mounted for one transition after the last row leaves — tearing it
   // down on `tasks.length === 0` would cut that row's collapse in half.
@@ -159,7 +159,7 @@
     void node;
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     return {
-      duration: reduced ? 0 : motionMs('duration-enter'),
+      duration: reduced ? 0 : motionMs('enter'),
       css: (t: number) => `grid-template-rows: ${t}fr; opacity: ${t}`,
     };
   }

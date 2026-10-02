@@ -128,7 +128,7 @@
         { transform: `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})` },
         { transform: 'translate3d(0, 0, 0) scale(1, 1)' },
       ],
-      { duration: motionMs('duration-enter'), easing: motionEase('enter') },
+      { duration: motionMs('enter'), easing: motionEase('enter') },
     );
     cardAnimation = animation;
     void animation.finished.then(
