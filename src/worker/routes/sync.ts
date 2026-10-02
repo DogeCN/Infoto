@@ -59,6 +59,7 @@ interface PollRow {
   allow_multiple: number;
   locale: LocaleCode;
   sort: number;
+  updated_at: number;
 }
 interface FbRow {
   id: number;
@@ -334,6 +335,7 @@ async function snapshot(
       allowMultiple: r.allow_multiple === 1,
       locale: r.locale,
       sort: r.sort,
+      updatedAt: r.updated_at,
       votes: (votes.get(r.id) ?? []).map((x) => ({ userId: x.user_id, option: x.option })),
     };
   });

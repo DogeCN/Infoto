@@ -13,6 +13,7 @@ const previewPoll: Poll = {
   allowMultiple: true,
   locale,
   sort: 0,
+  updatedAt: 1_700_000_000_000,
   votes: [
     { userId: 4, option: 0 },
     { userId: 5, option: 0 },
@@ -120,6 +121,7 @@ test('admin manages independent multiple-choice polls and copies stable referenc
       allowMultiple: body.allowMultiple,
       locale: body.locale,
       sort: 1,
+      updatedAt: Date.now(),
       votes: [],
     };
     await route.fulfill({ json: { ok: true, poll } });

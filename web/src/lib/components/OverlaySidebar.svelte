@@ -166,7 +166,11 @@
     </button>
   </div>
 
-  <!-- Independent scroll area; child panels provide bottom spacing for sticky controls. -->
+  <!-- Independent scroll area; child panels provide bottom spacing for sticky controls.
+       Nothing here fades: an ancestor `opacity` multiplies through the whole subtree, so
+       the slider under the pointer could not stay solid while the panel receded — and that
+       slider is the cue that tells the user the drag is still live. SettingsPanel fades
+       its own idle controls instead, which leaves this layer untouched. -->
   <div
     class="min-h-0 flex-1 overflow-y-auto px-4 pt-4"
     style="user-select: {dragging ? 'none' : 'auto'}"
