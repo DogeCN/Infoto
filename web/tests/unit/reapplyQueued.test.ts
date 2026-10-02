@@ -35,6 +35,7 @@ const poll = (id: number): Poll => ({
   allowMultiple: true,
   locale: 'en-US',
   sort: id,
+  updatedAt: 0,
   votes: [],
 });
 

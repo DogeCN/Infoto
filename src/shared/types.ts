@@ -77,6 +77,8 @@ export interface Poll {
   locale: LocaleCode;
   /** Manual display order within this locale. */
   sort: number;
+  /** Millisecond epoch. */
+  updatedAt: number;
   votes: Vote[];
 }
 

@@ -217,10 +217,19 @@
   }
 </script>
 
-<!-- pb-4: the scroll container has no bottom padding (see OverlaySidebar) -->
+<!-- pb-4: the scroll container has no bottom padding (see OverlaySidebar)
+
+     A layout preview fades the panel chrome so the waterfall reads through it, but the
+     slider under the pointer stays solid — it is what tells the user the drag is still
+     live. The two sections that are *not* being dragged therefore carry the fade, and
+     the live slider's own row carries none. -->
 <div class="space-y-6 pb-4">
   <!-- Filters section -->
-  <section>
+  <section
+    class="transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
+      ? 'opacity-25'
+      : 'opacity-100'}"
+  >
     <div class="flex items-center justify-between px-1">
       <h3 class="flex items-center gap-1.5 text-sm font-medium">
         <Funnel class="size-3.5" />{copy.settings.filterSection}
@@ -329,9 +338,14 @@
     </div>
   </section>
 
-  <!-- Interface section -->
+  <!-- Interface section. The layout sliders must not fade while one of them is dragged, so
+       the fade is carried by the chrome around them — the header and the mode row. -->
   <section>
-    <div class="flex items-center justify-between px-1">
+    <div
+      class="flex items-center justify-between px-1 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
+        ? 'opacity-25'
+        : 'opacity-100'}"
+    >
       <h3 class="flex items-center gap-1.5 text-sm font-medium">
         <LayoutGrid class="size-3.5" />{copy.settings.interfaceSection}
       </h3>
@@ -347,61 +361,65 @@
       </Tooltip>
     </div>
 
-    <div class="mt-4 space-y-3.5 px-1">
+    <div
+      class="mt-4 flex items-center gap-2 px-1 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
+        ? 'opacity-25'
+        : 'opacity-100'}"
+    >
       <!-- Language, arrangement, then scroll direction. The extra gap separates language from layout. -->
-      <div class="flex items-center gap-2">
-        <div class="mr-1">
-          <LocaleToggle onChange={onLocaleChange} />
-        </div>
-        <Tooltip
-          text={settings.layout.strategy === 'shortest'
+      <div class="mr-1">
+        <LocaleToggle onChange={onLocaleChange} />
+      </div>
+      <Tooltip
+        text={settings.layout.strategy === 'shortest'
+          ? copy.settings.switchToEqualHeight
+          : copy.settings.switchToEqualWidth}
+        side="bottom"
+      >
+        <button
+          type="button"
+          class="inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80"
+          aria-label={settings.layout.strategy === 'shortest'
             ? copy.settings.switchToEqualHeight
             : copy.settings.switchToEqualWidth}
-          side="bottom"
+          aria-pressed={settings.layout.strategy === 'sequential'}
+          onclick={toggleStrategy}
         >
-          <button
-            type="button"
-            class="inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80"
-            aria-label={settings.layout.strategy === 'shortest'
-              ? copy.settings.switchToEqualHeight
-              : copy.settings.switchToEqualWidth}
-            aria-pressed={settings.layout.strategy === 'sequential'}
-            onclick={toggleStrategy}
-          >
-            {#if settings.layout.strategy === 'shortest'}
-              <Columns3 class="size-4" />
-            {:else}
-              <Rows3 class="size-4" />
-            {/if}
-          </button>
-        </Tooltip>
-        <Tooltip
-          text={settings.layout.dir === 'v'
+          {#if settings.layout.strategy === 'shortest'}
+            <Columns3 class="size-4" />
+          {:else}
+            <Rows3 class="size-4" />
+          {/if}
+        </button>
+      </Tooltip>
+      <Tooltip
+        text={settings.layout.dir === 'v'
+          ? copy.settings.switchToHorizontal
+          : copy.settings.switchToVertical}
+        side="bottom"
+      >
+        <button
+          type="button"
+          class="inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80"
+          aria-label={settings.layout.dir === 'v'
             ? copy.settings.switchToHorizontal
             : copy.settings.switchToVertical}
-          side="bottom"
+          aria-pressed={settings.layout.dir === 'h'}
+          onclick={toggleDir}
         >
-          <button
-            type="button"
-            class="inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80"
-            aria-label={settings.layout.dir === 'v'
-              ? copy.settings.switchToHorizontal
-              : copy.settings.switchToVertical}
-            aria-pressed={settings.layout.dir === 'h'}
-            onclick={toggleDir}
-          >
-            {#if settings.layout.dir === 'v'}
-              <ArrowDownToLine class="size-4" />
-            {:else}
-              <ArrowRightToLine class="size-4" />
-            {/if}
-          </button>
-        </Tooltip>
-      </div>
+          {#if settings.layout.dir === 'v'}
+            <ArrowDownToLine class="size-4" />
+          {:else}
+            <ArrowRightToLine class="size-4" />
+          {/if}
+        </button>
+      </Tooltip>
+    </div>
 
-      <!-- Target band width and gap: single-thumb sliders. Only the slider not under the
-           pointer recedes, so the user keeps a reference for the value they are not
-           changing while the waterfall reflows. -->
+    <!-- Target band width and gap: single-thumb sliders. Only the slider not under the
+         pointer recedes, so the user keeps a reference for the value they are not
+         changing while the waterfall reflows. -->
+    <div class="mt-4 space-y-3.5 px-1">
       <div
         class="transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing &&
         previewing !== 'band'

@@ -537,7 +537,8 @@ class AppState {
     void this.pollRows.create(
       tempId,
       locale,
-      (rows) => ops.applyPollCreate(rows, tempId, title, options, allowMultiple, locale),
+      (rows) =>
+        ops.applyPollCreate(rows, tempId, title, options, allowMultiple, locale, Date.now()),
       () => createPoll(title, options, allowMultiple, locale),
     );
   }
@@ -546,7 +547,7 @@ class AppState {
     const locale = this.contentLocale;
     void this.pollRows.update(
       id,
-      (rows) => ops.applyPollUpdate(rows, id, title, options, allowMultiple),
+      (rows) => ops.applyPollUpdate(rows, id, title, options, allowMultiple, Date.now()),
       () => updatePoll(id, title, options, allowMultiple, locale),
     );
   }

@@ -44,6 +44,7 @@ const poll = (over: Partial<Poll> & { id: number }): Poll => ({
   allowMultiple: false,
   locale: 'en-US',
   sort: 0,
+  updatedAt: 1_000,
   votes: [],
   ...over,
 });
@@ -81,12 +82,12 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
   polls = ops.applyVote(polls, 1, 4, []);
   assert.deepEqual(polls[0]!.votes, []);
   polls = ops.applyVote(polls, 1, 4, [0, 2]);
-  polls = ops.applyPollUpdate(polls, 1, 'Renamed', ['A', 'B', 'C'], true);
+  polls = ops.applyPollUpdate(polls, 1, 'Renamed', ['A', 'B', 'C'], true, 2_000);
   assert.deepEqual(polls[0]!.votes, [
     { userId: 4, option: 0 },
     { userId: 4, option: 2 },
   ]);
-  polls = ops.applyPollUpdate(polls, 1, 'Renamed', ['C', 'A', 'B'], true);
+  polls = ops.applyPollUpdate(polls, 1, 'Renamed', ['C', 'A', 'B'], true, 3_000);
   assert.deepEqual(polls[0]!.votes, []);
 
   let announcements = [ann({ id: 1 })];

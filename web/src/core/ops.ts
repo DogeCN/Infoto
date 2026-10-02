@@ -194,9 +194,13 @@ export function applyPollCreate(
   options: string[],
   allowMultiple: boolean,
   locale: LocaleCode,
+  now: number,
 ): Poll[] {
   const sort = polls.reduce((max, poll) => Math.max(max, poll.sort), -1) + 1;
-  return [...polls, { id: tempId, title, options, allowMultiple, locale, sort, votes: [] }];
+  return [
+    ...polls,
+    { id: tempId, title, options, allowMultiple, locale, sort, updatedAt: now, votes: [] },
+  ];
 }
 
 export function applyPollUpdate(
@@ -205,6 +209,7 @@ export function applyPollUpdate(
   title: string,
   options: string[],
   allowMultiple: boolean,
+  now: number,
 ): Poll[] {
   return polls.map((poll) => {
     if (poll.id !== id) return poll;
@@ -212,7 +217,14 @@ export function applyPollUpdate(
       allowMultiple !== poll.allowMultiple ||
       options.length !== poll.options.length ||
       options.some((option, index) => option !== poll.options[index]);
-    return { ...poll, title, options, allowMultiple, votes: definitionChanged ? [] : poll.votes };
+    return {
+      ...poll,
+      title,
+      options,
+      allowMultiple,
+      updatedAt: now,
+      votes: definitionChanged ? [] : poll.votes,
+    };
   });
 }
 

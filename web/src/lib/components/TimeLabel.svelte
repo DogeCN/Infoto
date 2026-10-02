@@ -2,7 +2,7 @@
   import { getLocale } from '$lib/i18n.svelte';
   import { onDestroy } from 'svelte';
   import { formatRelativeTime, formatSmartAbsolute } from '$base/lib/format';
-  import { createHoverIntent } from '$base/lib/hover';
+  import { createHoverIntent } from '$base/lib/hover.svelte';
 
   interface Props {
     /** Epoch millis of the moment to render. */
@@ -24,41 +24,37 @@
   });
 
   // Show absolute time immediately on hover; debounce pointer leave.
-  let hovered = $state(false);
   const intent = createHoverIntent();
-  $effect(() => {
-    hovered = intent.hovered();
-  });
-  function onEnter(): void {
-    intent.enter();
-  }
-  function onLeave(): void {
-    intent.leave();
-  }
   onDestroy(intent.destroy);
 
+  // A row written before its table gained a timestamp column reads as undefined. Showing
+  // "NaN ago" would be worse than showing nothing, so the label stands down instead —
+  // this guards the render, it is not a substitute for the schema migration.
+  let hasTime = $derived(Number.isFinite(time));
   let relativeLabel = $derived(formatRelativeTime(time, now, getLocale()));
   let absoluteLabel = $derived(formatSmartAbsolute(time, now, getLocale()));
 </script>
 
-<!-- Stack relative and absolute labels in one grid cell for a width-stable transition. -->
-<!-- role=presentation: this wrapper is a hit-area only, not content. -->
-<span
-  class="time-hit {className}"
-  role="presentation"
-  onpointerenter={onEnter}
-  onpointerleave={onLeave}
->
+{#if hasTime}
+  <!-- Stack relative and absolute labels in one grid cell for a width-stable transition. -->
+  <!-- role=presentation: this wrapper is a hit-area only, not content. -->
   <span
-    class="time-label"
-    data-align={align}
-    data-hovered={hovered ? 'true' : 'false'}
-    aria-label={absoluteLabel}
+    class="time-hit {className}"
+    role="presentation"
+    onpointerenter={intent.enter}
+    onpointerleave={intent.leave}
   >
-    <span class="time-label__rel">{relativeLabel}</span>
-    <span class="time-label__abs" aria-hidden="true">{absoluteLabel}</span>
+    <span
+      class="time-label"
+      data-align={align}
+      data-hovered={intent.hovered ? 'true' : 'false'}
+      aria-label={absoluteLabel}
+    >
+      <span class="time-label__rel">{relativeLabel}</span>
+      <span class="time-label__abs" aria-hidden="true">{absoluteLabel}</span>
+    </span>
   </span>
-</span>
+{/if}
 
 <style>
   /* Wrapper only exists to own the expanded hit area: the pseudo can't live on

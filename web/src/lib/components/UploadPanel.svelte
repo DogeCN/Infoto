@@ -6,7 +6,7 @@
   import { fmt } from '$shared/copy';
   import type { UploadRow } from '../../transcode/pipeline';
   import { motionMs } from '$base/lib/motion';
-  import { createHoverIntent } from '$base/lib/hover';
+  import { createHoverIntent } from '$base/lib/hover.svelte';
 
   interface Props {
     /** Already filtered by the caller: this panel is stage-agnostic. */
@@ -71,7 +71,6 @@
 
   // ---- pointer devices: hover, debounced ---------------------------------
   let canHover = $state(false);
-  let expanded = $state(false);
   const intent = createHoverIntent();
 
   // A touch device reports hover: none — it gets the drag instead. Kept reactive: a
@@ -80,27 +79,17 @@
     const mq = window.matchMedia('(hover: hover)');
     const sync = () => {
       canHover = mq.matches;
-      if (!canHover) expanded = false;
     };
     sync();
     mq.addEventListener('change', sync);
     return () => mq.removeEventListener('change', sync);
   });
 
-  $effect(() => {
-    expanded = intent.hovered() && canHover;
-  });
-
-  // Entering waits for nothing, so an intentional hover feels immediate.
-  function onEnter(): void {
-    intent.enter();
-  }
-  function onLeave(): void {
-    intent.leave();
-  }
-  onDestroy(() => {
-    intent.destroy();
-  });
+  // Entering waits for nothing, so an intentional hover feels immediate. A keyboard or
+  // click pins the panel open instead, because there is no pointer to hover with.
+  let pinned = $state(false);
+  let expanded = $derived(pinned || (canHover && intent.hovered));
+  onDestroy(intent.destroy);
 
   // Touch dragging adjusts the bottom-anchored panel height; release chooses the nearest endpoint.
   const HEADER_H = 44;
@@ -187,8 +176,8 @@
     role="presentation"
     aria-hidden={hidden}
     inert={hidden}
-    onpointerenter={onEnter}
-    onpointerleave={onLeave}
+    onpointerenter={intent.enter}
+    onpointerleave={intent.leave}
   >
     <div
       bind:this={shellEl}
@@ -211,7 +200,7 @@
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            if (canHover) expanded = !expanded;
+            if (canHover) pinned = !pinned;
             else sheetH = sheetH > HEADER_H ? HEADER_H : naturalH();
           }
         }}

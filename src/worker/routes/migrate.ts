@@ -25,7 +25,7 @@ export const EXPORT_COLUMNS = {
   ],
   announcements: ['id', 'title', 'content_md', 'locale', 'sort', 'updated_at'],
   reactions: ['ann_id', 'user_id', 'emoji'],
-  polls: ['id', 'title', 'options', 'allow_multiple', 'locale', 'sort'],
+  polls: ['id', 'title', 'options', 'allow_multiple', 'locale', 'sort', 'updated_at'],
   votes: ['poll_id', 'user_id', 'option'],
   feedback: ['id', 'user_id', 'content_md', 'created_at', 'locale', 'sort'],
 } as const;

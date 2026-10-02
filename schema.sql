@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS polls (
   options TEXT NOT NULL,
   allow_multiple INTEGER NOT NULL,
   locale TEXT NOT NULL,
-  sort INTEGER NOT NULL
+  sort INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS votes (
   poll_id INTEGER NOT NULL,
