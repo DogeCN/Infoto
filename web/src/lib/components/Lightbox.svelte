@@ -924,7 +924,7 @@
           href={`https://lens.google.com/uploadbyurl?url=${encodeURIComponent(shareUrl)}`}
           target="_blank"
           rel="noopener noreferrer"
-          class="photo-action text-primary hover:bg-primary/15"
+          class="photo-action text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
           onclick={() => (showMenu = false)}
         >
           <Search class="size-6" />

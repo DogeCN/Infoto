@@ -238,6 +238,14 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await sidebar.getByPlaceholder(enCopy.announcements.feedbackPlaceholder).fill('pagehide-e2e');
     await sidebar.getByRole('button', { name: enCopy.announcements.send, exact: true }).click();
 
+    // Wait for the pending badge: appending the op is an IndexedDB write, so the flush
+    // is still a no-op a tick after the click. The badge is the UI's own signal that
+    // the engine holds an unsent operation.
+    const syncButton = page.getByRole('button', {
+      name: fmt(enCopy.sync.pendingCount, { count: 1 }),
+    });
+    await expect(syncButton).toBeVisible();
+
     // Observe the flush itself: the engine's keepalive POST carries the queued op.
     const flushed = page.waitForRequest((r) => r.url().includes('/sync') && r.method() === 'POST', {
       timeout: 15_000,
