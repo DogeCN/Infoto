@@ -121,6 +121,17 @@ jobs:
           if [ -n "$SITE_KEY" ]; then
             printf '\n[vars]\nTURNSTILE_SITE_KEY = "%s"\n' "$SITE_KEY" >> wrangler.toml
           fi
+          # MEDIA_HOST_URL is the facade's public hostname, not a credential, so it
+          # lives in plain-text [vars] (env.MEDIA_HOST_URL is read the same way).
+          # It is required for every deployed target: an unset value would leave the
+          # Worker with no facade address, which the media URL guard treats as a
+          # configuration error rather than defaulting to the local simulation.
+          MEDIA_HOST_URL_VALUE="${{ vars.MEDIA_HOST_URL }}"
+          if [ -z "$MEDIA_HOST_URL_VALUE" ]; then
+            echo "::error::vars.MEDIA_HOST_URL is empty — set the repo variable to the facade origin (e.g. https://tc.example). Refusing to deploy without a media host."
+            exit 1
+          fi
+          printf 'MEDIA_HOST_URL = "%s"\n' "$MEDIA_HOST_URL_VALUE" >> wrangler.toml
           cat wrangler.toml
 
       - name: Apply schema when missing
@@ -148,21 +159,6 @@ jobs:
 
       - name: Deploy Worker
         run: npx wrangler deploy
-
-      # The facade origin is a public hostname, not a credential, so it lives in repo
-      # Variables. It is still written with `wrangler secret put` so the Worker stores it
-      # encrypted. The facade's own TC_SECRET never reaches this repo.
-      - name: Inject Worker secrets
-        env:
-          MEDIA_HOST_URL_VALUE: ${{ vars.MEDIA_HOST_URL }}
-        run: |
-          # Without MEDIA_HOST_URL the browser would be pointed at the local simulation
-          # on 127.0.0.1, so every upload would fail. Fail the deploy instead.
-          if [ -z "$MEDIA_HOST_URL_VALUE" ]; then
-            echo "::error::repo variable MEDIA_HOST_URL is empty"
-            exit 1
-          fi
-          printf '%s' "$MEDIA_HOST_URL_VALUE" | npx wrangler secret put MEDIA_HOST_URL
 
       # A branch deployment runs against the always-pass test secret, which is the
       # only secret whose tokens the test site key above accepts.
