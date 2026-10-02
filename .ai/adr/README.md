@@ -47,3 +47,4 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0009](0009-standalone-image-host-facade.md)               | Image Host as a Standalone Facade                              | Accepted                   |
 | [0010](0010-locale-scoped-content-and-standalone-polls.md) | Locale-Scoped Content and Standalone Multi-Select Polls        | Accepted                   |
 | [0011](0011-web-fonts-google-china-endpoint.md)            | Web Fonts Load From Google's China Endpoint                    | Accepted                   |
+| [0012](0012-published-bar-height.md)                       | Measured Bar Height Is Published Once, Consumed Everywhere     | Accepted                   |
