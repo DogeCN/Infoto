@@ -194,9 +194,6 @@ export const enUS = {
     retry: 'Retry upload',
   },
 
-  /** Short glyph shown in place of media that failed to load. */
-  errorGlyph: 'ERROR',
-
   uploadPanel: {
     transcodeTitle: 'Transcoding',
     /** Remove one file from its panel row (cancels the job). */
@@ -320,7 +317,6 @@ export const enUS = {
       copyFailed: 'Could not copy poll code',
       multipleAnswers: 'Multiple choices',
       singleAnswer: 'Single choice',
-      preview: 'Live vote preview',
       editResetVotesHint:
         'Changing the options or choice mode resets votes; changing only the title keeps them.',
       saveFailed: 'Failed to save poll',
@@ -550,8 +546,6 @@ const zhCN: Copy = {
     retry: '重试上传',
   },
 
-  errorGlyph: '加载失败',
-
   uploadPanel: {
     transcodeTitle: '转码进度',
     /** Remove one file from its panel row (cancels the job). */
@@ -675,7 +669,6 @@ const zhCN: Copy = {
       copyFailed: '无法复制投票代码',
       multipleAnswers: '多选',
       singleAnswer: '单选',
-      preview: '实时投票预览',
       editResetVotesHint: '修改选项或投票模式会清空票数；仅修改标题会保留票数。',
       saveFailed: '投票保存失败',
       publishFailed: '投票创建失败',
@@ -795,8 +788,24 @@ export function pickLocale(langs?: readonly string[]): LocaleCode {
   return DEFAULT_LOCALE;
 }
 
-/** The locale the browser reports, or the default where there is no `navigator`. */
+/** Where the page persists its language choice. `lib/i18n.svelte.ts` writes this key. */
+const LOCALE_STORAGE_KEY = 'infoto-locale';
+
+/**
+ * The locale the browser reports, then the persisted choice, then the default.
+ *
+ * The stored preference outranks `navigator.languages`: a user who switched to
+ * Chinese once expects Chinese on every later visit, and the Worker has no
+ * storage of its own to consult.
+ */
 function browserLocale(): LocaleCode {
+  try {
+    const stored =
+      typeof localStorage !== 'undefined' ? localStorage.getItem(LOCALE_STORAGE_KEY) : null;
+    if (isLocaleCode(stored)) return stored;
+  } catch {
+    // Storage can be blocked; the browser languages below still decide.
+  }
   return pickLocale(typeof navigator !== 'undefined' ? navigator.languages : undefined);
 }
 

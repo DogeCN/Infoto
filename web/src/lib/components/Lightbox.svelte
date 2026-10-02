@@ -69,10 +69,10 @@
   let volumeMuted = $state(true);
   // loadedUrl === photo.url means the current media finished decoding (drives skeleton + opacity).
   let loadedUrl = $state('');
-  // Media load failure: show the failure glyph + a toast. The HTTP status is not
-  // reliably obtainable cross-origin (HEAD is CORS-gated), so no code is shown.
+  // Media load failure: show the 404 glyph + a toast. The HTTP status is not reliably
+  // obtainable cross-origin (HEAD is CORS-gated), so no code is shown.
   let loadFailed = $state(false);
-  let failStatus = $derived(copy.errorGlyph);
+  const failStatus = '404';
 
   // Track which failing URLs have already surfaced a toast, so revisiting a
   // known-broken photo does not spam notifications.

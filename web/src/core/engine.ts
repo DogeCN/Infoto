@@ -40,6 +40,14 @@ export interface EngineIo {
   db?: IDBDatabase;
   fetchFn?: typeof fetch;
   postSyncFn?: typeof postSync;
+  /**
+   * The language whose content a sync reads and writes.
+   *
+   * Supplied by the store rather than read from `activeLocale()`: admin writes are filed
+   * under the store's content locale, so a request that read a different one would leave
+   * those rows in the database but never display them.
+   */
+  locale?: () => LocaleCode;
   /** Response sink (store write). */
   onSyncResponse?: (r: SyncResponse, context: SyncSnapshotContext) => void;
   onError?: (phase: 'submit' | 'pagehide', e: unknown) => void;
@@ -130,7 +138,11 @@ export class SyncEngine {
       .then((entries) => {
         const available = entries.filter((entry) => !this.inFlightKeys.has(entry.key));
         if (available.length === 0) return;
-        const fit = keepalivePrefix(available.map((entry) => entry.op));
+        const fit = keepalivePrefix(
+          available.map((entry) => entry.op),
+          KEEPALIVE_BODY_LIMIT,
+          (this.io.locale ?? activeLocale)(),
+        );
         if (!fit) {
           console.warn('[infoto] first op exceeds the keepalive budget; kept for the next sync');
           return;
@@ -236,7 +248,7 @@ export class SyncEngine {
    * whole batch fits the browser's keepalive body cap. */
   private keepaliveEligible(ops: Op[]): boolean {
     if (typeof document === 'undefined' || document.visibilityState === 'visible') return false;
-    const fit = keepalivePrefix(ops);
+    const fit = keepalivePrefix(ops, KEEPALIVE_BODY_LIMIT, (this.io.locale ?? activeLocale)());
     return fit !== null && fit.ops.length === ops.length;
   }
 
@@ -257,7 +269,7 @@ export class SyncEngine {
   /** Awaitable manual and site-open sync with request coalescing. A language change
    * queues a fresh localized snapshot immediately after the in-flight one completes. */
   sync(): Promise<SyncAttemptResult> {
-    const locale = activeLocale();
+    const locale = (this.io.locale ?? activeLocale)();
     if (!this.activeSync) return this.beginSync(locale);
     if (this.activeSyncLocale === locale) return this.activeSync;
     return this.activeSync.then(() => this.sync());

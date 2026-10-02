@@ -144,6 +144,52 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test('SyncEngine locale: every request and the pagehide dump use the supplied locale', async () => {
+  arrangeFlushFixtures();
+  documentStub.visibilityState = 'hidden';
+  const requests: SyncRequest[] = [];
+  const dumpBodies: string[] = [];
+  fetchFn.mockImplementation((_url, init) => {
+    dumpBodies.push(String(init?.body ?? ''));
+    return Promise.resolve(new Response(null, { status: 200 }));
+  });
+  const e = engine({
+    // The store owns the content language; the engine must not read the ambient one.
+    locale: () => 'zh-CN',
+    postSyncFn: (body) => {
+      requests.push(body);
+      return Promise.resolve(result(snapshot()));
+    },
+  });
+
+  await e.addOp(op(1));
+  await e.sync();
+  assert.equal(requests.at(-1)?.locale, 'zh-CN');
+
+  // The pagehide dump serializes its own body rather than going through postSyncFn, so
+  // it is a second place the locale can drift. Queue the op after the sync, since a
+  // drained oplog is exactly what the flush skips.
+  await e.addOp(op(2));
+  firePagehide(e);
+  await vi.waitFor(() => assert.ok(dumpBodies.length > 0, 'pagehide sent a batch'));
+  for (const body of dumpBodies) {
+    assert.equal((JSON.parse(body) as SyncRequest).locale, 'zh-CN');
+  }
+});
+
+test('SyncEngine locale: falls back to the active locale when the store supplies none', async () => {
+  const requests: SyncRequest[] = [];
+  const e = engine({
+    postSyncFn: (body) => {
+      requests.push(body);
+      return Promise.resolve(result(snapshot()));
+    },
+  });
+  await e.sync();
+  // No resolver: the request must still carry a locale the server will accept.
+  assert.ok(requests.at(-1)?.locale === 'en-US' || requests.at(-1)?.locale === 'zh-CN');
+});
+
 test('SyncEngine awaitable sync: coalesces callers and retains concurrent edits for the next sync', async () => {
   const first = deferred<SyncCallResult>();
   const second = deferred<SyncCallResult>();
