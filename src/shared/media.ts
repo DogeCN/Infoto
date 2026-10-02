@@ -23,3 +23,9 @@ export function proxyUrl(origin: string, id: number): string {
 export function extOfType(type: number): 'webp' | 'webm' {
   return type === 0 ? 'webp' : 'webm';
 }
+
+/** Local simulated image host (scripts/local-media-host.mjs), used by `npm run dev`.
+ *  A deployment must set MEDIA_HOST_URL to the standalone facade (ADR 0009); the deploy
+ *  workflow refuses to run without it, so this default is never the production
+ *  configuration. The Worker and the browser client both fall back to it. */
+export const LOCAL_MEDIA_HOST_URL = 'http://127.0.0.1:8788';

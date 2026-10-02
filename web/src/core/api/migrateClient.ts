@@ -1,4 +1,6 @@
 import { copy, fmt } from '$shared/copy';
+import { isRecord, safeJsonParse } from '$shared/json';
+import { clamp01 } from '$base/lib/num';
 
 export const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 
@@ -87,7 +89,7 @@ export async function migrateSql(
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
-        reportProgress(Math.max(0, Math.min(1, event.loaded / event.total)));
+        reportProgress(clamp01(event.loaded / event.total));
       }
     };
     xhr.onerror = () => fail('network', copy.migrate.uploadFailedCheckNetwork);
@@ -129,15 +131,7 @@ function readPayload(xhr: XMLHttpRequest): unknown {
   if (response && typeof response === 'object') return response;
   const text = typeof xhr.responseText === 'string' ? xhr.responseText : String(response ?? '');
   if (!text.trim()) return null;
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return safeJsonParse<unknown>(text, null);
 }
 
 function isServerFailure(value: unknown): boolean {

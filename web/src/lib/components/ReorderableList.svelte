@@ -4,6 +4,7 @@
   // reorder callback. Shared by the admin announcement and feedback lists.
   import { tick, type Snippet } from 'svelte';
   import * as ops from '../../core/ops';
+  import { motionEase, motionMs } from '$base/lib/motion';
 
   interface Props {
     /** Source order (from the store). Only re-ordered while a drag is in flight. */
@@ -75,7 +76,7 @@
       if (dx === 0 && dy === 0) continue;
       const animation = element.animate(
         [{ transform: `translate3d(${dx}px, ${dy}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }],
-        { duration: 180, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+        { duration: motionMs('duration-exit'), easing: motionEase('exit') },
       );
       animations.set(id, animation);
     }
@@ -197,7 +198,7 @@
     else {
       const animation = element.animate(
         [{ transform: element.style.transform }, { transform: 'translate3d(0, 0, 0)' }],
-        { duration: 180, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+        { duration: motionMs('duration-exit'), easing: motionEase('exit') },
       );
       const clearTransform = () => {
         if (dragId === null) element.style.transform = '';
@@ -258,7 +259,7 @@
     <div
       use:card={entry.id}
       role="listitem"
-      class="touch-none cursor-grab select-none rounded-xl border border-border bg-card p-4 active:cursor-grabbing {dragId ===
+      class="touch-none cursor-grab select-none rounded-[var(--radius-card)] border border-border bg-card p-4 active:cursor-grabbing {dragId ===
       entry.id
         ? 'pointer-events-none relative z-10 opacity-50'
         : ''}"

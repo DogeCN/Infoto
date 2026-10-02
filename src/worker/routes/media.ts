@@ -3,14 +3,11 @@
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';
-import { fromId36 } from '../../shared/media.ts';
+import { fromId36, LOCAL_MEDIA_HOST_URL } from '../../shared/media.ts';
 import { MEDIA_TYPE } from '../../shared/types.ts';
 import { notFoundPage, serverErrorPage } from '../errors.ts';
 
-/** Local simulated image host (scripts/local-media-host.mjs). A deployment points
- *  MEDIA_HOST_URL at the standalone facade instead, so dev uploads never reach the
- *  production host and this default is inert in production. */
-export const LOCAL_MEDIA_HOST_URL = 'http://127.0.0.1:8788';
+export { LOCAL_MEDIA_HOST_URL };
 
 const MIME_BY_TYPE: Record<number, string> = {
   [MEDIA_TYPE.IMAGE]: 'image/webp',
@@ -59,10 +56,15 @@ export function isStorableMediaUrl(url: string): boolean {
 }
 
 /**
- * Storage/read rule for a media URL. The simulated host serves plain HTTP on loopback,
- * which `isStorableMediaUrl` rejects by design; trust exactly that origin, and only when
- * MEDIA_HOST_URL is unset or still points at the local simulation — a deployed facade
- * gets the strict rule.
+ * Storage/read rule for a media URL.
+ *
+ * `isStorableMediaUrl` is the rule and is not negotiable. The simulated host serves
+ * plain HTTP on loopback, which that rule rejects by design, so the local simulation
+ * needs one narrow exception — granted only when MEDIA_HOST_URL is unset, i.e. the
+ * worker runs as `npm run dev` with no facade configured. A deployed worker always
+ * has MEDIA_HOST_URL (the deploy workflow exits1 without it), so a missing value
+ * means a misconfigured production worker, and it gets the strict rule rather than
+ * a silent downgrade to the permissive local one.
  *
  * Both the write path (`/sync` upload ops) and the read proxy (`/l/:id36`) must use this,
  * or a locally uploaded photo is stored and then refused, or silently dropped on arrival.
@@ -71,7 +73,7 @@ export function isStorableMediaUrl(url: string): boolean {
  */
 export function isAllowedMediaUrl(env: AppEnv, url: string): boolean {
   if (isStorableMediaUrl(url)) return true;
-  if ((env.mediaHostUrl ?? LOCAL_MEDIA_HOST_URL) !== LOCAL_MEDIA_HOST_URL) return false;
+  if (env.mediaHostUrl !== undefined) return false;
   try {
     return new URL(url).origin === LOCAL_MEDIA_HOST_URL;
   } catch {

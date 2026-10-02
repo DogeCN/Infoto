@@ -1,16 +1,17 @@
 <script lang="ts">
   // Step-aligned single-thumb slider with pointer and keyboard controls and change-only emissions.
   import type { Component } from 'svelte';
-  import { cubicOut } from 'svelte/easing';
   import { fly } from 'svelte/transition';
   import { cn } from '$base/lib/ui';
   import {
     bubblePosition,
     thumbCenter,
     pointerPosition,
-    clamp01,
+    sliderKeyTarget,
     stepValue,
   } from '$base/lib/slider';
+  import { clamp01 } from '$base/lib/num';
+  import { bubbleTransition } from '$base/lib/motion';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
@@ -114,30 +115,7 @@
   // ---- keyboard (the handle is a custom role=slider element) ----------------
   let focus = $state(false);
   function onKeydown(e: KeyboardEvent): void {
-    const unit = step > 0 ? step / span : 1 / span;
-    let target: number | null = null;
-    switch (e.key) {
-      case 'ArrowLeft':
-      case 'ArrowDown':
-        target = t - unit;
-        break;
-      case 'ArrowRight':
-      case 'ArrowUp':
-        target = t + unit;
-        break;
-      case 'PageDown':
-        target = t - unit * 10;
-        break;
-      case 'PageUp':
-        target = t + unit * 10;
-        break;
-      case 'Home':
-        target = 0;
-        break;
-      case 'End':
-        target = 1;
-        break;
-    }
+    const target = sliderKeyTarget(e.key, t, step > 0 ? step / span : 1 / span);
     if (target === null) return;
     e.preventDefault();
     applyT(target);
@@ -182,11 +160,7 @@
         class="pointer-events-none absolute z-30"
         style="left: {bs.left}px; bottom: calc(100% - 2px)"
       >
-        <div
-          bind:clientWidth={bw}
-          class="slider-bubble"
-          transition:fly={{ y: 3, duration: 140, easing: cubicOut }}
-        >
+        <div bind:clientWidth={bw} class="slider-bubble" transition:fly={bubbleTransition}>
           {format(curVal)}
           <span class="slider-caret" style="left: {bs.tip}px"></span>
         </div>

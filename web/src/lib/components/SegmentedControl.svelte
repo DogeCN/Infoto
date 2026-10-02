@@ -4,6 +4,7 @@
   // (pill translation), text color uses --ease-exit / --duration-exit, like other site controls.
   import type { Component } from 'svelte';
   import { cn } from '$base/lib/ui';
+  import { measurePillWidths, type PillWidths } from './pillMeasure';
 
   export type SegmentedItem<T extends string = string> = {
     value: T;
@@ -60,42 +61,23 @@
     if (el) indicator = { x: el.offsetLeft, w: el.offsetWidth };
   }
 
-  let rootEl: HTMLDivElement | undefined = $state(undefined);
-
-  function measureWidths(): void {
-    const root = rootEl;
-    if (!root || !onWidths) return;
-    const labelDelta = [...root.querySelectorAll<HTMLElement>('[data-tab-label]')].reduce(
-      (sum, label) => {
-        const button = label.closest('button');
-        const gap = button ? Number.parseFloat(getComputedStyle(button).columnGap) || 0 : 0;
-        const hasIcon = !!button?.querySelector('svg');
-        return sum + label.offsetWidth + (hasIcon ? gap : 0);
-      },
-      0,
-    );
-    onWidths({ shown: root.offsetWidth, shownIsLabelled: !hideLabel, labelDelta });
-  }
-
-  $effect(() => {
+  // Density contract for the bar: measured by the shared clone probe, so the admin tabs and
+  // the gallery sort pill report comparable widths.
+  const measure = $derived.by(() => {
     void value;
     void items;
     void hideLabel;
     void size;
-    if (value !== undefined) syncIndicator(value);
-    const root = rootEl;
-    if (!root) return;
-    let raf = requestAnimationFrame(measureWidths);
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(measureWidths);
-    });
-    observer.observe(root);
-    for (const label of root.querySelectorAll('[data-tab-label]')) observer.observe(label);
-    return () => {
-      cancelAnimationFrame(raf);
-      observer.disconnect();
+    return {
+      labelled: !hideLabel,
+      deps: JSON.stringify([items, value, hideLabel, size, document.documentElement.lang]),
+      onWidths: (info: PillWidths) => onWidths?.(info),
     };
+  });
+
+  $effect(() => {
+    void measure;
+    if (value !== undefined) syncIndicator(value);
   });
 
   function onKeydown(event: KeyboardEvent, index: number) {
@@ -133,9 +115,9 @@
 </script>
 
 <div
-  bind:this={rootEl}
   role="tablist"
   aria-label={ariaLabel}
+  use:measurePillWidths={measure}
   class="relative flex items-center gap-1 rounded-full border border-border bg-card/80 p-1"
 >
   <!-- Sliding indicator pill: smoothly translates to the current item when it changes -->
@@ -164,7 +146,7 @@
       aria-label={hideLabel ? item.label : undefined}
       onclick={() => pick(item.value)}
     >
-      {#if Icon}<Icon class="size-[calc(var(--bar-h)*0.25)]" />{/if}
+      {#if Icon}<Icon class="size-[var(--bar-badge)]" />{/if}
       <span
         data-tab-label
         aria-hidden={hideLabel}

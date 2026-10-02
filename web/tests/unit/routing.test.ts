@@ -1,11 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
 import { isAdminRoute } from '../../src/routing';
 
-describe('admin routing', () => {
-  it('mounts Admin only for the exact /admin route', () => {
-    expect(isAdminRoute('/admin')).toBe(true);
-    expect(isAdminRoute('/admin/')).toBe(false);
-    expect(isAdminRoute('/admin/settings')).toBe(false);
-    expect(isAdminRoute('/administer')).toBe(false);
-  });
+test('mounts Admin only for the exact /admin route', () => {
+  assert.equal(isAdminRoute('/admin'), true);
+  assert.equal(isAdminRoute('/admin/'), false);
+  assert.equal(isAdminRoute('/admin/settings'), false);
+  assert.equal(isAdminRoute('/administer'), false);
 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Tri-state icon toggle: off -> only (primary cyan) -> exclude (amber) -> off.
+  // Tri-state icon toggle: off -> only (primary cyan) -> exclude (warning amber) -> off.
   import type { Component } from 'svelte';
   import { cn } from '$base/lib/ui';
   import Tooltip from './Tooltip.svelte';
@@ -17,7 +17,7 @@
   const STATE_CLASS: Record<TriState, string> = {
     off: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
     only: 'bg-primary text-primary-foreground',
-    exclude: 'bg-[#f59e0b] text-white',
+    exclude: 'bg-warning text-background',
   };
 </script>
 

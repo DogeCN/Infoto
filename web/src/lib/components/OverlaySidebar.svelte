@@ -2,6 +2,7 @@
   // Overlay sidebar with persisted desktop resizing and a full-width mobile layout.
   import { onDestroy, type Snippet } from 'svelte';
   import { overlay } from '$base/lib/overlay';
+  import { startPointerResize } from '$base/lib/pointer';
   import { copy } from '$lib/i18n.svelte';
   import { X } from '@lucide/svelte';
 
@@ -61,40 +62,27 @@
     }
   }
 
-  let stopResize = () => {};
-  onDestroy(() => stopResize());
+  let stopResize: (() => void) | undefined;
+  onDestroy(() => stopResize?.());
   $effect(() => {
-    if (!open) stopResize();
+    if (!open) stopResize?.();
   });
 
   /** Resize from the inner edge with pointer cancellation and teardown cleanup. */
   function startResize(event: PointerEvent) {
     if (event.button !== 0) return;
-    stopResize();
-    event.preventDefault();
-    dragging = true;
-    const startX = event.clientX;
-    const startWidth = width;
-    const sign = side === 'left' ? 1 : -1;
-    const move = (next: PointerEvent) => {
-      if (next.pointerId === event.pointerId)
-        width = clamp(startWidth + (next.clientX - startX) * sign);
-    };
-    const finish = (next: PointerEvent) => {
-      if (next.pointerId === event.pointerId) {
-        saveWidth();
-        stopResize();
-      }
-    };
-    stopResize = () => {
-      dragging = false;
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finish);
-    window.addEventListener('pointercancel', finish);
+    stopResize?.();
+    stopResize = startPointerResize({
+      event,
+      axis: 'x',
+      sign: side === 'left' ? 1 : -1,
+      start: width,
+      clamp,
+      onStart: () => (dragging = true),
+      onMove: (value) => (width = value),
+      onEnd: saveWidth,
+      onStop: () => (dragging = false),
+    });
   }
 
   function onResizeKey(event: KeyboardEvent) {
@@ -153,7 +141,7 @@
     type="button"
     aria-label={copy.sidebar.resizeAria}
     title={copy.sidebar.resizeTitle}
-    class="absolute inset-y-0 hidden w-1.5 cursor-col-resize transition-colors hover:bg-primary/40 md:block {dragging
+    class="absolute inset-y-0 hidden w-1.5 cursor-col-resize transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/40 md:block {dragging
       ? 'bg-primary/60'
       : ''} {side === 'left' ? 'right-0' : 'left-0'}"
     onpointerdown={startResize}

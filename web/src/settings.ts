@@ -2,6 +2,7 @@
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
 import { DEFAULT_BAND, MAX_BAND, MIN_BAND } from '$base/lib/band';
+import { heat } from './core/gallery';
 import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
 /** Ownership filter states: off, include-only, or exclude-only. */
@@ -44,7 +45,7 @@ export interface Settings {
 export function metricOf(photo: Photo, key: RangeKey): number {
   switch (key) {
     case 'heat':
-      return photo.likes.length - photo.dislikes.length;
+      return heat(photo);
     case 'likes':
       return photo.likes.length;
     case 'dislikes':

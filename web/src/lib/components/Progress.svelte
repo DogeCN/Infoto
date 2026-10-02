@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { clamp01 } from '$base/lib/num';
   interface Props {
     value: number;
     label: string;
@@ -6,7 +7,7 @@
   }
 
   let { value, label, class: className = '' }: Props = $props();
-  let fraction = $derived(Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0);
+  let fraction = $derived(clamp01(value));
   let percentage = $derived(Math.round(fraction * 100));
 </script>
 

@@ -33,8 +33,8 @@
     >
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.35" />
-          <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.05" />
+          <stop offset="0%" stop-color="var(--color-primary)" stop-opacity="0.35" />
+          <stop offset="100%" stop-color="var(--color-primary)" stop-opacity="0.05" />
         </linearGradient>
       </defs>
       <rect x="14" y="20" width="68" height="56" rx="10" fill="url(#{gradId})" />
@@ -44,14 +44,21 @@
         width="68"
         height="56"
         rx="10"
-        stroke="#22d3ee"
+        stroke="var(--color-primary)"
         stroke-opacity="0.25"
         stroke-width="1.5"
       />
-      <circle cx="38" cy="42" r="6" stroke="#22d3ee" stroke-opacity="0.5" stroke-width="2" />
+      <circle
+        cx="38"
+        cy="42"
+        r="6"
+        stroke="var(--color-primary)"
+        stroke-opacity="0.5"
+        stroke-width="2"
+      />
       <path
         d="M22 66l16-16 12 10 10-8 14 14"
-        stroke="#22d3ee"
+        stroke="var(--color-primary)"
         stroke-opacity="0.4"
         stroke-width="2"
         stroke-linecap="round"

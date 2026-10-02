@@ -58,9 +58,9 @@
       type="button"
       aria-pressed={isChosen}
       disabled={!interactive}
-      class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-[var(--duration-exit)] {isChosen
+      class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isChosen
         ? 'border-primary/50 bg-primary/5'
-        : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'} disabled:cursor-default"
+        : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'}"
       onclick={() => handle(idx)}
     >
       <span

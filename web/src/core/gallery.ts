@@ -3,6 +3,11 @@ import type { Photo } from '$shared/types';
 export type SortKey = 'latest' | 'hottest' | 'random';
 export type SortDirections = Partial<Record<SortKey, boolean>>;
 
+/** Net reaction score: likes minus dislikes. Also the `heat` filter dimension. */
+export function heat(photo: Photo): number {
+  return photo.likes.length - photo.dislikes.length;
+}
+
 export function shuffle<T>(items: readonly T[], random: () => number = Math.random): T[] {
   const result = [...items];
   for (let index = result.length - 1; index > 0; index--) {
@@ -28,7 +33,6 @@ export function sortPhotos(
   }
 
   if (key === 'hottest') {
-    const heat = (photo: Photo): number => photo.likes.length - photo.dislikes.length;
     return result.sort((a, b) => (ascending ? heat(a) - heat(b) : heat(b) - heat(a)));
   }
 

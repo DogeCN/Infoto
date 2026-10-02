@@ -1,7 +1,8 @@
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
 import {
   acceptLanguages,
   activeLocale,
@@ -88,120 +89,137 @@ function read(table: Copy, leaf: string): unknown {
     .reduce<unknown>((acc, key) => (acc as Record<string, unknown>)[key], table);
 }
 
-describe('copy', () => {
-  it('keeps localized Han text inside the shared copy module', () => {
-    const copyPath = resolve(ROOT, 'src/shared/copy.ts');
-    for (const path of sourceFiles(ROOT)) {
-      if (path === copyPath) continue;
-      expect(readFileSync(path, 'utf8'), relative(ROOT, path)).not.toMatch(/[\u3400-\u9fff]/u);
-    }
-  });
+test('copy: keeps localized Han text inside the shared copy module', () => {
+  const copyPath = resolve(ROOT, 'src/shared/copy.ts');
+  for (const path of sourceFiles(ROOT)) {
+    if (path === copyPath) continue;
+    assert.doesNotMatch(readFileSync(path, 'utf8'), /[\u3400-\u9fff]/u, relative(ROOT, path));
+  }
+});
 
-  it('keeps every locale table aligned with en-US and actually translated', () => {
-    const source = paths(enUS).sort();
-    const allowed = new Set([
-      'errorPage.pageHeading',
-      'errorPage.notFoundTitle',
-      'errorPage.serverErrorTitle',
-      'admin.feedback.idLabel',
-    ]);
-    for (const [code, table] of Object.entries(locales)) {
-      expect(paths(table).sort(), `${code} key set`).toEqual(source);
-      const typed: Copy = table;
-      expect(Object.keys(typed).length).toBe(Object.keys(enUS).length);
-      const rules = new Intl.PluralRules(code);
-      const reachable = [...new Set(Array.from({ length: 200 }, (_, n) => rules.select(n)))]
-        .filter((k) => k !== 'other')
-        .sort();
-      for (const leaf of paths(table)) {
-        const node = read(table, leaf);
-        if (!isPluralLeaf(node)) continue;
-        expect(
-          Object.keys(node)
-            .filter((k) => k !== 'other')
-            .sort(),
-          `${code} ${leaf}`,
-        ).toEqual(reachable);
+test('copy: keeps every locale table aligned with en-US and actually translated', () => {
+  const source = paths(enUS).sort();
+  const allowed = new Set([
+    'errorPage.pageHeading',
+    'errorPage.notFoundTitle',
+    'errorPage.serverErrorTitle',
+    'admin.feedback.idLabel',
+  ]);
+  for (const [code, table] of Object.entries(locales)) {
+    assert.deepEqual(paths(table).sort(), source, `${code} key set`);
+    const typed: Copy = table;
+    assert.equal(Object.keys(typed).length, Object.keys(enUS).length);
+    const rules = new Intl.PluralRules(code);
+    const reachable = [...new Set(Array.from({ length: 200 }, (_, n) => rules.select(n)))]
+      .filter((k) => k !== 'other')
+      .sort();
+    for (const leaf of paths(table)) {
+      const node = read(table, leaf);
+      if (!isPluralLeaf(node)) continue;
+      assert.deepEqual(
+        Object.keys(node)
+          .filter((k) => k !== 'other')
+          .sort(),
+        reachable,
+        `${code} ${leaf}`,
+      );
+    }
+  }
+  const zh = locales['zh-CN'];
+  for (const leaf of paths(zh)) {
+    if (allowed.has(leaf)) continue;
+    const zhNode = read(zh, leaf);
+    const enNode = read(enUS, leaf);
+    if (isPluralLeaf(zhNode)) {
+      for (const form of Object.keys(zhNode)) {
+        assert.notEqual(
+          (zhNode as Record<string, string>)[form],
+          (enNode as Record<string, string>)[form],
+          `${leaf}.${form}`,
+        );
       }
+    } else {
+      assert.notEqual(zhNode, enNode, leaf);
     }
-    const zh = locales['zh-CN'];
-    for (const leaf of paths(zh)) {
-      if (allowed.has(leaf)) continue;
-      const zhNode = read(zh, leaf);
-      const enNode = read(enUS, leaf);
-      if (isPluralLeaf(zhNode)) {
-        for (const form of Object.keys(zhNode)) {
-          expect((zhNode as Record<string, string>)[form], `${leaf}.${form}`).not.toBe(
-            (enNode as Record<string, string>)[form],
-          );
-        }
-      } else {
-        expect(zhNode, leaf).not.toBe(enNode);
-      }
-    }
-  });
+  }
+});
 
-  it('formats placeholders and plural categories', () => {
-    expect(fmt('a {x} c', { x: 'B' })).toBe('a B c');
-    expect(fmt('{x} {y}', { x: 1 })).toBe('1 {y}');
-    expect(fmt('{x}')).toBe('{x}');
-    const forms: PluralMessage = { one: '{n} file', other: '{n} files' };
-    expect(plural(1, forms, 'en-US')).toBe('{n} file');
-    expect(plural(1.4, forms, 'en-US')).toBe('{n} file');
-    expect(plural(2, forms, 'en-US')).toBe('{n} files');
-    expect(plural(1, forms, 'zh-CN')).toBe('{n} files');
-    expect(plural(1, forms, 'ru-RU')).toBe('{n} file');
-    expect(plural(3, forms, 'ru-RU')).toBe('{n} files');
-    expect(plural(5, { other: '{n} items' }, 'en-US')).toBe('{n} items');
+// A key no source reads is dead weight: it lingers unnoticed because the alignment test
+// above only compares key sets, and it gets copied into every new language table. Fail on
+// any registered leaf whose name appears nowhere outside the copy module.
+test('copy: references every registered key from source', () => {
+  const copyPath = resolve(ROOT, 'src/shared/copy.ts');
+  const source = sourceFiles(ROOT)
+    .filter((path) => path !== copyPath)
+    .map((path) => readFileSync(path, 'utf8'))
+    .join('\n');
+  const unused = paths(enUS).filter((leaf) => {
+    const key = leaf.split('.').pop() ?? leaf;
+    return !new RegExp(`\\b${key}\\b`).test(source);
   });
+  assert.deepEqual(unused, []);
+});
 
-  it('negotiates an exact shipped tag and follows the active locale', () => {
-    expect(acceptLanguages('zh-CN;q=0.9, en-US, fr-FR;q=0')).toEqual(['en-US', 'zh-CN']);
-    expect(acceptLanguages('en-US;q=0.8, zh-CN;q=1.1, fr-FR;q=0')).toEqual(['en-US']);
-    expect(acceptLanguages('en-US;q=0.9, zh-CN;q=0.1234')).toEqual(['en-US']);
-    expect(acceptLanguages(null)).toEqual([]);
-    expect(acceptLanguages('')).toEqual([]);
-    expect(pickLocale(['fr-FR', 'zh-CN', 'en-US'])).toBe('zh-CN');
-    expect(pickLocale(['zh'])).toBe(DEFAULT_LOCALE);
-    expect(pickLocale(['zh-Hans-CN'])).toBe(DEFAULT_LOCALE);
-    expect(pickLocale(['fr-FR', 'de-DE'])).toBe(DEFAULT_LOCALE);
-    expect(pickLocale([])).toBe(DEFAULT_LOCALE);
-    expect(pickLocale(undefined)).toBe(DEFAULT_LOCALE);
+test('copy: formats placeholders and plural categories', () => {
+  assert.equal(fmt('a {x} c', { x: 'B' }), 'a B c');
+  assert.equal(fmt('{x} {y}', { x: 1 }), '1 {y}');
+  assert.equal(fmt('{x}'), '{x}');
+  const forms: PluralMessage = { one: '{n} file', other: '{n} files' };
+  assert.equal(plural(1, forms, 'en-US'), '{n} file');
+  assert.equal(plural(1.4, forms, 'en-US'), '{n} file');
+  assert.equal(plural(2, forms, 'en-US'), '{n} files');
+  assert.equal(plural(1, forms, 'zh-CN'), '{n} files');
+  assert.equal(plural(1, forms, 'ru-RU'), '{n} file');
+  assert.equal(plural(3, forms, 'ru-RU'), '{n} files');
+  assert.equal(plural(5, { other: '{n} items' }, 'en-US'), '{n} items');
+});
 
-    setActiveLocale('en-US');
-    expect(activeLocale()).toBe('en-US');
-    expect(copy.settings.language).toBe('Language');
-    expect(plural(1, { one: '{n} vote', other: '{n} votes' })).toBe('{n} vote');
-    setActiveLocale('zh-CN');
-    expect(copy.settings.language).toBe(locales['zh-CN'].settings.language);
-    expect(copy.sync).toBe(locales['zh-CN'].sync);
-    expect(plural(2, locales['zh-CN'].vote.count)).toBe(locales['zh-CN'].vote.count.other);
-    setActiveLocale('fr-FR' as LocaleCode);
-    expect(activeLocale()).toBe('zh-CN');
-    setActiveLocale('en-US');
-  });
+test('copy: negotiates an exact shipped tag and follows the active locale', () => {
+  assert.deepEqual(acceptLanguages('zh-CN;q=0.9, en-US, fr-FR;q=0'), ['en-US', 'zh-CN']);
+  assert.deepEqual(acceptLanguages('en-US;q=0.8, zh-CN;q=1.1, fr-FR;q=0'), ['en-US']);
+  assert.deepEqual(acceptLanguages('en-US;q=0.9, zh-CN;q=0.1234'), ['en-US']);
+  assert.deepEqual(acceptLanguages(null), []);
+  assert.deepEqual(acceptLanguages(''), []);
+  assert.equal(pickLocale(['fr-FR', 'zh-CN', 'en-US']), 'zh-CN');
+  assert.equal(pickLocale(['zh']), DEFAULT_LOCALE);
+  assert.equal(pickLocale(['zh-Hans-CN']), DEFAULT_LOCALE);
+  assert.equal(pickLocale(['fr-FR', 'de-DE']), DEFAULT_LOCALE);
+  assert.equal(pickLocale([]), DEFAULT_LOCALE);
+  assert.equal(pickLocale(undefined), DEFAULT_LOCALE);
 
-  // Reject keys that are not registered as own properties of the locale table.
-  it('accepts only registered locale tags', () => {
-    for (const code of Object.keys(locales)) {
-      expect(isLocaleCode(code)).toBe(true);
-    }
-    for (const value of ['fr-FR', 'zh', 'zh-Hans-CN', 'EN-US', 'en-US ', '', 'en_US']) {
-      expect(isLocaleCode(value)).toBe(false);
-    }
-    for (const value of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
-      expect(isLocaleCode(value)).toBe(false);
-    }
-    for (const value of [null, undefined, 0, 1, true, {}, [], ['en-US'], Symbol('en-US')]) {
-      expect(isLocaleCode(value)).toBe(false);
-    }
-  });
+  setActiveLocale('en-US');
+  assert.equal(activeLocale(), 'en-US');
+  assert.equal(copy.settings.language, 'Language');
+  assert.equal(plural(1, { one: '{n} vote', other: '{n} votes' }), '{n} vote');
+  setActiveLocale('zh-CN');
+  assert.equal(copy.settings.language, locales['zh-CN'].settings.language);
+  assert.equal(copy.sync, locales['zh-CN'].sync);
+  assert.equal(plural(2, locales['zh-CN'].vote.count), locales['zh-CN'].vote.count.other);
+  setActiveLocale('fr-FR' as LocaleCode);
+  assert.equal(activeLocale(), 'zh-CN');
+  setActiveLocale('en-US');
+});
 
-  // Preserve the type predicate at its call site.
-  it('narrows an unknown value to LocaleCode', () => {
-    const raw: unknown = 'zh-CN';
-    if (!isLocaleCode(raw)) throw new Error('expected a registered tag');
-    const narrowed: LocaleCode = raw;
-    expect(narrowed).toBe('zh-CN');
-  });
+// Reject keys that are not registered as own properties of the locale table.
+test('copy: accepts only registered locale tags', () => {
+  for (const code of Object.keys(locales)) {
+    assert.equal(isLocaleCode(code), true);
+  }
+  for (const value of ['fr-FR', 'zh', 'zh-Hans-CN', 'EN-US', 'en-US ', '', 'en_US']) {
+    assert.equal(isLocaleCode(value), false);
+  }
+  for (const value of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    assert.equal(isLocaleCode(value), false);
+  }
+  for (const value of [null, undefined, 0, 1, true, {}, [], ['en-US'], Symbol('en-US')]) {
+    assert.equal(isLocaleCode(value), false);
+  }
+});
+
+// Preserve the type predicate at its call site.
+test('copy: narrows an unknown value to LocaleCode', () => {
+  const raw: unknown = 'zh-CN';
+  if (!isLocaleCode(raw)) throw new Error('expected a registered tag');
+  const narrowed: LocaleCode = raw;
+  assert.equal(narrowed, 'zh-CN');
 });

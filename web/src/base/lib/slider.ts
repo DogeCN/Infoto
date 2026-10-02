@@ -1,8 +1,6 @@
-export type RangeScale = 'linear' | 'logarithmic';
+import { clamp01 } from './num.ts';
 
-export function clamp01(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
+export type RangeScale = 'linear' | 'logarithmic';
 
 export function normalizeRangeValue(
   value: number,
@@ -66,4 +64,46 @@ export function stepValue(position: number, min: number, max: number, step: numb
   const offset = clamp01(position) * Math.max(0, max - min);
   const value = min + (step > 0 ? Math.round(offset / step) * step : offset);
   return Math.min(max, Math.max(min, Number(value.toFixed(6))));
+}
+
+/** PageUp/PageDown travel as a fraction of the track, independent of the value scale. */
+export const PAGE_STEP = 0.1;
+
+/** End stops for the keyboard, where a dual-thumb slider cannot reach the raw track edge. */
+export interface SliderKeyLimits {
+  home?: number;
+  end?: number;
+  pageStep?: number;
+}
+
+/**
+ * Normalized position for a keyboard key, or null when the key is not a slider control.
+ * One step is `unit`; a page step is a fixed fraction of the track, so a log-scaled
+ * slider does not jump by ten business units.
+ */
+export function sliderKeyTarget(
+  key: string,
+  current: number,
+  unit: number,
+  limits: SliderKeyLimits = {},
+): number | null {
+  const pageStep = limits.pageStep ?? PAGE_STEP;
+  switch (key) {
+    case 'ArrowLeft':
+    case 'ArrowDown':
+      return current - unit;
+    case 'ArrowRight':
+    case 'ArrowUp':
+      return current + unit;
+    case 'PageDown':
+      return current - pageStep;
+    case 'PageUp':
+      return current + pageStep;
+    case 'Home':
+      return limits.home ?? 0;
+    case 'End':
+      return limits.end ?? 1;
+    default:
+      return null;
+  }
 }

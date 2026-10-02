@@ -31,6 +31,44 @@
 
 ---
 
+## Design Tokens Are the Single Source (2026-10-02)
+
+A normalization pass removed ~30 hard-coded colour literals and ~13 magic millisecond values from the frontend. Both drift silently — a literal does not follow the token it was copied from. The rules that came out of it:
+
+- **Never re-type a palette colour or a shadow in a component.** `#22d3ee` is `--color-primary`, `#f43f5e` is `--color-destructive`, `0 4px 12px rgba(0,0,0,.4)` is `--shadow-md`. The three mark colours are tokens, not arbitrary values: like = `destructive`, dislike = `dislike` (`#3b82f6`), report = `warning`. Media and panel surfaces share `--radius-card` (14px).
+- **JS-driven animation reads the tokens, it does not restate them.** Web Animations, Svelte `transition:` params and JS timers cannot see a CSS custom property, so `web/src/base/lib/motion.ts` resolves `--duration-*` / `--ease-*` from the document (with `@theme` values as fallback) and `motionEaseFn` converts a `cubic-bezier(...)` token into the `EasingFunction` Svelte expects. Re-typing `cubic-bezier(0.2, 0, 0, 1)` in a component is how the token file and the components diverged.
+- **The top bar publishes what it measures.** `barCssVars` emits `--bar-h` _and_ `--bar-icon` / `--bar-badge` / `--bar-badge-text`; eight `size-[calc(var(--bar-h)*0.3125)]` strings became `size-[var(--bar-icon)]`. Same rule as §Responsive Layout: one measurement, no re-derived formula downstream.
+- **Enter and exit are different pairs**, but a single class driving both directions runs at enter timing on close. When both matter, derive the duration/ease from the state (`MultiSelectBar` is the worked example).
+- **One disabled treatment** (`--control-disabled-opacity`, applied by `button:disabled` in `@layer base`) — do not re-add per-site `disabled:opacity-*`, and do not override `button:disabled{cursor:not-allowed}`.
+
+---
+
+## Shared Owners Added (2026-10-02)
+
+Each of these exists because the logic had two hand-written copies that had already drifted:
+
+- `web/src/base/lib/motion.ts` — motion tokens (above).
+- `web/src/base/lib/num.ts` — `clamp01`/`clamp`; progress fractions and slider positions clamped the same way.
+- `web/src/base/lib/hover.ts` — `createHoverIntent`; instant enter, debounced leave, for every hover-revealed surface.
+- `web/src/base/lib/clipboard.ts` — `copyToClipboard` returns a boolean so callers keep their own copy labels (base/ may not import `copy.ts`).
+- `src/shared/json.ts` — `isRecord` / `safeJsonParse`, the one shape guard and lenient parser for both runtimes. It took nine inlined copies to notice that a malformed body is an expected path, not an exception.
+- `web/src/lib/components/PollReferences.svelte` — sole renderer for Markdown interleaved with `::vote:` references.
+- `web/src/lib/components/EditorDialog.svelte` — sole editor shell: scroll region, action footer, and the overlay. Both admin dialogs pass only their body.
+- `web/src/lib/components/pillMeasure.ts` — sole segmented-pill density measurement (clone probe). The deleted alternative summed `invisible` label-copy widths, which is the "hidden copies lie" trap again.
+- `AdminCollection` in `web/src/state/appStore.svelte.ts` — one optimistic admin write path (temp id → apply → commit or roll back → deferred reorder) for announcements and polls. The twins had already diverged: announcement delete/reorder toasts had lost the timeout hint the poll and feedback ones carried.
+
+---
+
+## Decisions That Closed Open Questions (2026-10-02)
+
+- **Editor images are not deduplicated.** `putSha` had no production caller, so the sha cache's `'editor'` purpose was unreachable. The cache is now exactly what it is used for — `isKnownAlbumSha(db, sha)` over the snapshot's hashes, replaced wholesale on every sync. The `'editor'` _upload purpose_ in the transcode protocol is unrelated and stays.
+- **The admin editor dialogs are modal.** `AnnouncementEditorDialog` said "non-modal panel"; that was the reason it had escaped `overlay.ts`. Both now run through the shared shell: focus trap, scroll lock, `aria-modal="true"`, Escape handled once at the top layer.
+- **An admin write's locale is an argument, not a UI read.** `adminClient` used `activeLocale()` while the store filed its optimistic row under `contentLocale` — two sources of truth for one value. Every write now takes the locale explicitly.
+- **One test convention, enforced.** `import { test } from 'vitest'` + `node:assert/strict`, no `describe`/`it`/`expect`. A `describe('Group')` + `it('Case')` pair flattens to one `test('Group: Case')`. Regex assertions use `assert.match` / `assert.doesNotMatch`, never `assert.ok(/re/.test(x))`. This is AGENTS §8.2, now actually true of every file in both suites.
+- **`expect(...).toEqual` ignores `undefined`-valued keys; `assert.deepEqual` does not.** Converting `uploadClient.test.ts` surfaced it: the result carries `detail: undefined` for a non-JSON error body, and the old expectation passed only because Vitet ignored it. `node:assert` is the stricter check — good, keep it, and write the `undefined` field explicitly rather than loosening the assertion.
+
+---
+
 ## Local Dev Environment (Pitfalls)
 
 - **NEVER `Stop-Process -Name node` / `taskkill /IM node`**: Kills the agent's own shell bridge, causing all subsequent Bash/PowerShell tools to fail with `command expected string / undefined`. To clear a port: `Get-NetTCPConnection -LocalPort <p>` → `Stop-Process -Id <pid>`.
@@ -40,6 +78,9 @@
 - wrangler reports Ready but curl hangs = zombie workerd on port; kill `workerd.exe` and restart. localhost unreachable → try `127.0.0.1` (local Vite only listens on IPv6 `[::1]:5173`).
 - After renaming a module export, vite may serve stale transform → `touch` the file to invalidate watcher cache.
 - **Temp scripts must never live in `web/` root** (triggers full-page reload, log spam = reload storm, can crash Worker). Put them in `scripts/` or use `.tmp-*` patterns.
+- **A corrupt `node_modules` looks like a code bug.** A partially-extracted `@lucide/svelte` (its `dist/lucide-svelte.d.ts` barrel missing) produced 22 "Could not find a declaration file" errors from `svelte-check`, and a stale `web/node_modules/vite` produced the rest — neither is a repo defect, and CI (fresh `npm ci`) was green the whole time. **Before chasing a wall of type errors, compare the installed version against the lockfile.** Repair by re-extracting the one package from its `resolved` tarball, not by editing `node_modules` or the lockfile.
+- **`npm ci` can leave the tree worse than it found it.** It unlinks first, so an `EPERM` on a locked native binary (`lightningcss.win32-x64-msvc.node`, held by a running dev stack or antivirus) aborts _after_ deleting most of `node_modules`. `npm install` is the safe recovery: it re-adds without unlinking.
+- `npm install` backfills `license` into `package-lock.json` from `package.json` — revert that line rather than committing unrelated lockfile churn.
 - **PowerShell often returns empty output for `npm run` / `npx`.** Redirect with `*> file` and read the file back; `$LASTEXITCODE` alone is the reliable signal.
 - **Inline PowerShell `$` variables get stripped** by the command tool: `foreach($p in …)` becomes `foreach( in …)` → parse error. Workaround: write the script to a `.ps1` file and run `powershell -ExecutionPolicy Bypass -File script.ps1`; prefer `netstat -ano | findstr` + `taskkill /PID <pid> /F` over complex inline PowerShell when feasible.
 - **`npm run dev` self-heals its ports** via a `predev` step (`scripts/free-dev-ports.mjs`) that kills whatever holds 8787 / 8788 / 5173 / 5174 and stops a leftover wrangler supervisor. Two traps that cost real time, both now encoded in the script and in AGENTS §9:
@@ -182,7 +223,7 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - Card overlay's "actual media" relies on local object URL (`previewUrlByJob`, revoke on dropTask), `overlay.preview` lets PhotoCard degrade undecodable preview to skeleton.
 - **No auto-sync after upload** (user decision): only `engine.addOp(op)`, relies on page open / pagehide / manual sync to send. Cost is new photos stay as optimistic cards until next sync.
 - **Toasts always `expand`**: sonner's hover-expand is a pitfall here (left-swipe close with pointer outside list, `interacting` mark unclear → remaining notifications never expand).
-- **Toast 避让底边是实测高度，不是常量**。`UploadPanel` 通过 `onHeight?(px)` 上报内层卡片的 `ResizeObserver` 高度，`App.svelte` 的 `toastOffsetBottom` 按 `multiMode → 80px` / `窄屏 + panelRows>0 → 16px + 实测高度` / 否则 `16px` 取值。三个坑：① effect 必须依赖 `hidden`（translate 不改 `offsetHeight`，从 hidden 回来高度会卡在 0）；② App 侧回调必须是模块级 `const`（内联箭头每次渲染换新引用，会把子组件的 RO 拆了重建）；③ 单位用 px 不用 rem（实测值过根字号换算会插入误差）。桌面端浮层在右下、toast 在左下，互不冲突，所以只在窄屏避让。
+- **Toast 避让底边是实测高度，不是常量**。`UploadPanel` 通过 `onGeometry?.({ height, atLeftEdge })` 上报内层 `ResizeObserver` 的实测高度与"是否贴着视口左边缘"（`rect.left < 8`），`App.svelte` 的 `toastOffsetBottom` 按 `multiMode → 80px` / `panelRows>0 && atLeftEdge → 16px + 实测高度` / 否则 `16px` 取值。左边缘贴边=面板全宽、压在左下 toast 列上；右下角桌面面板不重叠，无需避让。曾用 `matchMedia('(min-width: 768px)')` 断点（与面板 `md:` 恰好同值，所以当时无 bug，但阈值两处各写一遍会漂移），已按"measure, never guess"改为实测。三个坑：① effect 必须依赖 `hidden`（translate 不改 `offsetHeight`，从 hidden 回来高度会卡在 0）；② App 侧回调必须是模块级 `const`（内联箭头每次渲染换新引用，会把子组件的 RO 拆了重建）；③ 单位用 px 不用 rem（实测值过根字号换算会插入误差）。桌面端浮层在右下、toast 在左下，互不冲突，所以只在面板贴左边缘（全宽）时避让。
 - **触发 toast 的可靠零副作用路径**：`page.setInputFiles('input[type=file]', '非媒体文件')` → accept 校验拒绝并 toast，不写库。sonner 的 Toaster DOM 只在有 toast 时存在，空闲页面读不到 offset。
 
 ---
@@ -220,6 +261,8 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - `untracked` does not exist, correct name is **`untrack`**, and can only be imported from `'svelte'` (not `'svelte/runtime'`).
 - ⚠️ **Before positioning something in X's corner, ask whether X's box already exists.** Usually the parent _is_ X's shrink-wrapped box, so `relative` + `absolute` is enough. Copying a sizing formula (e.g. the skeleton's `min(--w, …)`) creates a shadow copy that drifts from its source — the drift here was a copied box that never received a height, so an absolutely-positioned child collapsed the frame to 0 and pinned itself to the viewport's vertical centre line.
 - ⚠️ **When a parent and child share a CSS variable that drives different properties, their `transition` must be set explicitly and identically.** One value applying instantly while the other animates guarantees a one-frame visual mismatch (element snaps to final size, then pops).
+
+- **指针 resize 只有一条实现**：`base/lib/pointer.ts#startPointerResize({ event, axis, sign, start, clamp, onMove, onStart/onEnd/onStop })` 返回 stop 函数；`OverlaySidebar`（水平宽度 + 方向 `sign`）与 `AnnouncementSidebar`（垂直高度，`sign: -1`）都复用它，不要在组件里再手写 `pointermove`/`up`/`cancel`。stop 由组件保存，并在 `onDestroy`（以及面板关闭）时调用。
 
 ---
 

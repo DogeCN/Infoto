@@ -29,11 +29,10 @@
   title={label || copy.settings.language}
   aria-pressed={current === 'zh-CN'}
   disabled={!target}
-  class="inline-flex shrink-0 items-center justify-center rounded-md transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 {variant ===
-  'settings'
-    ? 'size-9 bg-secondary text-secondary-foreground hover:bg-secondary/80'
-    : 'p-2 text-muted-foreground hover:bg-card hover:text-foreground'}"
+  class="{variant === 'settings'
+    ? 'inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80'
+    : 'icon-button shrink-0 p-2'} {variant === 'topbar' ? 'disabled:pointer-events-none' : ''}"
   onclick={toggle}
 >
-  <Icon class={variant === 'settings' ? 'size-4' : 'size-[calc(var(--bar-h)*0.3125)]'} />
+  <Icon class={variant === 'settings' ? 'size-4' : 'size-[var(--bar-icon)]'} />
 </button>

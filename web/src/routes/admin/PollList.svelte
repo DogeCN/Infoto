@@ -2,6 +2,7 @@
   import type { Poll } from '$shared/types';
   import { ChartNoAxesColumn, Copy, Pencil, Trash2 } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
+  import { copyToClipboard } from '$base/lib/clipboard';
   import { copy } from '$lib/i18n.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
@@ -19,12 +20,8 @@
   let { polls, selfId = -1, onEdit, onDelete, onReorder }: Props = $props();
 
   async function copySyntax(id: number): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(`::vote:${id}`);
-      toast.success(copy.admin.poll.syntaxCopied);
-    } catch {
-      toast.error(copy.admin.poll.copyFailed);
-    }
+    if (await copyToClipboard(`::vote:${id}`)) toast.success(copy.admin.poll.syntaxCopied);
+    else toast.error(copy.admin.poll.copyFailed);
   }
 </script>
 
@@ -44,7 +41,7 @@
           <Tooltip text={copy.admin.poll.copySyntax}>
             <button
               type="button"
-              class="icon-button p-2 disabled:opacity-40"
+              class="icon-button p-2"
               aria-label={copy.admin.poll.copySyntax}
               disabled={poll.id < 0}
               onclick={() => void copySyntax(poll.id)}
@@ -55,7 +52,7 @@
           <Tooltip text={copy.admin.poll.edit}>
             <button
               type="button"
-              class="icon-button p-2 disabled:opacity-40"
+              class="icon-button p-2"
               aria-label={copy.admin.poll.edit}
               disabled={poll.id < 0}
               onclick={() => onEdit(poll)}
@@ -66,7 +63,7 @@
           <Tooltip text={copy.admin.poll.delete}>
             <button
               type="button"
-              class="icon-button icon-button--danger p-2 disabled:opacity-40"
+              class="icon-button icon-button--danger p-2"
               aria-label={copy.admin.poll.deleteAria}
               disabled={poll.id < 0}
               onclick={() => onDelete(poll.id)}

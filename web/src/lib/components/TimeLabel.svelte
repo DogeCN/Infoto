@@ -2,6 +2,7 @@
   import { getLocale } from '$lib/i18n.svelte';
   import { onDestroy } from 'svelte';
   import { formatRelativeTime, formatSmartAbsolute } from '$base/lib/format';
+  import { createHoverIntent } from '$base/lib/hover';
 
   interface Props {
     /** Epoch millis of the moment to render. */
@@ -23,27 +24,18 @@
   });
 
   // Show absolute time immediately on hover; debounce pointer leave.
-  const LEAVE_DELAY_MS = 160;
   let hovered = $state(false);
-  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
-
+  const intent = createHoverIntent();
+  $effect(() => {
+    hovered = intent.hovered();
+  });
   function onEnter(): void {
-    if (leaveTimer) {
-      clearTimeout(leaveTimer);
-      leaveTimer = undefined;
-    }
-    hovered = true;
+    intent.enter();
   }
   function onLeave(): void {
-    if (leaveTimer) clearTimeout(leaveTimer);
-    leaveTimer = setTimeout(() => {
-      hovered = false;
-      leaveTimer = undefined;
-    }, LEAVE_DELAY_MS);
+    intent.leave();
   }
-  onDestroy(() => {
-    if (leaveTimer) clearTimeout(leaveTimer);
-  });
+  onDestroy(intent.destroy);
 
   let relativeLabel = $derived(formatRelativeTime(time, now, getLocale()));
   let absoluteLabel = $derived(formatSmartAbsolute(time, now, getLocale()));

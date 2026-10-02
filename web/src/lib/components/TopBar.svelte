@@ -11,6 +11,7 @@
   import type { SortDirections, SortKey } from '../../core/gallery';
   import { BAR_PAD, barCssVars, barHeight, resolveBarMode, type BarMode } from './topbarFit';
   import { scroll } from '../../state/scroll.svelte';
+  import { barHeightPx } from '../../state/barHeight.svelte';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
@@ -164,6 +165,20 @@
     if (next !== 'paged' && screen !== 0) screen = 0;
   }
 
+  // The bar is the project's single measurement of its own chrome: publish --bar-h on
+  // the root element and mirror it into shared state, so anything laid out beneath it
+  // (gallery inset, admin editor dialogs) offsets by the measured value instead of
+  // restating the height formula against a width it measured on its own.
+  $effect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--bar-h', `${barH}px`);
+    barHeightPx.value = barH;
+    return () => {
+      root.style.removeProperty('--bar-h');
+      barHeightPx.value = 0;
+    };
+  });
+
   $effect(() => {
     const header = headerEl;
     if (!header) return;
@@ -267,13 +282,13 @@
       title={copy.topbar.settings}
       aria-label={copy.topbar.settings}
     >
-      <Settings class="size-[calc(var(--bar-h)*0.3125)]" />
+      <Settings class="size-[var(--bar-icon)]" />
     </button>
     {#if filterCount > 0}
       <span
-        class="pointer-events-none absolute -right-0.5 -top-0.5 flex size-[calc(var(--bar-h)*0.25)] items-center justify-center rounded-full bg-primary text-primary-foreground"
+        class="pointer-events-none absolute -right-0.5 -top-0.5 flex size-[var(--bar-badge)] items-center justify-center rounded-full bg-primary text-primary-foreground"
       >
-        <Funnel class="size-[calc(var(--bar-h)*0.15625)]" />
+        <Funnel class="size-[var(--bar-badge-text)]" />
       </span>
     {/if}
   </div>
@@ -288,7 +303,7 @@
     title={copy.topbar.announcements}
     aria-label={copy.topbar.announcements}
   >
-    <Megaphone class="size-[calc(var(--bar-h)*0.3125)]" />
+    <Megaphone class="size-[var(--bar-icon)]" />
   </button>
   <button
     type="button"
@@ -298,7 +313,7 @@
     title={copy.topbar.multiSelect}
     aria-label={copy.topbar.multiSelect}
   >
-    <CheckSquare class="size-[calc(var(--bar-h)*0.3125)]" />
+    <CheckSquare class="size-[var(--bar-icon)]" />
   </button>
   <button
     type="button"
@@ -307,7 +322,7 @@
     title={copy.topbar.upload}
     aria-label={copy.topbar.upload}
   >
-    <UploadCloud class="size-[calc(var(--bar-h)*0.3125)]" />
+    <UploadCloud class="size-[var(--bar-icon)]" />
   </button>
 {/snippet}
 
@@ -349,7 +364,7 @@
         aria-label={adminCreateLabel}
         aria-pressed={adminCreateActive}
       >
-        <Plus class="size-[calc(var(--bar-h)*0.3125)]" />
+        <Plus class="size-[var(--bar-icon)]" />
       </button>
     {/if}
     {#if adminActions}{@render adminActions()}{/if}

@@ -95,7 +95,6 @@ export class UploadPipeline {
     { resolve: (url: string) => void; reject: (error: Error) => void }
   >();
   private readonly pendingAlbumOps = new Set<string>();
-  private swDead = false;
   private backoffTimer: ReturnType<typeof setTimeout> | null = null;
   /** Facade URL last reported to the SW; re-sent only when it changes. */
   private mediaHost: string | undefined;
@@ -187,7 +186,6 @@ export class UploadPipeline {
 
   /** Connect SharedWorker + BroadcastChannel, register triggers. */
   start(): void {
-    this.swDead = false;
     if (this.sw) return;
     this.sw = this.io.swUrl
       ? new SharedWorker(this.io.swUrl, { type: 'module' })
@@ -254,7 +252,6 @@ export class UploadPipeline {
   }
 
   private restartWithBackoff(): void {
-    this.swDead = true;
     for (const s of this.snapshots.values()) {
       this.emit({ ...s, phase: 'failed', error: 'worker_died' });
     }

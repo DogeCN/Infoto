@@ -1,6 +1,8 @@
 // Single-attempt upload transport with an idle-progress deadline and caller-controlled retry.
 
 import type { MediaHostUploadResponse } from '$shared/types';
+import { LOCAL_MEDIA_HOST_URL } from '$shared/media';
+import { clamp01 } from '$base/lib/num';
 import { UPLOAD_TIMEOUT_MS } from '$base/upload/pipeline';
 
 export interface UploadResultOk {
@@ -38,7 +40,7 @@ export interface UploadCallIo {
 
 /** Facade endpoint. Falls back to the local simulation when /sync has not answered yet. */
 function uploadEndpoint(mediaHostUrl: string | undefined): string {
-  return `${mediaHostUrl ?? 'http://127.0.0.1:8788'}/upload`;
+  return `${mediaHostUrl ?? LOCAL_MEDIA_HOST_URL}/upload`;
 }
 
 function parseMediaHostResponse(text: string, status: number): UploadResult {
@@ -167,7 +169,7 @@ export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<Upl
     xhr.upload.onprogress = (e) => {
       if (settled) return;
       if (e.lengthComputable && e.total > 0) {
-        io.onProgress?.(Math.max(0, Math.min(1, e.loaded / e.total)));
+        io.onProgress?.(clamp01(e.loaded / e.total));
       }
       arm();
     };

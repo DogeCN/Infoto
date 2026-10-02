@@ -15,6 +15,7 @@
   import MultiSelectBar from './MultiSelectBar.svelte';
   import { scroll } from '../../state/scroll.svelte';
   import { barHeight } from './topbarFit';
+  import { barHVar } from '../../state/barHeight.svelte';
 
   interface Props {
     photos: Photo[];
@@ -81,8 +82,9 @@
   let padX = $derived(Math.max(8, Math.min(16, Math.round(containerW * 0.02))));
   /** Additional spacing below the measured top bar. */
   const TOP_GAP = 0;
-  /** Reserve the measured bar height before the first gallery row. */
-  let padTop = $derived(Math.ceil(barHeight(containerW) + TOP_GAP));
+  // The bar publishes --bar-h from its own measurement, so the canvas reads that value
+  // instead of restating the height formula against a width it measures separately.
+  let padTop = $derived(Math.ceil((barHVar() || barHeight(containerW)) + TOP_GAP));
 
   // Uniform grid zoom preserves cell geometry and gap proportions.
   let zoom = $state(1);

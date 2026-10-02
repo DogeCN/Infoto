@@ -1,4 +1,6 @@
 /** JSON transport with a deadline covering headers and the complete response body. */
+import { safeJsonParse } from '$shared/json';
+
 export interface RequestIo {
   fetchFn?: typeof fetch;
   origin?: string;
@@ -26,13 +28,7 @@ export async function requestJson(
       signal: controller.signal,
     });
     const text = await response.text();
-    let data: unknown = null;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      // HTTP errors can carry an HTML or empty body.
-    }
-    return { response, data };
+    return { response, data: safeJsonParse<unknown>(text, null) };
   } catch (error) {
     if (controller.signal.aborted && !externalSignal?.aborted) {
       throw new Error(timeoutId, { cause: error });

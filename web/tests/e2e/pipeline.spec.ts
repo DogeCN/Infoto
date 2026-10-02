@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { fmt, locales } from '../../../src/shared/copy';
 import { passGate } from './helpers';
 
+const enCopy = locales['en-US'];
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const localizedPattern = (values: string[]): RegExp =>
   new RegExp(`^(?:${values.map(escapeRegExp).join('|')})$`);
@@ -227,31 +228,21 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     }).toPass({ timeout: 30_000 });
   });
 
-  test('lease revocation: page A closes mid-flight → revoked within 15s → page B re-enqueues', async () => {
-    test.skip(true, 'needs a real video file and lease timing; manual walkthrough batch');
-  });
-
-  test('pagehide submit: op leaves before unload', async ({ page }) => {
+  test('pagehide submit: a queued op leaves in a keepalive request', async ({ page }) => {
     await passGate(page);
-    let syncSeen = false;
-    page.on('request', (r) => {
-      if (r.url().includes('/sync') && r.method() === 'POST') syncSeen = true;
+
+    // The flush is a no-op with an empty oplog, so the op has to go through the engine:
+    // submitting feedback from the sidebar appends it and leaves one operation pending.
+    const sidebar = page.getByRole('dialog', { name: enCopy.sidebar.announcementsTitle });
+    await page.getByRole('button', { name: enCopy.topbar.announcements, exact: true }).click();
+    await sidebar.getByPlaceholder(enCopy.announcements.feedbackPlaceholder).fill('pagehide-e2e');
+    await sidebar.getByRole('button', { name: enCopy.announcements.send, exact: true }).click();
+
+    // Observe the flush itself: the engine's keepalive POST carries the queued op.
+    const flushed = page.waitForRequest((r) => r.url().includes('/sync') && r.method() === 'POST', {
+      timeout: 15_000,
     });
-    // add an op then trigger pagehide (unload path)
-    await page.evaluate(async () => {
-      const r = await fetch('/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          locale: 'en-US',
-          ops: [{ type: 'fb_create', target: null, payload: { contentMd: 'pagehide-e2e' } }],
-        }),
-      });
-      return r.status;
-    });
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event('pagehide'));
-    });
-    expect(syncSeen || true).toBe(true); // keepalive requests are barely observable; manual walkthrough backstops
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    expect((await flushed).postData()).toContain('fb_create');
   });
 });

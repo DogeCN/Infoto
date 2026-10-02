@@ -130,7 +130,7 @@ async function overlayRequestToken(siteKey: string): Promise<string> {
   container.style.display = 'grid';
   container.style.placeItems = 'center';
   container.style.zIndex = '9999';
-  container.style.background = '#0a0e1a';
+  container.style.background = 'var(--color-background)';
   document.body.appendChild(container);
   try {
     return await renderTurnstile(siteKey, container);

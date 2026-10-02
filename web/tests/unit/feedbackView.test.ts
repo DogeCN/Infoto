@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
 import type { Feedback } from '$shared/types';
 import { filterFeedback } from '../../src/routes/admin/feedbackView';
 
@@ -15,14 +16,14 @@ const feedback: Feedback[] = [
   { id: 12, userId: 3, contentMd: 'Faster exports', createdAt: 3, locale: 'zh-CN', sort: 2 },
 ];
 
-describe('admin feedback view', () => {
-  it('searches content and ids, and copies the list for an empty query', () => {
-    expect(filterFeedback(feedback, '  SEARCH ').map((item) => item.id)).toEqual([10]);
-    expect(filterFeedback(feedback, '20').map((item) => item.id)).toEqual([11]);
-    expect(filterFeedback(feedback, '12').map((item) => item.id)).toEqual([12]);
-    expect(filterFeedback(feedback, 'exports').map((item) => item.id)).toEqual([12]);
-    const result = filterFeedback(feedback, '  ');
-    expect(result).toEqual(feedback);
-    expect(result).not.toBe(feedback);
-  });
+const ids = (query: string): number[] => filterFeedback(feedback, query).map((item) => item.id);
+
+test('searches content and ids, and copies the list for an empty query', () => {
+  assert.deepEqual(ids('  SEARCH '), [10]);
+  assert.deepEqual(ids('20'), [11]);
+  assert.deepEqual(ids('12'), [12]);
+  assert.deepEqual(ids('exports'), [12]);
+  const result = filterFeedback(feedback, '  ');
+  assert.deepEqual(result, feedback);
+  assert.notEqual(result, feedback);
 });

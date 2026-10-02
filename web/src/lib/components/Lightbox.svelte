@@ -23,6 +23,7 @@
   import { toast } from 'svelte-sonner';
   import { proxyUrl } from '$shared/media';
   import { humanSize } from '$base/lib/format';
+  import { copyToClipboard } from '$base/lib/clipboard';
   import ActionSheet from './ActionSheet.svelte';
   import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
@@ -68,9 +69,10 @@
   let volumeMuted = $state(true);
   // loadedUrl === photo.url means the current media finished decoding (drives skeleton + opacity).
   let loadedUrl = $state('');
-  // Media load failure: show a glitching ERROR + toast.
+  // Media load failure: show the failure glyph + a toast. The HTTP status is not
+  // reliably obtainable cross-origin (HEAD is CORS-gated), so no code is shown.
   let loadFailed = $state(false);
-  let failStatus = $state('ERROR');
+  let failStatus = $derived(copy.errorGlyph);
 
   // Track which failing URLs have already surfaced a toast, so revisiting a
   // known-broken photo does not spam notifications.
@@ -541,7 +543,6 @@
     zoomY = 0;
     // Reset load errors on photo changes while keeping the URL-based decoded-media cache.
     loadFailed = false;
-    failStatus = 'ERROR';
     if (wrapEl) applyWrap();
   });
 
@@ -580,12 +581,8 @@
   // ---- menu actions ----------------------------------------------------------
 
   async function copyText(text: string, label: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success(label);
-    } catch {
-      toast.error(copy.lightbox.copyFailed);
-    }
+    if (await copyToClipboard(text)) toast.success(label);
+    else toast.error(copy.lightbox.copyFailed);
   }
 
   /** An optimistic upload entry: it has no server id yet, so anything addressed by id
@@ -654,11 +651,11 @@
             aria-label={isLiked ? copy.lightbox.unlike : copy.lightbox.like}
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isLiked
-              ? 'bg-[#f43f5e]/85 text-white'
+              ? 'bg-destructive/85 text-white'
               : 'text-white/85 hover:bg-white/10'}"
             onclick={toggleLike}
           >
-            <ThumbsUp class="size-5 {isLiked ? 'fill-current' : 'text-[#f43f5e]'}" />
+            <ThumbsUp class="size-5 {isLiked ? 'fill-current' : 'text-destructive'}" />
             <span class="tabular-nums">{photo.likes.length}</span>
           </button>
         </Tooltip>
@@ -667,11 +664,11 @@
             aria-label={isDisliked ? copy.lightbox.undislike : copy.lightbox.dislike}
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isDisliked
-              ? 'bg-[#3b82f6]/85 text-white'
+              ? 'bg-dislike/85 text-white'
               : 'text-white/85 hover:bg-white/10'}"
             onclick={toggleDislike}
           >
-            <ThumbsDown class="size-5 {isDisliked ? 'fill-current' : 'text-[#3b82f6]'}" />
+            <ThumbsDown class="size-5 {isDisliked ? 'fill-current' : 'text-dislike'}" />
             <span class="tabular-nums">{photo.dislikes.length}</span>
           </button>
         </Tooltip>
@@ -683,11 +680,11 @@
             aria-label={isReported ? copy.lightbox.cancelReport : copy.lightbox.report}
             type="button"
             class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isReported
-              ? 'bg-amber-500/85 text-white'
+              ? 'bg-warning/85 text-white'
               : 'text-white/85 hover:bg-white/10'}"
             onclick={toggleReport}
           >
-            <Flag class="size-5 {isReported ? 'fill-current' : 'text-amber-400'}" />
+            <Flag class="size-5 {isReported ? 'fill-current' : 'text-warning'}" />
             <span class="tabular-nums">{photo.reports.length}</span>
           </button>
         </Tooltip>
@@ -698,7 +695,7 @@
           <button
             aria-label={copy.lightbox.more}
             type="button"
-            class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10"
+            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
             onclick={() => (showMenu = true)}
           >
             <MoreHorizontal class="size-6" />
@@ -708,7 +705,7 @@
           <button
             aria-label={copy.lightbox.close}
             type="button"
-            class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10"
+            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
             onclick={onClose}
           >
             <X class="size-6" />
@@ -751,7 +748,6 @@
             onloadeddata={() => (loadedUrl = photo.url)}
             onerror={() => {
               loadFailed = true;
-              failStatus = 'ERROR';
               toastLoadFailed(photo.url);
             }}
           ></video>
@@ -765,7 +761,6 @@
             onload={() => (loadedUrl = photo.url)}
             onerror={() => {
               loadFailed = true;
-              failStatus = 'ERROR';
               toastLoadFailed(photo.url);
             }}
           />
@@ -778,16 +773,16 @@
               <button
                 aria-label={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute}
                 type="button"
-                class="flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 {volumeMuted
-                  ? 'border-white/15 bg-black/55 text-white/70 hover:bg-[#22d3ee]/20'
-                  : 'border-[#22d3ee]/50 bg-[#22d3ee]/20 text-[#22d3ee]'}"
+                class="flex items-center justify-center rounded-full border backdrop-blur-[4px] transition-[background-color,border-color,color,scale] duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:scale-105 active:scale-95 {volumeMuted
+                  ? 'border-white/15 bg-black/55 text-white/70 hover:bg-primary/20'
+                  : 'border-primary/50 bg-primary/20 text-primary'}"
                 style="width: 1.9rem; height: 1.9rem"
                 onpointerdown={(e) => e.stopPropagation()}
                 ondblclick={(e) => e.stopPropagation()}
                 onclick={() => (volumeMuted = !volumeMuted)}
               >
                 {#if volumeMuted}
-                  <VolumeX class="size-4 text-amber-500" />
+                  <VolumeX class="size-4 text-warning" />
                 {:else}
                   <Volume2 class="size-4" />
                 {/if}
@@ -802,7 +797,7 @@
     {#if gestureDir}
       {#if gestureDir === 'left'}
         <div
-          class="pointer-events-none absolute left-10 top-1/2 z-10 flex size-14 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-[#f43f5e] backdrop-blur-sm md:left-16"
+          class="pointer-events-none absolute left-10 top-1/2 z-10 flex size-14 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-destructive backdrop-blur-sm md:left-16"
           style="opacity: {gestureRatio}; transform: translateY(-50%) scale({0.8 +
             gestureRatio * 0.4})"
         >
@@ -810,7 +805,7 @@
         </div>
       {:else if gestureDir === 'right'}
         <div
-          class="pointer-events-none absolute right-10 top-1/2 z-10 flex size-14 items-center justify-center rounded-full bg-black/40 text-[#3b82f6] backdrop-blur-sm md:right-16"
+          class="pointer-events-none absolute right-10 top-1/2 z-10 flex size-14 items-center justify-center rounded-full bg-black/40 text-dislike backdrop-blur-sm md:right-16"
           style="opacity: {gestureRatio}; transform: translateY(-50%) scale({0.8 +
             gestureRatio * 0.4})"
         >
@@ -856,7 +851,7 @@
           <button
             aria-label={copy.lightbox.prev}
             type="button"
-            class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
+            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
             disabled={photos.length < 2}
             onclick={goPrev}
           >
@@ -870,7 +865,7 @@
           <button
             aria-label={copy.lightbox.next}
             type="button"
-            class="inline-flex size-11 items-center justify-center rounded-full text-white/80 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10 disabled:opacity-30"
+            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
             disabled={photos.length < 2}
             onclick={goNext}
           >
@@ -890,7 +885,7 @@
     <div class="grid grid-cols-3 gap-3">
       <button
         type="button"
-        class="photo-action text-sky-400 hover:bg-sky-400/15"
+        class="photo-action text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
         onclick={() => {
           void copyText(photo.url, copy.lightbox.originalUrlCopied);
           showMenu = false;
@@ -906,7 +901,7 @@
       {#if !isPending}
         <button
           type="button"
-          class="photo-action text-violet-400 hover:bg-violet-400/15"
+          class="photo-action text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
           onclick={() => {
             void copyText(shareUrl, copy.lightbox.linkCopied);
             showMenu = false;
@@ -918,7 +913,7 @@
 
         <button
           type="button"
-          class="photo-action text-teal-400 hover:bg-teal-400/15"
+          class="photo-action text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
           onclick={share}
         >
           <Share2 class="size-6" />
@@ -939,7 +934,7 @@
 
       <button
         type="button"
-        class="photo-action text-amber-500 hover:bg-amber-500/15"
+        class="photo-action text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
         onclick={() => {
           onRequestDelete?.(photo);
           showMenu = false;
@@ -953,7 +948,7 @@
       {#if !isPending}
         <button
           type="button"
-          class="photo-action text-success hover:bg-success/15"
+          class="photo-action text-primary hover:bg-primary/15"
           onclick={() => {
             onDownload?.(photo);
             showMenu = false;
@@ -1004,11 +999,11 @@
     /* Share metadata-derived CSS sizing between media and skeleton to reserve the final box before decoding. */
     max-height: calc(100dvh - 8rem);
     aspect-ratio: var(--ar, auto);
-    border-radius: 14px;
+    border-radius: var(--radius-card);
     object-fit: contain;
     transition:
-      opacity 0.3s ease,
-      transform 0.3s ease;
+      opacity var(--duration-enter) var(--ease-enter),
+      transform var(--duration-enter) var(--ease-enter);
   }
 
   /* Media and placeholder dimensions, constrained by native size and viewport space. */
@@ -1031,15 +1026,10 @@
     /* Establish a size container so the ERROR glitch can scale to the media box
        via cqmin instead of a fixed font-size (which overflowed narrow media). */
     container-type: size;
-    background: linear-gradient(
-      90deg,
-      var(--color-card) 0%,
-      var(--color-surface-top) 40%,
-      var(--color-card) 80%
-    );
-    background-size: 800px 100%;
-    animation: shimmer 1.8s infinite ease-in-out;
-    border-radius: 14px;
+    background: var(--shimmer-gradient);
+    background-size: var(--shimmer-size);
+    animation: shimmer var(--shimmer-duration) infinite ease-in-out;
+    border-radius: var(--radius-card);
   }
 
   /* On load failure: drop the shimmer, keep a flat solid surface behind the glitch code. */

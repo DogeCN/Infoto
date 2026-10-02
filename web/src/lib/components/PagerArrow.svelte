@@ -17,7 +17,7 @@
 
 <button
   type="button"
-  class="flex shrink-0 items-center justify-center rounded-md p-2 text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-card hover:text-foreground"
+  class="icon-button shrink-0 p-2"
   onclick={onToggle}
   title={label}
   aria-label={label}
@@ -30,6 +30,6 @@
       : 'rotate-0'}"
   >
     <!-- ChevronLeft points at screen 1; screen 1's rotation turns it the other way. -->
-    <ChevronLeft class="size-[calc(var(--bar-h)*0.3125)]" />
+    <ChevronLeft class="size-[var(--bar-icon)]" />
   </span>
 </button>

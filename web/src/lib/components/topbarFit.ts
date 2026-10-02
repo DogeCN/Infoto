@@ -34,18 +34,22 @@ export function barHeight(barWidth: number): number {
 /** Icon and badge dimensions as fractions of the measured bar height. */
 export const BAR_ICON_RATIO = 0.3125;
 export const BAR_BADGE_RATIO = 0.25;
-
-/** Icon box in px for a given bar width, for callers that need the number rather than CSS. */
-export function barIconSize(barWidth: number): number {
-  return barHeight(barWidth) * BAR_ICON_RATIO;
-}
+/** Badge text as a fraction of the badge box. */
+export const BADGE_TEXT_RATIO = 0.625;
 
 /**
- * Custom properties for the bar element. Children inherit `--bar-h`, so the whole control
- * set scales from one measurement instead of each component re-deriving the ramp.
+ * Custom properties for the bar element. Children inherit `--bar-h` plus the sizes derived
+ * from it, so the whole control set scales from one measurement instead of each component
+ * re-deriving the ramp or re-typing the ratios.
  */
 export function barCssVars(barWidth: number): string {
-  return `--bar-h:${barHeight(barWidth)}px`;
+  const h = barHeight(barWidth);
+  return [
+    `--bar-h:${h}px`,
+    `--bar-icon:${h * BAR_ICON_RATIO}px`,
+    `--bar-badge:${h * BAR_BADGE_RATIO}px`,
+    `--bar-badge-text:${h * BAR_BADGE_RATIO * BADGE_TEXT_RATIO}px`,
+  ].join(';');
 }
 
 export interface BarRequirements {

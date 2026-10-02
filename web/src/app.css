@@ -19,7 +19,13 @@
   --color-destructive: #f43f5e;
   --color-success: #10b981;
   --color-warning: #f59e0b;
+  /* Dislike reads as the cool counterpart to destructive's rose; it is its own token
+     because both Lightbox and PhotoCard paint the same pair. */
+  --color-dislike: #3b82f6;
   --radius: 12px;
+  /* Media and panel surfaces share one radius; generic controls use `rounded-*`. */
+  --radius-card: 14px;
+  --control-disabled-opacity: 0.4;
 
   --ease-enter: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
@@ -30,6 +36,8 @@
 
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.6);
+  /* Upward lift for a bar pinned to the bottom edge. */
+  --shadow-lift: 0 -8px 24px rgba(0, 0, 0, 0.45);
 }
 
 @layer base {
@@ -78,6 +86,7 @@
 
   button:disabled {
     cursor: not-allowed;
+    opacity: var(--control-disabled-opacity);
   }
 
   input,
@@ -137,16 +146,24 @@
   }
 }
 
-.skeleton {
-  border-radius: var(--radius);
-  background: linear-gradient(
+/* The indeterminate sweep is declared once; `.skeleton` and the Lightbox placeholder
+   both read these three properties instead of restating the gradient. */
+:root {
+  --shimmer-gradient: linear-gradient(
     90deg,
     var(--color-card) 0%,
     var(--color-surface-top) 40%,
     var(--color-card) 80%
   );
-  background-size: 800px 100%;
-  animation: shimmer 1.8s infinite ease-in-out;
+  --shimmer-size: 800px 100%;
+  --shimmer-duration: 1.8s;
+}
+
+.skeleton {
+  border-radius: var(--radius);
+  background: var(--shimmer-gradient);
+  background-size: var(--shimmer-size);
+  animation: shimmer var(--shimmer-duration) infinite ease-in-out;
 }
 
 [data-sonner-toaster].toast-stack[data-y-position='bottom'] {
@@ -276,9 +293,11 @@
     background: color-mix(in srgb, var(--color-secondary) 80%, white);
   }
 
+  /* The thumb grows on hover and under the drag; the drag cancels the transition so the
+     scale tracks the pointer instead of lagging behind it. */
   .slider-thumb {
     @apply absolute top-1/2 size-[18px] -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full border-[3px] border-background bg-primary outline-none active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
-    transition: transform 120ms var(--ease-exit);
+    transition: transform var(--duration-exit) var(--ease-exit);
   }
 
   .slider-bubble {

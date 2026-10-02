@@ -62,27 +62,25 @@
   let rightOpen = $state(false);
   let layoutPreview = $state(false);
   let multiMode = $state(false);
-  /** Wide layout: the upload panel moves to the bottom-right, clear of bottom-left toasts. */
-  let wideLayout = $state(false);
-  $effect(() => {
-    const mq = window.matchMedia('(min-width: 768px)');
-    const apply = () => (wideLayout = mq.matches);
-    apply();
-    mq.addEventListener('change', apply);
-    return () => mq.removeEventListener('change', apply);
-  });
 
-  /** Measured upload-panel height, zero while collapsed or hidden. A stable callback preserves its observer subscription. */
+  /** Measured upload-panel geometry, zero-height while collapsed or hidden. A stable callback
+   *  preserves the panel's observer subscription; the edge and height come from the panel's
+   *  own ResizeObserver, so clearance follows the panel rather than a viewport breakpoint. */
   let uploadPanelHeight = $state(0);
-  const handleUploadPanelHeight = (px: number) => (uploadPanelHeight = px);
+  let uploadPanelAtLeftEdge = $state(false);
+  const handleUploadPanelGeometry = (geometry: { height: number; atLeftEdge: boolean }) => {
+    uploadPanelHeight = geometry.height;
+    uploadPanelAtLeftEdge = geometry.atLeftEdge;
+  };
 
-  /** Bottom toast clearance in pixels. Narrow layouts clear the upload panel; multi-select clears the bottom bar. */
+  /** Bottom toast clearance in pixels. A panel flush with the left edge covers the toast
+   *  column; multi-select clears the bottom bar. */
   const TOAST_EDGE_GAP = 16;
   const MULTI_SELECT_CLEARANCE = 80;
   let toastOffsetBottom = $derived(
     multiMode
       ? MULTI_SELECT_CLEARANCE
-      : uploads.panelRows.length > 0 && !wideLayout
+      : uploads.panelRows.length > 0 && uploadPanelAtLeftEdge
         ? TOAST_EDGE_GAP + uploadPanelHeight
         : TOAST_EDGE_GAP,
   );
@@ -357,7 +355,7 @@
       {#if verifyState !== 'idle'}
         <div
           data-verify
-          class="absolute inset-0 z-10 grid place-items-center bg-background transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-exit)] {verifyState ===
+          class="absolute inset-0 z-10 grid place-items-center bg-background transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {verifyState ===
           'done'
             ? 'pointer-events-none opacity-0'
             : 'opacity-100'}"
@@ -426,7 +424,7 @@
     tasks={uploads.panelRows}
     progress={uploads.progress}
     onRemove={handleRemoveUpload}
-    onHeight={handleUploadPanelHeight}
+    onGeometry={handleUploadPanelGeometry}
     hidden={multiMode}
   />
 
