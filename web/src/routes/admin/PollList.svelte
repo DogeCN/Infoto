@@ -74,8 +74,9 @@
         </div>
       </div>
 
-      <div class="mt-4 space-y-2 rounded-lg border border-border bg-background/50 p-3">
-        <p class="text-xs font-medium text-muted-foreground">{copy.admin.poll.preview}</p>
+      <!-- Read-only render of the poll. No heading: the option rows are self-describing, and
+           a second bordered panel around them only nested one box inside another. -->
+      <div class="mt-4">
         <VoteBlock
           options={poll.options}
           votes={poll.votes}

@@ -73,12 +73,16 @@
         >
           {label}
         </span>
-        <span class="inline-flex items-baseline gap-1.5 tabular-nums">
-          <span class="font-mono text-xs text-primary">{pct.toFixed(0)}%</span>
-          <span class="font-mono text-[11px] text-muted-foreground/70">
-            {fmt(plural(count, copy.vote.count), { count })}
+        <!-- A poll nobody has answered yet would read as "0% 0 votes" on every row, which
+             is noise rather than information. The fill bar already shows an empty poll. -->
+        {#if total > 0}
+          <span class="inline-flex items-baseline gap-1.5 tabular-nums">
+            <span class="font-mono text-xs text-primary">{pct.toFixed(0)}%</span>
+            <span class="font-mono text-[11px] text-muted-foreground/70">
+              {fmt(plural(count, copy.vote.count), { count })}
+            </span>
           </span>
-        </span>
+        {/if}
       </span>
     </button>
   {/each}

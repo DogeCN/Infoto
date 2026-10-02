@@ -139,9 +139,10 @@
     );
   });
 
-  // The real HTTP status is not reliably obtainable cross-origin (HEAD is CORS-gated),
-  // so a uniform glyph is shown instead of a misleading code.
-  let failStatus = $derived(copy.errorGlyph);
+  // Media that will not load reads as 404 — the same glyph the not-found page uses. The
+  // real HTTP status is not reliably obtainable cross-origin (HEAD is CORS-gated), so no
+  // code is shown rather than a misleading one.
+  const failStatus = '404';
   // type=1 (animated image without audio track) and type=2 (video with sound) are both
   // video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);

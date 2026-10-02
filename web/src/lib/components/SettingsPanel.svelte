@@ -1,3 +1,9 @@
+<script lang="ts" module>
+  /** The layout slider under the pointer, or null. The waterfall reflows while one of them
+   *  is dragged, so the panel fades back — except that slider, which must stay readable. */
+  export type LayoutPreviewControl = 'band' | 'gap' | null;
+</script>
+
 <script lang="ts">
   import {
     Upload,
@@ -51,7 +57,8 @@
     photos?: Photo[];
     onFilterCount?: (count: number) => void;
     onLocaleChange?: (locale: LocaleCode) => void;
-    onLayoutPreviewChange?: (preview: boolean) => void;
+    /** Which layout slider is being dragged, or null. Drives the panel fade. */
+    onLayoutPreviewChange?: (control: LayoutPreviewControl) => void;
   }
 
   let {
@@ -62,6 +69,11 @@
     onLayoutPreviewChange,
   }: Props = $props();
   let settings = $state<Settings>(loadSettings());
+
+  /** The layout slider under the pointer. Reported upward so the parent can fade its own
+   *  chrome; also read here so the other slider can recede. */
+  let previewing = $state<LayoutPreviewControl>(null);
+  $effect(() => onLayoutPreviewChange?.(previewing));
 
   // Debounced localStorage writes: syncing at 60fps while dragging blocks the
   // main thread. Call the parent immediately (instant layout / filters) and
@@ -387,29 +399,45 @@
         </Tooltip>
       </div>
 
-      <!-- Target band width and gap: single-thumb sliders -->
-      <SingleSlider
-        min={MIN_BAND}
-        max={MAX_BAND}
-        step={10}
-        value={settings.layout.band}
-        defaultValue={LAYOUT_DEFAULTS.band}
-        icon={Ruler}
-        format={(v) => `${v}px`}
-        onChange={setBand}
-        onDragChange={onLayoutPreviewChange}
-      />
-      <SingleSlider
-        min={0}
-        max={32}
-        step={1}
-        value={settings.layout.gap}
-        defaultValue={LAYOUT_DEFAULTS.gap}
-        icon={MoveHorizontal}
-        format={(v) => `${v}px`}
-        onChange={setGap}
-        onDragChange={onLayoutPreviewChange}
-      />
+      <!-- Target band width and gap: single-thumb sliders. Only the slider not under the
+           pointer recedes, so the user keeps a reference for the value they are not
+           changing while the waterfall reflows. -->
+      <div
+        class="transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing &&
+        previewing !== 'band'
+          ? 'opacity-40'
+          : 'opacity-100'}"
+      >
+        <SingleSlider
+          min={MIN_BAND}
+          max={MAX_BAND}
+          step={10}
+          value={settings.layout.band}
+          defaultValue={LAYOUT_DEFAULTS.band}
+          icon={Ruler}
+          format={(v) => `${v}px`}
+          onChange={setBand}
+          onDragChange={(dragging) => (previewing = dragging ? 'band' : null)}
+        />
+      </div>
+      <div
+        class="transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing &&
+        previewing !== 'gap'
+          ? 'opacity-40'
+          : 'opacity-100'}"
+      >
+        <SingleSlider
+          min={0}
+          max={32}
+          step={1}
+          value={settings.layout.gap}
+          defaultValue={LAYOUT_DEFAULTS.gap}
+          icon={MoveHorizontal}
+          format={(v) => `${v}px`}
+          onChange={setGap}
+          onDragChange={(dragging) => (previewing = dragging ? 'gap' : null)}
+        />
+      </div>
     </div>
   </section>
 </div>

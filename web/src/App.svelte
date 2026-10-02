@@ -5,6 +5,7 @@
   import WaterfallLayout from '$lib/components/WaterfallLayout.svelte';
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
+  import type { LayoutPreviewControl } from '$lib/components/SettingsPanel.svelte';
   import AnnouncementSidebar from '$lib/components/AnnouncementSidebar.svelte';
   import { onDestroy, onMount, tick } from 'svelte';
 
@@ -45,6 +46,7 @@
   const store = createAppStore();
   const engine = getEngine({
     postSyncFn: syncWithIdentity,
+    locale: () => store.contentLocale,
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
     },
@@ -60,7 +62,7 @@
 
   let leftOpen = $state(false);
   let rightOpen = $state(false);
-  let layoutPreview = $state(false);
+  let layoutPreview = $state<LayoutPreviewControl>(null);
   let multiMode = $state(false);
 
   /** Measured upload-panel geometry, zero-height while collapsed or hidden. A stable callback
@@ -250,14 +252,14 @@
 
   function toggleLeft() {
     leftOpen = !leftOpen;
-    if (!leftOpen) layoutPreview = false;
+    if (!leftOpen) layoutPreview = null;
     if (leftOpen) rightOpen = false;
   }
   function toggleRight() {
     rightOpen = !rightOpen;
     if (rightOpen) {
       leftOpen = false;
-      layoutPreview = false;
+      layoutPreview = null;
     }
   }
   function handleMultiSelect() {
@@ -316,7 +318,7 @@
     bind:open={leftOpen}
     side="left"
     title={copy.sidebar.settingsTitle}
-    previewTransparent={layoutPreview}
+    previewTransparent={layoutPreview !== null}
   >
     {#snippet icon()}
       <SettingsIcon class="size-5 text-primary" />
@@ -326,7 +328,7 @@
       photos={store.photos}
       onFilterCount={(n) => (filterCount = n)}
       onLocaleChange={handleLocaleChange}
-      onLayoutPreviewChange={(preview) => (layoutPreview = preview)}
+      onLayoutPreviewChange={(control) => (layoutPreview = control)}
     />
   </OverlaySidebar>
 
@@ -404,7 +406,7 @@
     bind:open={rightOpen}
     side="right"
     title={copy.sidebar.announcementsTitle}
-    previewTransparent={layoutPreview}
+    previewTransparent={layoutPreview !== null}
   >
     {#snippet icon()}
       <Megaphone class="size-5 text-primary" />

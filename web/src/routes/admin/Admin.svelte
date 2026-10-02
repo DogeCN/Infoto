@@ -24,6 +24,7 @@
   let syncErrorToastAt = 0;
   const engine = getEngine({
     postSyncFn: postSync,
+    locale: () => store.contentLocale,
     onSyncResponse: (response, context) => store.applySync(response, context),
     onError: (phase, error) => {
       console.error('[sync]', phase, error);
