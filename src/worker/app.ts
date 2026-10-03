@@ -48,7 +48,11 @@ export function createApp(env: AppEnv): Hono {
   // /admin (the management page) is a front-end route: the SPA fallback serves it.
   app.all('/admin/*', (c) => notFoundPage(c.req.raw));
   app.get('*', async (c) => {
-    if (env.assets) {
+    // The SPA shell exists for exactly two client routes. Everything else is a hard 404:
+    // answering arbitrary paths with index.html made crawlers (and Google's URL fetcher)
+    // read missing pages as existing ones. Trailing slashes normalize to the same routes.
+    const path = new URL(c.req.raw.url).pathname.replace(/\/+$/, '') || '/';
+    if ((path === '/' || path === '/admin') && env.assets) {
       const res = await env.assets(c.req.raw);
       if (res.status !== 404) return res;
     }
