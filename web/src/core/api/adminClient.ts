@@ -136,7 +136,6 @@ export async function reorderAnnouncements(
 }
 
 export async function createPoll(
-  title: string,
   options: string[],
   allowMultiple: boolean,
   locale: LocaleCode,
@@ -147,7 +146,7 @@ export async function createPoll(
     'create',
     'POST',
     '',
-    { title, options, allowMultiple, locale },
+    { options, allowMultiple, locale },
     io,
   );
   return created<Poll>(data, 'poll');
@@ -155,20 +154,12 @@ export async function createPoll(
 
 export async function updatePoll(
   id: number,
-  title: string,
   options: string[],
   allowMultiple: boolean,
   locale: LocaleCode,
   io: AdminApiIo = {},
 ): Promise<void> {
-  await adminWrite(
-    'poll',
-    'update',
-    'PUT',
-    `/${id}`,
-    { title, options, allowMultiple, locale },
-    io,
-  );
+  await adminWrite('poll', 'update', 'PUT', `/${id}`, { options, allowMultiple, locale }, io);
 }
 
 export async function deletePoll(id: number, io: AdminApiIo = {}): Promise<void> {

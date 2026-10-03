@@ -39,7 +39,6 @@ async function rootCookie(app: TestApp): Promise<string> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({
-      title: 'Question',
       options: ['A', 'B'],
       allowMultiple: false,
       locale: 'en-US',

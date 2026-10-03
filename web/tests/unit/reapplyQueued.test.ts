@@ -30,7 +30,6 @@ const ann = (id: number): Announcement => ({
 
 const poll = (id: number): Poll => ({
   id,
-  title: `poll${id}`,
   options: ['A', 'B', 'C'],
   allowMultiple: true,
   locale: 'en-US',

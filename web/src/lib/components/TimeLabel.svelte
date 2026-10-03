@@ -27,34 +27,28 @@
   const intent = createHoverIntent();
   onDestroy(intent.destroy);
 
-  // A row written before its table gained a timestamp column reads as undefined. Showing
-  // "NaN ago" would be worse than showing nothing, so the label stands down instead —
-  // this guards the render, it is not a substitute for the schema migration.
-  let hasTime = $derived(Number.isFinite(time));
   let relativeLabel = $derived(formatRelativeTime(time, now, getLocale()));
   let absoluteLabel = $derived(formatSmartAbsolute(time, now, getLocale()));
 </script>
 
-{#if hasTime}
-  <!-- Stack relative and absolute labels in one grid cell for a width-stable transition. -->
-  <!-- role=presentation: this wrapper is a hit-area only, not content. -->
+<!-- Stack relative and absolute labels in one grid cell for a width-stable transition. -->
+<!-- role=presentation: this wrapper is a hit-area only, not content. -->
+<span
+  class="time-hit {className}"
+  role="presentation"
+  onpointerenter={intent.enter}
+  onpointerleave={intent.leave}
+>
   <span
-    class="time-hit {className}"
-    role="presentation"
-    onpointerenter={intent.enter}
-    onpointerleave={intent.leave}
+    class="time-label"
+    data-align={align}
+    data-hovered={intent.hovered ? 'true' : 'false'}
+    aria-label={absoluteLabel}
   >
-    <span
-      class="time-label"
-      data-align={align}
-      data-hovered={intent.hovered ? 'true' : 'false'}
-      aria-label={absoluteLabel}
-    >
-      <span class="time-label__rel">{relativeLabel}</span>
-      <span class="time-label__abs" aria-hidden="true">{absoluteLabel}</span>
-    </span>
+    <span class="time-label__rel">{relativeLabel}</span>
+    <span class="time-label__abs" aria-hidden="true">{absoluteLabel}</span>
   </span>
-{/if}
+</span>
 
 <style>
   /* Wrapper only exists to own the expanded hit area: the pseudo can't live on

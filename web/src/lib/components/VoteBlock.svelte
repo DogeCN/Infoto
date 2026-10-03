@@ -35,6 +35,9 @@
     new Set(votes.filter((vote) => vote.userId === selfId).map((vote) => vote.option)),
   );
 
+  // Semantics: click an option to vote; click a chosen one again to retract. A
+  // single-choice poll replaces the previous vote; a multi-choice poll toggles each
+  // option independently.
   function handle(option: number): void {
     if (!interactive || !onVote) return;
     const next = new Set(chosen);

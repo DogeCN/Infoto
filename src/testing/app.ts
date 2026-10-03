@@ -54,12 +54,10 @@ export function cookieFrom(res: Response): string {
 }
 
 export async function sync(app: TestApp, body: unknown, cookie?: string): Promise<Response> {
-  const payload =
-    body && typeof body === 'object' && !Array.isArray(body) ? { locale: 'en-US', ...body } : body;
   return app.request('http://localhost/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
 }
 

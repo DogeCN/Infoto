@@ -256,7 +256,6 @@ test('poll votes replace or clear selected options and reject invalid selections
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: rootCookie },
     body: JSON.stringify({
-      title: 'Question',
       options: ['Good', 'Okay', 'Bad'],
       allowMultiple: false,
       locale: 'en-US',
@@ -305,13 +304,12 @@ test('announcement reactions and poll votes appear in their respective snapshots
   await app.request('http://localhost/admin/announcements', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ title: 'a', contentMd: '::vote:1', locale: 'en-US' }),
+    body: JSON.stringify({ title: 'a', contentMd: '::poll:en-US:1', locale: 'en-US' }),
   });
   const poll = await app.request('http://localhost/admin/polls', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({
-      title: 'Question',
       options: ['A', 'B'],
       allowMultiple: false,
       locale: 'en-US',

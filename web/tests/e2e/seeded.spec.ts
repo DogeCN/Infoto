@@ -92,7 +92,6 @@ test('independent polls, reactions and feedback persist through real sync and re
 }) => {
   await enter(page);
   const before = await snapshot(page);
-  const pollTitle = `Local review poll ${Date.now()}`;
   const announcementTitle = `Local review announcement ${Date.now()}`;
   const optionA = `First choice ${Date.now()}`;
   const optionB = `Second choice ${Date.now()}`;
@@ -103,7 +102,6 @@ test('independent polls, reactions and feedback persist through real sync and re
   try {
     const pollResponse = await page.request.post('/admin/polls', {
       data: {
-        title: pollTitle,
         options: [optionA, optionB],
         allowMultiple: true,
         locale: 'en-US',
@@ -116,7 +114,7 @@ test('independent polls, reactions and feedback persist through real sync and re
     const announcementResponse = await page.request.post('/admin/announcements', {
       data: {
         title: announcementTitle,
-        contentMd: `Choose below.\n\n::vote:${poll.id}`,
+        contentMd: `Choose below.\n\n::poll:en-US:${poll.id}`,
         locale: 'en-US',
       },
     });
@@ -147,7 +145,7 @@ test('independent polls, reactions and feedback persist through real sync and re
     const savedPoll = after.polls.find((item) => item.id === pollId)!;
     const savedAnnouncement = after.announcements.find((item) => item.id === announcementId)!;
     expect(savedPoll.votes).toContainEqual({ userId: before.selfId, option: 1 });
-    expect(savedAnnouncement.contentMd).toContain(`::vote:${pollId}`);
+    expect(savedAnnouncement.contentMd).toContain(`::poll:en-US:${pollId}`);
     expect(savedAnnouncement.reactions).toContainEqual({ userId: before.selfId, emoji: '🔥' });
     expect(after.feedback.some((item) => item.contentMd === text)).toBe(true);
 

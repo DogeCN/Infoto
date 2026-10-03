@@ -67,11 +67,23 @@ export interface VideoProgressRequest {
   fraction: number;
 }
 
+/**
+ * Document visibility for a held lease. A hidden page still owns its job — its heartbeat is
+ * only throttled — so the reaper must not treat silence as death while this is set.
+ */
+export interface LeaseVisibilityRequest {
+  t: 'leaseVisibility';
+  leaseId: string;
+  hidden: boolean;
+}
+
+/** The page worker has already written the artifact to OPFS, so it reports the digest and
+ *  size instead of carrying the bytes back across threads. */
 export interface VideoResultRequest {
   t: 'videoResult';
   jobId: string;
-  /** WebM artifact. Structured clone, never in a transfer list. */
-  blob: Blob;
+  sha256: string;
+  bytes: number;
   width: number;
   height: number;
   /** Whether the source media had an audio track (decides type=2). */
@@ -119,6 +131,7 @@ export type PageToSwMessage =
   | RetryJobRequest
   | LeaseHeartbeatRequest
   | LeaseReleaseRequest
+  | LeaseVisibilityRequest
   | VideoProgressRequest
   | VideoResultRequest
   | VideoFailedRequest
@@ -189,6 +202,7 @@ const PAGE_TYPES = new Set([
   'retryJob',
   'leaseHeartbeat',
   'leaseRelease',
+  'leaseVisibility',
   'videoProgress',
   'videoResult',
   'videoFailed',

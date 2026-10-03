@@ -80,7 +80,13 @@
   let containerW = $state(0);
   /** Canvas inset: the scroll container is full-width (scrollbar at the viewport edge), whitespace comes from the canvas margin. */
   let padX = $derived(Math.max(8, Math.min(16, Math.round(containerW * 0.02))));
-  /** Additional spacing below the measured top bar. */
+  /** Extra breathing room above the first row, on top of the bar's own height.
+   *
+   *  Zero on purpose. The bar is 56–64px tall but its controls are only ~20px, so it
+   *  already carries ~16px of padding above and below the icons; adding more here just
+   *  widened the empty band the bar looked like it was padding. The bar is transparent at
+   *  rest and translucent once scrolled, so photos are meant to meet it, not float below it.
+   */
   const TOP_GAP = 0;
   // The bar publishes --bar-h from its own measurement, so the canvas reads that value
   // instead of restating the height formula against a width it measures separately.

@@ -89,8 +89,17 @@ interface Lease {
   jobId: string;
   port: MessagePort;
   lastBeat: number;
+  /** The owning document is hidden. The browser throttles a hidden page's heartbeat timer,
+   *  so its silence says nothing about whether the work is still alive. */
+  hidden: boolean;
 }
 const leases = new Map<string, Lease>();
+
+/** Artifact extension for a job, derived from its route engine — `meta` only exists once the
+ *  encode has finished, but a partial artifact already carries this name. */
+function jobArtifactExt(rec: JobRec): 'webp' | 'webm' {
+  return rec.engine === 'image' ? 'webp' : 'webm';
+}
 
 /** Video concurrency, bounded to one or two jobs and refined by page capability hints. */
 let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
@@ -132,6 +141,10 @@ function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
 function failJob(rec: JobRec, error: string): void {
   rec.phase = 'failed';
   rec.error = error;
+  // A terminal failure ends the job: drop its resume record so a later page load cannot
+  // auto-resume it. The artifact stays in OPFS for a same-session manual retry — only
+  // cancel may remove it.
+  if (db) void deletePendingUpload(db, rec.jobId).catch(() => undefined);
   notify(rec);
 }
 
@@ -176,7 +189,7 @@ function pumpVideoLeases(): void {
     const leaseId = uid();
     rec.phase = 'transcoding';
     rec.leaseId = leaseId;
-    leases.set(leaseId, { leaseId, jobId, port, lastBeat: Date.now() });
+    leases.set(leaseId, { leaseId, jobId, port, lastBeat: Date.now(), hidden: false });
     port.postMessage({
       t: 'leaseGranted',
       leaseId,
@@ -217,6 +230,10 @@ const EMPTY_BLOB = new Blob();
 
 /** Forget a job everywhere it is indexed (no broadcast: pages own their own rows). */
 function forgetJob(jobId: string): void {
+  const rec = jobs.get(jobId);
+  // A held lease occupies a video slot, and the reaper can no longer match it to a record
+  // once the record is gone — so it has to go with the job.
+  if (rec?.leaseId) leases.delete(rec.leaseId);
   jobs.delete(jobId);
   if (db) void deletePendingUpload(db, jobId).catch(() => undefined);
   owners.delete(jobId);
@@ -267,7 +284,6 @@ async function afterStage1(rec: JobRec): Promise<void> {
   if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
   if (db && rec.sha256) {
     if (rec.cancelled) return;
-    notify(rec, { fraction: undefined });
     const known = await isKnownAlbumSha(db, rec.sha256).catch(() => false);
     if (known) {
       rec.phase = 'duplicate';
@@ -300,8 +316,10 @@ async function runEditorUpload(rec: JobRec): Promise<void> {
 }
 
 /** Stage 2: 100MB pre-check + one /upload attempt, no auto-retry — a failure marks the
- *  file and retryJob is manual-only. `source` = the blob to send; absent → the album
- *  artifact is read back from OPFS (the editor passes the picked file it still holds). */
+ *  file failed and deletes its resume record, so a later page load will not re-run the
+ *  upload; retryJob is manual-only, reusing the artifact that stays in OPFS.
+ *  `source` = the blob to send; absent → the album artifact is read back from OPFS
+ *  (the editor passes the picked file it still holds). */
 async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   let blob: Blob | null;
   let fileName: string | undefined;
@@ -358,26 +376,19 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
 
 function onVideoResult(
   rec: JobRec,
-  blob: Blob,
-  width: number,
-  height: number,
-  hasAudio: boolean,
+  result: { sha256: string; bytes: number; width: number; height: number; hasAudio: boolean },
 ): void {
   if (rec.leaseId) leases.delete(rec.leaseId);
   void (async () => {
     try {
-      const type: MediaType = hasAudio ? 2 : 1;
-      rec.phase = 'hashing';
-      notify(rec);
       if (rec.cancelled) return;
-      // Same one-loop measurement as the image leg: the WebM artifact's bytes hashed
-      // while being written to OPFS.
-      const { sha256, bytes } = await storeArtifact(rec.jobId, blob, 'webm', (written) => {
-        notifyBytes(rec, blob.size, written);
-      });
-      rec.sha256 = sha256;
-      rec.meta = { width, height, size: bytes, type };
-      rec.artifact = { ext: 'webm', size: bytes };
+      const type: MediaType = result.hasAudio ? 2 : 1;
+      // The page worker already wrote the artifact to OPFS and hashed the same bytes while
+      // encoding, so there is no separate hashing phase here: one measured progress covers
+      // encode, write and digest alike.
+      rec.sha256 = result.sha256;
+      rec.meta = { width: result.width, height: result.height, size: result.bytes, type };
+      rec.artifact = { ext: 'webm', size: result.bytes };
       await afterStage1(rec);
     } catch (e) {
       failJob(rec, String((e as Error)?.message ?? e));
@@ -430,35 +441,41 @@ function onRetry(jobId: string): void {
   pumpImage();
 }
 
-// ---- lease reaper (force-revoke after 15s without a heartbeat) -----------------------
+// ---- lease reaper (force-revoke after 15s without a heartbeat, unless the page is hidden) ----
 
 setInterval(() => {
   const now = Date.now();
   for (const [leaseId, lease] of leases) {
-    if (now - lease.lastBeat > LEASE_TIMEOUT_MS) {
-      leases.delete(leaseId);
-      const rec = jobs.get(lease.jobId);
-      if (rec && rec.leaseId === leaseId) {
-        const pid = owners.get(rec.jobId);
-        const seen = pid === undefined ? 0 : (portLastSeen.get(pid) ?? 0);
-        if (pid === undefined || now - seen > DEAD_OWNER_MS) {
-          // Drop jobs whose owning page has exceeded the inactivity threshold.
-          forgetJob(rec.jobId);
-          continue;
-        }
-        rec.leaseId = undefined;
-        rec.phase = 'lease-wait';
-        // in-flight job re-enqueues (transcoding is idempotent; OPFS artifact sha256 dedupe backstops)
-        videoQueue.push(rec.jobId);
-        try {
-          lease.port.postMessage({ t: 'leaseRevoked', leaseId, jobId: lease.jobId });
-        } catch {
-          // The port may have been swept already; the page re-registers on its next message.
-        }
-        notify(rec);
-        pumpVideoLeases();
-      }
+    const pid = owners.get(lease.jobId);
+    const seen = pid === undefined ? 0 : (portLastSeen.get(pid) ?? 0);
+    const dead = pid === undefined || now - seen > DEAD_OWNER_MS;
+    // A hidden page's heartbeat is throttled to roughly one tick a minute, so a missed
+    // heartbeat is not evidence of death: only the dead-owner threshold retires its lease.
+    const stale = lease.hidden ? dead : now - lease.lastBeat > LEASE_TIMEOUT_MS;
+    if (!stale) continue;
+    leases.delete(leaseId);
+    const rec = jobs.get(lease.jobId);
+    if (!rec || rec.leaseId !== leaseId) continue;
+    if (dead) {
+      // Drop jobs whose owning page has exceeded the inactivity threshold.
+      const ext = jobArtifactExt(rec);
+      forgetJob(rec.jobId);
+      void removeArtifact(rec.jobId, ext);
+      continue;
     }
+    rec.leaseId = undefined;
+    rec.phase = 'lease-wait';
+    // The revoked encode left a partial artifact behind; the re-run writes it from the top.
+    void removeArtifact(rec.jobId, jobArtifactExt(rec));
+    // in-flight job re-enqueues (transcoding is idempotent; OPFS artifact sha256 dedupe backstops)
+    videoQueue.push(rec.jobId);
+    try {
+      lease.port.postMessage({ t: 'leaseRevoked', leaseId, jobId: lease.jobId });
+    } catch {
+      // The port may have been swept already; the page re-registers on its next message.
+    }
+    notify(rec);
+    pumpVideoLeases();
   }
 }, 2_000);
 
@@ -667,6 +684,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       if (lease) lease.lastBeat = Date.now();
       return;
     }
+    case 'leaseVisibility': {
+      const lease = leases.get(m.leaseId);
+      if (lease) lease.hidden = m.hidden;
+      return;
+    }
     case 'leaseRelease': {
       const lease = leases.get(m.leaseId);
       if (lease) {
@@ -685,8 +707,7 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
     }
     case 'videoResult': {
       const rec = jobs.get(m.jobId);
-      if (rec && rec.phase === 'transcoding')
-        onVideoResult(rec, m.blob, m.width, m.height, m.hasAudio);
+      if (rec && rec.phase === 'transcoding') onVideoResult(rec, m);
       else pumpVideoLeases();
       return;
     }

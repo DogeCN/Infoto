@@ -11,7 +11,7 @@ import type {
   Poll,
   SyncResponse,
 } from '$shared/types';
-import { activeLocale, copy, DEFAULT_LOCALE } from '$shared/copy';
+import { activeLocale, copy } from '$shared/copy';
 import type { EngineState, SyncEngine, SyncSnapshotContext } from '../core/engine';
 import { toast } from 'svelte-sonner';
 import * as ops from '../core/ops';
@@ -63,6 +63,7 @@ interface AdminToasts {
 class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }> {
   private tempIds = new Map<number, number>();
   private pendingReorder: {
+    locale: LocaleCode;
     ids: number[];
     previousIds: number[];
     call: (ids: number[]) => Promise<void>;
@@ -70,22 +71,16 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
 
   constructor(
     private config: {
-      /** Current rows, read through a getter so the store owns the reactive list. */
-      rows: () => T[];
-      /** Replace the rows with a pure reducer's result. */
-      setRows: (rows: T[]) => void;
-      /** True while a write's locale is still the one on screen. */
-      isCurrentLocale: (locale: LocaleCode) => boolean;
+      /** One locale's rows, read through a getter so the store owns the reactive buckets. */
+      rows: (locale: LocaleCode) => T[];
+      /** Replace one locale's rows with a pure reducer's result. Writes are addressed by
+       *  locale, so a request that resolves after a language switch still lands in the
+       *  language it was made for. */
+      setRows: (locale: LocaleCode, rows: T[]) => void;
       timeoutId: string;
       toasts: AdminToasts;
     },
   ) {}
-
-  /** Drop the state that a language switch invalidates. */
-  reset(): void {
-    this.tempIds.clear();
-    this.pendingReorder = null;
-  }
 
   /** Insert an optimistic row under `tempId` and commit it once the server assigns an id. */
   async create(
@@ -94,19 +89,22 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
     optimistic: (rows: T[]) => T[],
     call: () => Promise<T>,
   ): Promise<void> {
-    this.config.setRows(optimistic(this.config.rows()));
+    this.config.setRows(locale, optimistic(this.config.rows(locale)));
     try {
       const created = await call();
-      if (!this.config.isCurrentLocale(locale)) return;
       this.tempIds.set(tempId, created.id);
-      this.config.setRows(this.config.rows().map((row) => (row.id === tempId ? created : row)));
+      this.config.setRows(
+        locale,
+        this.config.rows(locale).map((row) => (row.id === tempId ? created : row)),
+      );
       this.flushPendingReorder();
     } catch (error) {
       console.error('[admin] create failed', error);
-      if (this.config.isCurrentLocale(locale)) {
-        this.config.setRows(this.config.rows().filter((row) => row.id !== tempId));
-        if (this.pendingReorder?.ids.includes(tempId)) this.pendingReorder = null;
-      }
+      this.config.setRows(
+        locale,
+        this.config.rows(locale).filter((row) => row.id !== tempId),
+      );
+      if (this.pendingReorder?.ids.includes(tempId)) this.pendingReorder = null;
       toast.error(this.config.toasts.createFailed, {
         description: adminFailHint(error, this.config.timeoutId),
       });
@@ -116,19 +114,23 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
   /** Apply an edit and restore the edited row only, never the whole list. */
   async update(
     id: number,
+    locale: LocaleCode,
     optimistic: (rows: T[]) => T[],
     call: () => Promise<void>,
   ): Promise<void> {
-    const previous = this.config.rows().find((row) => row.id === id);
-    this.config.setRows(optimistic(this.config.rows()));
+    const previous = this.config.rows(locale).find((row) => row.id === id);
+    this.config.setRows(locale, optimistic(this.config.rows(locale)));
     try {
       await call();
     } catch (error) {
       console.error('[admin] update failed', error);
       // Restore only the edited row: a snapshot may have landed meanwhile, and a
       // whole-array rollback would discard those unrelated changes.
-      if (previous && this.config.isCurrentLocale(previous.locale)) {
-        this.config.setRows(this.config.rows().map((row) => (row.id === id ? previous : row)));
+      if (previous) {
+        this.config.setRows(
+          locale,
+          this.config.rows(locale).map((row) => (row.id === id ? previous : row)),
+        );
       }
       toast.error(this.config.toasts.updateFailed, {
         description: adminFailHint(error, this.config.timeoutId),
@@ -137,23 +139,22 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
   }
 
   /** Remove a row and put it back at its prior position unless a snapshot restored it. */
-  async remove(id: number, call: () => Promise<void>): Promise<void> {
-    const rows = this.config.rows();
+  async remove(id: number, locale: LocaleCode, call: () => Promise<void>): Promise<void> {
+    const rows = this.config.rows(locale);
     const index = rows.findIndex((row) => row.id === id);
     const previous = index >= 0 ? rows[index] : undefined;
-    this.config.setRows(rows.filter((row) => row.id !== id));
+    this.config.setRows(
+      locale,
+      rows.filter((row) => row.id !== id),
+    );
     try {
       await call();
     } catch (error) {
       console.error('[admin] delete failed', error);
-      if (
-        previous &&
-        this.config.isCurrentLocale(previous.locale) &&
-        !this.config.rows().some((row) => row.id === id)
-      ) {
-        const next = [...this.config.rows()];
+      if (previous && !this.config.rows(locale).some((row) => row.id === id)) {
+        const next = [...this.config.rows(locale)];
         next.splice(Math.min(index, next.length), 0, previous);
-        this.config.setRows(next);
+        this.config.setRows(locale, next);
       }
       toast.error(this.config.toasts.deleteFailed, {
         description: `${this.config.toasts.deleteRollback} · ${adminFailHint(error, this.config.timeoutId)}`,
@@ -161,11 +162,10 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
     }
   }
 
-  /** Reorder locally at once; a still-temporary id defers the submit until it resolves. */
-  reorder(orderedIds: number[], call: (ids: number[]) => Promise<void>): void {
-    const locale = this.deferredLocale();
-    const previousIds = this.config.rows().map((row) => row.id);
-    this.config.setRows(ops.applyReorder(this.config.rows(), orderedIds));
+  /** Reorder one locale at once; a still-temporary id defers the submit until it resolves. */
+  reorder(locale: LocaleCode, orderedIds: number[], call: (ids: number[]) => Promise<void>): void {
+    const previousIds = this.config.rows(locale).map((row) => row.id);
+    this.config.setRows(locale, ops.applyReorder(this.config.rows(locale), orderedIds));
     const resolved = this.resolveIds(orderedIds);
     if (resolved.every((id) => id > 0)) {
       void this.submitReorder(resolved, previousIds, locale, call);
@@ -173,12 +173,7 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
     }
     // A just-created row still carries a temp id: keep the new order locally —
     // no "can't reorder yet" deadlock — and flush when the real id arrives.
-    this.pendingReorder = { ids: orderedIds, previousIds, call };
-  }
-
-  /** Rows are only ever one locale at a time, so the first row names the collection's locale. */
-  private deferredLocale(): LocaleCode {
-    return this.config.rows()[0]?.locale ?? DEFAULT_LOCALE;
+    this.pendingReorder = { locale, ids: orderedIds, previousIds, call };
   }
 
   private resolveIds(ids: number[]): number[] {
@@ -193,7 +188,7 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
     this.pendingReorder = null;
     // Clear temporary-ID mappings after all referenced creates complete.
     this.tempIds.clear();
-    void this.submitReorder(resolved, pending.previousIds, this.deferredLocale(), pending.call);
+    void this.submitReorder(resolved, pending.previousIds, pending.locale, pending.call);
   }
 
   private async submitReorder(
@@ -206,8 +201,7 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
       await call(ids);
     } catch (error) {
       console.error('[admin] reorder failed', error);
-      if (this.config.isCurrentLocale(locale))
-        this.config.setRows(ops.applyReorder(this.config.rows(), previousIds));
+      this.config.setRows(locale, ops.applyReorder(this.config.rows(locale), previousIds));
       toast.error(this.config.toasts.reorderFailed, {
         description: `${this.config.toasts.reorderRollback} · ${adminFailHint(error, this.config.timeoutId)}`,
       });
@@ -272,23 +266,50 @@ export function setMediaHostSink(sink: (url: string) => void): void {
 
 const setMediaHost = (url: string): void => mediaHostSink?.(url);
 
+/** One locale's slice of an all-locale list; order is preserved. */
+function localeSlice<T extends { locale: LocaleCode }>(all: T[], locale: LocaleCode): T[] {
+  return all.filter((row) => row.locale === locale);
+}
+
+/** Swap one locale's rows inside an all-locale list, leaving the other locales untouched. */
+function replaceLocale<T extends { locale: LocaleCode }>(
+  all: T[],
+  locale: LocaleCode,
+  rows: T[],
+): T[] {
+  return [...all.filter((row) => row.locale !== locale), ...rows];
+}
+
+/** Authoritative rows plus the local-only ones (temp ids) a snapshot must not drop. */
+function keepLocalOnly<T extends { id: number; sort: number }>(server: T[], local: T[]): T[] {
+  return [...server, ...local.filter((row) => row.id < 0)].sort(
+    (a, b) => a.sort - b.sort || a.id - b.id,
+  );
+}
+
 class AppState {
   engineState = $state<EngineState>({ syncing: false, pending: 0 });
   selfId = $state<number>(readCachedSelfId());
   photos = $state<Photo[]>([]);
-  announcements = $state<Announcement[]>([]);
-  polls = $state<Poll[]>([]);
-  feedback = $state<Feedback[]>([]);
   contentLocale = $state<LocaleCode>(activeLocale());
+  /** Every locale's content rows. The public lists below are the active locale's slice, so
+   *  a language switch is a local re-render rather than another round trip. */
+  private allAnnouncements = $state<Announcement[]>([]);
+  private allPolls = $state<Poll[]>([]);
+  private allFeedback = $state<Feedback[]>([]);
+  announcements = $derived(localeSlice(this.allAnnouncements, this.contentLocale));
+  polls = $derived(localeSlice(this.allPolls, this.contentLocale));
+  feedback = $derived(localeSlice(this.allFeedback, this.contentLocale));
   /** Upload facade from the last /sync response. */
   mediaHostUrl = $state<string>('');
 
   private engineUnsubscribe: (() => void) | null = null;
 
   private announcementRows = new AdminCollection<Announcement>({
-    rows: () => this.announcements,
-    setRows: (rows) => (this.announcements = rows),
-    isCurrentLocale: (locale) => this.contentLocale === locale,
+    rows: (locale) => localeSlice(this.allAnnouncements, locale),
+    setRows: (locale, rows) => {
+      this.allAnnouncements = replaceLocale(this.allAnnouncements, locale, rows);
+    },
     timeoutId: ANN_TIMEOUT,
     toasts: {
       createFailed: copy.admin.announcement.publishFailed,
@@ -301,9 +322,10 @@ class AppState {
   });
 
   private pollRows = new AdminCollection<Poll>({
-    rows: () => this.polls,
-    setRows: (rows) => (this.polls = rows),
-    isCurrentLocale: (locale) => this.contentLocale === locale,
+    rows: (locale) => localeSlice(this.allPolls, locale),
+    setRows: (locale, rows) => {
+      this.allPolls = replaceLocale(this.allPolls, locale, rows);
+    },
     timeoutId: POLL_TIMEOUT,
     toasts: {
       createFailed: copy.admin.poll.publishFailed,
@@ -352,18 +374,13 @@ class AppState {
     });
   }
 
-  /** Clear language-scoped content before requesting the matching snapshot. */
+  /** Switch the language on screen. The snapshot already carries every locale, so this is
+   *  a local re-render: no list is cleared and no request is issued. */
   setContentLocale(locale: LocaleCode): void {
-    if (this.contentLocale === locale) return;
     this.contentLocale = locale;
-    this.announcements = [];
-    this.polls = [];
-    this.feedback = [];
-    this.announcementRows.reset();
-    this.pollRows.reset();
   }
 
-  /** Apply one authoritative full snapshot. */
+  /** Apply one authoritative full snapshot, covering every locale at once. */
   applySync(r: SyncResponse, context?: SyncSnapshotContext): void {
     this.selfId = r.selfId;
     // Uploads go straight to the facade; the SharedWorker needs the target before a job
@@ -383,22 +400,15 @@ class AppState {
       r.selfId,
     );
     this.photos = refolded.photos;
-    // A locale can change while an older request is in flight. Its unrelated localized
-    // rows must not leak into the newly selected language while the next sync is queued.
-    if (r.locale !== this.contentLocale) return;
-
-    const unconfirmedAnnouncements = this.announcements.filter((item) => item.id < 0);
-    this.announcements = [...refolded.announcements, ...unconfirmedAnnouncements].sort(
-      (a, b) => a.sort - b.sort || a.id - b.id,
-    );
-    const unconfirmedPolls = this.polls.filter((item) => item.id < 0);
-    this.polls = [...refolded.polls, ...unconfirmedPolls].sort(
-      (a, b) => a.sort - b.sort || a.id - b.id,
-    );
+    // The snapshot covers every locale, so an in-flight admin create filed under a
+    // language the user has since switched away from is neither lost nor leaked: the
+    // local-only row stays in its own bucket, and the views follow `contentLocale`.
+    this.allAnnouncements = keepLocalOnly(refolded.announcements, this.allAnnouncements);
+    this.allPolls = keepLocalOnly(refolded.polls, this.allPolls);
 
     // Feedback has no foldable op left (deletes go through /admin/feedback), so the
     // snapshot is authoritative for root; non-root visitors never receive rows.
-    this.feedback = r.selfId === 0 ? r.feedback : [];
+    this.allFeedback = r.selfId === 0 ? r.feedback : [];
   }
 
   // Photos
@@ -515,59 +525,60 @@ class AppState {
     const locale = this.contentLocale;
     void this.announcementRows.update(
       id,
+      locale,
       (rows) => ops.applyAnnUpdate(rows, id, title, contentMd, Date.now()),
       () => updateAnnouncement(id, title, contentMd, locale),
     );
   }
 
   annDelete(id: number): void {
-    void this.announcementRows.remove(id, () => deleteAnnouncement(id));
+    void this.announcementRows.remove(id, this.contentLocale, () => deleteAnnouncement(id));
   }
 
   annReorder(orderedIds: number[]): void {
     const locale = this.contentLocale;
-    this.announcementRows.reorder(orderedIds, (ids) => reorderAnnouncements(ids, locale));
+    this.announcementRows.reorder(locale, orderedIds, (ids) => reorderAnnouncements(ids, locale));
   }
 
   // Polls
 
-  pollCreate(title: string, options: string[], allowMultiple: boolean): void {
+  pollCreate(options: string[], allowMultiple: boolean): void {
     const locale = this.contentLocale;
     const tempId = takeTempId();
     void this.pollRows.create(
       tempId,
       locale,
-      (rows) =>
-        ops.applyPollCreate(rows, tempId, title, options, allowMultiple, locale, Date.now()),
-      () => createPoll(title, options, allowMultiple, locale),
+      (rows) => ops.applyPollCreate(rows, tempId, options, allowMultiple, locale, Date.now()),
+      () => createPoll(options, allowMultiple, locale),
     );
   }
 
-  pollUpdate(id: number, title: string, options: string[], allowMultiple: boolean): void {
+  pollUpdate(id: number, options: string[], allowMultiple: boolean): void {
     const locale = this.contentLocale;
     void this.pollRows.update(
       id,
-      (rows) => ops.applyPollUpdate(rows, id, title, options, allowMultiple, Date.now()),
-      () => updatePoll(id, title, options, allowMultiple, locale),
+      locale,
+      (rows) => ops.applyPollUpdate(rows, id, options, allowMultiple, Date.now()),
+      () => updatePoll(id, options, allowMultiple, locale),
     );
   }
 
   pollDelete(id: number): void {
-    void this.pollRows.remove(id, () => deletePoll(id));
+    void this.pollRows.remove(id, this.contentLocale, () => deletePoll(id));
   }
 
   pollReorder(orderedIds: number[]): void {
     const locale = this.contentLocale;
-    this.pollRows.reorder(orderedIds, (ids) => reorderPolls(ids, locale));
+    this.pollRows.reorder(locale, orderedIds, (ids) => reorderPolls(ids, locale));
   }
 
   react(annId: number, emoji: string | null): void {
-    this.announcements = ops.applyReact(this.announcements, annId, this.selfId, emoji);
+    this.allAnnouncements = ops.applyReact(this.allAnnouncements, annId, this.selfId, emoji);
     void this.submit({ type: 'react', target: annId, payload: { emoji } });
   }
 
   vote(pollId: number, options: number[]): void {
-    this.polls = ops.applyVote(this.polls, pollId, this.selfId, options);
+    this.allPolls = ops.applyVote(this.allPolls, pollId, this.selfId, options);
     void this.submit({ type: 'vote', target: pollId, payload: { options } });
   }
 
@@ -575,8 +586,8 @@ class AppState {
 
   fbCreate(contentMd: string, locale: LocaleCode = this.contentLocale): void {
     const tempId = takeTempId();
-    this.feedback = ops.applyFbCreate(
-      this.feedback,
+    this.allFeedback = ops.applyFbCreate(
+      this.allFeedback,
       tempId,
       this.selfId,
       contentMd,
@@ -587,23 +598,22 @@ class AppState {
   }
 
   fbDelete(id: number): void {
-    const index = this.feedback.findIndex((f) => f.id === id);
-    const previous = index >= 0 ? this.feedback[index] : undefined;
-    this.feedback = ops.applyFbDelete(this.feedback, id);
+    const locale = this.contentLocale;
+    const rows = localeSlice(this.allFeedback, locale);
+    const index = rows.findIndex((f) => f.id === id);
+    const previous = index >= 0 ? rows[index] : undefined;
+    this.allFeedback = replaceLocale(this.allFeedback, locale, ops.applyFbDelete(rows, id));
     void (async () => {
       try {
         await deleteFeedback(id);
       } catch (error) {
         console.error('[fb] delete failed', error);
         // Restore only the deleted row, preserving unrelated snapshot changes.
-        if (
-          previous &&
-          this.contentLocale === previous.locale &&
-          !this.feedback.some((f) => f.id === id)
-        ) {
-          const next = [...this.feedback];
+        const current = localeSlice(this.allFeedback, locale);
+        if (previous && !current.some((f) => f.id === id)) {
+          const next = [...current];
           next.splice(Math.min(index, next.length), 0, previous);
-          this.feedback = next;
+          this.allFeedback = replaceLocale(this.allFeedback, locale, next);
         }
         toast.error(copy.admin.feedback.deleteFailed, {
           description: adminFailHint(error, FB_TIMEOUT),
@@ -615,16 +625,20 @@ class AppState {
   /** Manual (root-only) display order. Rows seen on /admin always carry real ids. */
   fbReorder(orderedIds: number[]): void {
     const locale = this.contentLocale;
-    const previousIds = this.feedback.map((item) => item.id);
-    this.feedback = ops.applyReorder(this.feedback, orderedIds);
+    const rows = localeSlice(this.allFeedback, locale);
+    const previousIds = rows.map((item) => item.id);
+    this.allFeedback = replaceLocale(this.allFeedback, locale, ops.applyReorder(rows, orderedIds));
     const persisted = orderedIds.filter((id) => id > 0);
     void (async () => {
       try {
         await reorderFeedback(persisted, locale);
       } catch (error) {
         console.error('[fb] reorder failed', error);
-        if (this.contentLocale === locale)
-          this.feedback = ops.applyReorder(this.feedback, previousIds);
+        this.allFeedback = replaceLocale(
+          this.allFeedback,
+          locale,
+          ops.applyReorder(localeSlice(this.allFeedback, locale), previousIds),
+        );
         toast.error(copy.admin.feedback.reorderFailed, {
           description: adminFailHint(error, FB_TIMEOUT),
         });
@@ -634,9 +648,9 @@ class AppState {
 
   /** Clear local state after SQL import and wait for a full snapshot. */
   resetAfterImport(): void {
-    this.announcements = [];
-    this.polls = [];
-    this.feedback = [];
+    this.allAnnouncements = [];
+    this.allPolls = [];
+    this.allFeedback = [];
   }
 }
 

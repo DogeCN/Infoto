@@ -46,7 +46,6 @@
   const store = createAppStore();
   const engine = getEngine({
     postSyncFn: syncWithIdentity,
-    locale: () => store.contentLocale,
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
     },
@@ -286,9 +285,9 @@
     void engine.sync();
   }
 
+  /** The snapshot already carries every locale, so a language change is a local re-render. */
   function handleLocaleChange(locale: LocaleCode) {
     store.setContentLocale(locale);
-    void engine.sync();
   }
 
   // Submit announcement reactions, poll votes, and feedback.

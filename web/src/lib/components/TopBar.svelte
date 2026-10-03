@@ -86,8 +86,11 @@
     return { destroy: () => {} };
   }
 
-  // The visible sort pill or admin tabs report the same on-screen width plus the
-  // measured text contribution, avoiding hidden-copy containing-block measurements.
+  /**
+   * Natural width of the labelled pill: the on-screen variant plus the label delta.
+   * A hidden copy reports the containing block, not content width, so the delta is
+   * measured from the visible pill (or admin tabs) instead.
+   */
   let labelledPillW = $state(0);
   let iconPillW = $state(0);
   function onPillWidths(info: {
@@ -105,7 +108,11 @@
     remeasure();
   }
 
-  // Measure the pager arrow because its width scales with the bar height.
+  /**
+   * Arrow width comes from a mounted probe: the arrow is absent from the single-screen
+   * DOM, and a hidden copy does not report content width, so the button's own box is the
+   * only honest measurement.
+   */
   let arrowProbeEl: HTMLElement | undefined = $state(undefined);
   let groupProbeEl: HTMLElement | undefined = $state(undefined);
   let leftExtraW = $state(0);
@@ -145,6 +152,7 @@
 
     const padX = 2 * BAR_PAD;
     const gap = parseFloat(getComputedStyle(rowEl).columnGap) || 0;
+    // Spacing intervals: three on the single and first paged screens, two on the second.
     const singleGaps = 3;
     const pagedFirstGaps = 3;
     const pagedSecondGaps = 2;
@@ -179,6 +187,9 @@
     };
   });
 
+  // Re-measure on width changes and whenever a measured width can have moved (label text
+  // on locale switch, badge counts, sync state). rAF-coalesced: a drag or a rotation
+  // fires a burst of these.
   $effect(() => {
     const header = headerEl;
     if (!header) return;

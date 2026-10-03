@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
+import { batchProgress, indeterminateRow, type UploadRow } from '../../src/transcode/pipeline.ts';
 import {
   artifactExt,
   buildUploadOp,
@@ -131,4 +132,33 @@ test('classifies uploads, translates errors, and builds independent operations',
     const ids = new Set(Array.from({ length: 200 }, () => uid()));
     assert.equal(ids.size, 200);
   }
+});
+
+test('batch progress: totals only a fully measured batch, never an implied number', () => {
+  const row = (phase: string, fraction?: number | null): UploadRow => ({
+    jobId: 'job',
+    fileName: 'file.jpg',
+    phase,
+    fraction,
+  });
+
+  // Every row measures itself: the mean of the measured fractions.
+  assert.equal(batchProgress([row('hashing', 0.5), row('uploading', 1)]), 0.75);
+  // Video transcoding reports its encoder's measured fraction, so it counts.
+  assert.equal(batchProgress([row('transcoding', 0.25), row('transcoding', 0.75)]), 0.5);
+  // One unmeasured stage makes the whole total indeterminate instead of understating it:
+  // queued work, a leased job waiting for its page, and image transcoding (a single
+  // decode + encode call with no intermediate signal).
+  assert.equal(batchProgress([row('hashing', 0.5), row('transcoding')]), null);
+  assert.equal(batchProgress([row('queued')]), null);
+  assert.equal(batchProgress([row('lease-wait')]), null);
+  assert.equal(batchProgress([]), null);
+  // A misreported fraction cannot push the total past completion.
+  assert.equal(batchProgress([row('hashing', 2)]), 1);
+
+  assert.equal(indeterminateRow(row('queued')), true);
+  assert.equal(indeterminateRow(row('lease-wait')), true);
+  assert.equal(indeterminateRow(row('transcoding')), true);
+  assert.equal(indeterminateRow(row('transcoding', 0.4)), false);
+  assert.equal(indeterminateRow(row('hashing', 0.1)), false);
 });

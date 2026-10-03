@@ -19,7 +19,7 @@
     max: number;
     step?: number;
     value: number;
-    /** Default value: when equal, icon and value fall back to muted (same rule as the range sliders). */
+    /** Default value: when equal outside a drag, icon and value fall back to muted (same rule as the range sliders). */
     defaultValue: number;
     /** Leading icon of the row. */
     icon: Component;
@@ -42,7 +42,10 @@
   }: Props = $props();
 
   let span = $derived(Math.max(1, max - min));
-  let active = $derived(value !== defaultValue);
+  // `drag` is declared before `active` because the derived reads it: a live drag must keep
+  // the row highlighted even when the value passes back through the default mid-gesture.
+  let drag = $state(false);
+  let active = $derived(value !== defaultValue || drag);
 
   /** Normalized position → business value (aligned to step). */
   const mapValue = (t: number): number => stepValue(t, min, max, step);
@@ -70,7 +73,6 @@
     bubblePosition(position, width, trackWidth);
 
   // ---- pointer interaction -------------------------------------------------
-  let drag = $state(false);
   /** Hovering the handle (the bubble shows on hover / press / drag / keyboard focus alike). */
   let hover = $state(false);
   /** Rendered bubble width (text length varies with the value). */

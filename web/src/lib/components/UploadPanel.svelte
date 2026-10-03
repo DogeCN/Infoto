@@ -4,7 +4,7 @@
   import { Clapperboard, X } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
-  import type { UploadRow } from '../../transcode/pipeline';
+  import { batchProgress, indeterminateRow, type UploadRow } from '../../transcode/pipeline';
   import { motionMs } from '$base/lib/motion';
   import { createHoverIntent } from '$base/lib/hover.svelte';
 
@@ -153,10 +153,13 @@
     };
   }
 
-  /** Use an indeterminate sweep for queued jobs and stages without measurable progress. */
-  function indeterminate(task: UploadRow): boolean {
-    return task.phase === 'queued' || task.phase === 'lease-wait' || task.fraction == null;
-  }
+  /** Collapsed: pointer devices when nothing is hovered or pinned, touch devices when the
+   *  sheet is back down at its header height. */
+  const collapsed = $derived(canHover ? !expanded : sheetH <= HEADER_H);
+
+  /** Batch total across the rows, or null while any row's stage cannot measure itself —
+   *  the bar then sweeps instead of naming a number the work does not support. */
+  const totalFraction = $derived(batchProgress(tasks));
 
   function pct(task: UploadRow): number {
     const f = task.fraction;
@@ -246,9 +249,9 @@
                     aria-label={fmt(copy.uploadPanel.fileProgress, { fileName: task.fileName })}
                     aria-valuemin="0"
                     aria-valuemax="100"
-                    aria-valuenow={indeterminate(task) ? undefined : pct(task)}
+                    aria-valuenow={indeterminateRow(task) ? undefined : pct(task)}
                   >
-                    {#if indeterminate(task)}
+                    {#if indeterminateRow(task)}
                       <div class="sweep h-full rounded-full bg-primary/70"></div>
                     {:else}
                       <div
@@ -272,6 +275,29 @@
           </div>
         </div>
       </div>
+
+      <!-- Batch total along the panel's bottom edge, shown while collapsed: with the rows
+           out of sight, a live bar is what separates a hover collapse (the batch is still
+           running) from a finished one (the panel unmounts entirely). -->
+      {#if collapsed && tasks.length > 0}
+        <div
+          class="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-muted-foreground/20"
+          role="progressbar"
+          aria-label={title}
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={totalFraction == null ? undefined : Math.round(totalFraction * 100)}
+        >
+          {#if totalFraction == null}
+            <div class="sweep h-full bg-primary/70"></div>
+          {:else}
+            <div
+              class="h-full bg-primary transition-[width] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
+              style="width: {Math.round(totalFraction * 100)}%"
+            ></div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}

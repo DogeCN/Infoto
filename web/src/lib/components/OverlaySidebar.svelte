@@ -113,9 +113,9 @@
   ></div>
 {/if}
 
-<!-- Layout-preview transparency is carried by the background alpha, never by `opacity` on
+<!-- Layout-preview transparency is carried by the background fill, never by `opacity` on
      this panel. An ancestor opacity multiplies through the whole subtree, so a slider thumb
-     inside it could not stay solid while the panel faded, and the thumb is exactly the cue
+     inside it could not stay solid while the panel cleared, and the thumb is exactly the cue
      that tells the user the drag is still live while they watch the waterfall reflow. -->
 <div
   role="dialog"
@@ -126,7 +126,7 @@
   tabindex="-1"
   use:overlay={{ enabled: open, onClose: close }}
   class="fixed top-0 z-50 flex h-full w-full flex-col border-border shadow-2xl shadow-black/40 transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)] {previewTransparent
-    ? 'bg-card/45'
+    ? 'bg-transparent'
     : 'bg-card'}"
   class:left-0={side === 'left'}
   class:right-0={side === 'right'}
@@ -167,10 +167,10 @@
   </div>
 
   <!-- Independent scroll area; child panels provide bottom spacing for sticky controls.
-       Nothing here fades: an ancestor `opacity` multiplies through the whole subtree, so
-       the slider under the pointer could not stay solid while the panel receded — and that
-       slider is the cue that tells the user the drag is still live. SettingsPanel fades
-       its own idle controls instead, which leaves this layer untouched. -->
+       Nothing here clears: an ancestor `opacity` multiplies through the whole subtree, so
+       the slider under the pointer could not stay solid while the panel went transparent —
+       and that slider is the cue that tells the user the drag is still live. SettingsPanel
+       hides its own idle controls instead, which leaves this layer untouched. -->
   <div
     class="min-h-0 flex-1 overflow-y-auto px-4 pt-4"
     style="user-select: {dragging ? 'none' : 'auto'}"

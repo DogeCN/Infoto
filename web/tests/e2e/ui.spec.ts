@@ -31,7 +31,6 @@ async function mockAlbum(page: Page, items = photos, announcements: Announcement
         serverTime: Date.now(),
         mediaHostUrl: 'https://facade.test',
         photos: items,
-        locale: 'en-US',
         announcements,
         polls: [],
         feedback: [],
@@ -154,32 +153,36 @@ test('narrow top bar switches its two screens with a horizontal swipe', async ({
     .toBeLessThan(320);
 });
 
-test('layout slider makes the sidebars and scrim transparent while dragging', async ({ page }) => {
+test('layout preview clears the panel and scrim but keeps the dragged row opaque', async ({
+  page,
+}) => {
   await page.goto('/');
   await page.getByRole('button', { name: enCopy.topbar.settings, exact: true }).click();
-  const settings = page.getByRole('dialog', { name: enCopy.topbar.settings, exact: true });
-  const slider = settings
-    .locator('svg.lucide-ruler')
-    .locator('xpath=following-sibling::div')
-    .getByRole('slider');
-  await slider.scrollIntoViewIfNeeded();
-  const track = slider.locator('xpath=..');
+  const panel = page.getByRole('dialog', { name: enCopy.topbar.settings, exact: true });
+  const settings = panel.locator('[data-previewing]');
+  const bandIcon = panel.locator('svg.lucide-ruler');
+  const band = bandIcon.locator('xpath=following-sibling::div').getByRole('slider');
+  await band.scrollIntoViewIfNeeded();
+  const track = band.locator('xpath=..');
   const rect = (await track.boundingBox())!;
+  const scrim = page.locator('[data-layout-scrim]');
+  const bandRow = bandIcon.locator('xpath=../..');
+  const gapRow = panel.locator('svg.lucide-move-horizontal').locator('xpath=../..');
+  const filters = panel.locator('section').first();
+  await expect(settings).toHaveAttribute('data-previewing', 'none');
   await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
   await page.mouse.down();
-  const scrim = page.locator('[data-layout-scrim]');
-  const announcements = page.locator(
-    `[role="dialog"][aria-label="${enCopy.sidebar.announcementsTitle}"]`,
-  );
-  await expect.poll(() => settings.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
-  await expect.poll(() => scrim.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
-  await expect
-    .poll(() => announcements.evaluate((node) => getComputedStyle(node).opacity))
-    .toBe('0');
+  await expect(settings).toHaveAttribute('data-previewing', 'band');
+  await expect(scrim).toHaveCSS('opacity', '0');
+  await expect(panel).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(bandRow).toHaveCSS('opacity', '1');
+  await expect(filters).toHaveCSS('opacity', '0');
+  await expect(gapRow).toHaveCSS('opacity', '0');
   await page.mouse.move(rect.x + rect.width * 0.8, rect.y + rect.height / 2, { steps: 5 });
   await page.mouse.up();
-  await expect.poll(() => settings.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
-  await expect.poll(() => scrim.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+  await expect(settings).toHaveAttribute('data-previewing', 'none');
+  await expect(scrim).toHaveCSS('opacity', '1');
+  await expect(panel).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
 });
 
 test('lightbox pages from the black mask, keeps its counter between arrows, and supports Ctrl-drag zoom', async ({
@@ -353,13 +356,13 @@ test('photo actions have no visible header, all hover, and open Lens through the
   await expect(menu.getByText(enCopy.lightbox.actions, { exact: true })).toHaveCount(0);
   const actions = menu.locator('button, a');
   await expect(actions).toHaveCount(7);
-  // Neutral items (copy original, copy link, share, Lens) share one muted colour;
-  // colour is reserved for intent — primary for download, destructive for delete.
+  // Each action carries its own colour: the hue is the scanning cue across the sheet, so
+  // no two rows share one.
   const colours = await actions.evaluateAll((nodes) =>
     nodes.map((node) => getComputedStyle(node).color),
   );
-  assert.equal(new Set(colours.slice(0, 4)).size, 1, 'the four neutral actions share one colour');
-  assert.equal(new Set(colours).size, 3, 'neutral, primary and destructive only');
+  assert.equal(new Set(colours.slice(0, 4)).size, 4, 'the four leading actions each keep a colour');
+  assert.equal(new Set(colours).size, colours.length, 'no two actions share a colour');
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 844 });
     for (const action of await actions.all()) {

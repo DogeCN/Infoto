@@ -39,6 +39,7 @@ test('protocol: validates pipeline messages and upload purposes', () => {
       false,
     );
     assert.equal(isPageToSw({ t: 'opWritten', jobId: 'a' }), true);
+    assert.equal(isPageToSw({ t: 'leaseVisibility', leaseId: 'l', hidden: true }), true);
     assert.equal(isPageToSw({ t: 'poolHint', deviceMemory: 8, hardwareConcurrency: 16 }), true);
     assert.equal(isPageToSw({ t: 'poolHint' }), true);
     assert.equal(isPageToSw({ t: 'jobStatus', jobId: 'a', phase: 'queued' }), false);

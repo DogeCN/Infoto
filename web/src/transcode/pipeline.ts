@@ -1,6 +1,7 @@
 // Page-side upload orchestration: SharedWorker scheduling, video leases, durable operations, and broadcast progress.
 
 import { buildUploadOp, routeByMime, translateTaskError, uid } from '$base/upload/pipeline';
+import { clamp01 } from '$base/lib/num';
 import { copy } from '$shared/copy';
 import { openOplogDb, appendOp } from '../core/oplog';
 import { LeaseClient } from './lease';
@@ -41,6 +42,29 @@ export interface UploadRow {
   fraction?: number | null;
 }
 
+/**
+ * True when a row's stage exposes no measured progress: queued work has not started,
+ * a leased video job is waiting for its page to pick it up, and image transcoding is a
+ * single decode + encode call with no intermediate signal. Hashing and uploading report
+ * byte-derived fractions, and video transcoding reports its encoder's measured fraction.
+ */
+export function indeterminateRow(row: UploadRow): boolean {
+  return row.phase === 'queued' || row.phase === 'lease-wait' || row.fraction == null;
+}
+
+/**
+ * Batch progress as the mean of the rows that measure themselves, or null when any row
+ * does not. A total that quietly omitted an unmeasured stage would state a number the
+ * work does not support, so the caller shows an indeterminate sweep instead.
+ */
+export function batchProgress(rows: UploadRow[]): number | null {
+  if (rows.length === 0) return null;
+  const measured = rows.filter((row) => !indeterminateRow(row));
+  if (measured.length !== rows.length) return null;
+  const sum = measured.reduce((total, row) => total + clamp01(row.fraction ?? 0), 0);
+  return sum / measured.length;
+}
+
 export interface PipelineIo {
   /** SharedWorker URL override (E2E / tests). */
   swUrl?: URL;
@@ -76,6 +100,9 @@ const CH = 'infoto-upload';
 const PROBE_TIMEOUT_MS = 10_000;
 
 const SW_RESTART_BACKOFF_MS = 1000;
+
+/** How long an abandoned video worker gets to release its artifact handle before it is killed. */
+const ABORT_GRACE_MS = 2_000;
 
 /** Upload pipeline client — one instance per page. */
 export class UploadPipeline {
@@ -201,7 +228,7 @@ export class UploadPipeline {
         ),
       onRevoked: (m) => {
         this.log(`lease revoked for job ${m.jobId} (heartbeat lost, or the job was cancelled)`);
-        this.terminateVideoWorker(m.jobId);
+        this.stopVideoWorker(m.jobId);
       },
     });
     this.sw.port.onmessage = (e: MessageEvent<unknown>) => {
@@ -457,6 +484,7 @@ export class UploadPipeline {
    * Cancel handle (any phase): the SW deletes the record and broadcasts `jobRemoved`, dropping the row/card in every holding tab and stopping a failed job from replaying its card after a refresh.
    */
   cancel(jobId: string): void {
+    this.stopVideoWorker(jobId);
     this.sw?.port.postMessage({ t: 'cancelJob', jobId });
   }
 
@@ -466,6 +494,35 @@ export class UploadPipeline {
     if (w) {
       w.terminate();
       this.videoWorkers.delete(jobId);
+    }
+  }
+
+  /**
+   * Abandon a running video job. The worker writes its artifact through an open OPFS handle,
+   * so it is asked to release that handle first — a worker killed mid-write leaves the partial
+   * file locked, which would make the retry's rewrite fail. The job's result no longer matters,
+   * so this handler replaces the live one while it waits.
+   */
+  private stopVideoWorker(jobId: string): void {
+    const w = this.videoWorkers.get(jobId);
+    if (!w) return;
+    this.videoWorkers.delete(jobId);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      w.terminate();
+    };
+    w.onmessage = (e: MessageEvent) => {
+      if ((e.data as { t?: string } | null)?.t === 'aborted') finish();
+    };
+    w.onerror = null;
+    const timer = setTimeout(finish, ABORT_GRACE_MS);
+    try {
+      w.postMessage({ t: 'abortJob' });
+    } catch {
+      finish();
     }
   }
 
@@ -484,7 +541,7 @@ export class UploadPipeline {
         jobId,
         error: `worker_create_failed:${String(e)}`,
       });
-      this.lease?.release();
+      this.lease?.release(jobId);
       return;
     }
     this.videoWorkers.set(jobId, w);
@@ -497,12 +554,14 @@ export class UploadPipeline {
           /* port closed */
         }
       } else if (m['t'] === 'videoResult') {
-        // structured-clone forward, no transfer list (Blob is not Transferable)
+        // The worker has already written and hashed the artifact in OPFS, so only the
+        // digest and size cross the thread boundary.
         try {
           this.sw?.port.postMessage({
             t: 'videoResult',
             jobId,
-            blob: m['blob'],
+            sha256: m['sha256'],
+            bytes: m['bytes'],
             width: m['width'],
             height: m['height'],
             hasAudio: m['hasAudio'],
@@ -514,7 +573,7 @@ export class UploadPipeline {
             /* port closed */
           }
         }
-        this.lease?.release(); // Completion returns the concurrency token.
+        this.lease?.release(jobId); // Completion returns the concurrency token.
         w.terminate();
         this.videoWorkers.delete(jobId);
       } else if (m['t'] === 'videoFailed') {
@@ -523,7 +582,7 @@ export class UploadPipeline {
         } catch {
           /* port closed */
         }
-        this.lease?.release(); // Failure also returns the concurrency token.
+        this.lease?.release(jobId); // Failure also returns the concurrency token.
         w.terminate();
         this.videoWorkers.delete(jobId);
       }
@@ -531,7 +590,7 @@ export class UploadPipeline {
     w.onerror = (e: ErrorEvent) => {
       // release path: worker onerror — return the token like every other exit
       this.sw?.port.postMessage({ t: 'videoFailed', jobId, error: `worker_error:${e.message}` });
-      this.lease?.release();
+      this.lease?.release(jobId);
       w.terminate();
       this.videoWorkers.delete(jobId);
     };
