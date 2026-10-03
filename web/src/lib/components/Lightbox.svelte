@@ -28,7 +28,22 @@
   import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
   import TooltipIconButton from './TooltipIconButton.svelte';
-  import GlitchText from './GlitchText.svelte';
+  import {
+    snapRotation,
+    pinchTransform,
+    ctrlZoomTransform,
+    classifyTap,
+    classifySwipe,
+    classifyClickNav,
+    clampPan as engineClampPan,
+    isAtRest,
+    isZoomedBeyondViewport as engineIsZoomedBeyondViewport,
+    zoomToPoint as engineZoomToPoint,
+    isRotated as engineIsRotated,
+    type PinchStart,
+    type Tap,
+    type ZoomState,
+  } from '$base/lib/lightboxEngine';
 
   interface Props {
     photos: Photo[];
@@ -62,18 +77,15 @@
   const SWIPE_THRESHOLD = 60;
   /** Distance (px) where the direction hint starts showing, same reference. */
   const HINT_THRESHOLD = 10;
-  /** Zoom bounds. */
-  const MIN_SCALE = 1;
-  const MAX_SCALE = 5;
+  /** Zoom bounds are imported from the lightbox engine (MIN_SCALE / MAX_SCALE). */
 
   let showMenu = $state(false);
   let volumeMuted = $state(true);
   // loadedUrl === photo.url means the current media finished decoding (drives skeleton + opacity).
   let loadedUrl = $state('');
-  // Media load failure: show the 404 glyph + a toast. The HTTP status is not reliably
-  // obtainable cross-origin (HEAD is CORS-gated), so no code is shown.
+  // Media load failure: the skeleton drops to a flat surface and a toast reports it.
+  // The HTTP status is not reliably obtainable cross-origin (HEAD is CORS-gated).
   let loadFailed = $state(false);
-  const failStatus = '404';
 
   // Track which failing URLs have already surfaced a toast, so revisiting a
   // known-broken photo does not spam notifications.
@@ -95,19 +107,24 @@
   let scale = 1;
   let zoomX = 0;
   let zoomY = 0;
+  let rot = 0;
   let dragging = false;
   let panning = false;
   let gestureMoved = false;
-  let pinchStartDist = 0;
-  let pinchStartScale = 1;
+  let pinchActive = false;
+  let pinchStart: PinchStart | null = null;
+  /** Touch double-tap bookkeeping (native dblclick is unreliable on touch). */
+  let lastTap: Tap | null = null;
+  let suppressClickUntil = 0;
   let ctrlZoomPointer: number | null = null;
+  /** Fixed pivot for the Ctrl gesture: the card centre (stage centre at rest). */
   let ctrlZoomCenter = { x: 0, y: 0 };
-  let ctrlZoomOrigin = { x: 0, y: 0 };
-  let ctrlZoomStartMidpoint = { x: 0, y: 0 };
-  let ctrlZoomStartDistance = 0;
+  let ctrlZoomStartDist = 1;
+  let ctrlZoomStartAngle = 0;
   let ctrlZoomStartScale = 1;
-  let ctrlZoomStartX = 0;
-  let ctrlZoomStartY = 0;
+  let ctrlZoomStartRot = 0;
+  /** True while Ctrl is held; lets a plain drag switch into the Ctrl zoom/rotate mode. */
+  let ctrlPressed = false;
   const active = new Map<number, { x: number; y: number }>();
   let downPoint = { x: 0, y: 0 };
   /** Viewport-scaled thresholds for the gesture in flight (set on pointerdown). */
@@ -122,33 +139,95 @@
     if (!wrapEl) return;
     const transition = animate ? 'transform var(--duration-exit) var(--ease-exit)' : 'none';
     wrapEl.style.transition = transition;
-    wrapEl.style.transform = `translate(${zoomX + dx}px, ${zoomY + dy}px) scale(${scale})`;
+    wrapEl.style.transform = `translate(${zoomX + dx}px, ${zoomY + dy}px) scale(${scale}) rotate(${rot}deg)`;
     // Counter-scale media controls while preserving their independent hover scale.
     wrapEl.style.setProperty('--inv', String(1 / scale));
     // Apply the same transform transition to media and counter-scaled controls.
     if (cornerEl) cornerEl.style.transition = transition;
   }
 
-  function resetZoom(animate = false): void {
+  function resetZoom(animate = false, keepRotate = false): void {
     scale = 1;
     zoomX = 0;
     zoomY = 0;
+    if (!keepRotate) rot = 0;
     applyWrap(0, 0, animate);
   }
 
-  /** Pan clamping while zoomed: media edges do not pass the viewport centre. */
+  /** Pan clamping: keep the rendered media box inside the stage using the
+   *  actual post-transform rects (not stage dimensions). The geometry lives in
+   *  the lightbox engine; this reads the live rects and applies the result. */
   function clampPan(): void {
-    if (!stageEl) return;
-    const maxX = ((scale - 1) * stageEl.clientWidth) / 2;
-    const maxY = ((scale - 1) * stageEl.clientHeight) / 2;
-    zoomX = Math.min(maxX, Math.max(-maxX, zoomX));
-    zoomY = Math.min(maxY, Math.max(-maxY, zoomY));
+    if (!stageEl || !wrapEl) return;
+    const sr = stageEl.getBoundingClientRect();
+    const wr = wrapEl.getBoundingClientRect();
+    const next = engineClampPan({ scale, zoomX, zoomY, rot }, sr, wr);
+    zoomX = next.zoomX;
+    zoomY = next.zoomY;
   }
 
-  function distance(): number {
+  /** Whether the rendered media actually overflows the viewport on some axis —
+   *  the correct gate for entering pan mode. */
+  function isZoomedBeyondViewport(): boolean {
+    if (!stageEl || !wrapEl) return false;
+    const sr = stageEl.getBoundingClientRect();
+    const wr = wrapEl.getBoundingClientRect();
+    return engineIsZoomedBeyondViewport(sr, wr);
+  }
+
+  /** A rotation that is not axis-aligned (0/180/360°) — such images should pan. */
+  function isRotated(): boolean {
+    return engineIsRotated(rot);
+  }
+
+  /** Capture the pinch-start geometry (distance, angle, and current zoom state). */
+  function startPinch(): void {
     const [a, b] = [...active.values()];
-    if (!a || !b) return 0;
-    return Math.hypot(a.x - b.x, a.y - b.y);
+    if (!a || !b || !stageEl) return;
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    const angle = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+    pinchActive = true;
+    pinchStart = { dist: d, angle, s: scale, x: zoomX, y: zoomY, r: rot };
+  }
+
+  /** Clamp the state that is on screen *now*, rewriting the transform only if the
+   *  clamp actually moved it. This must always run after the write that produced the
+   *  rects: `clampPan` reads the rendered box, so judging it before the write measures
+   *  the previous frame's geometry, which is by definition still legal — and the new
+   *  value then escapes unclamped.
+   *
+   *  No "skip while at rest" escape hatch: `clampPan` collapses the offset itself when
+   *  the media is at or below fit scale, and that collapse is exactly what a pinch-out
+   *  past 1 needs. Skipping it left the media parked off-centre at, say, 0.8 — a state
+   *  reachable only because `MIN_SCALE` is now below 1. */
+  function clampSettled(animate: boolean): void {
+    if (!stageEl || !wrapEl) return;
+    const beforeX = zoomX;
+    const beforeY = zoomY;
+    clampPan();
+    if (zoomX !== beforeX || zoomY !== beforeY) applyWrap(0, 0, animate);
+  }
+
+  /** Write a provisional transform, then clamp against the *newly rendered*
+   *  rects and write again. Clamping before the write would judge the previous
+   *  frame's geometry, which is already legal, so the new value escaped
+   *  unclamped on every move. `animate` eases the step (used for double-tap/dblclick,
+   *  not for the continuous wheel/pinch/Ctrl gestures). */
+  function commitZoom(next: ZoomState, animate = false): void {
+    scale = next.scale;
+    zoomX = next.zoomX;
+    zoomY = next.zoomY;
+    rot = next.rot;
+    applyWrap(0, 0, animate);
+    clampSettled(animate);
+  }
+
+  /** Zoom to `ns` anchored at the stage-relative point (sx, sy); when rotated,
+   *  pin the anchor to the centre so the scale+translate math stays valid. */
+  function zoomToPoint(ns: number, sx: number, sy: number, animate = false): void {
+    if (!stageEl) return;
+    const sr = stageEl.getBoundingClientRect();
+    commitZoom(engineZoomToPoint({ scale, zoomX, zoomY, rot }, ns, sx, sy, sr), animate);
   }
 
   /** Page-width-proportional thresholds: `base` is defined for a 768px-wide
@@ -165,37 +244,9 @@
     triggerAt = scaledThreshold(SWIPE_THRESHOLD);
 
     if (e.pointerType === 'mouse' && e.ctrlKey && (e.target as Element).closest('.lb-box')) {
-      const stageRect = stageEl?.getBoundingClientRect();
-      const wrapRect = wrapEl?.getBoundingClientRect();
-      if (stageRect && wrapRect) {
-        const cardCenter = {
-          x: (wrapRect.left + wrapRect.right) / 2,
-          y: (wrapRect.top + wrapRect.bottom) / 2,
-        };
-        const stageCenter = {
-          x: stageRect.left + stageRect.width / 2,
-          y: stageRect.top + stageRect.height / 2,
-        };
-        ctrlZoomPointer = e.pointerId;
-        ctrlZoomCenter = cardCenter;
-        ctrlZoomOrigin = stageCenter;
-        ctrlZoomStartMidpoint = {
-          x: (cardCenter.x + e.clientX) / 2,
-          y: (cardCenter.y + e.clientY) / 2,
-        };
-        ctrlZoomStartDistance = Math.max(
-          12,
-          Math.hypot(cardCenter.x - e.clientX, cardCenter.y - e.clientY),
-        );
-        ctrlZoomStartScale = scale;
-        ctrlZoomStartX = zoomX;
-        ctrlZoomStartY = zoomY;
-        downPoint = { x: e.clientX, y: e.clientY };
-        active.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-        e.preventDefault();
-        return;
-      }
+      beginCtrlZoom(e.pointerId, e.clientX, e.clientY, e.currentTarget as HTMLElement);
+      e.preventDefault();
+      return;
     }
 
     active.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -205,9 +256,8 @@
       downPoint = { x: e.clientX, y: e.clientY };
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     } else if (active.size === 2) {
-      // Second pointer: switch to pinch and clear the drag preview.
-      pinchStartDist = distance();
-      pinchStartScale = scale;
+      // Second pointer: start a pinch; clear any drag preview.
+      startPinch();
       dragging = false;
       gestureDir = null;
       gestureRatio = 0;
@@ -215,36 +265,58 @@
     }
   }
 
+  /**
+   * Enter the desktop Ctrl zoom/rotate mode for `pointerId`. The pivot is the card centre
+   * (stage centre at rest) and stays fixed: the image scales and rotates about it. The gesture
+   * starts from the *current* scale/rotation and the pointer's present distance/angle, so
+   * entering mid-drag (Ctrl pressed after the press) produces no jump. The pan is zeroed so
+   * the pivot is exactly the stage centre.
+   */
+  function beginCtrlZoom(
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    target: HTMLElement | null,
+  ): void {
+    if (!wrapEl) return;
+    const wrapRect = wrapEl.getBoundingClientRect();
+    const center = {
+      x: (wrapRect.left + wrapRect.right) / 2,
+      y: (wrapRect.top + wrapRect.bottom) / 2,
+    };
+    ctrlZoomCenter = center;
+    ctrlZoomStartDist = Math.max(12, Math.hypot(center.x - clientX, center.y - clientY));
+    ctrlZoomStartAngle = (Math.atan2(clientY - center.y, clientX - center.x) * 180) / Math.PI;
+    ctrlZoomStartScale = scale;
+    ctrlZoomStartRot = rot;
+    zoomX = 0;
+    zoomY = 0;
+    applyWrap();
+    ctrlZoomPointer = pointerId;
+    gestureDir = null;
+    gestureRatio = 0;
+    gestureMoved = true;
+    active.set(pointerId, { x: clientX, y: clientY });
+    target?.setPointerCapture?.(pointerId);
+  }
+
   function onPointerMove(e: PointerEvent) {
     if (ctrlZoomPointer === e.pointerId) {
       active.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      const distance = Math.max(
-        12,
-        Math.hypot(ctrlZoomCenter.x - e.clientX, ctrlZoomCenter.y - e.clientY),
+      commitZoom(
+        ctrlZoomTransform(
+          {
+            scale0: ctrlZoomStartScale,
+            dist0: ctrlZoomStartDist,
+            angle0: ctrlZoomStartAngle,
+            r: ctrlZoomStartRot,
+          },
+          { x: e.clientX, y: e.clientY },
+          ctrlZoomCenter,
+        ),
+        false,
       );
-      const distanceRatio = distance / ctrlZoomStartDistance;
-      const midpoint = {
-        x: (ctrlZoomCenter.x + e.clientX) / 2,
-        y: (ctrlZoomCenter.y + e.clientY) / 2,
-      };
-      scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, ctrlZoomStartScale * distanceRatio));
-      if (scale <= MIN_SCALE + 0.01) {
-        zoomX = 0;
-        zoomY = 0;
-      } else {
-        const ratio = scale / ctrlZoomStartScale;
-        zoomX =
-          midpoint.x -
-          ctrlZoomOrigin.x -
-          (ctrlZoomStartMidpoint.x - ctrlZoomOrigin.x - ctrlZoomStartX) * ratio;
-        zoomY =
-          midpoint.y -
-          ctrlZoomOrigin.y -
-          (ctrlZoomStartMidpoint.y - ctrlZoomOrigin.y - ctrlZoomStartY) * ratio;
-        clampPan();
-      }
       gestureMoved = true;
-      applyWrap();
       return;
     }
     if (!active.has(e.pointerId)) return;
@@ -254,14 +326,17 @@
     active.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (active.size >= 2) {
-      // Pinch zoom
-      const d = distance();
-      if (pinchStartDist > 0) {
-        scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, (d / pinchStartDist) * pinchStartScale));
-        if (scale <= MIN_SCALE + 0.01) {
-          zoomX = 0;
-          zoomY = 0;
-        }
+      // Pinch: zoom + rotate around the two-finger midpoint, recomputed every
+      // frame from the pinch-start state so there is no cumulative drift.
+      if (!pinchActive) startPinch();
+      if (pinchStart) {
+        const [a, b] = [...active.values()];
+        const sr = stageEl!.getBoundingClientRect();
+        const next = pinchTransform(pinchStart, a, b, sr);
+        scale = next.scale;
+        zoomX = next.zoomX;
+        zoomY = next.zoomY;
+        rot = next.rot;
         gestureMoved = true;
         applyWrap();
       }
@@ -272,13 +347,10 @@
     if (Math.abs(e.clientX - downPoint.x) > 4 || Math.abs(e.clientY - downPoint.y) > 4)
       gestureMoved = true;
 
-    if (panning || scale > 1.01) {
+    if (panning || isZoomedBeyondViewport() || isRotated()) {
       // Zoomed: dragging pans, accumulating with each move.
       panning = true;
-      zoomX += dx;
-      zoomY += dy;
-      clampPan();
-      applyWrap();
+      commitZoom({ scale, zoomX: zoomX + dx, zoomY: zoomY + dy, rot });
       return;
     }
 
@@ -344,9 +416,15 @@
   }
 
   let gestureTimer: ReturnType<typeof setTimeout> | undefined;
+  // Cancel a pending gesture advance when the viewer closes or the photo
+  // switches. This deliberately keys on the (stable) index and open flag rather
+  // than the photo: marking a photo replaces its entry in the store while
+  // keeping the same sha, which changed the `photo` object identity, re-ran this
+  // effect and cleared the 200 ms advance timer — so a swipe marked the photo
+  // but sometimes never advanced until the next swipe.
   $effect(() => {
     void open;
-    void photo?.sha256;
+    void currentIndex;
     return () => clearTimeout(gestureTimer);
   });
 
@@ -374,6 +452,10 @@
         gestureRatio = 0;
       }, 250);
     } else {
+      // The up gesture has no auto-advance timer, so the hint drawn during the
+      // drag would otherwise stay on screen behind the sheet that just opened.
+      gestureDir = null;
+      gestureRatio = 0;
       showMenu = true;
     }
   }
@@ -385,37 +467,82 @@
       (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
       dragging = false;
       panning = false;
+      // Snap the free rotation to the nearest 90° on release (matches the pinch
+      // path). The pivot stays centred, so the snap only re-orients the image.
+      rot = snapRotation(rot);
       applyWrap(0, 0, true);
+      clampSettled(true);
       return;
     }
     const start = active.get(e.pointerId);
     active.delete(e.pointerId);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    if (active.size < 2) pinchStartDist = 0;
-    if (active.size > 0) return; // One of multiple pointers released; wait.
+
+    // Pinch: end on the first finger lift, snap rotation to the nearest 90°
+    // (keeping the signed value so a -90° gesture does not spin a full turn),
+    // and clamp. A remaining finger keeps dragging from its current spot so its
+    // release is never judged as a swipe from the original press point.
+    if (pinchActive && active.size < 2) {
+      pinchActive = false;
+      rot = snapRotation(rot);
+      if (active.size === 1) {
+        const [rem] = [...active.values()];
+        downPoint = { x: rem.x, y: rem.y };
+        dragging = true;
+        panning = false;
+        gestureMoved = false;
+      } else {
+        dragging = false;
+        panning = false;
+      }
+      // Write the snapped rotation *before* clamping. Snapping moves the box's edges
+      // by tens of pixels, so clamping against the pre-snap rect is how the image used
+      // to settle out of frame at an angle it was no longer rendered at.
+      applyWrap(0, 0, true);
+      clampSettled(true);
+      return;
+    }
+
+    if (active.size > 0) return; // A pointer is still down; wait for it.
 
     dragging = false;
     const wasPanning = panning;
     panning = false;
 
     if (!start) return;
-    // Direction uses the total displacement from the press point (same as the
-    // drag preview).
+    // Total displacement from the press point (same reference as the drag preview).
     const dx = e.clientX - downPoint.x;
     const dy = e.clientY - downPoint.y;
 
-    // Zoomed drag ends: position is clamped, settle in place.
+    // Touch tap: detect a double-tap on the media to toggle zoom (native dblclick
+    // is unreliable on touch, so it is handled here; the mouse path keeps onDblClick).
+    if (Math.hypot(dx, dy) < 12 && e.pointerType === 'touch') {
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      if (hit?.closest('.lb-media') && !hit.closest('.lb-corner, button')) {
+        const now = Date.now();
+        if (classifyTap(lastTap, now, e.clientX, e.clientY) === 'double') {
+          if (!isAtRest(scale)) resetZoom(true, true);
+          else {
+            const r = stageEl!.getBoundingClientRect();
+            zoomToPoint(2, e.clientX - r.left, e.clientY - r.top, true);
+          }
+          lastTap = null;
+          suppressClickUntil = now + 400;
+          return;
+        }
+        lastTap = { t: now, x: e.clientX, y: e.clientY };
+      }
+    }
+
+    // Zoomed/rotated drag ends: clamp and settle in place.
     if (wasPanning) {
       applyWrap(0, 0, true);
       return;
     }
 
-    const ax = Math.abs(dx);
-    const ay = Math.abs(dy);
-    const dist = Math.max(ax, ay);
-    if (dist >= triggerAt) {
-      const dir = ax > ay ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
-      triggerGesture(dir as 'left' | 'right' | 'up' | 'down');
+    const dir = classifySwipe(dx, dy, triggerAt);
+    if (dir) {
+      triggerGesture(dir);
       return;
     }
 
@@ -425,32 +552,60 @@
     applyWrap(0, 0, true);
   }
 
+  /**
+   * A cancelled gesture is not a finished one.
+   *
+   * This used to be bound to `onPointerUp`, which ran the whole completion path: a system
+   * takeover (incoming call, edge-back, app switch, a second touch stealing the gesture)
+   * could mark a photo, start a download or open the menu that the user never asked for —
+   * and vote on it, which is a server write. Cancelling drops the gesture state, snaps any
+   * in-flight rotation to a resting angle so the photo is not left tilted, and returns the
+   * transform without animating: nothing was completed, so there is nothing to settle.
+   */
+  function onPointerCancel(e: PointerEvent): void {
+    active.delete(e.pointerId);
+    if (ctrlZoomPointer === e.pointerId) ctrlZoomPointer = null;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    pinchActive = false;
+    pinchStart = null;
+    dragging = false;
+    panning = false;
+    gestureMoved = false;
+    lastTap = null;
+    gestureDir = null;
+    gestureRatio = 0;
+    rot = snapRotation(rot);
+    scale = 1;
+    zoomX = 0;
+    zoomY = 0;
+    applyWrap();
+  }
+
   function onDblClick(e: MouseEvent): void {
-    // Hit-test double clicks against media rather than the pointer-capture target.
+    // Mouse double-click zooms around the cursor; hit-test against media.
+    // Guarded so a touch double-tap handled in onPointerUp is not doubled.
+    if (Date.now() < suppressClickUntil) return;
     const hit = document.elementFromPoint(e.clientX, e.clientY);
     if (!hit?.closest('.lb-media')) return;
     if (showMenu || gestureMoved) return;
-    if (scale > 1.01) resetZoom(true);
+    if (!isAtRest(scale)) resetZoom(true, true);
     else {
-      scale = 2;
-      applyWrap(0, 0, true);
+      const r = stageEl!.getBoundingClientRect();
+      zoomToPoint(2, e.clientX - r.left, e.clientY - r.top, true);
     }
   }
 
-  /** Desktop Ctrl+wheel zoom; passive:false is required to stop browser zoom,
-   *  bound through an action. */
+  /** Desktop wheel zoom; passive:false is required to stop the page/browser zoom,
+   *  bound through an action. Anchored on the cursor, like every other zoom path here —
+   *  a wheel that zooms about the stage centre slides whatever sits under the pointer
+   *  toward the middle on each tick, so the detail you are scrolling toward never stays put.
+   *  Plain wheel and Ctrl+wheel both zoom (a trackpad pinch arrives as Ctrl+wheel). */
   function wheelZoom(node: HTMLElement) {
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
       e.preventDefault();
-      scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale - e.deltaY * 0.002));
-      if (scale <= MIN_SCALE + 0.01) {
-        zoomX = 0;
-        zoomY = 0;
-      } else {
-        clampPan();
-      }
-      applyWrap();
+      const sr = stageEl?.getBoundingClientRect();
+      if (!sr) return;
+      zoomToPoint(scale - e.deltaY * 0.002, e.clientX - sr.left, e.clientY - sr.top, false);
     };
     node.addEventListener('wheel', onWheel, { passive: false });
     return {
@@ -463,6 +618,21 @@
   function handleKeydown(e: KeyboardEvent) {
     if (!open || e.defaultPrevented) return;
     if (e.key === ' ' && (e.target as HTMLElement).closest('button, a, input, textarea')) return;
+
+    // Ctrl is the desktop zoom/rotate modifier. Pressing it mid-drag switches the plain
+    // drag into the Ctrl mode (fixed-centre zoom + rotate) so you can start the gesture
+    // any time, not only with Ctrl held at the press. The modifier's own keydown used to
+    // reset the zoom, which fought the "press Ctrl to begin" flow and is removed.
+    if (e.key === 'Control') {
+      if (!ctrlPressed) {
+        ctrlPressed = true;
+        if (active.size >= 1 && !ctrlZoomPointer && dragging && !panning) {
+          const [pid, p] = [...active.entries()][0];
+          beginCtrlZoom(pid, p.x, p.y, null);
+        }
+      }
+      return;
+    }
 
     // While the menu is open, arrows / Escape only close it and never reach
     // the gestures (no marking or paging behind the menu). Other keys are
@@ -502,11 +672,11 @@
         e.preventDefault();
         if (photo?.type === 2) volumeMuted = !volumeMuted;
         break;
-      case 'Control':
-        // Double-tap Ctrl resets zoom.
-        if (scale > 1.01) resetZoom(true);
-        break;
     }
+  }
+
+  function handleKeyUp(e: KeyboardEvent) {
+    if (e.key === 'Control') ctrlPressed = false;
   }
 
   // Wrap-around: first and last photos are connected.
@@ -521,14 +691,23 @@
 
   function handleStageClick(event: MouseEvent): void {
     if (showMenu || gestureMoved) return;
-    const target = event.target;
+    // Swallow the click that follows a touch double-tap zoom.
+    if (Date.now() < suppressClickUntil) {
+      suppressClickUntil = 0;
+      return;
+    }
+    // The pointer is captured by the stage, so `event.target` is always the
+    // stage — never the media or a control. Hit-test the point instead, or a
+    // click on the card would page like a click on the black mask. Hit-testing
+    // respects the zoom transform, so the media's *rendered* box is what counts.
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
     if (
-      !(target instanceof Element) ||
-      target.closest('button, a, input, textarea, select, [data-lb-controls], .lb-box')
+      !hit ||
+      hit.closest('button, a, input, textarea, select, [data-lb-controls], [data-lb-media]')
     )
       return;
-    const midpoint = (stageEl?.clientWidth ?? window.innerWidth) / 2;
-    if (event.clientX < midpoint) goPrev();
+    const width = stageEl?.clientWidth ?? window.innerWidth;
+    if (classifyClickNav(event.clientX, width) === 'prev') goPrev();
     else goNext();
   }
 
@@ -542,6 +721,7 @@
     scale = 1;
     zoomX = 0;
     zoomY = 0;
+    rot = 0;
     // Reset load errors on photo changes while keeping the URL-based decoded-media cache.
     loadFailed = false;
     if (wrapEl) applyWrap();
@@ -618,7 +798,7 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onkeyup={handleKeyUp} />
 
 {#if open && photo}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -635,7 +815,7 @@
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
-    onpointercancel={onPointerUp}
+    onpointercancel={onPointerCancel}
     onclick={handleStageClick}
     ondblclick={onDblClick}
     use:wheelZoom
@@ -715,6 +895,7 @@
     <div class="absolute inset-0 flex items-center justify-center overflow-hidden">
       <div
         bind:this={wrapEl}
+        data-lb-media
         class="relative flex max-w-full select-none items-center justify-center will-change-transform"
       >
         <!-- Size the placeholder from native dimensions and aspect ratio. -->
@@ -724,11 +905,7 @@
             style="--w: {photo.width}px; --h: {photo.height}px; --ar: {photo.width /
               photo.height}; aspect-ratio: {photo.width} / {photo.height};"
             aria-hidden="true"
-          >
-            {#if loadFailed}
-              <GlitchText text={failStatus} size="clamp(1.5rem, 20cqmin, 4.5rem)" />
-            {/if}
-          </div>
+          ></div>
         {/if}
         {#if photo.type !== 0}
           <!-- Render silent and audio WebM with CSS sizing and eager buffering. -->
