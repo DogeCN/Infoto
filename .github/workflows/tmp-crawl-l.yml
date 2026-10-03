@@ -1,0 +1,21 @@
+name: tmp-crawl-l
+
+# TEMPORARY diagnostic: fetch https://dev.infoto.cc.cd/l/b from CI (a datacenter IP,
+# no cookies, no browser) to confirm the /l/* WAF skip rule lets non-browser fetchers
+# retrieve media. Delete after reading the run.
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch /l/b
+        run: |
+          code=$(curl -sS -o /tmp/b.bin -D /tmp/h.txt -w "%{http_code} %{content_type} %{size_download}" \
+            "https://dev.infoto.cc.cd/l/b") || true
+          echo "--- result: $code ---"
+          echo "--- first 16 bytes ---"; head -c 16 /tmp/b.bin | xxd || true
