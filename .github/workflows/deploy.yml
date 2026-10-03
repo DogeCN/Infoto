@@ -161,11 +161,13 @@ jobs:
         run: npx wrangler deploy
 
       # A branch deployment runs against the always-pass test secret, which is the
-      # only secret whose tokens the test site key above accepts.
+      # only secret whose tokens the test site key above accepts. Must stay in sync
+      # with ALWAYS_PASS_SECRET in src/worker/turnstile.ts (the Worker short-circuits
+      # siteverify on an exact match).
       - name: Inject Turnstile test secret (non-production)
         if: github.ref_type != 'tag'
         run: |
-          printf '%s' "0x00000000000000000000000000000000" | npx wrangler secret put TURNSTILE_SECRET_KEY
+          printf '%s' "1x0000000000000000000000000000000AA" | npx wrangler secret put TURNSTILE_SECRET_KEY
 
       - name: Inject Turnstile secret (production)
         if: github.ref_type == 'tag'
