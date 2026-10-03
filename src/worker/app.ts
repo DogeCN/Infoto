@@ -29,6 +29,18 @@ export function createApp(env: AppEnv): Hono {
   const app = new Hono();
 
   app.post('/sync', syncHandler(env));
+  // A real robots policy: the SPA fallback would otherwise answer /robots.txt with the
+  // HTML shell (a soft-200 that crawlers — e.g. the Google Lens URL fetcher — read as
+  // noise instead of a policy).
+  app.get('/robots.txt', () => {
+    const body = 'User-agent: *\nDisallow: /admin\nDisallow: /sync\n';
+    return new Response(body, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'public, max-age=86400',
+      },
+    });
+  });
   app.get('/l/:id36', mediaHandler(env));
   app.get('/admin/migrate', migrateExportHandler(env));
   app.post('/admin/migrate', migrateImportHandler(env));

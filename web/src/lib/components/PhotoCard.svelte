@@ -88,9 +88,12 @@
     }
   });
 
-  // FLIP each card between computed waterfall boxes. The live visual rect is read
-  // before canceling an in-flight animation, so rapid reflows continue from where
-  // the card is actually rendered instead of snapping back to a stale endpoint.
+  // FLIP each card between computed waterfall boxes. The start frame is the box the card
+  // rendered in before this reflow — reading the live rect only differs from the target
+  // while a previous FLIP is still in flight (its transform is what moves the rect), so a
+  // fresh reflow would read from == to and snap. Cancelling the in-flight animation
+  // restarts from its current visual frame, so rapid reflows chain and interrupts stay
+  // smooth.
   $effect(() => {
     const next = { x, y, width, height };
     const previous = previousBox;
@@ -105,16 +108,17 @@
     )
       return;
 
-    const from = element.getBoundingClientRect();
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const fromLive = cardAnimation ? element.getBoundingClientRect() : null;
     cardAnimation?.cancel();
     cardAnimation = null;
     const to = element.getBoundingClientRect();
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-    const dx = from.left - to.left;
-    const dy = from.top - to.top;
-    const sx = to.width > 0 ? from.width / to.width : 1;
-    const sy = to.height > 0 ? from.height / to.height : 1;
+    const dx = fromLive ? fromLive.left - to.left : previous.x - next.x;
+    const dy = fromLive ? fromLive.top - to.top : previous.y - next.y;
+    const sx = next.width > 0 ? (fromLive ? fromLive.width : previous.width) / next.width : 1;
+    const sy = next.height > 0 ? (fromLive ? fromLive.height : previous.height) / next.height : 1;
     if (
       Math.abs(dx) < 0.25 &&
       Math.abs(dy) < 0.25 &&

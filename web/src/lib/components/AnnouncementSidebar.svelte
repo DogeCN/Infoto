@@ -22,7 +22,9 @@
   let feedbackText = $state('');
   let previewMode = $state(false);
   // Textarea height (drag the top-right handle upward to enlarge)
-  let taH = $state(190);
+  // Default to the resize floor: the composer sits sticky over the content, so its
+  // resting footprint stays as small as the handle allows (user call).
+  let taH = $state(120);
   /** Ids of expanded announcements (empty = all collapsed, so long posts cannot fill the screen). */
   let expandedIds = $state<Set<number>>(new Set());
 
