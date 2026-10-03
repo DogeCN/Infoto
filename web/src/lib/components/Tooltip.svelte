@@ -1,7 +1,8 @@
 <script lang="ts">
-  // Accessible tooltip for a single trigger element. Visible on hover and keyboard focus, and
-  // on a 500ms long-press for touch devices (the native title attribute is unreachable there).
+  // Accessible tooltip for a single trigger element. Visible on hover and keyboard focus.
   // Portaled above <body> so overflow clipping and transformed ancestors can't trap it; placement flips to the opposite side near a viewport edge.
+  // Touch deliberately gets no tooltip (user call): the long-press copy blocked the view
+  // on phones, and the labelled control itself is the touch affordance.
   import { onDestroy, type Snippet } from 'svelte';
   import { portal } from '$base/lib/portal';
 
@@ -25,17 +26,14 @@
 
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
-  let pressTimer: ReturnType<typeof setTimeout> | undefined;
 
   onDestroy(() => {
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
-    clearTimeout(pressTimer);
   });
 
   const SHOW_DELAY_MS = 350;
   const HIDE_DELAY_MS = 80;
-  const TOUCH_PRESS_MS = 500;
   const GAP_PX = 6;
 
   const OPPOSITE: Record<Side, Side> = {
@@ -113,10 +111,10 @@
   }
 
   function onPointerOver(): void {
+    if (window.matchMedia('(hover: none)').matches) return;
     show();
   }
   function onPointerOut(): void {
-    clearPress();
     hide();
   }
   function onFocusIn(): void {
@@ -124,13 +122,6 @@
   }
   function onFocusOut(): void {
     hide();
-  }
-  function onPointerDown(): void {
-    if (pressTimer) clearTimeout(pressTimer);
-    pressTimer = setTimeout(() => show(true), TOUCH_PRESS_MS);
-  }
-  function clearPress(): void {
-    if (pressTimer) clearTimeout(pressTimer);
   }
   function onKeyDown(e: KeyboardEvent): void {
     if (e.key === 'Escape') open = false;
@@ -173,9 +164,6 @@
   onpointerout={onPointerOut}
   onfocusin={onFocusIn}
   onfocusout={onFocusOut}
-  onpointerdown={onPointerDown}
-  onpointerup={clearPress}
-  onpointercancel={clearPress}
   onkeydown={onKeyDown}
 >
   {@render children()}

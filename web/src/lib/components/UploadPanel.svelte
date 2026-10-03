@@ -1,6 +1,7 @@
 <script lang="ts">
   // Album progress panel with measured progress or an indeterminate sweep. Pointer hover expands the list; touch dragging controls its height.
   import { onDestroy } from 'svelte';
+  import { fly } from 'svelte/transition';
   import { Clapperboard, X } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
@@ -211,8 +212,22 @@
         <Clapperboard class="size-4 shrink-0 text-muted-foreground" />
         <span class="flex-1 text-xs text-muted-foreground">{title}</span>
         {#if progress && progress.total > 0}
-          <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
-            {progress.done}<span class="text-muted-foreground/50">/{progress.total}</span>
+          <!-- Remaining count only, one big number that fade-hops when it ticks down
+               (user call): the done/total pair read as clutter at header size. Both keyed
+               spans share one grid cell so the cross-fade never reflows the header. -->
+          {@const remaining = progress.total - progress.done}
+          <span
+            class="inline-grid shrink-0 justify-items-end text-sm font-semibold tabular-nums text-foreground"
+          >
+            {#key remaining}
+              <span
+                class="col-start-1 row-start-1"
+                in:fly={{ y: 5, duration: 200 }}
+                out:fly={{ y: -5, duration: 200 }}
+              >
+                {remaining}
+              </span>
+            {/key}
           </span>
         {/if}
       </div>

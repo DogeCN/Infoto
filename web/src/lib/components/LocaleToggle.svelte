@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ALargeSmall, Languages } from '@lucide/svelte';
+  import { Languages } from '@lucide/svelte';
   import type { LocaleCode } from '$shared/types';
   import { copy, getLocale, LOCALE_OPTIONS, setLocale } from '$lib/i18n.svelte';
 
@@ -10,7 +10,9 @@
 
   let { variant = 'settings', onChange }: Props = $props();
   let current = $derived(getLocale());
-  let Icon = $derived(current === 'zh-CN' ? Languages : ALargeSmall);
+  // The icon stays fixed: the label text already flips with the language, and a second
+  // moving part reads as noise (user call).
+  let Icon = Languages;
   let target = $derived(LOCALE_OPTIONS.find((option) => option.code !== current)?.code);
   let label = $derived(
     target === 'zh-CN' ? copy.settings.switchToChinese : copy.settings.switchToEnglish,
