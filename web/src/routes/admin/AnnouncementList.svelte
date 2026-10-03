@@ -4,7 +4,7 @@
   import { copy } from '$lib/i18n.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
-  import Tooltip from '$lib/components/Tooltip.svelte';
+  import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
   import { reactionCounts } from '../../core/reactions';
 
@@ -33,26 +33,23 @@
           </p>
         </div>
         <div class="flex shrink-0 gap-1">
-          <Tooltip text={copy.admin.announcement.edit}>
-            <button
-              type="button"
-              class="icon-button p-2"
-              aria-label={copy.admin.announcement.editAria}
-              onclick={() => onEdit(announcement)}
-            >
-              <Pencil class="size-4" />
-            </button>
-          </Tooltip>
-          <Tooltip text={copy.admin.announcement.delete}>
-            <button
-              type="button"
-              class="icon-button icon-button--danger p-2"
-              aria-label={copy.admin.announcement.deleteAria}
-              onclick={() => onDelete(announcement.id)}
-            >
-              <Trash2 class="size-4" />
-            </button>
-          </Tooltip>
+          <TooltipIconButton
+            text={copy.admin.announcement.edit}
+            ariaLabel={copy.admin.announcement.editAria}
+            class="p-2"
+            onclick={() => onEdit(announcement)}
+          >
+            <Pencil class="size-4" />
+          </TooltipIconButton>
+          <TooltipIconButton
+            text={copy.admin.announcement.delete}
+            ariaLabel={copy.admin.announcement.deleteAria}
+            danger
+            class="p-2"
+            onclick={() => onDelete(announcement.id)}
+          >
+            <Trash2 class="size-4" />
+          </TooltipIconButton>
         </div>
       </div>
       <div class="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground/70">

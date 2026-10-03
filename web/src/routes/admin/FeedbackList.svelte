@@ -6,7 +6,7 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import MarkdownView from '$lib/components/MarkdownView.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
-  import Tooltip from '$lib/components/Tooltip.svelte';
+  import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
   import { filterFeedback } from './feedbackView';
 
@@ -72,16 +72,15 @@
               {feedbackItem.userId}
             </span>
           </div>
-          <Tooltip text={copy.admin.feedback.delete}>
-            <button
-              type="button"
-              class="icon-button icon-button--danger shrink-0 p-2"
-              aria-label={copy.admin.feedback.deleteAria}
-              onclick={() => onDelete(feedbackItem.id)}
-            >
-              <Trash2 class="size-4" />
-            </button>
-          </Tooltip>
+          <TooltipIconButton
+            text={copy.admin.feedback.delete}
+            ariaLabel={copy.admin.feedback.deleteAria}
+            danger
+            class="shrink-0 p-2"
+            onclick={() => onDelete(feedbackItem.id)}
+          >
+            <Trash2 class="size-4" />
+          </TooltipIconButton>
         </div>
 
         <div class="mt-2">
