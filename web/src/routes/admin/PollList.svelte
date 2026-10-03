@@ -78,18 +78,23 @@
 
       <!-- Read-only render of the poll. No heading: the option rows are self-describing, and
            a second bordered panel around them only nested one box inside another. The
-           timestamp anchors the row bottom-right, where the announcement list puts it. -->
-      <div class="mt-3 flex items-end justify-between gap-3">
-        <div class="min-w-0 flex-1">
-          <VoteBlock
-            options={poll.options}
-            votes={poll.votes}
-            allowMultiple={poll.allowMultiple}
-            interactive={false}
-            {selfId}
-          />
-        </div>
-        <TimeLabel time={poll.updatedAt} align="end" class="shrink-0 tabular-nums" />
+           timestamp gets its own bottom row, as in the other lists, so it never steals
+           width from the option labels. -->
+      <div class="mt-3">
+        <VoteBlock
+          options={poll.options}
+          votes={poll.votes}
+          allowMultiple={poll.allowMultiple}
+          interactive={false}
+          {selfId}
+        />
+      </div>
+      <div class="mt-3 flex justify-end">
+        <TimeLabel
+          time={poll.updatedAt}
+          align="end"
+          class="text-xs text-muted-foreground tabular-nums"
+        />
       </div>
     {/snippet}
   </ReorderableList>

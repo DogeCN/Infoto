@@ -13,6 +13,8 @@
       contentMd: string;
       updatedAt: number;
     } | null;
+    /** In-memory draft to seed the fields with; wins over `announcement`. */
+    draft?: { title: string; contentMd: string } | null;
     polls?: Poll[];
     selfId?: number;
     onPickImage: (file: File) => Promise<string>;
@@ -28,6 +30,7 @@
 
   let {
     announcement,
+    draft = null,
     polls = [],
     selfId = -1,
     onPickImage,
@@ -37,8 +40,8 @@
     onCancelUpload,
     onRetryUpload,
   }: Props = $props();
-  let title = $state(untrack(() => announcement?.title ?? ''));
-  let contentMd = $state(untrack(() => announcement?.contentMd ?? ''));
+  let title = $state(untrack(() => draft?.title ?? announcement?.title ?? ''));
+  let contentMd = $state(untrack(() => draft?.contentMd ?? announcement?.contentMd ?? ''));
   let titleInput: HTMLInputElement | undefined = $state(undefined);
   let imageInput: HTMLInputElement | undefined = $state(undefined);
   let uploadBusy = $state(false);
@@ -57,6 +60,11 @@
     if (currentJobId) onCancelUpload?.();
   });
   const canSave = $derived(title.trim().length > 0 && contentMd.trim().length > 0 && !uploadBusy);
+
+  /** Live draft snapshot, captured by the tab switch so the editor can be parked unmounted. */
+  export function getDraft(): { title: string; contentMd: string } {
+    return { title, contentMd };
+  }
 
   async function pickImage() {
     const input = imageInput;
