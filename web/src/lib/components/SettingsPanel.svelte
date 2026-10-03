@@ -224,6 +224,31 @@
      slider under the pointer stays solid — it is what tells the user the drag is still
      live. The regions that are *not* being dragged therefore go fully transparent, and
      the live slider's own row stays opaque. -->
+<!-- Shared section header: icon + label on the left, reset button on the right. Fades out
+     with the chrome during a layout preview (the filters section already fades whole). -->
+{#snippet sectionHeader(
+  sectionIcon: Component,
+  label: string,
+  resetLabel: string,
+  onreset: () => void,
+)}
+  {@const SectionIcon = sectionIcon}
+  <div
+    class="flex items-center justify-between px-1 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
+      ? 'opacity-0'
+      : 'opacity-100'}"
+  >
+    <h3 class="flex items-center gap-1.5 text-sm font-medium">
+      <SectionIcon class="size-3.5" />{label}
+    </h3>
+    <Tooltip text={resetLabel} side="bottom">
+      <button aria-label={resetLabel} type="button" class="icon-button size-7" onclick={onreset}>
+        <RotateCcw class="size-3.5" />
+      </button>
+    </Tooltip>
+  </div>
+{/snippet}
+
 <div class="space-y-6 pb-4" data-previewing={previewing ?? 'none'}>
   <!-- Filters section -->
   <section
@@ -231,21 +256,12 @@
       ? 'opacity-0'
       : 'opacity-100'}"
   >
-    <div class="flex items-center justify-between px-1">
-      <h3 class="flex items-center gap-1.5 text-sm font-medium">
-        <Funnel class="size-3.5" />{copy.settings.filterSection}
-      </h3>
-      <Tooltip text={copy.settings.resetFilters} side="bottom">
-        <button
-          aria-label={copy.settings.resetFilters}
-          type="button"
-          class="icon-button size-7"
-          onclick={resetFilters}
-        >
-          <RotateCcw class="size-3.5" />
-        </button>
-      </Tooltip>
-    </div>
+    {@render sectionHeader(
+      Funnel,
+      copy.settings.filterSection,
+      copy.settings.resetFilters,
+      resetFilters,
+    )}
 
     <div class="mt-4 space-y-5 px-1">
       <!-- Ranges: rows of icon + dual-thumb slider -->
@@ -259,24 +275,17 @@
             {@const Icon = RANGE_ICONS[key]}
             {@const active = rangeActive(key)}
             {#if full}
-              <div class="flex items-center gap-2">
-                <Icon
-                  class="size-4 shrink-0 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {active
-                    ? 'text-primary'
-                    : 'text-muted-foreground'} {filterable ? '' : 'opacity-50'}"
-                />
-                <div class="min-w-0 flex-1">
-                  <RangeSlider
-                    min={full[0]}
-                    max={full[1]}
-                    value={rangeValue(key)}
-                    scale={key === 'size' ? 'log' : 'linear'}
-                    disabled={!filterable}
-                    format={key === 'size' ? compactSize : (v) => String(v)}
-                    onChange={(v) => setRange(key, v)}
-                  />
-                </div>
-              </div>
+              <RangeSlider
+                min={full[0]}
+                max={full[1]}
+                value={rangeValue(key)}
+                scale={key === 'size' ? 'log' : 'linear'}
+                disabled={!filterable}
+                icon={Icon}
+                iconActive={active}
+                format={key === 'size' ? compactSize : (v) => String(v)}
+                onChange={(v) => setRange(key, v)}
+              />
             {/if}
           {/each}
         {/if}
@@ -342,25 +351,12 @@
   <!-- Interface section. The layout sliders must not be hidden while one of them is dragged,
        so the transparency is carried by the chrome around them — the header and the mode row. -->
   <section>
-    <div
-      class="flex items-center justify-between px-1 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
-        ? 'opacity-0'
-        : 'opacity-100'}"
-    >
-      <h3 class="flex items-center gap-1.5 text-sm font-medium">
-        <LayoutGrid class="size-3.5" />{copy.settings.interfaceSection}
-      </h3>
-      <Tooltip text={copy.settings.resetLayout} side="bottom">
-        <button
-          aria-label={copy.settings.resetLayout}
-          type="button"
-          class="icon-button size-7"
-          onclick={resetLayout}
-        >
-          <RotateCcw class="size-3.5" />
-        </button>
-      </Tooltip>
-    </div>
+    {@render sectionHeader(
+      LayoutGrid,
+      copy.settings.interfaceSection,
+      copy.settings.resetLayout,
+      resetLayout,
+    )}
 
     <div
       class="mt-4 flex items-center gap-2 px-1 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing

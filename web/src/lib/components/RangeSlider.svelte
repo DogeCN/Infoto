@@ -1,6 +1,6 @@
 <script lang="ts">
   // Dual-thumb slider with linear or logarithmic mapping, separated handles, and change-only emissions.
-  import { fly } from 'svelte/transition';
+  import type { Component } from 'svelte';
   import { cn } from '$base/lib/ui';
   import {
     bubblePosition,
@@ -13,7 +13,7 @@
     type RangeScale,
   } from '$base/lib/slider';
   import { clamp01 } from '$base/lib/num';
-  import { bubbleTransition } from '$base/lib/motion';
+  import SliderBubble from './SliderBubble.svelte';
   import { copy } from '$lib/i18n.svelte';
 
   type SliderScale = 'linear' | 'log';
@@ -25,6 +25,10 @@
     /** Log scale is used for byte sizes (linear is the default). */
     scale?: SliderScale;
     disabled?: boolean;
+    /** Leading icon of the row, lit while the range is non-default (SingleSlider parity). */
+    icon: Component;
+    /** Whether the icon reads as active. */
+    iconActive?: boolean;
     /** Value -> display text (e.g. bytes to human-readable). */
     format?: (v: number) => string;
     onChange?: (v: [number, number]) => void;
@@ -36,6 +40,8 @@
     value,
     scale = 'linear',
     disabled = false,
+    icon: Icon,
+    iconActive = false,
     format = (v) => String(v),
     onChange,
   }: Props = $props();
@@ -155,6 +161,15 @@
 
   // ---- keyboard (thumbs are custom role=slider elements) --------------------
   let focus = $state<Which | null>(null);
+
+  const iconCls = $derived(
+    cn(
+      'size-4 shrink-0 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
+      iconActive && !disabled ? 'text-primary' : 'text-muted-foreground',
+      disabled && 'opacity-50',
+    ),
+  );
+
   function onKeydown(e: KeyboardEvent, which: Which): void {
     if (disabled) return;
     const curV = which === 'lo' ? loVal : hiVal;
@@ -170,103 +185,87 @@
   }
 </script>
 
-<!-- At rest only the track is visible (h-8 hit area); bubbles float above
-     the track during drag / focus without affecting layout. -->
-<div class={cn('relative h-8 select-none', disabled && 'opacity-50')}>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    bind:this={trackEl}
-    bind:clientWidth={trackWidth}
-    class={cn(
-      'absolute inset-x-0 top-0 h-8 touch-none',
-      disabled ? 'cursor-default' : 'cursor-pointer',
-    )}
-    onpointerdown={onPointerDown}
-    onpointermove={onPointerMove}
-    onpointerup={endDrag}
-    onpointercancel={endDrag}
-    onlostpointercapture={endDrag}
-  >
-    <!-- base track -->
-    <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-border"></div>
-    <!-- Highlight fill between the thumbs (endpoints use thumb centres, strictly coaxial with them) -->
-    <div
-      class="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-primary"
-      style="left: {thumbCenter(tLo)}; right: calc(100% - {thumbCenter(tHi)})"
-    ></div>
+<!-- Two columns: icon + track (same row shape as SingleSlider). At rest only the track is
+     visible (h-8 hit area); bubbles float above the track during drag / focus. -->
+<div class="grid grid-cols-[1rem_minmax(0,1fr)] items-center gap-2">
+  <Icon class={iconCls} />
 
-    <!-- Bubble: shown only for the hovered / dragged thumb (mapped value changed) or the keyboard-focused one -->
-    {#if drag === 'lo' || hover === 'lo' || focus === 'lo'}
-      {@const bs = bubblePos(tLo, bwLo)}
-      <div
-        data-bubble
-        class="pointer-events-none absolute z-30"
-        style="left: {bs.left}px; bottom: calc(100% - 2px)"
-      >
-        <div bind:clientWidth={bwLo} class="slider-bubble" transition:fly={bubbleTransition}>
-          {format(loVal)}
-          <span class="slider-caret" style="left: {bs.tip}px"></span>
-        </div>
-      </div>
-    {/if}
-    {#if drag === 'hi' || hover === 'hi' || focus === 'hi'}
-      {@const bs = bubblePos(tHi, bwHi)}
-      <div
-        data-bubble
-        class="pointer-events-none absolute z-30"
-        style="left: {bs.left}px; bottom: calc(100% - 2px)"
-      >
-        <div bind:clientWidth={bwHi} class="slider-bubble" transition:fly={bubbleTransition}>
-          {format(hiVal)}
-          <span class="slider-caret" style="left: {bs.tip}px"></span>
-        </div>
-      </div>
-    {/if}
-
-    <!-- lower thumb -->
+  <div class={cn('relative h-8 min-w-0 select-none', disabled && 'opacity-50')}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      data-thumb="lo"
-      role="slider"
-      tabindex={disabled ? -1 : 0}
-      aria-label={copy.settings.rangeMin}
-      aria-valuemin={Math.round(min)}
-      aria-valuemax={Math.round(max)}
-      aria-valuenow={loVal}
-      aria-valuetext={format(loVal)}
-      aria-disabled={disabled}
+      bind:this={trackEl}
+      bind:clientWidth={trackWidth}
       class={cn(
-        'slider-thumb',
-        drag === 'lo' ? 'z-20 scale-[1.22] transition-none' : 'z-10 hover:scale-110',
+        'absolute inset-x-0 top-0 h-8 touch-none',
+        disabled ? 'cursor-default' : 'cursor-pointer',
       )}
-      style="left: {thumbCenter(tLo)}"
-      onkeydown={(e) => onKeydown(e, 'lo')}
-      onpointerenter={() => (hover = 'lo')}
-      onpointerleave={() => hover === 'lo' && (hover = null)}
-      onfocus={() => (focus = 'lo')}
-      onblur={() => (focus = null)}
-    ></div>
+      onpointerdown={onPointerDown}
+      onpointermove={onPointerMove}
+      onpointerup={endDrag}
+      onpointercancel={endDrag}
+      onlostpointercapture={endDrag}
+    >
+      <!-- base track -->
+      <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-border"></div>
+      <!-- Highlight fill between the thumbs (endpoints use thumb centres, strictly coaxial with them) -->
+      <div
+        class="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-primary"
+        style="left: {thumbCenter(tLo)}; right: calc(100% - {thumbCenter(tHi)})"
+      ></div>
 
-    <!-- upper thumb -->
-    <div
-      data-thumb="hi"
-      role="slider"
-      tabindex={disabled ? -1 : 0}
-      aria-label={copy.settings.rangeMax}
-      aria-valuemin={Math.round(min)}
-      aria-valuemax={Math.round(max)}
-      aria-valuenow={hiVal}
-      aria-valuetext={format(hiVal)}
-      aria-disabled={disabled}
-      class={cn(
-        'slider-thumb',
-        drag === 'hi' ? 'z-20 scale-[1.22] transition-none' : 'z-10 hover:scale-110',
-      )}
-      style="left: {thumbCenter(tHi)}"
-      onkeydown={(e) => onKeydown(e, 'hi')}
-      onpointerenter={() => (hover = 'hi')}
-      onpointerleave={() => hover === 'hi' && (hover = null)}
-      onfocus={() => (focus = 'hi')}
-      onblur={() => (focus = null)}
-    ></div>
+      <!-- Bubble: shown only for the hovered / dragged thumb or the keyboard-focused one -->
+      {#if drag === 'lo' || hover === 'lo' || focus === 'lo'}
+        <SliderBubble position={bubblePos(tLo, bwLo)} text={format(loVal)} bind:width={bwLo} />
+      {/if}
+      {#if drag === 'hi' || hover === 'hi' || focus === 'hi'}
+        <SliderBubble position={bubblePos(tHi, bwHi)} text={format(hiVal)} bind:width={bwHi} />
+      {/if}
+
+      <!-- lower thumb -->
+      <div
+        data-thumb="lo"
+        role="slider"
+        tabindex={disabled ? -1 : 0}
+        aria-label={copy.settings.rangeMin}
+        aria-valuemin={Math.round(min)}
+        aria-valuemax={Math.round(max)}
+        aria-valuenow={loVal}
+        aria-valuetext={format(loVal)}
+        aria-disabled={disabled}
+        class={cn(
+          'slider-thumb',
+          drag === 'lo' ? 'z-20 scale-[1.22] transition-none' : 'z-10 hover:scale-110',
+        )}
+        style="left: {thumbCenter(tLo)}"
+        onkeydown={(e) => onKeydown(e, 'lo')}
+        onpointerenter={() => (hover = 'lo')}
+        onpointerleave={() => hover === 'lo' && (hover = null)}
+        onfocus={() => (focus = 'lo')}
+        onblur={() => (focus = null)}
+      ></div>
+
+      <!-- upper thumb -->
+      <div
+        data-thumb="hi"
+        role="slider"
+        tabindex={disabled ? -1 : 0}
+        aria-label={copy.settings.rangeMax}
+        aria-valuemin={Math.round(min)}
+        aria-valuemax={Math.round(max)}
+        aria-valuenow={hiVal}
+        aria-valuetext={format(hiVal)}
+        aria-disabled={disabled}
+        class={cn(
+          'slider-thumb',
+          drag === 'hi' ? 'z-20 scale-[1.22] transition-none' : 'z-10 hover:scale-110',
+        )}
+        style="left: {thumbCenter(tHi)}"
+        onkeydown={(e) => onKeydown(e, 'hi')}
+        onpointerenter={() => (hover = 'hi')}
+        onpointerleave={() => hover === 'hi' && (hover = null)}
+        onfocus={() => (focus = 'hi')}
+        onblur={() => (focus = null)}
+      ></div>
+    </div>
   </div>
 </div>

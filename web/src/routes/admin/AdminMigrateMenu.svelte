@@ -5,6 +5,7 @@
   import { fmt } from '$shared/copy';
   import Progress from '$lib/components/Progress.svelte';
   import Tooltip from '$lib/components/Tooltip.svelte';
+  import { portal } from '$base/lib/portal';
   import { migrateSql } from '../../core/api/migrateClient';
 
   interface Props {
@@ -114,8 +115,11 @@
   <input bind:this={fileInput} type="file" accept=".sql" class="hidden" onchange={importSelected} />
 
   {#if importing}
+    <!-- Portaled and pinned under the bar: the header clips overflow and its backdrop
+         filter would capture a fixed child, so this panel cannot live inside it. -->
     <div
-      class="absolute top-full right-0 z-40 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 shadow-lg"
+      use:portal
+      class="fixed top-[calc(var(--bar-h,3.5rem)+8px)] right-4 z-50 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 shadow-lg"
       role="status"
       aria-live="polite"
     >
