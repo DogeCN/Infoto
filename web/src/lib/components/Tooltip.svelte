@@ -3,6 +3,7 @@
   // on a 500ms long-press for touch devices (the native title attribute is unreachable there).
   // Portaled above <body> so overflow clipping and transformed ancestors can't trap it; placement flips to the opposite side near a viewport edge.
   import { onDestroy, type Snippet } from 'svelte';
+  import { portal } from '$base/lib/portal';
 
   type Side = 'top' | 'bottom' | 'left' | 'right';
 
@@ -52,11 +53,6 @@
 
   function triggerEl(): Element | undefined {
     return wrapper?.firstElementChild ?? undefined;
-  }
-
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
   }
 
   function position(): void {

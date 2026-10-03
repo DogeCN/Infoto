@@ -1,7 +1,6 @@
 <script lang="ts">
   // Step-aligned single-thumb slider with pointer and keyboard controls and change-only emissions.
   import type { Component } from 'svelte';
-  import { fly } from 'svelte/transition';
   import { cn } from '$base/lib/ui';
   import {
     bubblePosition,
@@ -11,7 +10,7 @@
     stepValue,
   } from '$base/lib/slider';
   import { clamp01 } from '$base/lib/num';
-  import { bubbleTransition } from '$base/lib/motion';
+  import SliderBubble from './SliderBubble.svelte';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
@@ -156,17 +155,7 @@
 
     <!-- Bubble: surfaces while dragging, hovering, or keyboard-focused -->
     {#if drag || hover || focus}
-      {@const bs = bubblePos(t, bw)}
-      <div
-        data-bubble
-        class="pointer-events-none absolute z-30"
-        style="left: {bs.left}px; bottom: calc(100% - 2px)"
-      >
-        <div bind:clientWidth={bw} class="slider-bubble" transition:fly={bubbleTransition}>
-          {format(curVal)}
-          <span class="slider-caret" style="left: {bs.tip}px"></span>
-        </div>
-      </div>
+      <SliderBubble position={bubblePos(t, bw)} text={format(curVal)} bind:width={bw} />
     {/if}
 
     <div

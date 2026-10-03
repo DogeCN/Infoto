@@ -263,7 +263,9 @@
       {/snippet}
     </TopBar>
 
-    <main class="w-full px-4 pb-6 pt-20 md:px-8 md:pt-24">
+    <!-- Offset by the measured bar height (published as --bar-h), like every other
+         surface beneath the bar; the fixed paddings predate the height ramp. -->
+    <main class="w-full px-4 pb-6 md:px-8 pt-[calc(var(--bar-h,3.5rem)+16px)]">
       {#if activeTab === 'announcements'}
         <AnnouncementList
           announcements={store.announcements}
