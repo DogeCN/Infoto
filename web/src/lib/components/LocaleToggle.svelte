@@ -17,9 +17,13 @@
   );
 
   function toggle(): void {
-    if (!target) return;
-    setLocale(target);
-    onChange?.(target);
+    // Capture the target BEFORE setLocale: target is a $derived off the live locale, so
+    // reading it again after the switch re-evaluates against the new locale and hands
+    // onChange the one we just left — the content view then lags the UI by one toggle.
+    const next = target;
+    if (!next) return;
+    setLocale(next);
+    onChange?.(next);
   }
 </script>
 
