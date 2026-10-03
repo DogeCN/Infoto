@@ -19,6 +19,15 @@ export interface LayoutBox {
   h: number;
 }
 
+/**
+ * A committed box with the id dropped — everything a card needs to know where it *was*,
+ * without the identity the caller already keys on. The waterfall's cross-mount geometry
+ * memory stores these, so the stored value matches the declared type exactly; declaring it
+ * as `LayoutBox` instead would promise an `id` that is never written, and the first reader
+ * to trust it would get `undefined` with no type error.
+ */
+export type GeomStamp = Omit<LayoutBox, 'id'>;
+
 export interface LayoutOptions {
   dir: ScrollDir;
   strategy: FillStrategy;

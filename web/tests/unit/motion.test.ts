@@ -1,30 +1,49 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { bubbleTransition, motionEase, motionEaseFn, motionMs } from '../../src/base/lib/motion';
+import {
+  bubbleTransition,
+  motionEase,
+  motionEaseFn,
+  motionMs,
+  reflowFlipWindowMs,
+} from '../../src/base/lib/motion';
 
 // Values mirror the `@theme` block in `app.css`; keep the two in step.
-const MS = { enter: 280, exit: 160, spring: 420 };
+const MS = { enter: 280, exit: 160, spring: 420, reflow: 450 };
 const EASE = {
   enter: 'cubic-bezier(0.2, 0, 0, 1)',
   exit: 'cubic-bezier(0.3, 0, 0.8, 0.15)',
   spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
+  reflow: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
 };
+const PHASES = ['enter', 'exit', 'spring', 'reflow'] as const;
 
 test('motion tokens resolve without a document', () => {
   // Every phase must produce a usable value with no DOM: the prefix is added exactly
   // once, so a wrong phase name would miss the fallback table instead of throwing here.
-  for (const phase of ['enter', 'exit', 'spring'] as const) {
+  for (const phase of PHASES) {
     assert.equal(motionMs(phase), MS[phase]);
     assert.equal(motionEase(phase), EASE[phase]);
   }
   assert.deepEqual(bubbleTransition, { y: 3, duration: MS.exit, easing: bubbleTransition.easing });
 });
 
+test('the reflow flip window outlasts the reflow it is bracketing', () => {
+  // The window decides which remounts still glide. Shorter than the animation itself and
+  // a card mounting late in its own transition is treated as a fresh mount and appears at
+  // the new box — the half-finished glide `ca1b082` was cited for. It must also be derived
+  // from the token, so the assertion is against `motionMs`, not against a restated 450.
+  assert.ok(
+    reflowFlipWindowMs > motionMs('reflow'),
+    `flip window ${reflowFlipWindowMs}ms must exceed the ${motionMs('reflow')}ms reflow`,
+  );
+});
+
 test('easing functions reproduce the cubic-bezier curves they mirror', () => {
   const sample = (ease: (t: number) => number, n = 100): number[] =>
     Array.from({ length: n + 1 }, (_, i) => ease(i / n));
 
-  for (const phase of ['enter', 'exit', 'spring'] as const) {
+  for (const phase of PHASES) {
     const ease = motionEaseFn(phase);
     assert.equal(ease(0), 0, `${phase} starts at 0`);
     assert.equal(ease(1), 1, `${phase} settles at 1`);

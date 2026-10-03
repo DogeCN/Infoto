@@ -14,16 +14,27 @@
 import { clamp01 } from './num.ts';
 
 /** `enter` runs when something appears, `exit` when it leaves, `spring` for bouncy motion. */
-export type MotionPhase = 'enter' | 'exit' | 'spring';
+export type MotionPhase = 'enter' | 'exit' | 'spring' | 'reflow';
 
 type MotionProperty = `--duration-${MotionPhase}` | `--ease-${MotionPhase}`;
 
-/** Fallbacks mirror the `@theme` block in `app.css`; keep the two in step. */
-const FALLBACK_MS: Record<MotionPhase, number> = { enter: 280, exit: 160, spring: 420 };
-const FALLBACK_EASE: Record<MotionPhase, string> = {
+/**
+ * Fallbacks mirror the `@theme` block in `app.css` and the table in `.ai/CONTRACT.md`;
+ * all three are asserted equal by `designTokens.test.ts`. Divergence here is not a
+ * cosmetic problem: the fallback is what unit tests and any DOM-less render animate at,
+ * so a silent split means the tested timings are not the shipped ones.
+ */
+export const FALLBACK_MS: Record<MotionPhase, number> = {
+  enter: 280,
+  exit: 160,
+  spring: 420,
+  reflow: 450,
+};
+export const FALLBACK_EASE: Record<MotionPhase, string> = {
   enter: 'cubic-bezier(0.2, 0, 0, 1)',
   exit: 'cubic-bezier(0.3, 0, 0.8, 0.15)',
   spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
+  reflow: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
 };
 
 /** Resolve one motion custom property, falling back to its declared value. */
@@ -87,3 +98,16 @@ export const bubbleTransition = {
   duration: motionMs('exit'),
   easing: motionEaseFn('exit'),
 };
+
+/**
+ * How long after a layout commit a card may still remount and glide from the box it last
+ * rendered at, rather than appearing at the new one.
+ *
+ * Evaluated once at module load, not per card: `motionMs` reads a custom property through
+ * `getComputedStyle`, and a waterfall mounts and unmounts cards on every scroll step. The
+ * value comes from the token so it cannot drift — `ca1b082` hardcoded the pair this window
+ * exists to bracket and is cited in ADR 0015 for exactly that. The margin is the frame in
+ * which a remount lands after the commit; with no document (unit tests) it degrades to the
+ * asserted fallback rather than to a second literal.
+ */
+export const reflowFlipWindowMs = motionMs('reflow') + 30;

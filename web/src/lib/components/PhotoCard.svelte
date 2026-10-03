@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import type { Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
+  import { reflowFlipWindowMs } from '$base/lib/motion';
+  import type { GeomStamp } from '$base/lib/layout';
   import {
     ThumbsUp,
     ThumbsDown,
@@ -12,7 +14,6 @@
     RotateCcw,
     X,
   } from '@lucide/svelte';
-  import GlitchText from './GlitchText.svelte';
 
   interface Props {
     photo: Photo;
@@ -22,6 +23,12 @@
     y?: number;
     width: number;
     height: number;
+    /** Cross-mount geometry memory, so a card the virtualizer had unmounted can glide from
+     *  the box it last rendered at instead of appearing at the new one. */
+    motionMemory?: Map<number, GeomStamp>;
+    /** performance.now() of the latest layout commit; a remount inside the flip window
+     *  (derived from `--duration-reflow`) glides, a later one appears in place. */
+    reflowAt?: number;
     /** Upload curtain overlay: fraction = progress (reveal ratio), failed = full cover + retry.
      *  `preview` marks media that is only a local stand-in, so a source the browser cannot
      *  decode falls back to the skeleton instead of the broken-photo placeholder. */
@@ -45,6 +52,8 @@
     y = 0,
     width,
     height,
+    motionMemory,
+    reflowAt = 0,
     overlay,
     selected = false,
     multiMode = false,
@@ -75,12 +84,70 @@
   // glide instead of restart-jumping. `placed` gates the transition until the first box
   // has landed, so a mount never slides in from the origin.
   let placed = $state(false);
+  // The virtualizer unmounts cards outside the scroll window, so on a reflow those cards
+  // would remount straight at the new box. Within the flip window a remounting card is
+  // painted at its remembered old box first, gets the transition enabled, then retargets
+  // to the new box — same glide as the cards that stayed mounted. The window comes from
+  // `--duration-reflow` (see `reflowFlipWindowMs`) rather than a literal of its own.
+  const reducedMotion =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let fromBox: GeomStamp | null = $state(null);
+  // Mount-time snapshot, on purpose. This sits outside every `$effect` in the component, so
+  // no later prop update can retro-fire the flip — a remounting card either glides from the
+  // box it last rendered at, or appears in place. `untrack` is what marks the props below as
+  // deliberately read once: Svelte otherwise warns that they only capture their initial
+  // value, which is exactly the intent, and `--fail-on-warnings` would fail the build.
+  untrack(() => {
+    const remembered =
+      motionMemory &&
+      !reducedMotion &&
+      reflowAt > 0 &&
+      performance.now() - reflowAt <= reflowFlipWindowMs
+        ? motionMemory.get(photo.id)
+        : undefined;
+    if (
+      remembered &&
+      (remembered.x !== x ||
+        remembered.y !== y ||
+        remembered.w !== width ||
+        remembered.h !== height)
+    ) {
+      fromBox = remembered;
+    }
+  });
+  let cancelFlip: (() => void) | undefined;
+  onDestroy(() => cancelFlip?.());
+  let flipArmed = false;
   $effect(() => {
     void x;
     void y;
     void width;
     void height;
+    void fromBox;
+    if (fromBox) {
+      if (!flipArmed) {
+        flipArmed = true;
+        // Frame A: enable the transition while the inline style still holds the old box;
+        // frame B: retarget to the new box. Both must be separate painted commits or the
+        // browser sees transition:none in the before-change style and skips the animation.
+        let raf2 = 0;
+        const raf1 = requestAnimationFrame(() => {
+          placed = true;
+          raf2 = requestAnimationFrame(() => {
+            fromBox = null;
+          });
+        });
+        cancelFlip = () => {
+          cancelAnimationFrame(raf1);
+          cancelAnimationFrame(raf2);
+        };
+      }
+      return;
+    }
     if (!placed) placed = true;
+    motionMemory?.set(photo.id, { x, y, w: width, h: height });
   });
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
   // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
@@ -97,10 +164,8 @@
     }
   });
 
-  // Media that will not load reads as 404 — the same glyph the not-found page uses. The
-  // real HTTP status is not reliably obtainable cross-origin (HEAD is CORS-gated), so no
-  // code is shown rather than a misleading one.
-  const failStatus = '404';
+  // A media element that fails to load leaves a bare surface; the failure is reported by the
+  // Lightbox, which this card still opens into. The grid itself stays silent about it.
   // type=1 (animated image without audio track) and type=2 (video with sound) are both
   // video media — inside the card they always play muted and looping, no poster frame.
   let isVideo = $derived(photo.type !== 0);
@@ -156,7 +221,8 @@
     ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
   class:card-motion={placed}
-  style="transform: translate3d({x}px, {y}px, 0); width: {width}px; height: {height}px; transform-origin: top left"
+  style="transform: translate3d({fromBox?.x ?? x}px, {fromBox?.y ?? y}px, 0); width: {fromBox?.w ??
+    width}px; height: {fromBox?.h ?? height}px; transform-origin: top left"
   role="button"
   aria-label={copy.lightbox.preview}
   aria-pressed={multiMode ? selected : undefined}
@@ -172,16 +238,12 @@
     onClick?.();
   }}
 >
-  <!-- Media: on load failure render a glitching error code.
+  <!-- Media: on load failure the card keeps a bare raised surface. The failure is reported by
+       the Lightbox, which the card still opens; the grid itself shows nothing.
        Empty URL (upload still in flight) keeps the skeleton instead of an <img>
        whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
-    <div class="flex h-full w-full items-center justify-center bg-card [container-type:size]">
-      <GlitchText
-        text={failStatus}
-        size={width < 140 ? 'clamp(0.65rem, 14cqmin, 0.85rem)' : 'clamp(1.25rem, 22cqmin, 3.5rem)'}
-      />
-    </div>
+    <div class="h-full w-full bg-card"></div>
   {:else if photo.url}
     {#if loadedUrl !== photo.url}
       <div class="absolute inset-0 skeleton" aria-hidden="true"></div>
@@ -384,9 +446,9 @@
      utility they used previously would be overridden by this unlayered shorthand. */
   .card-motion {
     transition:
-      transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
-      width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
-      height 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
+      transform var(--duration-reflow) var(--ease-reflow),
+      width var(--duration-reflow) var(--ease-reflow),
+      height var(--duration-reflow) var(--ease-reflow),
       border-color var(--duration-exit) var(--ease-exit),
       opacity var(--duration-exit) var(--ease-exit);
   }

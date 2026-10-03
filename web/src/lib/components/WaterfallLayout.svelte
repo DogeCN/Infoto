@@ -4,6 +4,7 @@
     computeLayoutChunked,
     orderByMain,
     windowIndices,
+    type GeomStamp,
     type LayoutBox,
     type ScrollDir,
     type FillStrategy,
@@ -153,6 +154,10 @@
   let totalW = $state(0);
   let order = $state<number[]>([]);
   let layoutReady = $state(false);
+  /** Last committed box per card id, kept across virtualizer unmounts for FLIP reflows. */
+  const geomMemory = new Map<number, GeomStamp>();
+  /** performance.now() of the latest layout commit, gating the FLIP remount window. */
+  let reflowAt = $state(0);
   let currentAbort: AbortController | null = null;
   let layoutTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -245,12 +250,19 @@
           const sorted = orderByMain(result.boxes, d);
           requestAnimationFrame(() => {
             if (!controller.signal.aborted) {
+              reflowAt = performance.now();
               boxes = result.boxes;
               totalH = result.totalH;
               totalW = result.totalW;
               maxExtent = result.boxes.reduce((m, bx) => Math.max(m, d === 'v' ? bx.h : bx.w), 0);
               order = sorted;
               layoutReady = true;
+              // Drop memory for removed cards; unmounted survivors keep their stale box
+              // until they remount, which is exactly the FLIP source they need.
+              const live = new Set(result.boxes.map((bx) => bx.id));
+              for (const id of geomMemory.keys()) {
+                if (!live.has(id)) geomMemory.delete(id);
+              }
             }
           });
         }
@@ -546,6 +558,8 @@
             y={box.y}
             width={box.w}
             height={box.h}
+            motionMemory={geomMemory}
+            {reflowAt}
             overlay={overlays.get(photo.id)}
             onRetryUpload={() => onRetryUpload?.(photo)}
             onDismissUpload={() => onDismissUpload?.(photo)}

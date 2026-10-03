@@ -33,6 +33,11 @@
   --duration-enter: 280ms;
   --duration-exit: 160ms;
   --duration-spring: 420ms;
+  /* Reflow is its own phase: the waterfall writes transform/width/height and a CSS
+     transition interpolates between them, so an interrupted reflow retargets instead of
+     restarting. It is not `spring` — that overshoots, which a box retarget must not do. */
+  --ease-reflow: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --duration-reflow: 450ms;
 
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.6);
