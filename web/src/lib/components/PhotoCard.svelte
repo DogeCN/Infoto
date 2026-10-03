@@ -2,7 +2,6 @@
   import { onDestroy } from 'svelte';
   import type { Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
-  import { motionEase, motionMs } from '$base/lib/motion';
   import {
     ThumbsUp,
     ThumbsDown,
@@ -71,8 +70,18 @@
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
   let cardEl: HTMLDivElement | undefined = $state(undefined);
-  let cardAnimation: Animation | null = null;
-  let previousBox: { x: number; y: number; width: number; height: number } | null = null;
+  // The card sits at 0,0 and moves purely by transform; a CSS transition interpolates
+  // between reflows and retargets mid-flight, so continuous reflows (a dragged slider)
+  // glide instead of restart-jumping. `placed` gates the transition until the first box
+  // has landed, so a mount never slides in from the origin.
+  let placed = $state(false);
+  $effect(() => {
+    void x;
+    void y;
+    void width;
+    void height;
+    if (!placed) placed = true;
+  });
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
   // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
   // every /sync keeps the loaded image visible; the browser caches decoding by URL itself.
@@ -86,61 +95,6 @@
     if (url) {
       loadFailed = false;
     }
-  });
-
-  // FLIP each card between computed waterfall boxes. The start frame is the box the card
-  // rendered in before this reflow — reading the live rect only differs from the target
-  // while a previous FLIP is still in flight (its transform is what moves the rect), so a
-  // fresh reflow would read from == to and snap. Cancelling the in-flight animation
-  // restarts from its current visual frame, so rapid reflows chain and interrupts stay
-  // smooth.
-  $effect(() => {
-    const next = { x, y, width, height };
-    const previous = previousBox;
-    previousBox = next;
-    const element = cardEl;
-    if (!element || !previous) return;
-    if (
-      previous.x === next.x &&
-      previous.y === next.y &&
-      previous.width === next.width &&
-      previous.height === next.height
-    )
-      return;
-
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-
-    const fromLive = cardAnimation ? element.getBoundingClientRect() : null;
-    cardAnimation?.cancel();
-    cardAnimation = null;
-    const to = element.getBoundingClientRect();
-
-    const dx = fromLive ? fromLive.left - to.left : previous.x - next.x;
-    const dy = fromLive ? fromLive.top - to.top : previous.y - next.y;
-    const sx = next.width > 0 ? (fromLive ? fromLive.width : previous.width) / next.width : 1;
-    const sy = next.height > 0 ? (fromLive ? fromLive.height : previous.height) / next.height : 1;
-    if (
-      Math.abs(dx) < 0.25 &&
-      Math.abs(dy) < 0.25 &&
-      Math.abs(sx - 1) < 0.002 &&
-      Math.abs(sy - 1) < 0.002
-    )
-      return;
-
-    const animation = element.animate(
-      [
-        { transform: `translate3d(${dx}px, ${dy}px, 0) scale(${sx}, ${sy})` },
-        { transform: 'translate3d(0, 0, 0) scale(1, 1)' },
-      ],
-      { duration: motionMs('enter'), easing: motionEase('enter') },
-    );
-    cardAnimation = animation;
-    void animation.finished.then(
-      () => {
-        if (cardAnimation === animation) cardAnimation = null;
-      },
-      () => undefined,
-    );
   });
 
   // Media that will not load reads as 404 — the same glyph the not-found page uses. The
@@ -179,7 +133,6 @@
 
   onDestroy(() => {
     cancelLongPress();
-    cardAnimation?.cancel();
   });
 
   /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
@@ -199,10 +152,11 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   bind:this={cardEl}
-  class="absolute overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border transition-[border-color,opacity] duration-[var(--duration-enter)] ease-[var(--ease-enter)] {selected
+  class="absolute left-0 top-0 overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border {selected
     ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
-  style="left: {x}px; top: {y}px; width: {width}px; height: {height}px; transform-origin: top left"
+  class:card-motion={placed}
+  style="transform: translate3d({x}px, {y}px, 0); width: {width}px; height: {height}px; transform-origin: top left"
   role="button"
   aria-label={copy.lightbox.preview}
   aria-pressed={multiMode ? selected : undefined}
@@ -422,3 +376,23 @@
     </button>
   {/if}
 </div>
+
+<style>
+  /* Demo-standard reflow motion: the layout writes transform/width/height and this
+     transition interpolates, so a reflow glides and retargets mid-flight instead of
+     restart-jumping. border-color/opacity ride along because the Tailwind transition
+     utility they used previously would be overridden by this unlayered shorthand. */
+  .card-motion {
+    transition:
+      transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
+      width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
+      height 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
+      border-color var(--duration-exit) var(--ease-exit),
+      opacity var(--duration-exit) var(--ease-exit);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card-motion {
+      transition: none;
+    }
+  }
+</style>
