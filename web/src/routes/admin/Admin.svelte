@@ -50,6 +50,18 @@
   let editorUploadTask = $state<UploadRow | null>(null);
   let editorJobId: string | null = null;
 
+  // Draft park for tab switches: an open editor is closed when the user visits another
+  // tab, but its live draft is captured and re-seeded on return (page memory only —
+  // gone on reload, never written to storage).
+  type AnnouncementDraft = { title: string; contentMd: string };
+  type PollDraft = { options: string[]; allowMultiple: boolean };
+  let annEditor: { getDraft: () => AnnouncementDraft } | undefined = $state();
+  let pollEditor: { getDraft: () => PollDraft } | undefined = $state();
+  let parkedAnnouncement: { editing: Announcement | null; draft: AnnouncementDraft } | null = null;
+  let parkedPoll: { editing: Poll | null; draft: PollDraft } | null = null;
+  let annRestoreDraft = $state<AnnouncementDraft | null>(null);
+  let pollRestoreDraft = $state<PollDraft | null>(null);
+
   const adminItems = $derived([
     { value: 'announcements', label: copy.admin.tabs.announcements, icon: Megaphone },
     { value: 'feedback', label: copy.admin.tabs.feedback, icon: MessageSquare },
@@ -132,6 +144,7 @@
       editorJobId = null;
     }
     editorUploadTask = null;
+    annRestoreDraft = null;
     editorOpen = false;
     editingAnnouncement = null;
   }
@@ -161,6 +174,7 @@
   }
 
   function closePollEditor(): void {
+    pollRestoreDraft = null;
     pollEditorOpen = false;
     editingPoll = null;
   }
@@ -177,12 +191,42 @@
   }
 
   function handleTabChange(value: string): void {
-    if (value === 'announcements' || value === 'feedback' || value === 'polls') activeTab = value;
+    if (value !== 'announcements' && value !== 'feedback' && value !== 'polls') return;
+    if (value === activeTab) return;
+    // Leave a tab with an open editor: park it with its live draft so the visit
+    // doesn't discard work. Returning to its tab reopens it exactly as it was.
+    if (activeTab === 'announcements' && editorOpen) {
+      parkedAnnouncement = {
+        editing: editingAnnouncement,
+        draft: annEditor?.getDraft() ?? { title: '', contentMd: '' },
+      };
+      closeAnnouncementEditor();
+    } else if (activeTab === 'polls' && pollEditorOpen) {
+      parkedPoll = {
+        editing: editingPoll,
+        draft: pollEditor?.getDraft() ?? { options: ['', ''], allowMultiple: false },
+      };
+      closePollEditor();
+    }
+    if (value === 'announcements' && parkedAnnouncement) {
+      editingAnnouncement = parkedAnnouncement.editing;
+      annRestoreDraft = parkedAnnouncement.draft;
+      parkedAnnouncement = null;
+      editorOpen = true;
+    } else if (value === 'polls' && parkedPoll) {
+      editingPoll = parkedPoll.editing;
+      pollRestoreDraft = parkedPoll.draft;
+      parkedPoll = null;
+      pollEditorOpen = true;
+    }
+    activeTab = value;
   }
 
   function handleLocaleChange(locale: LocaleCode): void {
     closeAnnouncementEditor();
     closePollEditor();
+    parkedAnnouncement = null;
+    parkedPoll = null;
     store.setContentLocale(locale);
   }
 
@@ -247,7 +291,9 @@
     {#if editorOpen}
       {#key editingAnnouncement?.id ?? 'new-announcement'}
         <AnnouncementEditorDialog
+          bind:this={annEditor}
           announcement={editingAnnouncement}
+          draft={annRestoreDraft}
           polls={store.polls}
           selfId={store.selfId}
           onPickImage={(file) => pipeline.uploadEditorImage(file)}
@@ -265,7 +311,13 @@
 
     {#if pollEditorOpen}
       {#key editingPoll?.id ?? 'new-poll'}
-        <PollEditorDialog poll={editingPoll} onSave={savePoll} onCancel={closePollEditor} />
+        <PollEditorDialog
+          bind:this={pollEditor}
+          poll={editingPoll}
+          draft={pollRestoreDraft}
+          onSave={savePoll}
+          onCancel={closePollEditor}
+        />
       {/key}
     {/if}
 

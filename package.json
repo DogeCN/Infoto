@@ -19,6 +19,7 @@
     "wait:worker": "node scripts/wait-for-worker.mjs",
     "build": "npm run build -w infoto-web",
     "db:local": "node scripts/db-local.mjs",
+    "db:seed": "node scripts/seed-dev-content.mjs",
     "db:reset": "node scripts/reset-local-db.mjs",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
     "test": "vitest run && npm test -w infoto-web",

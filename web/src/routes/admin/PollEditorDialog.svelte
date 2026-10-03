@@ -9,21 +9,30 @@
 
   interface Props {
     poll: Poll | null;
+    /** In-memory draft to seed the fields with; wins over `poll`. */
+    draft?: { options: string[]; allowMultiple: boolean } | null;
     onSave: (options: string[], allowMultiple: boolean) => void;
     onCancel: () => void;
   }
 
-  let { poll, onSave, onCancel }: Props = $props();
+  let { poll, draft = null, onSave, onCancel }: Props = $props();
   let nextOptionId = 0;
   let options = $state(
-    untrack(() => (poll?.options ?? ['', '']).map((value) => ({ id: nextOptionId++, value }))),
+    untrack(() =>
+      (draft?.options ?? poll?.options ?? ['', '']).map((value) => ({ id: nextOptionId++, value })),
+    ),
   );
-  let allowMultiple = $state(untrack(() => poll?.allowMultiple ?? false));
+  let allowMultiple = $state(untrack(() => draft?.allowMultiple ?? poll?.allowMultiple ?? false));
   let canSave = $derived(
     options.length >= 2 &&
       options.length <= MAX_POLL_OPTIONS &&
       options.every((option) => option.value.trim().length > 0),
   );
+
+  /** Live draft snapshot, captured by the tab switch so the editor can be parked unmounted. */
+  export function getDraft(): { options: string[]; allowMultiple: boolean } {
+    return { options: options.map((option) => option.value), allowMultiple };
+  }
 
   function addOption(): void {
     if (options.length >= MAX_POLL_OPTIONS) return;
