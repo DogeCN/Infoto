@@ -4,7 +4,7 @@
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
   import Progress from '$lib/components/Progress.svelte';
-  import Tooltip from '$lib/components/Tooltip.svelte';
+  import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
   import { portal } from '$base/lib/portal';
   import { migrateSql } from '../../core/api/migrateClient';
 
@@ -89,29 +89,23 @@
 </script>
 
 <div class="relative flex items-center gap-1">
-  <Tooltip text={exporting ? copy.migrate.exporting : copy.migrate.exportSql}>
-    <button
-      type="button"
-      class="icon-button p-2"
-      aria-label={copy.migrate.exportSql}
-      disabled={exporting}
-      onclick={exportSql}
-    >
-      <Download class="size-5" />
-    </button>
-  </Tooltip>
+  <TooltipIconButton
+    text={exporting ? copy.migrate.exporting : copy.migrate.exportSql}
+    class="p-2"
+    disabled={exporting}
+    onclick={exportSql}
+  >
+    <Download class="size-5" />
+  </TooltipIconButton>
 
-  <Tooltip text={importing ? copy.migrate.importing : copy.migrate.importSql}>
-    <button
-      type="button"
-      class="icon-button p-2"
-      aria-label={copy.migrate.importSql}
-      disabled={importing}
-      onclick={() => fileInput?.click()}
-    >
-      <Upload class="size-5" />
-    </button>
-  </Tooltip>
+  <TooltipIconButton
+    text={importing ? copy.migrate.importing : copy.migrate.importSql}
+    class="p-2"
+    disabled={importing}
+    onclick={() => fileInput?.click()}
+  >
+    <Upload class="size-5" />
+  </TooltipIconButton>
   <input bind:this={fileInput} type="file" accept=".sql" class="hidden" onchange={importSelected} />
 
   {#if importing}

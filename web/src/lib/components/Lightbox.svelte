@@ -27,6 +27,7 @@
   import ActionSheet from './ActionSheet.svelte';
   import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
   import GlitchText from './GlitchText.svelte';
 
   interface Props {
@@ -691,26 +692,22 @@
       </div>
 
       <div class="flex items-center gap-0.5">
-        <Tooltip text={copy.lightbox.more} side="bottom">
-          <button
-            aria-label={copy.lightbox.more}
-            type="button"
-            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
-            onclick={() => (showMenu = true)}
-          >
-            <MoreHorizontal class="size-6" />
-          </button>
-        </Tooltip>
-        <Tooltip text={copy.lightbox.close} side="bottom">
-          <button
-            aria-label={copy.lightbox.close}
-            type="button"
-            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
-            onclick={onClose}
-          >
-            <X class="size-6" />
-          </button>
-        </Tooltip>
+        <TooltipIconButton
+          text={copy.lightbox.more}
+          side="bottom"
+          class="size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+          onclick={() => (showMenu = true)}
+        >
+          <MoreHorizontal class="size-6" />
+        </TooltipIconButton>
+        <TooltipIconButton
+          text={copy.lightbox.close}
+          side="bottom"
+          class="size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+          onclick={onClose}
+        >
+          <X class="size-6" />
+        </TooltipIconButton>
       </div>
     </div>
 
@@ -847,31 +844,25 @@
       </div>
 
       <div class="flex items-center gap-1">
-        <Tooltip text={copy.lightbox.prev}>
-          <button
-            aria-label={copy.lightbox.prev}
-            type="button"
-            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
-            disabled={photos.length < 2}
-            onclick={goPrev}
-          >
-            <ChevronLeft class="size-6" />
-          </button>
-        </Tooltip>
+        <TooltipIconButton
+          text={copy.lightbox.prev}
+          class="size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+          disabled={photos.length < 2}
+          onclick={goPrev}
+        >
+          <ChevronLeft class="size-6" />
+        </TooltipIconButton>
         <span class="lb-meta min-w-14 text-center text-xs tabular-nums text-white/80">
           {currentIndex + 1} / {photos.length}
         </span>
-        <Tooltip text={copy.lightbox.next}>
-          <button
-            aria-label={copy.lightbox.next}
-            type="button"
-            class="icon-button size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
-            disabled={photos.length < 2}
-            onclick={goNext}
-          >
-            <ChevronRight class="size-6" />
-          </button>
-        </Tooltip>
+        <TooltipIconButton
+          text={copy.lightbox.next}
+          class="size-11 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+          disabled={photos.length < 2}
+          onclick={goNext}
+        >
+          <ChevronRight class="size-6" />
+        </TooltipIconButton>
       </div>
     </div>
   </div>

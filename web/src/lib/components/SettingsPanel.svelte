@@ -48,6 +48,7 @@
   import RangeSlider from './RangeSlider.svelte';
   import SingleSlider from './SingleSlider.svelte';
   import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
   import { toast } from 'svelte-sonner';
   import { copy } from '$lib/i18n.svelte';
   import LocaleToggle from './LocaleToggle.svelte';
@@ -241,11 +242,9 @@
     <h3 class="flex items-center gap-1.5 text-sm font-medium">
       <SectionIcon class="size-3.5" />{label}
     </h3>
-    <Tooltip text={resetLabel} side="bottom">
-      <button aria-label={resetLabel} type="button" class="icon-button size-7" onclick={onreset}>
-        <RotateCcw class="size-3.5" />
-      </button>
-    </Tooltip>
+    <TooltipIconButton text={resetLabel} side="bottom" class="size-7" onclick={onreset}>
+      <RotateCcw class="size-3.5" />
+    </TooltipIconButton>
   </div>
 {/snippet}
 

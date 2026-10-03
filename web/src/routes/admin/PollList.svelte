@@ -7,7 +7,7 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
-  import Tooltip from '$lib/components/Tooltip.svelte';
+  import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
   import VoteBlock from '$lib/components/VoteBlock.svelte';
 
   interface Props {
@@ -40,39 +40,32 @@
           {poll.allowMultiple ? copy.admin.poll.multipleAnswers : copy.admin.poll.singleAnswer}
         </p>
         <div class="flex shrink-0 items-center gap-1">
-          <Tooltip text={copy.admin.poll.copySyntax}>
-            <button
-              type="button"
-              class="icon-button p-2"
-              aria-label={copy.admin.poll.copySyntax}
-              disabled={poll.id < 0}
-              onclick={() => void copySyntax(poll)}
-            >
-              <Copy class="size-4" />
-            </button>
-          </Tooltip>
-          <Tooltip text={copy.admin.poll.edit}>
-            <button
-              type="button"
-              class="icon-button p-2"
-              aria-label={copy.admin.poll.edit}
-              disabled={poll.id < 0}
-              onclick={() => onEdit(poll)}
-            >
-              <Pencil class="size-4" />
-            </button>
-          </Tooltip>
-          <Tooltip text={copy.admin.poll.delete}>
-            <button
-              type="button"
-              class="icon-button icon-button--danger p-2"
-              aria-label={copy.admin.poll.deleteAria}
-              disabled={poll.id < 0}
-              onclick={() => onDelete(poll.id)}
-            >
-              <Trash2 class="size-4" />
-            </button>
-          </Tooltip>
+          <TooltipIconButton
+            text={copy.admin.poll.copySyntax}
+            class="p-2"
+            disabled={poll.id < 0}
+            onclick={() => void copySyntax(poll)}
+          >
+            <Copy class="size-4" />
+          </TooltipIconButton>
+          <TooltipIconButton
+            text={copy.admin.poll.edit}
+            class="p-2"
+            disabled={poll.id < 0}
+            onclick={() => onEdit(poll)}
+          >
+            <Pencil class="size-4" />
+          </TooltipIconButton>
+          <TooltipIconButton
+            text={copy.admin.poll.delete}
+            ariaLabel={copy.admin.poll.deleteAria}
+            danger
+            class="p-2"
+            disabled={poll.id < 0}
+            onclick={() => onDelete(poll.id)}
+          >
+            <Trash2 class="size-4" />
+          </TooltipIconButton>
         </div>
       </div>
 
