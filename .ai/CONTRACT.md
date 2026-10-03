@@ -269,18 +269,35 @@ Back-filled from the commit history. Tagged sections are not yet written.
     box's edges by tens of pixels, so clamping against the pre-snap rect is how the image settled
     out of frame at an angle it was no longer being rendered at.
     The transform is written **directly to the DOM**, not through component state, and the
-    counter-scaled corner control gets the identical transition string. A pinch ends on the first
-    finger lift and is guarded so it never falls through to a four-way swipe. Zoom resets on every
+    counter-scaled corner control gets the identical transition string. Zoom resets on every
     photo switch.
+  - **A pinch owns the whole multi-touch sequence, not just the frames where two fingers are
+    down.** `pinchSequence` is set by `startPinch` and cleared only once every pointer of that
+    sequence has left; while it holds, a release may pan an already-zoomed photo but is never a
+    tap, a swipe or a mask click (`classifyRelease`). The pinch itself still ends on the first
+    finger lift, but the leftover fingers are **not re-armed as a fresh drag**: re-arming them
+    measured their releases against a press point captured during the pinch — for a two-finger
+    zoom closed with both fingers together that is the distance _between the two fingers_, well
+    past the swipe threshold, so zooming voted on the photo and advanced (and the photo switch
+    resets the rotation, which is why a rotate appeared to have never happened). A pinch release
+    also leaves `gestureMoved` set, so it cannot page through `handleStageClick`, and clears
+    `lastTap`, so it cannot seed a double-tap zoom.
   - **`pointercancel` is not `pointerup`.** A cancelled gesture (incoming call, edge-back, app
     switch, a second pointer stealing it) drops the gesture state, snaps any in-flight rotation to
     a resting angle, and returns the transform **without animating**. It must never reach the
     completion path: marking a photo is a server write, so routing a cancel through `onPointerUp`
-    let the system hand the user a vote, a download or a menu they never asked for.
+    let the system hand the user a vote, a download or a menu they never asked for. One cancelled
+    finger of a pinch ends the pinch exactly as a release would, and the reset only runs once
+    **no** pointers remain — clearing the pinch while a partner finger was still down left that
+    finger to be judged as a swipe from the original press point, on top of losing the zoom.
   - All gesture/transform math (zoom-to-point, pinch, `Ctrl`+drag, pan clamp, overflow gate,
     rotation snap, double-tap/swipe/click-nav classification) lives in the pure module
     `web/src/base/lib/lightboxEngine.ts` and is covered by `web/tests/unit/lightboxEngine.test.ts`
-    — the `<Lightbox>` component only wires events and writes the transform to the DOM.
+    — the `<Lightbox>` component only wires events and writes the transform to the DOM. The
+    multi-touch _release_ path is covered end-to-end by `web/tests/e2e/lightbox-pinch.spec.ts`,
+    which drives synthetic pointer events at a phone viewport: CDP's `touchEnd` cannot state
+    which finger stays down, so the case that mattered — the surviving finger dragging after
+    its partner lifts — silently never happened under CDP touch.
   - **Mask paging is hit-tested, not target-tested.** The stage captures the pointer, so
     `event.target` on the resulting `click` is always the stage; `handleStageClick` therefore
     resolves the point with `document.elementFromPoint` (which honours the zoom transform) and

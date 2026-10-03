@@ -15,6 +15,7 @@ import {
   ctrlZoomTransform,
   classifyTap,
   classifySwipe,
+  classifyRelease,
   classifyClickNav,
   type Rect,
 } from '../../src/base/lib/lightboxEngine.ts';
@@ -277,6 +278,53 @@ test('classifySwipe maps displacement to a direction past threshold (feature ges
   assert.equal(classifySwipe(0, -100, 60), 'up');
   assert.equal(classifySwipe(30, 0, 60), null);
   assert.equal(classifySwipe(80, 20, 60), 'right');
+});
+
+test('classifyRelease never turns the tail of a pinch into a swipe', () => {
+  const base = { pinchSequence: false, panning: false, dx: 0, dy: 0, triggerAt: 60, isTouch: true };
+  // Closing a two-finger zoom releases the partner finger at a point up to a whole
+  // pinch-width away from the press point captured during the pinch. That distance
+  // is what used to be classified as a swipe: zooming voted on the photo and
+  // advanced, which also reset the rotation and made the rotate look lost.
+  assert.deepEqual(classifyRelease({ ...base, pinchSequence: true, dx: 120, dy: -40 }), {
+    kind: 'pinch-tail',
+  });
+  // The very same displacement without a pinch behind it is an ordinary swipe.
+  assert.deepEqual(classifyRelease({ ...base, dx: 120, dy: -40 }), {
+    kind: 'swipe',
+    dir: 'right',
+  });
+  // A tail on an already-zoomed photo may still finish its pan.
+  assert.deepEqual(classifyRelease({ ...base, pinchSequence: true, panning: true }), {
+    kind: 'pan-end',
+  });
+  // A finger that barely moved is a tap on touch; the mouse path keeps dblclick.
+  assert.deepEqual(classifyRelease({ ...base, dx: 3, dy: 4 }), { kind: 'tap' });
+  assert.deepEqual(classifyRelease({ ...base, dx: 3, dy: 4, isTouch: false }), { kind: 'none' });
+});
+
+test('a two-finger rotate survives the release snap', () => {
+  // Fingers start 100px apart horizontally about the stage centre and rotate to
+  // vertical while spreading: the image must keep the quarter turn, not snap back.
+  const start = { dist: 100, angle: 0, s: 1, x: 0, y: 0, r: 0 };
+  const cw = pinchTransform(start, { x: 500, y: 300 }, { x: 500, y: 700 }, stage);
+  assert.equal(cw.rot, 90);
+  assert.equal(snapRotation(cw.rot), 90);
+  // The other way round keeps its sign, so the transition does not spin the long
+  // way: -90 must not become 270.
+  const ccw = pinchTransform(start, { x: 500, y: 700 }, { x: 500, y: 300 }, stage);
+  assert.equal(ccw.rot, -90);
+  assert.equal(snapRotation(ccw.rot), -90);
+  // Rotating from an already-zoomed start composes instead of restarting: the
+  // 4x spread on top of 2x asks for 8x and lands on the ceiling.
+  const zoomed = pinchTransform(
+    { dist: 100, angle: 0, s: 2, x: 0, y: 0, r: 0 },
+    { x: 500, y: 300 },
+    { x: 500, y: 700 },
+    stage,
+  );
+  assert.equal(zoomed.scale, MAX_SCALE);
+  assert.equal(zoomed.rot, 90);
 });
 
 test('classifyClickNav splits the mask left=prev / right=next (feature 1)', () => {

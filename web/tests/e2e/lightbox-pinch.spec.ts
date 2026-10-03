@@ -1,0 +1,184 @@
+/**
+ * Lightbox multi-touch regressions.
+ *
+ * These drive the gesture with synthetic **pointer** events rather than CDP
+ * `Input.dispatchTouchEvent` on purpose: a pinch is released one finger at a time,
+ * and CDP's `touchEnd` semantics make it impossible to state reliably which finger
+ * stays down, so the interesting case — the surviving finger dragging after its
+ * partner lifts — silently never happened. Pointer events are what the component
+ * listens to anyway; only `setPointerCapture` is stubbed, because it rejects ids
+ * that no real pointer owns and plays no part in the gesture state machine.
+ */
+import { expect, test, type Page } from '@playwright/test';
+import { locales } from '../../../src/shared/copy';
+import type { Photo, SyncResponse } from '../../../src/shared/types';
+
+const enCopy = locales['en-US'];
+
+const photos: Photo[] = Array.from({ length: 2 }, (_, index) => ({
+  id: index + 1,
+  sha256: `photo-${index}`,
+  url: `https://media.test/${index}.webp`,
+  uploader: 0,
+  width: 1200,
+  height: 800,
+  size: 1024,
+  createdAt: 1_700_000_000_000 + index * 1000,
+  type: 0,
+  likes: [],
+  dislikes: [],
+  reports: [],
+}));
+
+type Pt = [number, number];
+
+async function mockAlbum(page: Page) {
+  await page.addInitScript(() => localStorage.setItem('infoto-locale', 'en-US'));
+  await page.addInitScript(() => {
+    Element.prototype.setPointerCapture = () => undefined;
+    Element.prototype.releasePointerCapture = () => undefined;
+  });
+  await page.route('**/sync', (route) =>
+    route.fulfill({
+      json: {
+        ok: true,
+        selfId: 7,
+        serverTime: Date.now(),
+        mediaHostUrl: 'https://facade.test',
+        photos,
+        announcements: [],
+        polls: [],
+        feedback: [],
+      } satisfies SyncResponse,
+    }),
+  );
+  await page.route('https://media.test/**', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="1200" height="800" fill="#174450"/></svg>',
+    }),
+  );
+  await page.route('**/vote', (route) => route.fulfill({ json: { ok: true } }));
+}
+
+// A phone-sized viewport is the point: the swipe threshold scales with page width,
+// so it is 30px here and 100px on a desktop window. This bug was a mobile one and
+// desktop geometry is far too forgiving to expose it.
+test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+async function openLightbox(page: Page) {
+  await mockAlbum(page);
+  await page.goto('/');
+  await page.locator('main img').first().click();
+  const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
+  await expect(lightbox.locator('img.lb-media')).toBeVisible();
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+  return lightbox;
+}
+
+type Lightbox = Awaited<ReturnType<typeof openLightbox>>;
+
+async function send(page: Page, type: string, points: Array<{ id: number; x: number; y: number }>) {
+  await page.evaluate(
+    ({ type, points, label }) => {
+      const stage = document.querySelector(`div[role="dialog"][aria-label="${label}"]`)!;
+      for (const p of points) {
+        stage.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: p.id,
+            pointerType: 'touch',
+            clientX: p.x,
+            clientY: p.y,
+            button: type === 'pointermove' ? -1 : 0,
+            buttons: type === 'pointerup' ? 0 : 1,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }
+    },
+    { type, points, label: enCopy.lightbox.preview },
+  );
+}
+
+const both = (page: Page, a: Pt, b: Pt, type: string) =>
+  send(page, type, [
+    { id: 1, x: a[0], y: a[1] },
+    { id: 2, x: b[0], y: b[1] },
+  ]);
+const down = (page: Page, a: Pt, b: Pt) => both(page, a, b, 'pointerdown');
+const move = (page: Page, a: Pt, b: Pt) => both(page, a, b, 'pointermove');
+const lift = (page: Page, id: number, p: Pt) => send(page, 'pointerup', [{ id, x: p[0], y: p[1] }]);
+const drag = (page: Page, id: number, p: Pt) =>
+  send(page, 'pointermove', [{ id, x: p[0], y: p[1] }]);
+
+async function transformOf(lightbox: Lightbox): Promise<string> {
+  return lightbox
+    .locator('.will-change-transform')
+    .evaluate((n) => (n as HTMLElement).style.transform);
+}
+
+test('two-finger pinch rotates the photo', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  // 200px apart about the centre, rotated to vertical at a constant distance:
+  // a pure quarter turn with no zoom component.
+  await down(page, [95, 422], [295, 422]);
+  await move(page, [125, 362], [265, 482]);
+  await move(page, [195, 322], [195, 522]);
+  await lift(page, 1, [195, 322]);
+  await lift(page, 2, [195, 522]);
+  const transform = await transformOf(lightbox);
+  expect(/rotate\(90deg\)/.test(transform)).toBe(true);
+  await page.waitForTimeout(600);
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+});
+
+test('a pinch tail never votes, pages or opens the menu', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  // Pinch closed to 0.5: the photo is now smaller than the stage, so it neither
+  // overflows the viewport nor is rotated — the state in which a leftover finger
+  // used to be judged as a fresh swipe.
+  await down(page, [95, 422], [295, 422]);
+  await move(page, [145, 422], [245, 422]);
+  // Finger 1 lifts; finger 2 keeps sliding as the hand pulls away. That is how a
+  // pinch ends on a phone, and it is 110px of travel — far past the 30px
+  // threshold at this width.
+  await lift(page, 1, [145, 422]);
+  await drag(page, 2, [265, 422]);
+  await drag(page, 2, [295, 422]);
+  await drag(page, 2, [325, 422]);
+  await drag(page, 2, [355, 422]);
+  await lift(page, 2, [355, 422]);
+  expect(await transformOf(lightbox)).toContain('scale(0.5)');
+  // Let the 200ms advance timer run out before asserting nothing moved.
+  await page.waitForTimeout(600);
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+  await expect(
+    lightbox.getByRole('button', { name: enCopy.lightbox.like, exact: true }),
+  ).toContainText('0');
+  await expect(
+    lightbox.getByRole('button', { name: enCopy.lightbox.dislike, exact: true }),
+  ).toContainText('0');
+  await expect(page.getByRole('dialog', { name: enCopy.lightbox.actions })).toHaveCount(0);
+});
+
+test('a pinch tail on a zoomed photo pans without voting', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  // Spread apart: the photo now overflows the stage, so a leftover finger drags
+  // the view instead of being classified at all.
+  await down(page, [145, 422], [245, 422]);
+  await move(page, [95, 422], [295, 422]);
+  await move(page, [45, 422], [345, 422]);
+  await lift(page, 1, [45, 422]);
+  await drag(page, 2, [315, 422]);
+  await drag(page, 2, [285, 422]);
+  await lift(page, 2, [285, 422]);
+  await page.waitForTimeout(600);
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+  await expect(
+    lightbox.getByRole('button', { name: enCopy.lightbox.like, exact: true }),
+  ).toContainText('0');
+  await expect(
+    lightbox.getByRole('button', { name: enCopy.lightbox.dislike, exact: true }),
+  ).toContainText('0');
+});

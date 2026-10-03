@@ -33,7 +33,7 @@
     pinchTransform,
     ctrlZoomTransform,
     classifyTap,
-    classifySwipe,
+    classifyRelease,
     classifyClickNav,
     clampPan as engineClampPan,
     isAtRest,
@@ -113,6 +113,10 @@
   let gestureMoved = false;
   let pinchActive = false;
   let pinchStart: PinchStart | null = null;
+  /** True from the first two-finger contact until every pointer of that sequence
+   *  has left. While it holds the tail of the gesture may pan but must never be
+   *  judged as a tap, a swipe or a mask click — see `classifyRelease`. */
+  let pinchSequence = false;
   /** Touch double-tap bookkeeping (native dblclick is unreliable on touch). */
   let lastTap: Tap | null = null;
   let suppressClickUntil = 0;
@@ -187,6 +191,7 @@
     const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
     const angle = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
     pinchActive = true;
+    pinchSequence = true;
     pinchStart = { dist: d, angle, s: scale, x: zoomX, y: zoomY, r: rot };
   }
 
@@ -480,17 +485,20 @@
 
     // Pinch: end on the first finger lift, snap rotation to the nearest 90°
     // (keeping the signed value so a -90° gesture does not spin a full turn),
-    // and clamp. A remaining finger keeps dragging from its current spot so its
-    // release is never judged as a swipe from the original press point.
+    // and clamp. A remaining finger may keep panning an already-zoomed photo,
+    // but it is deliberately *not* re-armed as a fresh drag: re-arming it is what
+    // let the two fingers' release points be measured against each other and
+    // voted as a swipe.
     if (pinchActive && active.size < 2) {
       pinchActive = false;
       rot = snapRotation(rot);
+      gestureMoved = true;
       if (active.size === 1) {
         const [rem] = [...active.values()];
         downPoint = { x: rem.x, y: rem.y };
-        dragging = true;
-        panning = false;
-        gestureMoved = false;
+        const canPan = isZoomedBeyondViewport() || isRotated();
+        dragging = canPan;
+        panning = canPan;
       } else {
         dragging = false;
         panning = false;
@@ -500,6 +508,7 @@
       // to settle out of frame at an angle it was no longer rendered at.
       applyWrap(0, 0, true);
       clampSettled(true);
+      if (active.size === 0) pinchSequence = false;
       return;
     }
 
@@ -508,15 +517,54 @@
     dragging = false;
     const wasPanning = panning;
     panning = false;
+    const tail = pinchSequence;
+    pinchSequence = false;
 
-    if (!start) return;
+    if (!start) {
+      applyWrap(0, 0, true);
+      return;
+    }
     // Total displacement from the press point (same reference as the drag preview).
     const dx = e.clientX - downPoint.x;
     const dy = e.clientY - downPoint.y;
 
+    const release = classifyRelease({
+      pinchSequence: tail,
+      panning: wasPanning,
+      dx,
+      dy,
+      triggerAt,
+      isTouch: e.pointerType === 'touch',
+    });
+
+    // The tail of a pinch is never a vote, a download or a menu. Closing a two-finger
+    // zoom used to land here with `dx` spanning the gap between the two fingers — far
+    // past the threshold — so zooming marked the photo and advanced, which also reset
+    // the rotation and made the rotate gesture look like it never happened.
+    if (release.kind === 'pinch-tail') {
+      lastTap = null;
+      gestureDir = null;
+      gestureRatio = 0;
+      applyWrap(0, 0, true);
+      clampSettled(true);
+      return;
+    }
+
+    // Zoomed/rotated drag ends: clamp and settle in place.
+    if (release.kind === 'pan-end') {
+      applyWrap(0, 0, true);
+      clampSettled(true);
+      return;
+    }
+
+    if (release.kind === 'swipe') {
+      triggerGesture(release.dir);
+      return;
+    }
+
     // Touch tap: detect a double-tap on the media to toggle zoom (native dblclick
     // is unreliable on touch, so it is handled here; the mouse path keeps onDblClick).
-    if (Math.hypot(dx, dy) < 12 && e.pointerType === 'touch') {
+    if (release.kind === 'tap') {
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       if (hit?.closest('.lb-media') && !hit.closest('.lb-corner, button')) {
         const now = Date.now();
@@ -532,18 +580,6 @@
         }
         lastTap = { t: now, x: e.clientX, y: e.clientY };
       }
-    }
-
-    // Zoomed/rotated drag ends: clamp and settle in place.
-    if (wasPanning) {
-      applyWrap(0, 0, true);
-      return;
-    }
-
-    const dir = classifySwipe(dx, dy, triggerAt);
-    if (dir) {
-      triggerGesture(dir);
-      return;
     }
 
     // Below the threshold: spring back.
@@ -566,7 +602,28 @@
     active.delete(e.pointerId);
     if (ctrlZoomPointer === e.pointerId) ctrlZoomPointer = null;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    pinchActive = false;
+
+    // One finger of a pinch being cancelled ends the pinch exactly as a release
+    // would: snap the rotation and settle. Clearing `pinchActive` without that left
+    // the partner finger to be judged as a swipe from the *original* press point —
+    // a system takeover mid-zoom then voted on the photo, on top of losing the zoom.
+    if (pinchActive) {
+      pinchActive = false;
+      rot = snapRotation(rot);
+      applyWrap(0, 0, true);
+      clampSettled(true);
+    }
+
+    // Partner fingers are still down: the gesture is not over. Nothing resets yet
+    // and the leftover pointers stay inert — they may pan, never swipe.
+    if (active.size > 0) {
+      const canPan = isZoomedBeyondViewport() || isRotated();
+      dragging = canPan;
+      panning = canPan;
+      return;
+    }
+
+    pinchSequence = false;
     pinchStart = null;
     dragging = false;
     panning = false;

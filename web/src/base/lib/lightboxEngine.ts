@@ -246,6 +246,46 @@ export function classifySwipe(dx: number, dy: number, triggerAt: number): SwipeD
   return ax > ay ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
 }
 
+/** How far a release may travel and still count as a tap, in px. */
+export const TAP_SLOP = 12;
+
+export type Release =
+  | { kind: 'pinch-tail' }
+  | { kind: 'pan-end' }
+  | { kind: 'tap' }
+  | { kind: 'swipe'; dir: SwipeDir }
+  | { kind: 'none' };
+
+/**
+ * Classify the release of the pointer that empties the gesture.
+ *
+ * `pinchSequence` is the decisive input and the whole point of this function. A
+ * pinch ends on the **first** finger lift, and the partner fingers are still down
+ * afterwards. Judging their releases like a fresh drag measures them against a
+ * press point captured during the pinch — for a two-finger zoom closed with both
+ * fingers together, that is the distance *between the two fingers*, easily past
+ * the swipe threshold, so zooming voted on the photo (and advanced, which also
+ * resets the rotation — making the rotate gesture look like it never happened).
+ * The reference implementation avoids it by ending the whole gesture on the
+ * first lift and leaving the remaining fingers inert; this keeps that rule while
+ * still letting a leftover finger pan an already-zoomed photo.
+ */
+export function classifyRelease(input: {
+  /** A pinch happened in this multi-touch sequence and it has not fully ended. */
+  pinchSequence: boolean;
+  panning: boolean;
+  dx: number;
+  dy: number;
+  triggerAt: number;
+  isTouch: boolean;
+}): Release {
+  if (input.pinchSequence) return input.panning ? { kind: 'pan-end' } : { kind: 'pinch-tail' };
+  if (input.panning) return { kind: 'pan-end' };
+  if (input.isTouch && Math.hypot(input.dx, input.dy) < TAP_SLOP) return { kind: 'tap' };
+  const dir = classifySwipe(input.dx, input.dy, input.triggerAt);
+  return dir ? { kind: 'swipe', dir } : { kind: 'none' };
+}
+
 /** Black-mask navigation: left half → prev, right half → next. */
 export function classifyClickNav(x: number, stageWidth: number): 'prev' | 'next' {
   return x < stageWidth / 2 ? 'prev' : 'next';
