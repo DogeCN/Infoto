@@ -876,7 +876,7 @@
     <div class="grid grid-cols-3 gap-3">
       <button
         type="button"
-        class="photo-action"
+        class="photo-action text-sky-400 hover:bg-sky-400/15"
         onclick={() => {
           void copyText(photo.url, copy.lightbox.originalUrlCopied);
           showMenu = false;
@@ -892,7 +892,7 @@
       {#if !isPending}
         <button
           type="button"
-          class="photo-action"
+          class="photo-action text-violet-400 hover:bg-violet-400/15"
           onclick={() => {
             void copyText(shareUrl, copy.lightbox.linkCopied);
             showMenu = false;
@@ -902,7 +902,11 @@
           <span class="text-sm">{copy.lightbox.copyLink}</span>
         </button>
 
-        <button type="button" class="photo-action" onclick={share}>
+        <button
+          type="button"
+          class="photo-action text-teal-400 hover:bg-teal-400/15"
+          onclick={share}
+        >
           <Share2 class="size-6" />
           <span class="text-sm">{copy.lightbox.share}</span>
         </button>
