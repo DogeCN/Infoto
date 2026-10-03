@@ -100,7 +100,7 @@ test('copy: keeps localized Han text inside the shared copy module', () => {
 test('copy: keeps every locale table aligned with en-US and actually translated', () => {
   const source = paths(enUS).sort();
   const allowed = new Set([
-    'errorPage.pageHeading',
+    'errorPage.spaPageHeading',
     'errorPage.notFoundTitle',
     'errorPage.serverErrorTitle',
     'admin.feedback.idLabel',

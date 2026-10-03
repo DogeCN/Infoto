@@ -14,9 +14,9 @@
     <GlitchText text={String(code)} />
 
     <p class="mt-8 text-lg font-medium tracking-widest text-primary">
-      {copy.errorPage.pageHeading}
+      {copy.errorPage.spaPageHeading}
     </p>
-    <p class="mt-2 text-muted-foreground">{copy.errorPage.notFoundMessage}</p>
+    <p class="mt-2 text-muted-foreground">{copy.errorPage.spaNotFoundMessage}</p>
 
     <a
       href="/"

@@ -391,8 +391,12 @@ export const enUS = {
   },
 
   errorPage: {
-    pageHeading: 'PAGE NOT FOUND',
-    notFoundMessage: 'The page you visited does not exist',
+    // Two 404 surfaces with deliberately different wording. The SPA component only ever
+    // renders a route miss; the Worker's own page also answers a deleted `/l/:id36`, so its
+    // message names removal. Same reason the titles stay English in both locales: they are
+    // the `<title>` and the accessible name, not body copy.
+    spaPageHeading: 'PAGE NOT FOUND',
+    spaNotFoundMessage: 'The page you visited does not exist',
     backHome: 'Back to home',
     notFoundTitle: 'Not Found',
     serverErrorTitle: 'Server Error',
@@ -740,9 +744,9 @@ const zhCN: Copy = {
   },
 
   errorPage: {
-    // Keep status page headings and accessibility titles in English.
-    pageHeading: 'PAGE NOT FOUND',
-    notFoundMessage: '您访问的页面不存在',
+    // `spaPageHeading`, `notFoundTitle` and `serverErrorTitle` stay English in both locales.
+    spaPageHeading: 'PAGE NOT FOUND',
+    spaNotFoundMessage: '您访问的页面不存在',
     backHome: '返回首页',
     notFoundTitle: 'Not Found',
     serverErrorTitle: 'Server Error',

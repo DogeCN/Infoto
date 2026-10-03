@@ -8,9 +8,15 @@ export const FONT_FILE_HOST = 'https://fonts.gstatic.cn';
 /** SPA families: Inter and Noto Sans SC, weights 400–700. */
 export const APP_FONT_QUERY =
   'family=Inter:wght@400..700&family=Noto+Sans+SC:wght@400..700&display=swap';
-/** Error-page families, including the display face used only there. */
+/**
+ * Error-page families. Space Grotesk is the display face and carries every weight the
+ * page chrome asks for (400 body, 600–700 headings). Inter is loaded for one reason only:
+ * the glitch glyph's own `font-family`, at the 700 the glyph declares. Shipping a weight
+ * the page never asks for is how the glyph ended up rendering in synthetic bold here while
+ * the SPA, which loads Inter 400–700, rendered it for real.
+ */
 export const ERROR_FONT_QUERY =
-  'family=Space+Grotesk:wght@400;700&family=Inter:wght@400;600&family=Noto+Sans+SC:wght@400;500&display=swap';
+  'family=Space+Grotesk:wght@400;700&family=Inter:wght@400;700&family=Noto+Sans+SC:wght@400;500&display=swap';
 
 export function fontStylesheetUrl(query: string): string {
   return `${FONT_CSS_HOST}/css2?${query}`;
