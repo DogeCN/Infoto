@@ -21,12 +21,13 @@ export interface PillWidths {
 
 /** Re-shape a cloned tablist into `labelled`, removing or restoring the label spans. */
 function forceLabels(clone: HTMLElement, labelled: boolean): void {
-  const spans = clone.querySelectorAll('[role="tab"] > span');
-  if (!labelled) {
-    for (const span of spans) span.remove();
-    return;
-  }
-  if (spans.length > 0) return;
+  // Always strip every span first, then rebuild from the title attributes. The compact
+  // on-screen shape hides its spans instead of removing them (`absolute invisible`), so
+  // "spans exist" cannot mean "already labelled" — and an early return there would leave
+  // the hidden copies in the clone, measuring the icon width as the labelled width and
+  // flapping the bar's density at the collapse threshold.
+  for (const span of clone.querySelectorAll('[role="tab"] > span')) span.remove();
+  if (!labelled) return;
   for (const tab of clone.querySelectorAll('[role="tab"]')) {
     const label = tab.getAttribute('title');
     if (!label) continue;
