@@ -125,9 +125,9 @@
   inert={!open}
   tabindex="-1"
   use:overlay={{ enabled: open, onClose: close }}
-  class="fixed top-0 z-50 flex h-full w-full flex-col border-border shadow-2xl shadow-black/40 transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)] {previewTransparent
-    ? 'bg-transparent'
-    : 'bg-card'}"
+  class="fixed top-0 z-50 flex h-full w-full flex-col border-border transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] md:w-[var(--sidebar-w)] {previewTransparent
+    ? 'bg-transparent shadow-none'
+    : 'bg-card shadow-2xl shadow-black/40'}"
   class:left-0={side === 'left'}
   class:right-0={side === 'right'}
   class:translate-x-0={open}
@@ -148,7 +148,13 @@
     onkeydown={onResizeKey}
   ></button>
 
-  <div class="flex items-center justify-between border-b border-border px-5 py-4">
+  <!-- The header hides with the preview too: it sits beside the scroll region, so its own
+       opacity never multiplies into the live slider (that rule forbids only ancestors). -->
+  <div
+    class="flex items-center justify-between border-b border-border px-5 py-4 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewTransparent
+      ? 'pointer-events-none opacity-0'
+      : 'opacity-100'}"
+  >
     <div class="flex items-center gap-2.5">
       {#if icon}
         {@render icon()}
