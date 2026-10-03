@@ -57,14 +57,20 @@
     {@const pct = total ? (count / total) * 100 : 0}
     {@const isChosen = chosen.has(idx)}
     {@const isWinner = max > 0 && count === max}
-    <button
-      type="button"
-      aria-pressed={isChosen}
-      disabled={!interactive}
+    <!-- Interactive rows are buttons; the read-only render is a results chart, not a
+         control — a disabled button would drag the whole block to the global disabled
+         opacity and wash the results out. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <svelte:element
+      this={interactive ? 'button' : 'div'}
+      type={interactive ? 'button' : undefined}
+      aria-pressed={interactive ? isChosen : undefined}
+      onclick={interactive ? () => handle(idx) : undefined}
       class="relative isolate w-full overflow-hidden rounded-md border px-3 py-2 text-left transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] {isChosen
         ? 'border-primary/50 bg-primary/5'
-        : 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'}"
-      onclick={() => handle(idx)}
+        : interactive
+          ? 'border-border bg-transparent hover:bg-muted/50 hover:border-primary/30'
+          : 'border-border bg-transparent'}"
     >
       <span
         class="vote-fill absolute inset-y-0 left-0 bg-primary/10 transition-[width] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
@@ -87,6 +93,6 @@
           </span>
         {/if}
       </span>
-    </button>
+    </svelte:element>
   {/each}
 </div>
