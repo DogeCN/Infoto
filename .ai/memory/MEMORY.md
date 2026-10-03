@@ -315,6 +315,10 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 ## Documentation & Module Layout
 
 - **Sole documentation is `AGENTS.md`** (architecture layers + red lines); everything else is code/comments.
+- **`.ai/` is the only tracked home for agent-facing knowledge.** `memory/` (daily logs + `MEMORY.md`), `adr/` (permanent decisions), `CONTRACT.md` (observable behaviour), `documents/` (design records too large or too working-state for an ADR).
+- ⚠️ **`.workbuddy/` and `.trae/` are gitignored**, so anything left there is invisible to every other agent and dies with the machine. Both tools keep writing their own logs and documents there; **the content has to be merged into `.ai/` in the same session** or it is lost. This already cost one round: three WorkBuddy daily logs and one Trae transcode design record sat untracked until 2026-10-04.
+  - Merging is **not** copying over — the same date can hold genuinely different content written by a different session (it did, across 10-02/10-03/10-04). Compare headings first, then append.
+  - Do **not** delete the source directories: they are each tool's live state, not scratch.
 - `schema.sql` / `schema-ddl.ts` must be byte-identical (enforced by `schema-alignment` test). **Now red line 3** — it was only a parenthetical in the key-files table, which is too weak for an invariant with a test behind it.
 - **Module paths flattened (09-26), do not look for old paths**: `src/testing/localDb.ts` (formerly `src/d1-shim.ts`, before that `src/local/d1-shim.ts`), `web/src/core/engine.ts` (formerly `core/sync/engine.ts`), `web/src/transcode/protocol.ts` (formerly `transcode/shared/protocol.ts`). `src/shared/types.ts` **kept** (`$shared` alias, ~40 references, do not move). The `createRequire` rule lives on `src/testing/localDb.ts` + `scripts/lib/apply-local-schema.mjs` now, not on the old shim path.
 - Reference: `D:\ToDo\v1` is initial version (pure static public/ + Hono Worker), production `inf.prom.cc.cd` (unreachable locally).
@@ -349,3 +353,89 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 - The user requires the deterministic all-zero root UUID for local seed authentication, with no administrator/visitor selector page. Seeded browser tests establish normal server cookies through `/sync`; no development login route or production authentication change is needed.
 
 - Identity verification belongs inside the engine-owned sync attempt. Do not run a separate bootstrap request before `engine.init()`, or start bootstrap from `onError`: both issue extra requests after failure. A Turnstile-required response permits one token handshake within the same attempt; widget/token/HTTP failure stops until another allowed trigger. Turnstile automatic retry and refresh are disabled.
+
+## Refactor Commit Discipline (2026-10-03, ADR 0015)
+
+A retrospective over every commit asked which were refactors and whether each was a net win. The
+variable that predicted the damage was not size, it was **how many dimensions one commit carried**.
+
+**The rules (ADR 0015).**
+
+- **One dimension per refactor commit**: pure path move, module merge, component extraction, token
+  unification, test-stack migration, or semantic change — pick one. No visual, layout, spacing, motion
+  or copy change rides along.
+- **The only permitted exception is value-preserving**: a literal → the token whose value equals it.
+  Bypassing the token file is not an exception (`ca1b082` hardcoded `0.45s cubic-bezier(…)` into
+  `.card-motion` one commit after `motion.ts` was built to prevent exactly that).
+- **A new abstraction ships with its contract test, before its first use.** If the contract cannot be
+  written as a test, the abstraction is not ready to extract. `66d91b7`'s `motion.test.ts` is the model:
+  assert per phase, and feed `'0.5s'` / `'  '` / `'var(--nope)'` to force the fallback branch.
+- **A module merge deletes the old files in the same commit.** `d915d61` left `oplog/cache.ts` and
+  `oplog/store.ts` behind; `7e5a633` left `src/d1-shim.ts` and `src/testSupport.ts`. Nothing references
+  them precisely because the merge already replaced them, so "grep says unused" never finds them.
+- **"Eliminate a double source" changes every reader and every writer, or none.** `189b47a` converted
+  only the writer, which turned an optimistic-row mismatch into rows that were written and never shown.
+
+**Why a static green check is not evidence.** All three `189b47a` regressions shipped with lint, `tsc`
+and the unit suite green: `motionMs('duration-enter')` (the parameter already carried the prefix the
+function body re-added) and a closure-returned boolean are both perfectly type-legal. **Static checks
+verify types and syntax, never a contract that was never written down.** A refactor that introduces new
+_state_ is the dangerous kind, not one that introduces new code.
+
+**How to judge a refactor commit after the fact** (this is the cheap check, and it needs no review):
+
+1. Run `git log --follow --format="%h %s" -- <file>` for the files it moved. **Zero follow-up commits
+   titled Fix / Revert / Restore is the signature of a good refactor.** `f4869b0`, `31ffb82`,
+   `97819d8`, `c481e04` have none; `189b47a` has five.
+2. Ask whether `git diff --stat` per file proves it was a _pure move_ (`transcode/protocol.ts` at +2/−4).
+   Large and pure is fine — `e8c2340` (32 renames) and `31ffb82` (84 files) were both net wins.
+3. Count the dimensions. If the message cannot name one, it is not a refactor commit.
+4. Check whether the commit message describes something the diff does not contain. `ac96442` ("Chore")
+   announced a toast close button that had not existed for a commit; `3367991` ("translate comments")
+   carried a complete 313-line `ErrorPage` rewrite and a deleted `message` prop.
+
+**A structural move and a logic change in one commit is the actual hazard**, because it makes the
+revert a gamble. Named references: the `enabled` option on `base/lib/overlay.ts` (documented in
+MEMORY.md §Shared Lifecycle) was added by `d54aa95` and omitted at exactly one of its three call
+sites, so the Lightbox held the body scroll lock after closing; `OverlaySidebar` and `ActionSheet` both
+passed it. **When you extract a shared action, audit every call site against its contract in the same
+commit** — three days passed with two later commits touching that file without noticing.
+
+**Squash merges silently delete functional comments, and a wrong comment is worse than none.** `8e4b62d`
+had to restore them verbatim after `6217c37` stripped six files. The dangerous case was `schema.sql`'s
+users.id note, rewritten to "SQLite's implicit integer primary-key assignment" — which contradicts
+`f86a5a6`, where `createUser` computes `COALESCE(MAX(id),-1)+1` inside the INSERT precisely so the first
+visitor gets id 0 and `ROOT_ID` works. **ADR and memory files are code.** Diff a squash against its
+source branch before accepting it.
+
+**Test count is not a coverage metric.** `ec40dbd` cut the suite from 208 cases to 49 to satisfy "keep it
+under 100" and dropped `topbarFit.test.ts` from 20 to 2; those cases were never proven redundant.
+`MEMORY.md` §Unit Suite Shape holds the shape, but the gap is real: appearance and `pillMeasure` still
+have no regression net (CONTRACT.md §5).
+
+**No temporary artifact lands in the trunk, and a diagnostic is not a change.** `ca1b082` shipped a
+`tmp-crawl-l.yml` labelled "TEMPORARY — delete after reading the run"; it cost four later commits of
+add/remove churn. Same class as `1a369a9` repainting three icons inside a diagnostic commit, which
+CONTRACT.md §4.5 records. If state lives in a Cloudflare dashboard, CI cannot converge on it
+(CONTRACT.md §4.6).
+
+**Do not judge a refactor by its title.** Of the commits titled `refactor` / `restructure` / `normalize`
+/ `chore`, only four changed structure without changing behaviour. The two worst were titled
+`Normalize the codebase` (five dimensions) and `Refactor shared lifecycle and enforce explicit sync
+triggers` (a structural win plus a product-level behaviour change).
+
+**Two writers in one tree will interleave, and the failure looks like a harness bug.** A parallel
+session rewrote `Lightbox.svelte` every few seconds while this one held it open; `read` results went
+stale and an `edit` was refused with "file changed since it was read", which reads like a tooling
+fault rather than a lost race. **When an edit is refused on a file you read seconds ago, the file is
+not yours — check the mtime before re-reading and re-applying.** The cheap check is
+`Get-ChildItem -Recurse -File | Where-Object LastWriteTime -gt (Get-Date).AddMinutes(-3)`. Two
+untracked modules (`base/lib/lightboxEngine.ts` and its test) appeared the same way and turned out to
+be good work — but "it showed up mid-session and nothing imports it" is also exactly what dead code
+looks like, so ask before adopting _or_ deleting. CONTRACT.md §5 gap 4 records it too.
+
+**A shared definition must be checked against each consumer's resources, not only for agreement.**
+Extracting one glitch stylesheet for two surfaces made them identical — and exposed that neither font
+query shipped the `font-weight: 800` the glyph asked for, so both rendered synthetic bold while the
+now-identical surfaces looked fine side by side. **Unifying a definition answers "do they agree",
+never "can each of them actually render it".**
