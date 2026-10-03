@@ -1,3 +1,5 @@
+import { isLocaleCode, type LocaleCode } from '$shared/copy';
+
 export interface TextSelection {
   start: number;
   end: number;
@@ -155,10 +157,15 @@ export function upgradeAnimatedMedia(root: ParentNode): void {
   }
 }
 
-// Vote references are stable IDs owned by the poll manager, never poll content stored in Markdown.
-export type MarkdownPollPart = { type: 'markdown'; content: string } | { type: 'poll'; id: number };
+// Poll references are stable IDs owned by the poll manager, never poll content stored in Markdown.
+export type MarkdownPollPart =
+  { type: 'markdown'; content: string } | { type: 'poll'; locale: LocaleCode; id: number };
 
-/** Split whole-line `::vote:<id>` references from Markdown, preserving every text block. */
+/**
+ * Split whole-line `::poll:<lang>:<id>` references from Markdown, preserving every text block.
+ * A line whose language is not a registered locale, whose id is missing, or that uses the
+ * legacy `::vote:<id>` form is not a poll reference and stays plain Markdown.
+ */
 export function splitPollReferences(contentMd: string): MarkdownPollPart[] {
   const parts: MarkdownPollPart[] = [];
   const textLines: string[] = [];
@@ -167,11 +174,12 @@ export function splitPollReferences(contentMd: string): MarkdownPollPart[] {
     textLines.length = 0;
   };
   for (const line of contentMd.split(/\r?\n/)) {
-    const match = line.match(/^\s*::vote:(\d+)\s*$/);
-    const id = match ? Number(match[1]) : NaN;
-    if (match && Number.isSafeInteger(id)) {
+    const match = line.match(/^\s*::poll:([A-Za-z][A-Za-z0-9-]*):(\d+)\s*$/);
+    const rawLocale = match ? match[1] : undefined;
+    const id = match ? Number(match[2]) : NaN;
+    if (match && rawLocale && isLocaleCode(rawLocale) && Number.isSafeInteger(id)) {
       flushText();
-      parts.push({ type: 'poll', id });
+      parts.push({ type: 'poll', locale: rawLocale, id });
     } else {
       textLines.push(line);
     }

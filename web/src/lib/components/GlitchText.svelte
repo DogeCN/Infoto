@@ -68,7 +68,8 @@
 
 <div
   class="glitch"
-  style="font-size: {size}; --glitch-burst: {burstActive ? BURST_MS + 'ms' : '0ms'}"
+  class:burst={burstActive}
+  style="font-size: {size}"
   role="img"
   aria-label={text}
   onmouseenter={burst}
@@ -117,7 +118,8 @@
   }
 
   /* The two echoes share one slice keyframe family but run on different periods, so they
-     never realign; the burst collapses the slice to a fixed offset for its duration. */
+     never realign; a burst swaps in a dedicated ramp that throws them far apart and skews
+     them before settling back onto the idle baselines. */
   .echo-a {
     z-index: 2;
     opacity: 0.75;
@@ -136,12 +138,14 @@
       jitter-b 0.4s steps(2) infinite;
   }
 
-  .glitch:hover .echo-a {
-    animation-duration: var(--glitch-burst), 0.35s;
+  /* A burst replaces the ambient slice/jitter with a wide displacement ramp; the layer
+     returns to its idle baseline at 100%, so dropping the class resumes ambient motion. */
+  .glitch.burst .echo-a {
+    animation: burst-a 0.4s steps(2) both;
   }
 
-  .glitch:hover .echo-b {
-    animation-duration: var(--glitch-burst), 0.4s;
+  .glitch.burst .echo-b {
+    animation: burst-b 0.4s steps(2) both;
   }
 
   @keyframes slice-a {
@@ -199,6 +203,68 @@
     }
     70% {
       transform: translate(-4px, 0);
+    }
+  }
+
+  @keyframes burst-a {
+    0% {
+      transform: translate(-2px, 0);
+      clip-path: inset(0 0 0 0);
+    }
+    15% {
+      transform: translate(-18px, 0) skewX(-6deg);
+      clip-path: inset(10% 0 70% 0);
+    }
+    30% {
+      transform: translate(16px, 0) skewX(5deg);
+      clip-path: inset(60% 0 20% 0);
+    }
+    45% {
+      transform: translate(-14px, 0) skewX(-4deg);
+      clip-path: inset(30% 0 50% 0);
+    }
+    60% {
+      transform: translate(17px, 0) skewX(6deg);
+      clip-path: inset(75% 0 10% 0);
+    }
+    75% {
+      transform: translate(-9px, 0);
+      clip-path: inset(45% 0 35% 0);
+    }
+    100% {
+      transform: translate(-2px, 0);
+      clip-path: inset(0 0 0 0);
+    }
+  }
+
+  @keyframes burst-b {
+    0% {
+      transform: translate(2px, 0);
+      clip-path: inset(0 0 0 0);
+    }
+    15% {
+      transform: translate(18px, 0) skewX(6deg);
+      clip-path: inset(70% 0 15% 0);
+    }
+    30% {
+      transform: translate(-16px, 0) skewX(-5deg);
+      clip-path: inset(20% 0 60% 0);
+    }
+    45% {
+      transform: translate(14px, 0) skewX(4deg);
+      clip-path: inset(50% 0 30% 0);
+    }
+    60% {
+      transform: translate(-17px, 0) skewX(-6deg);
+      clip-path: inset(10% 0 75% 0);
+    }
+    75% {
+      transform: translate(9px, 0);
+      clip-path: inset(35% 0 45% 0);
+    }
+    100% {
+      transform: translate(2px, 0);
+      clip-path: inset(0 0 0 0);
     }
   }
 

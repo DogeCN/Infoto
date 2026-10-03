@@ -8,7 +8,6 @@ const voteCount = (count: number): string => fmt(plural(count, copy.vote.count, 
 
 const previewPoll: Poll = {
   id: 42,
-  title: 'Existing poll',
   options: ['Choice A', 'Choice B'],
   allowMultiple: true,
   locale,
@@ -34,7 +33,6 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
         selfId: 0,
         mediaHostUrl: 'https://facade.test',
         photos: [],
-        locale,
         announcements: [],
         polls: [previewPoll],
         feedback: [],
@@ -68,13 +66,14 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
   ).toHaveCount(0);
 
   await editor.fill(
-    '::vote:42\nBody\n![Safe image](https://example.com/image.png)\n![Unsafe image](javascript:alert(1))\n[Unsafe link](javascript:alert(1))',
+    `::poll:${locale}:42\nBody\n![Safe image](https://example.com/image.png)\n![Unsafe image](javascript:alert(1))\n[Unsafe link](javascript:alert(1))`,
   );
   const preview = dialog.getByLabel(copy.editor.previewAria);
-  await expect(preview.getByRole('heading', { name: previewPoll.title })).toBeVisible();
+  await expect(preview.getByRole('region', { name: copy.admin.tabs.polls })).toBeVisible();
+  await expect(preview).toContainText('Choice A');
   await expect(preview).toContainText('67%');
   await expect(preview).toContainText(voteCount(2));
-  await expect(preview).not.toContainText('::vote:42');
+  await expect(preview).not.toContainText(`::poll:${locale}:42`);
   await expect(preview.locator('img')).toHaveCount(1);
   await expect(preview.locator('img')).toHaveAttribute('src', 'https://example.com/image.png');
   await expect(preview.locator('a[href^="javascript:"]')).toHaveCount(0);
@@ -100,7 +99,6 @@ test('admin manages independent multiple-choice polls and copies stable referenc
         selfId: 0,
         mediaHostUrl: 'https://facade.test',
         photos: [],
-        locale,
         announcements: [],
         polls: [previewPoll],
         feedback: [],
@@ -109,14 +107,12 @@ test('admin manages independent multiple-choice polls and copies stable referenc
   });
   await page.route('**/admin/polls', async (route) => {
     const body = route.request().postDataJSON() as {
-      title: string;
       options: string[];
       allowMultiple: boolean;
       locale: Poll['locale'];
     };
     const poll: Poll = {
       id: createdId,
-      title: body.title,
       options: body.options,
       allowMultiple: body.allowMultiple,
       locale: body.locale,
@@ -139,22 +135,19 @@ test('admin manages independent multiple-choice polls and copies stable referenc
   expect(localeBox!.x).toBeLessThan((await page.evaluate(() => window.innerWidth)) / 2);
   await page.getByRole('tab', { name: copy.admin.tabs.polls, exact: true }).click();
 
-  const existingRow = page.getByRole('listitem').filter({ hasText: previewPoll.title });
+  const existingRow = page.getByRole('listitem').filter({ hasText: 'Choice A' });
   await expect(existingRow).toContainText('67%');
   await expect(existingRow).toContainText(voteCount(2));
 
   await page.getByRole('button', { name: copy.admin.newPoll, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: copy.admin.newPoll, exact: true });
-  await dialog
-    .getByRole('textbox', { name: copy.admin.editor.pollTitle })
-    .fill('New multi-choice poll');
   const optionOne = dialog.getByRole('textbox', {
     name: fmt(copy.admin.editor.pollOptionLabel, { number: 1 }),
   });
   const optionTwo = dialog.getByRole('textbox', {
     name: fmt(copy.admin.editor.pollOptionLabel, { number: 2 }),
   });
-  await expect(dialog.getByRole('textbox')).toHaveCount(3);
+  await expect(dialog.getByRole('textbox')).toHaveCount(2);
   await expect(
     dialog.getByRole('button', {
       name: fmt(copy.admin.editor.removePollOption, { number: 1 }),
@@ -170,7 +163,7 @@ test('admin manages independent multiple-choice polls and copies stable referenc
   await dialog
     .getByRole('button', { name: fmt(copy.admin.editor.removePollOption, { number: 3 }) })
     .click();
-  await expect(dialog.getByRole('textbox')).toHaveCount(3);
+  await expect(dialog.getByRole('textbox')).toHaveCount(2);
   await dialog.getByRole('button', { name: copy.admin.editor.pollAllowMultiple }).click();
   const createRequest = page.waitForRequest(
     (request) => new URL(request.url()).pathname === '/admin/polls' && request.method() === 'POST',
@@ -183,7 +176,7 @@ test('admin manages independent multiple-choice polls and copies stable referenc
     options: ['Option A', 'Option B'],
   });
 
-  const row = page.getByRole('listitem').filter({ hasText: 'New multi-choice poll' });
+  const row = page.getByRole('listitem').filter({ hasText: 'Option A' });
   await expect(row).toBeVisible();
   await expect(row).toContainText(copy.admin.poll.multipleAnswers);
   await page.evaluate(() => {
@@ -205,5 +198,5 @@ test('admin manages independent multiple-choice polls and copies stable referenc
         () => (window as unknown as { __testClipboard?: { value: string } }).__testClipboard?.value,
       ),
     )
-    .toBe(`::vote:${createdId}`);
+    .toBe(`::poll:${locale}:${createdId}`);
 });

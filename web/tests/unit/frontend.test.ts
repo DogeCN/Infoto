@@ -39,7 +39,6 @@ const ann = (over: Partial<Announcement> & { id: number }): Announcement => ({
 });
 
 const poll = (over: Partial<Poll> & { id: number }): Poll => ({
-  title: 'question',
   options: ['A', 'B', 'C'],
   allowMultiple: false,
   locale: 'en-US',
@@ -82,12 +81,12 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
   polls = ops.applyVote(polls, 1, 4, []);
   assert.deepEqual(polls[0]!.votes, []);
   polls = ops.applyVote(polls, 1, 4, [0, 2]);
-  polls = ops.applyPollUpdate(polls, 1, 'Renamed', ['A', 'B', 'C'], true, 2_000);
+  polls = ops.applyPollUpdate(polls, 1, ['A', 'B', 'C'], true, 2_000);
   assert.deepEqual(polls[0]!.votes, [
     { userId: 4, option: 0 },
     { userId: 4, option: 2 },
   ]);
-  polls = ops.applyPollUpdate(polls, 1, 'Renamed', ['C', 'A', 'B'], true, 3_000);
+  polls = ops.applyPollUpdate(polls, 1, ['C', 'A', 'B'], true, 3_000);
   assert.deepEqual(polls[0]!.votes, []);
 
   let announcements = [ann({ id: 1 })];
@@ -138,14 +137,14 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
 });
 
 test('frontend ops and filters: splits independent poll references from Markdown and counts reactions in set order', () => {
-  assert.deepEqual(splitPollReferences('opening note\n::vote:0\nclosing note'), [
+  assert.deepEqual(splitPollReferences('opening note\n::poll:en-US:0\nclosing note'), [
     { type: 'markdown', content: 'opening note' },
-    { type: 'poll', id: 0 },
+    { type: 'poll', locale: 'en-US', id: 0 },
     { type: 'markdown', content: 'closing note' },
   ]);
-  assert.deepEqual(splitPollReferences('::vote:12\n::vote:3'), [
-    { type: 'poll', id: 12 },
-    { type: 'poll', id: 3 },
+  assert.deepEqual(splitPollReferences('::poll:zh-CN:12\n::poll:en-US:3'), [
+    { type: 'poll', locale: 'zh-CN', id: 12 },
+    { type: 'poll', locale: 'en-US', id: 3 },
   ]);
   assert.deepEqual(splitPollReferences('plain text'), [
     { type: 'markdown', content: 'plain text' },
@@ -171,6 +170,25 @@ test('frontend ops and filters: splits independent poll references from Markdown
     ],
   );
   assert.deepEqual(reactionCounts(ann({ id: 1 }), 0), []);
+});
+
+test('frontend markdown: a poll line with an unknown/mismatched language, a missing part, or the legacy form stays plain Markdown', () => {
+  // Only registered locales parse; anything else the component sees as literal text, so a
+  // reference whose language cannot match the current content locale never resolves.
+  assert.deepEqual(splitPollReferences('::poll:fr-FR:1'), [
+    { type: 'markdown', content: '::poll:fr-FR:1' },
+  ]);
+  assert.deepEqual(splitPollReferences('::poll:en:1'), [
+    { type: 'markdown', content: '::poll:en:1' },
+  ]);
+  assert.deepEqual(splitPollReferences('::vote:1'), [{ type: 'markdown', content: '::vote:1' }]);
+  assert.deepEqual(splitPollReferences('::poll:en-US:'), [
+    { type: 'markdown', content: '::poll:en-US:' },
+  ]);
+  assert.deepEqual(splitPollReferences('::poll::3'), [{ type: 'markdown', content: '::poll::3' }]);
+  assert.deepEqual(splitPollReferences('::poll:en-US:1 trailing'), [
+    { type: 'markdown', content: '::poll:en-US:1 trailing' },
+  ]);
 });
 
 test('frontend ops and filters: filters by type, ownership, marks, and ranges', () => {

@@ -190,7 +190,6 @@ export function applyAnnDelete(anns: Announcement[], id: number): Announcement[]
 export function applyPollCreate(
   polls: Poll[],
   tempId: number,
-  title: string,
   options: string[],
   allowMultiple: boolean,
   locale: LocaleCode,
@@ -199,14 +198,13 @@ export function applyPollCreate(
   const sort = polls.reduce((max, poll) => Math.max(max, poll.sort), -1) + 1;
   return [
     ...polls,
-    { id: tempId, title, options, allowMultiple, locale, sort, updatedAt: now, votes: [] },
+    { id: tempId, options, allowMultiple, locale, sort, updatedAt: now, votes: [] },
   ];
 }
 
 export function applyPollUpdate(
   polls: Poll[],
   id: number,
-  title: string,
   options: string[],
   allowMultiple: boolean,
   now: number,
@@ -219,7 +217,6 @@ export function applyPollUpdate(
       options.some((option, index) => option !== poll.options[index]);
     return {
       ...poll,
-      title,
       options,
       allowMultiple,
       updatedAt: now,

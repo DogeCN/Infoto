@@ -89,11 +89,10 @@ const pollRequest = (app: TestApp, method: string, path: string, cookie: string,
 const pollCreate = (
   app: TestApp,
   cookie: string,
-  title: string,
   options: string[],
   allowMultiple = false,
   locale = 'en-US',
-) => pollRequest(app, 'POST', '', cookie, { title, options, allowMultiple, locale });
+) => pollRequest(app, 'POST', '', cookie, { options, allowMultiple, locale });
 
 test('root create returns real id, locale, sort, and empty reactions', async () => {
   const { app } = makeApp();
@@ -127,7 +126,7 @@ test('update existing → 200; update missing → 404', async () => {
   assert.equal(after.announcements[0]!.title, 'a2');
 });
 
-test('announcements and feedback snapshots are isolated by requested locale', async () => {
+test('the snapshot carries announcements and feedback from every locale', async () => {
   const { app } = makeApp();
   const { root, guest } = await twoIdentities(app);
   await annCreate(app, root, 'English', 'body', 'en-US');
@@ -137,37 +136,23 @@ test('announcements and feedback snapshots are isolated by requested locale', as
     fbCreate('Localized suggestion', 'zh-CN'),
   ]);
 
-  const english = await snap(app, root);
-  assert.deepEqual(
-    english.announcements.map((item) => item.title),
-    ['English'],
-  );
-  assert.deepEqual(
-    english.feedback.map((item) => item.contentMd),
-    ['English suggestion'],
-  );
-
-  const chinese = (await (
-    await app.request('http://localhost/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: root },
-      body: JSON.stringify({ locale: 'zh-CN', ops: [] }),
-    })
-  ).json()) as Awaited<ReturnType<typeof snap>>;
-  assert.deepEqual(
-    chinese.announcements.map((item) => item.title),
-    ['Localized announcement'],
-  );
-  assert.deepEqual(
-    chinese.feedback.map((item) => item.contentMd),
-    ['Localized suggestion'],
-  );
+  // /sync returns all locales; the client filters by its content locale. Rows share the
+  // same `sort` value across locales, so compare as sets rather than relying on tie order.
+  const all = await snap(app, root);
+  assert.deepEqual(all.announcements.map((item) => item.title).sort(), [
+    'English',
+    'Localized announcement',
+  ]);
+  assert.deepEqual(all.feedback.map((item) => item.contentMd).sort(), [
+    'English suggestion',
+    'Localized suggestion',
+  ]);
 });
 
 test('poll CRUD persists multiple-choice selections and validates single-choice polls', async () => {
   const { app } = makeApp();
   const { root, guest } = await twoIdentities(app);
-  const created = await pollCreate(app, root, 'Choose', ['A', 'B', 'C'], true);
+  const created = await pollCreate(app, root, ['A', 'B', 'C'], true);
   assert.equal(created.status, 200);
   const poll = ((await created.json()) as { poll: { id: number; allowMultiple: boolean } }).poll;
   assert.equal(poll.id, 1);
@@ -180,11 +165,10 @@ test('poll CRUD persists multiple-choice selections and validates single-choice 
   ];
   assert.deepEqual((await snap(app, root)).polls[0]!.votes, originalVotes);
 
-  assert.equal((await pollCreate(app, root, 'Bad', ['only one'])).status, 400);
+  assert.equal((await pollCreate(app, root, ['only one'])).status, 400);
   assert.equal(
     (
       await pollRequest(app, 'PUT', `/${poll.id}`, root, {
-        title: 'Renamed',
         options: ['A', 'B', 'C'],
         allowMultiple: true,
         locale: 'en-US',
@@ -197,7 +181,6 @@ test('poll CRUD persists multiple-choice selections and validates single-choice 
   assert.equal(
     (
       await pollRequest(app, 'PUT', `/${poll.id}`, root, {
-        title: 'Choose one',
         options: ['Yes', 'No'],
         allowMultiple: false,
         locale: 'en-US',
@@ -214,7 +197,7 @@ test('announcement deletion clears reactions without removing independent poll v
   const { app } = makeApp();
   const { root } = await twoIdentities(app);
   await annCreate(app, root, 'announcement', 'body');
-  const pollResponse = await pollCreate(app, root, 'Question', ['Yes', 'No']);
+  const pollResponse = await pollCreate(app, root, ['Yes', 'No']);
   const pollId = ((await pollResponse.json()) as { poll: { id: number } }).poll.id;
   await postOps(app, root, [
     { type: 'react', target: 1, payload: { emoji: '👍' } },
@@ -274,7 +257,7 @@ test('non-root writes → 403 on every admin route', async () => {
   assert.equal((await annPut(app, guest, 1, 'x', 'y')).status, 403);
   assert.equal((await annDelete(app, guest, 1)).status, 403);
   assert.equal((await annReorder(app, guest, [1])).status, 403);
-  assert.equal((await pollCreate(app, guest, 'poll', ['Yes', 'No'])).status, 403);
+  assert.equal((await pollCreate(app, guest, ['Yes', 'No'])).status, 403);
   assert.equal((await pollRequest(app, 'DELETE', '/1', guest)).status, 403);
   assert.equal((await fbDelete(app, guest, 1)).status, 403);
   assert.equal((await fbReorder(app, guest, [1])).status, 403);

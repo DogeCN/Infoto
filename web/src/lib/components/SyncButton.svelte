@@ -70,9 +70,11 @@
     </span>
     {#if pendingCount > 0}
       <!-- Height comes from the measured bar; the width stays content-driven so a single
-           digit is not padded into a wide lozenge. `size-*` would force a square. -->
+           digit is not padded into a wide lozenge. `size-*` would force a square.
+           `text-[length:var(...)]` needs the `length:` hint: a bare `text-[var(...)]` is
+           ambiguous and compiles to `color`, leaving the digits at the inherited size. -->
       <span
-        class="absolute -right-0.5 -top-0.5 flex h-[var(--bar-badge)] min-w-[var(--bar-badge)] items-center justify-center rounded-full bg-primary px-1 text-[var(--bar-badge-text)] font-bold leading-none text-primary-foreground"
+        class="absolute -right-0.5 -top-0.5 flex h-[var(--bar-badge)] min-w-[var(--bar-badge)] items-center justify-center rounded-full bg-primary px-1 text-[length:var(--bar-badge-text)] font-bold leading-none text-primary-foreground"
       >
         {pendingCount > 99 ? '99+' : pendingCount}
       </span>

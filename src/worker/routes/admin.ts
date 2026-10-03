@@ -25,18 +25,15 @@ function readAnnouncementDraft(
 }
 
 function readPollDraft(c: Context): Promise<{
-  title: string;
   options: string[];
   allowMultiple: boolean;
   locale: LocaleCode;
 } | null> {
   return readJson<{
-    title?: unknown;
     options?: unknown;
     allowMultiple?: unknown;
     locale?: unknown;
   }>(c).then((body) => {
-    const title = typeof body?.title === 'string' ? body.title.trim() : '';
     const options = Array.isArray(body?.options)
       ? body.options
           .filter((option): option is string => typeof option === 'string')
@@ -45,8 +42,6 @@ function readPollDraft(c: Context): Promise<{
     const raw = body?.locale;
     const locale = isLocaleCode(raw) ? raw : null;
     if (
-      !title ||
-      title.length > 200 ||
       options.length < 2 ||
       options.length > MAX_POLL_OPTIONS ||
       options.some((option) => option.length === 0 || option.length > 200) ||
@@ -54,7 +49,7 @@ function readPollDraft(c: Context): Promise<{
       !locale
     )
       return null;
-    return { title, options, allowMultiple: body.allowMultiple, locale };
+    return { options, allowMultiple: body.allowMultiple, locale };
   });
 }
 
@@ -129,11 +124,10 @@ function pollsApp(env: AppEnv): Hono {
     const serverTime = Date.now();
     const { last_row_id: id } = await env.db
       .prepare(
-        `INSERT INTO polls (title, options, allow_multiple, locale, sort, updated_at)
-         VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(sort) + 1, 0) FROM polls WHERE locale = ?), ?)`,
+        `INSERT INTO polls (options, allow_multiple, locale, sort, updated_at)
+         VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort) + 1, 0) FROM polls WHERE locale = ?), ?)`,
       )
       .bind(
-        draft.title,
         JSON.stringify(draft.options),
         draft.allowMultiple ? 1 : 0,
         draft.locale,
@@ -147,7 +141,6 @@ function pollsApp(env: AppEnv): Hono {
       .first<number>('sort');
     const poll: Poll = {
       id,
-      title: draft.title,
       options: draft.options,
       allowMultiple: draft.allowMultiple,
       locale: draft.locale,
@@ -187,9 +180,8 @@ function pollsApp(env: AppEnv): Hono {
       existing.locale !== draft.locale;
     const statements = [
       {
-        sql: 'UPDATE polls SET title = ?, options = ?, allow_multiple = ?, locale = ?, updated_at = ? WHERE id = ?',
+        sql: 'UPDATE polls SET options = ?, allow_multiple = ?, locale = ?, updated_at = ? WHERE id = ?',
         binds: [
-          draft.title,
           JSON.stringify(draft.options),
           draft.allowMultiple ? 1 : 0,
           draft.locale,

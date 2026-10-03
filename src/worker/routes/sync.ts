@@ -54,7 +54,6 @@ interface AnnRow {
 }
 interface PollRow {
   id: number;
-  title: string;
   options: string;
   allow_multiple: number;
   locale: LocaleCode;
@@ -285,10 +284,11 @@ function groupById<T>(rows: T[], key: (row: T) => number): Map<number, T[]> {
   return out;
 }
 
+/** Every locale's content rows: the client filters by its content locale, so a language
+ *  switch is a local re-render rather than another round trip. Photos are locale-neutral. */
 async function snapshot(
   db: Db,
   selfId: number,
-  locale: LocaleCode,
 ): Promise<{
   photos: Photo[];
   announcements: Announcement[];
@@ -297,14 +297,8 @@ async function snapshot(
 }> {
   const [photoRows, annRows, pollRows, reactRows, voteRows] = await Promise.all([
     db.prepare('SELECT * FROM photos ORDER BY id ASC').all<PhotoRow>(),
-    db
-      .prepare('SELECT * FROM announcements WHERE locale = ? ORDER BY sort ASC')
-      .bind(locale)
-      .all<AnnRow>(),
-    db
-      .prepare('SELECT * FROM polls WHERE locale = ? ORDER BY sort ASC')
-      .bind(locale)
-      .all<PollRow>(),
+    db.prepare('SELECT * FROM announcements ORDER BY sort ASC').all<AnnRow>(),
+    db.prepare('SELECT * FROM polls ORDER BY sort ASC').all<PollRow>(),
     db.prepare('SELECT ann_id, user_id, emoji FROM reactions').all<ReactRow>(),
     db.prepare('SELECT poll_id, user_id, option FROM votes').all<VoteRow>(),
   ]);
@@ -330,7 +324,6 @@ async function snapshot(
     }
     return {
       id: r.id,
-      title: r.title,
       options,
       allowMultiple: r.allow_multiple === 1,
       locale: r.locale,
@@ -341,10 +334,7 @@ async function snapshot(
   });
   let feedback: Feedback[] = [];
   if (selfId === ROOT_ID) {
-    const rows = await db
-      .prepare('SELECT * FROM feedback WHERE locale = ? ORDER BY sort ASC')
-      .bind(locale)
-      .all<FbRow>();
+    const rows = await db.prepare('SELECT * FROM feedback ORDER BY sort ASC').all<FbRow>();
     feedback = rows.results.map((r) => ({
       id: r.id,
       userId: r.user_id,
@@ -368,8 +358,6 @@ export function syncHandler(env: AppEnv) {
     if (!body || typeof body !== 'object' || !Array.isArray(body.ops)) {
       return c.json({ ok: false, error: 'bad_request' }, 400);
     }
-    const locale = isLocaleCode(body.locale) ? body.locale : null;
-    if (!locale) return c.json({ ok: false, error: 'bad_request' }, 400);
     if (body.ops.length > MAX_SYNC_OPS) {
       return c.json({ ok: false, error: 'too_many_ops' }, 413);
     }
@@ -401,12 +389,11 @@ export function syncHandler(env: AppEnv) {
     const serverTime = Date.now();
     await applyOps(env, user, body.ops, serverTime);
 
-    const snap = await snapshot(env.db, user.id, locale);
+    const snap = await snapshot(env.db, user.id);
     const res = c.json({
       ok: true,
       serverTime,
       selfId: user.id,
-      locale,
       // Uploads go straight from the browser to the facade; this server only stores the
       // URL it hands back.
       mediaHostUrl: env.mediaHostUrl ?? LOCAL_MEDIA_HOST_URL,

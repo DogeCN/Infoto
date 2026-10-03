@@ -207,6 +207,6 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 | `web/src/lib/components/UploadPanel.svelte`     | Sole upload overlay                                                                       |
 | `web/src/lib/components/TimeLabel.svelte`       | Sole time display component                                                               |
 | `web/src/lib/components/ReorderableList.svelte` | Reusable drag-sort list                                                                   |
-| `web/src/lib/components/PollReferences.svelte`  | Sole renderer for Markdown interleaved with `::vote:` poll references                     |
+| `web/src/lib/components/PollReferences.svelte`  | Sole renderer for Markdown interleaved with `::poll:<lang>:<id>` poll references          |
 | `web/src/lib/components/EditorDialog.svelte`    | Sole editor shell — scroll region, footer, overlay focus trap / scroll lock / Escape      |
 | `web/src/lib/components/pillMeasure.ts`         | Sole segmented-pill density measurement (clone probe, never hidden-copy widths)           |

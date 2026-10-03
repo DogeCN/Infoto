@@ -1,6 +1,7 @@
 <script lang="ts" module>
   /** The layout slider under the pointer, or null. The waterfall reflows while one of them
-   *  is dragged, so the panel fades back — except that slider, which must stay readable. */
+   *  is dragged, so the panel chrome goes fully transparent — except that slider's own row,
+   *  which stays opaque so the drag cue never disappears. */
   export type LayoutPreviewControl = 'band' | 'gap' | null;
 </script>
 
@@ -70,8 +71,8 @@
   }: Props = $props();
   let settings = $state<Settings>(loadSettings());
 
-  /** The layout slider under the pointer. Reported upward so the parent can fade its own
-   *  chrome; also read here so the other slider can recede. */
+  /** The layout slider under the pointer. Reported upward so the parent can clear its own
+   *  background; also read here so every region except the live row goes transparent. */
   let previewing = $state<LayoutPreviewControl>(null);
   $effect(() => onLayoutPreviewChange?.(previewing));
 
@@ -219,15 +220,15 @@
 
 <!-- pb-4: the scroll container has no bottom padding (see OverlaySidebar)
 
-     A layout preview fades the panel chrome so the waterfall reads through it, but the
+     A layout preview hides the panel chrome so the waterfall reads through it, but the
      slider under the pointer stays solid — it is what tells the user the drag is still
-     live. The two sections that are *not* being dragged therefore carry the fade, and
-     the live slider's own row carries none. -->
-<div class="space-y-6 pb-4">
+     live. The regions that are *not* being dragged therefore go fully transparent, and
+     the live slider's own row stays opaque. -->
+<div class="space-y-6 pb-4" data-previewing={previewing ?? 'none'}>
   <!-- Filters section -->
   <section
     class="transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
-      ? 'opacity-25'
+      ? 'opacity-0'
       : 'opacity-100'}"
   >
     <div class="flex items-center justify-between px-1">
@@ -338,12 +339,12 @@
     </div>
   </section>
 
-  <!-- Interface section. The layout sliders must not fade while one of them is dragged, so
-       the fade is carried by the chrome around them — the header and the mode row. -->
+  <!-- Interface section. The layout sliders must not be hidden while one of them is dragged,
+       so the transparency is carried by the chrome around them — the header and the mode row. -->
   <section>
     <div
       class="flex items-center justify-between px-1 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
-        ? 'opacity-25'
+        ? 'opacity-0'
         : 'opacity-100'}"
     >
       <h3 class="flex items-center gap-1.5 text-sm font-medium">
@@ -363,7 +364,7 @@
 
     <div
       class="mt-4 flex items-center gap-2 px-1 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing
-        ? 'opacity-25'
+        ? 'opacity-0'
         : 'opacity-100'}"
     >
       <!-- Language, arrangement, then scroll direction. The extra gap separates language from layout. -->
@@ -416,14 +417,13 @@
       </Tooltip>
     </div>
 
-    <!-- Target band width and gap: single-thumb sliders. Only the slider not under the
-         pointer recedes, so the user keeps a reference for the value they are not
-         changing while the waterfall reflows. -->
+    <!-- Target band width and gap: single-thumb sliders. Only the slider under the pointer
+         stays visible; the other goes fully transparent while the waterfall reflows. -->
     <div class="mt-4 space-y-3.5 px-1">
       <div
         class="transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing &&
         previewing !== 'band'
-          ? 'opacity-40'
+          ? 'opacity-0'
           : 'opacity-100'}"
       >
         <SingleSlider
@@ -441,7 +441,7 @@
       <div
         class="transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {previewing &&
         previewing !== 'gap'
-          ? 'opacity-40'
+          ? 'opacity-0'
           : 'opacity-100'}"
       >
         <SingleSlider

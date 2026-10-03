@@ -9,20 +9,18 @@
 
   interface Props {
     poll: Poll | null;
-    onSave: (title: string, options: string[], allowMultiple: boolean) => void;
+    onSave: (options: string[], allowMultiple: boolean) => void;
     onCancel: () => void;
   }
 
   let { poll, onSave, onCancel }: Props = $props();
-  let title = $state(untrack(() => poll?.title ?? ''));
   let nextOptionId = 0;
   let options = $state(
     untrack(() => (poll?.options ?? ['', '']).map((value) => ({ id: nextOptionId++, value }))),
   );
   let allowMultiple = $state(untrack(() => poll?.allowMultiple ?? false));
   let canSave = $derived(
-    title.trim().length > 0 &&
-      options.length >= 2 &&
+    options.length >= 2 &&
       options.length <= MAX_POLL_OPTIONS &&
       options.every((option) => option.value.trim().length > 0),
   );
@@ -39,7 +37,6 @@
 
   function submit(): void {
     onSave(
-      title.trim(),
       options.map((option) => option.value.trim()),
       allowMultiple,
     );
@@ -55,18 +52,6 @@
 >
   {#snippet body()}
     <div class="mx-auto flex max-w-3xl flex-col gap-5">
-      <label class="block">
-        <span class="sr-only">{copy.admin.editor.pollTitle}</span>
-        <input
-          bind:value={title}
-          required
-          maxlength="200"
-          type="text"
-          placeholder={copy.admin.editor.pollTitle}
-          class="field-control"
-        />
-      </label>
-
       <fieldset class="space-y-3">
         <legend class="sr-only">{copy.admin.editor.pollOptions}</legend>
         <div class="space-y-2">

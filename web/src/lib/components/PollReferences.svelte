@@ -1,7 +1,9 @@
 <script lang="ts">
   // Renders announcement content: Markdown blocks interleaved with the polls they
-  // reference. A reference with no matching poll renders as a plain `::vote:` line.
+  // reference. A reference that resolves to no poll — because the id is unknown or its
+  // language differs from the poll's — renders as a plain `::poll:` line.
   import type { Poll } from '$shared/types';
+  import { copy } from '$lib/i18n.svelte';
   import { splitPollReferences, type MarkdownPollPart } from '../../core/markdown';
   import MarkdownView from './MarkdownView.svelte';
   import VoteBlock from './VoteBlock.svelte';
@@ -25,8 +27,10 @@
   /** Vote rows are interactive only when a handler is supplied. */
   let canVote = $derived(interactive && onVote !== undefined);
 
+  /** A reference resolves only when both its language and id match a known poll. */
   function section(part: Extract<MarkdownPollPart, { type: 'poll' }>): Poll | undefined {
-    return pollMap.get(part.id);
+    const poll = pollMap.get(part.id);
+    return poll && poll.locale === part.locale ? poll : undefined;
   }
 </script>
 
@@ -38,8 +42,9 @@
       {/if}
     {:else if section(part)}
       {@const poll = section(part)!}
-      <section class="space-y-2" aria-label={poll.title}>
-        <h4 class="text-sm font-medium text-foreground">{poll.title}</h4>
+      <!-- No title: the poll has none, and the option rows are the poll. The section reuses
+           the generic "Polls" label so the vote group still has an accessible name. -->
+      <section class="space-y-2" aria-label={copy.admin.tabs.polls}>
         <VoteBlock
           options={poll.options}
           votes={poll.votes}
@@ -50,7 +55,11 @@
         />
       </section>
     {:else}
-      <MarkdownView content={`::vote:${part.id}`} allowImages class="text-muted-foreground" />
+      <MarkdownView
+        content={`::poll:${part.locale}:${part.id}`}
+        allowImages
+        class="text-muted-foreground"
+      />
     {/if}
   {/each}
 </div>

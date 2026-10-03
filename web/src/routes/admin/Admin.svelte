@@ -24,7 +24,6 @@
   let syncErrorToastAt = 0;
   const engine = getEngine({
     postSyncFn: postSync,
-    locale: () => store.contentLocale,
     onSyncResponse: (response, context) => store.applySync(response, context),
     onError: (phase, error) => {
       console.error('[sync]', phase, error);
@@ -166,9 +165,9 @@
     editingPoll = null;
   }
 
-  function savePoll(title: string, options: string[], allowMultiple: boolean): void {
-    if (editingPoll) store.pollUpdate(editingPoll.id, title, options, allowMultiple);
-    else store.pollCreate(title, options, allowMultiple);
+  function savePoll(options: string[], allowMultiple: boolean): void {
+    if (editingPoll) store.pollUpdate(editingPoll.id, options, allowMultiple);
+    else store.pollCreate(options, allowMultiple);
     closePollEditor();
   }
 
@@ -185,7 +184,6 @@
     closeAnnouncementEditor();
     closePollEditor();
     store.setContentLocale(locale);
-    void engine.sync();
   }
 
   function handleAnnouncementReorder(ids: number[]): void {

@@ -20,8 +20,9 @@
 
   let { polls, selfId = -1, onEdit, onDelete, onReorder }: Props = $props();
 
-  async function copySyntax(id: number): Promise<void> {
-    if (await copyToClipboard(`::vote:${id}`)) toast.success(copy.admin.poll.syntaxCopied);
+  async function copySyntax(poll: Poll): Promise<void> {
+    if (await copyToClipboard(`::poll:${poll.locale}:${poll.id}`))
+      toast.success(copy.admin.poll.syntaxCopied);
     else toast.error(copy.admin.poll.copyFailed);
   }
 </script>
@@ -45,7 +46,7 @@
               class="icon-button p-2"
               aria-label={copy.admin.poll.copySyntax}
               disabled={poll.id < 0}
-              onclick={() => void copySyntax(poll.id)}
+              onclick={() => void copySyntax(poll)}
             >
               <Copy class="size-4" />
             </button>

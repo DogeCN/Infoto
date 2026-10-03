@@ -71,7 +71,6 @@ export interface Announcement {
 
 export interface Poll {
   id: number;
-  title: string;
   options: string[];
   allowMultiple: boolean;
   locale: LocaleCode;
@@ -153,8 +152,6 @@ export interface Op {
 export interface SyncRequest {
   /** Required when no identity exists yet. */
   turnstileToken?: string | null;
-  /** Selects the localized announcements, polls, and root-only feedback snapshot. */
-  locale?: LocaleCode;
   ops: Op[];
 }
 
@@ -167,8 +164,8 @@ export interface SyncResponse {
    *  credentials, so this server never sees an upload or a TC_SECRET. */
   mediaHostUrl: string;
   photos: Photo[];
-  /** Locale for selecting the remaining localized snapshot fields. */
-  locale: LocaleCode;
+  /** Every locale's rows: the client filters by its content locale, so switching language
+   *  never needs another round trip. */
   announcements: Announcement[];
   polls: Poll[];
   /** Real data for the root user only; empty array for everyone else. */
