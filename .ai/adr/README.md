@@ -33,20 +33,21 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 
 ## Index
 
-| ADR                                                        | Title                                                                        | Status                     |
-| ---------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------- |
-| [0001](0001-sha256-addressing.md)                          | sha256 Addresses Photos, Not Sequential IDs                                  | Accepted                   |
-| [0002](0002-progress-only-real-measurements.md)            | Progress Reports Only Real Measurements                                      | Accepted                   |
-| [0003](0003-measured-responsive-layout.md)                 | Responsive State From Measured Widths, Not Breakpoints                       | Accepted                   |
-| [0004](0004-two-layer-i18n-copy.md)                        | Two-Layer i18n Copy: `$state` vs Live Proxy                                  | Accepted                   |
-| [0005](0005-waterfall-target-band-width.md)                | Waterfall Density Controlled by Target Band Width                            | Accepted                   |
-| [0006](0006-dual-source-web-fonts.md)                      | Web Fonts Race the Official Host Against the USTC Mirror                     | Superseded by 0006-revised |
-| [0006-revised](0006-revised-official-font-host-only.md)    | Web Fonts Load From the Official Host Only                                   | Superseded by 0011         |
-| [0007](0007-shared-frontend-lifecycle.md)                  | Shared Frontend Lifecycle and Utility Boundaries                             | Accepted                   |
-| [0008](0008-explicit-sync-triggers.md)                     | Synchronization Uses Explicit User and Page-Lifecycle Triggers               | Accepted                   |
-| [0009](0009-standalone-image-host-facade.md)               | Image Host as a Standalone Facade                                            | Accepted                   |
-| [0010](0010-locale-scoped-content-and-standalone-polls.md) | Locale-Scoped Content and Standalone Multi-Select Polls                      | Superseded by 0013         |
-| [0011](0011-web-fonts-google-china-endpoint.md)            | Web Fonts Load From Google's China Endpoint                                  | Accepted                   |
-| [0012](0012-published-bar-height.md)                       | Measured Bar Height Is Published Once, Consumed Everywhere                   | Accepted                   |
-| [0013](0013-all-locale-sync-and-poll-references.md)        | All-Locale Sync Snapshots and Language-Addressed Poll References             | Accepted                   |
-| [0014](0014-transcode-output-streams-to-opfs.md)           | Transcode Output Streams Straight to OPFS, and a Hidden Page Keeps Its Lease | Accepted                   |
+| ADR                                                        | Title                                                                                   | Status                     |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------- |
+| [0001](0001-sha256-addressing.md)                          | sha256 Addresses Photos, Not Sequential IDs                                             | Accepted                   |
+| [0002](0002-progress-only-real-measurements.md)            | Progress Reports Only Real Measurements                                                 | Accepted                   |
+| [0003](0003-measured-responsive-layout.md)                 | Responsive State From Measured Widths, Not Breakpoints                                  | Accepted                   |
+| [0004](0004-two-layer-i18n-copy.md)                        | Two-Layer i18n Copy: `$state` vs Live Proxy                                             | Accepted                   |
+| [0005](0005-waterfall-target-band-width.md)                | Waterfall Density Controlled by Target Band Width                                       | Accepted                   |
+| [0006](0006-dual-source-web-fonts.md)                      | Web Fonts Race the Official Host Against the USTC Mirror                                | Superseded by 0006-revised |
+| [0006-revised](0006-revised-official-font-host-only.md)    | Web Fonts Load From the Official Host Only                                              | Superseded by 0011         |
+| [0007](0007-shared-frontend-lifecycle.md)                  | Shared Frontend Lifecycle and Utility Boundaries                                        | Accepted                   |
+| [0008](0008-explicit-sync-triggers.md)                     | Synchronization Uses Explicit User and Page-Lifecycle Triggers                          | Accepted                   |
+| [0009](0009-standalone-image-host-facade.md)               | Image Host as a Standalone Facade                                                       | Accepted                   |
+| [0010](0010-locale-scoped-content-and-standalone-polls.md) | Locale-Scoped Content and Standalone Multi-Select Polls                                 | Superseded by 0013         |
+| [0011](0011-web-fonts-google-china-endpoint.md)            | Web Fonts Load From Google's China Endpoint                                             | Accepted                   |
+| [0012](0012-published-bar-height.md)                       | Measured Bar Height Is Published Once, Consumed Everywhere                              | Accepted                   |
+| [0013](0013-all-locale-sync-and-poll-references.md)        | All-Locale Sync Snapshots and Language-Addressed Poll References                        | Accepted                   |
+| [0014](0014-transcode-output-streams-to-opfs.md)           | Transcode Output Streams Straight to OPFS, and a Hidden Page Keeps Its Lease            | Accepted                   |
+| [0015](0015-one-dimension-per-refactor-commit.md)          | One Dimension Per Refactor Commit, and a New Abstraction Is Specified Before It Is Used | Accepted                   |

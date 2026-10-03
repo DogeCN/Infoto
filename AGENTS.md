@@ -21,6 +21,7 @@ Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Sv
 5. **Layer dependency direction is strict** — `routes → components → state/core → base`; `base/` never imports business-layer code.
 6. **Routine work does not touch `.ai/`** — memory is written only per §10 conditions.
 7. **The image host is never compiled into this Worker** — it lives behind `media-proxy/worker.js` and is reached only through `MEDIA_HOST_URL` (ADR 0009). No `/upload` route, no `TC_SECRET` here, and never a hardcoded upstream hostname in `src/`.
+8. **No unrecorded visual or behavioural change** — a change to tokens, layout, motion or component behaviour lands in `.ai/CONTRACT.md` in the same commit as the code, and a change nobody asked for does not land at all (a "locator hint", a debug tint, a temporary probe workflow). A spec goes stale the moment the code it describes moves, not when the code is finished; deleting a spec because it is "basically implemented" is how this project's last one rotted.
 
 ---
 
@@ -130,14 +131,26 @@ All agent knowledge lives under `.ai/` and is **tracked in git** — it is proje
 
 ```
 .ai/
+  CONTRACT.md        ← Single source of truth for design & component behaviour
   memory/            ← Evolving knowledge (overwritten as conventions change)
     MEMORY.md          Long-term: still-active conventions, pitfalls, decisions
     YYYY-MM-DD.md      Daily logs: decision rationale, verification records
   adr/               ← Architecture Decision Records (permanent; see format below)
     NNNN-title.md
+  documents/         ← Working design records too large or too in-progress for an ADR
 ```
 
-Tool-private directories (`.codebuddy/`, `.trae/`) are **not** knowledge and are gitignored; never read or write memory there.
+**`CONTRACT.md` holds only what no test can enforce** — the token table, the flat visual
+discipline, per-component behaviour, and the ⚠️ register of mistakes that were made and
+corrected. Anything with a real assertion behind it lives in code and is listed in its §5.
+It replaces `.ai/00-contracts.md`, which was deleted on 2026-09-25 while already out of date
+with the palette it described; §4.1 of the contract records that failure. **It is a living
+document, not a phase artefact** — a spec is stale the moment the code it describes moves,
+not when the code is finished. Its token table is asserted equal to `web/src/app.css` by
+`web/tests/unit/designTokens.test.ts`, so editing one side alone fails `npm test` — as does a
+`transition` in `web/src` that carries a literal duration or easing curve instead of a token.
+
+Tool-private directories (`.codebuddy/`, `.trae/`, `.workbuddy/`) are gitignored and are **not** knowledge — never _store_ agent knowledge in them. Tools write their own logs and documents there regardless, so anything that appears must be **merged into `.ai/` in the same session** or it stays invisible to every other agent and dies with the machine. Merging is not copying over: the same date may already hold different content written by another session, so compare headings and append. Leave the source directories in place — they are each tool's live state, not scratch.
 
 ### Memory Update Rules
 
@@ -173,11 +186,16 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 
 1. **Read this file first** — it is the project's constitution.
 2. **Check `.ai/memory/MEMORY.md`** for active conventions and pitfalls before starting work.
-3. **Follow the layer dependency direction** strictly; never invert it.
-4. **Run lint + ts-check + test** before declaring any task complete.
-5. **Update memory** when: user states a new rule, a design decision is finalized, or a pitfall is discovered.
-6. **Create an ADR** when: choosing between architectural approaches, changing data model semantics, or establishing a new project-wide pattern.
-7. **No hooks enforcement** — this project relies on §2 red lines for self-discipline; no pre-commit or lifecycle hooks are configured.
+3. **Check `.ai/CONTRACT.md` before any UI change.** It is the single source of truth for how
+   the site is supposed to look and behave. A visual decision absent from it is not
+   authorized — add it there first, in the same commit as the code. Read its §4 (the ⚠️
+   register) before "simplifying" anything that looks over-built; most of it is there
+   because the obvious version was tried and was wrong.
+4. **Follow the layer dependency direction** strictly; never invert it.
+5. **Run lint + ts-check + test** before declaring any task complete.
+6. **Update memory** when: user states a new rule, a design decision is finalized, or a pitfall is discovered.
+7. **Create an ADR** when: choosing between architectural approaches, changing data model semantics, or establishing a new project-wide pattern.
+8. **No hooks enforcement** — this project relies on §2 red lines for self-discipline; no pre-commit or lifecycle hooks are configured.
 
 ---
 
@@ -185,6 +203,7 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 
 | File                                            | Purpose                                                                                   |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `.ai/CONTRACT.md`                               | Design & component behaviour contract — the single source of truth for appearance         |
 | `schema.sql`                                    | D1 DDL — source of truth; regenerate `schema-ddl.ts` from it (red line 3)                 |
 | `src/shared/copy.ts`                            | i18n copy tables (en-US / zh-CN), BCP-47 exact-match keys                                 |
 | `src/shared/json.ts`                            | `isRecord` / `safeJsonParse` — the one shape guard and lenient parser for both runtimes   |
