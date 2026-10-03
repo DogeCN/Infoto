@@ -29,7 +29,25 @@
       holder.className = 'md-media skeleton';
       media.replaceWith(holder);
       holder.appendChild(media);
-      const done = () => holder.classList.remove('skeleton');
+      // Once the intrinsic size is known, the box hugs the content instead of the 16:10
+      // guess: object-fit then has no letterbox, so the card radius lands on the actual
+      // image corners rather than on empty bars.
+      const done = () => {
+        holder.classList.remove('skeleton');
+        const w =
+          media instanceof HTMLImageElement
+            ? media.naturalWidth
+            : media instanceof HTMLVideoElement
+              ? media.videoWidth
+              : 0;
+        const h =
+          media instanceof HTMLImageElement
+            ? media.naturalHeight
+            : media instanceof HTMLVideoElement
+              ? media.videoHeight
+              : 0;
+        if (w > 0 && h > 0) holder.style.aspectRatio = `${w} / ${h}`;
+      };
       if (media instanceof HTMLImageElement && media.complete) {
         done();
         continue;
@@ -79,12 +97,14 @@
     height: auto;
   }
 
-  /* Loading placeholder: reserves a 16:10 box so the paragraph does not jump, and
-     carries the shared shimmer until the media reports it is ready. */
+  /* Loading placeholder: reserves a 16:10 box until the media reports its real aspect
+     (then the holder resizes to hug the content), and carries the shared shimmer.
+     The radius lives here with the clip, so it always rounds the visible media. */
   div :global(.md-media) {
     display: block;
     aspect-ratio: 16 / 10;
     overflow: hidden;
+    border-radius: 0.5rem;
   }
 
   div :global(.md-media img),
