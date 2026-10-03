@@ -106,6 +106,7 @@ Each of these exists because the logic had two hand-written copies that had alre
 - Turnstile widget must `turnstile.remove(widgetId)` before removing DOM, otherwise orphaned widget keeps polling and errors. After token returns, **do not** remove immediately (iframe handshake not complete, postMessage goes to removed window); delay ~800ms, hide overlay during this time.
 - In dev, site key is injected by vite from root `.dev.vars` as `VITE_TURNSTILE_SITE_KEY` (fallback only when 401 body missing).
 - Cloudflare's published always-pass secret `1x0000000000000000000000000000000AA` accepts any non-empty token and does not call siteverify. A missing secret, an empty token, and every other secret still fail closed. Do not treat that short-circuit as a bypass for the production secret.
+- **The deploy workflow's test secret must be that exact published value** — it is not any "looks like a dummy" placeholder. `deploy.yml` shipped `0x0000…00` for months; siteverify rejected every token against it, so identity creation on the test deployment looped through the challenge forever while CI stayed green (nothing exercises the deployed secret). The workflow and `ALWAYS_PASS_SECRET` in `turnstile.ts` cross-reference each other in comments — keep them in sync.
 
 ---
 
@@ -158,6 +159,7 @@ Each of these exists because the logic had two hand-written copies that had alre
 
 ## Verification Discipline (2026-09-27, three false conclusions in one session)
 
+- **Never invent a credential, token, or endpoint value for an external service from recollection.** Copy the vendor's published value and verify the pair (e.g. site key ↔ secret, mirror ↔ TLS) against the real service once, end to end. This mistake has now happened twice: the USTCLUG font mirror was adopted from a hostname nobody tested and failed at TLS negotiation (see Web Fonts), and the deploy workflow carried an invented "Turnstile test secret" (`0x0000…00`, on no Cloudflare doc) that made every identity creation fail — silently, because CI never touches the deployed secret. A plausible-looking placeholder is not a test key.
 - **Performance numbers must be measured cold, and the same URL at least twice.** A first `curl` hits the CDN cache: the 25MB video measured "≈10s" cold-start-correct is **0.9s** — a full order of magnitude off. A 10× discrepancy means the measurement is wrong before the code is.
 - **A/B tests need a fresh browser context each run.** Reusing one session leaves files in the HTTP cache, so "first visible frame 24ms" was pure cache-hit and the change under test was never exercised.
 - **Test the worst-case resource, never a small one.** A 0.3MB video validates nothing about a 25MB one; the small-file run is what hid the original bug for two rounds.
