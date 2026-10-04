@@ -38,6 +38,7 @@
   aria-modal="true"
   aria-label={label}
   tabindex={-1}
+  data-autofocus
   use:mount
   class="fixed inset-x-0 bottom-0 top-[var(--bar-h,3.5rem)] z-30 flex flex-col bg-background"
 >

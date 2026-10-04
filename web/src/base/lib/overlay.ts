@@ -28,7 +28,11 @@ export function overlay(node: HTMLElement, options: OverlayOptions) {
     );
 
   function focusFirst() {
-    (node.querySelector<HTMLElement>('[data-autofocus]') ?? focusable()[0] ?? node).focus({
+    // querySelector only matches descendants, so honour the marker on the node itself too.
+    const marked = node.matches('[data-autofocus]')
+      ? node
+      : node.querySelector<HTMLElement>('[data-autofocus]');
+    (marked ?? focusable()[0] ?? node).focus({
       preventScroll: true,
     });
   }
