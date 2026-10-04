@@ -866,6 +866,7 @@
     aria-modal="true"
     aria-label={copy.lightbox.preview}
     tabindex="-1"
+    data-autofocus
     use:overlay={{ enabled: open, onClose: () => onClose?.() }}
     class="fixed inset-0 z-70 touch-none bg-black/92 opacity-0 backdrop-blur-[8px] pointer-events-none invisible transition-[opacity,visibility] duration-[var(--duration-enter)] ease-[var(--ease-enter)]"
     class:show={shown}

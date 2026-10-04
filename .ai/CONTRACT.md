@@ -341,7 +341,10 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - Initial focus order is `[data-autofocus]` → first focusable → the node itself, always with
     `preventScroll`, scheduled in a double rAF so it lands after the opening transition starts.
     "Focusable" excludes disabled elements, anything inside `[inert]`, zero-client-rect nodes
-    and computed `visibility: hidden`.
+    and computed `visibility: hidden`. The Lightbox stage carries `data-autofocus` so the
+    dialog node itself takes initial focus — without it the first focusable (the like button,
+    top-left) was focused on open, popping its tooltip immediately and making Space toggle
+    like instead of reaching the stage's key bindings.
   - Tab wrapping is manual, in both directions, and re-wraps when focus sits outside the list.
   - On deactivation, focus returns to the previously focused element only if it was the top
     layer, is still connected, and is not inside an `[inert]` subtree.
