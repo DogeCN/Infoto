@@ -146,6 +146,29 @@ async function doubleTap(page: Page, x: number, y: number, travel = 0) {
   await tapAt(page, 2, x, y, travel);
 }
 
+/** A real mobile browser fires native `click` (after each tap) and `dblclick`
+ *  (after the pair) on top of the pointer events. The harness drives gestures
+ *  with pointer events only, so it has to replay those too — they are exactly
+ *  what used to undo the zoom the touch path had just applied. */
+async function sendMouse(page: Page, type: 'click' | 'dblclick', x: number, y: number) {
+  await page.evaluate(
+    ({ type, x, y, label }) => {
+      const stage = document.querySelector(`div[role="dialog"][aria-label="${label}"]`)!;
+      stage.dispatchEvent(
+        new MouseEvent(type, {
+          clientX: x,
+          clientY: y,
+          button: 0,
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        }),
+      );
+    },
+    { type, x, y, label: enCopy.lightbox.preview },
+  );
+}
+
 test('a touch double tap zooms about the tapped point, not the centre', async ({ page }) => {
   const lightbox = await openLightbox(page);
   // Off-centre on purpose: the media is centred in the stage, so any anchoring
@@ -156,6 +179,30 @@ test('a touch double tap zooms about the tapped point, not the centre', async ({
   expect(Math.abs(zoomed.tx)).toBeGreaterThan(20);
   await page.waitForTimeout(600);
   // Still there once it settles, and no vote, no paging.
+  expect(parsed(await transformOf(lightbox)).scale).toBe(2);
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+  await expect(
+    lightbox.getByRole('button', { name: enCopy.lightbox.like, exact: true }),
+  ).toContainText('0');
+});
+
+test('a real mobile double tap is not undone by the trailing native dblclick', async ({
+  page,
+}) => {
+  const lightbox = await openLightbox(page);
+  // The harness drives gestures with pointer events only, so the native click and
+  // dblclick a real browser dispatches after a touch double tap never ran before.
+  // They are what undid the zoom: the trailing click swallowed and cleared the
+  // suppression window, so the dblclick that followed re-toggled the zoom back to 1.
+  await doubleTap(page, 100, 360);
+  // Replay what Chrome-on-Android emits: a click per tap, then a dblclick.
+  await sendMouse(page, 'click', 100, 360);
+  await sendMouse(page, 'click', 100, 360);
+  await sendMouse(page, 'dblclick', 100, 360);
+  await page.waitForTimeout(50);
+  expect(parsed(await transformOf(lightbox)).scale).toBe(2);
+  await page.waitForTimeout(600);
+  // Still zoomed, and no vote or paging from the spurious events.
   expect(parsed(await transformOf(lightbox)).scale).toBe(2);
   await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
   await expect(

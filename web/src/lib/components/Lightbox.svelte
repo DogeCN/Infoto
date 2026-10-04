@@ -120,6 +120,13 @@
   /** Touch double-tap bookkeeping (native dblclick is unreliable on touch). */
   let lastTap: Tap | null = null;
   let suppressClickUntil = 0;
+  /** When a touch double-tap was handled in `onPointerUp`. A real mobile browser
+   *  still dispatches a native `dblclick` after the second tap; it arrives *after*
+   *  the trailing `click` (which `handleStageClick` swallows), so the
+   *  `suppressClickUntil` window is gone by then. This timestamp is a dedicated,
+   *  longer-lived guard so that native `dblclick` never re-toggles the zoom the
+   *  touch path already applied — otherwise the photo zooms in then snaps back. */
+  let lastTouchDoubleAt = 0;
   let ctrlZoomPointer: number | null = null;
   /** Fixed pivot for the Ctrl gesture: the card centre (stage centre at rest). */
   let ctrlZoomCenter = { x: 0, y: 0 };
@@ -588,7 +595,8 @@
             zoomToPoint(2, e.clientX - r.left, e.clientY - r.top, true);
           }
           lastTap = null;
-          suppressClickUntil = now + 400;
+          suppressClickUntil = now + 600;
+          lastTouchDoubleAt = now;
           return;
         }
         lastTap = { t: now, x: e.clientX, y: e.clientY };
@@ -653,8 +661,12 @@
 
   function onDblClick(e: MouseEvent): void {
     // Mouse double-click zooms around the cursor; hit-test against media.
-    // Guarded so a touch double-tap handled in onPointerUp is not doubled.
+    // Guarded so a touch double-tap handled in onPointerUp is not doubled. The
+    // click the double-tap leaves behind already cleared `suppressClickUntil`
+    // when it was swallowed, so a second, dedicated guard on `lastTouchDoubleAt`
+    // is what actually stops the native `dblclick` from re-toggling the zoom.
     if (Date.now() < suppressClickUntil) return;
+    if (Date.now() - lastTouchDoubleAt < 600) return;
     const hit = document.elementFromPoint(e.clientX, e.clientY);
     if (!hit?.closest('.lb-media')) return;
     if (showMenu || gestureMoved) return;
@@ -761,11 +773,11 @@
 
   function handleStageClick(event: MouseEvent): void {
     if (showMenu || gestureMoved) return;
-    // Swallow the click that follows a touch double-tap zoom.
-    if (Date.now() < suppressClickUntil) {
-      suppressClickUntil = 0;
-      return;
-    }
+    // Swallow the click that follows a touch double-tap zoom. Leave
+    // `suppressClickUntil` set: the native `dblclick` lands after this click, and
+    // its own guard in `onDblClick` still needs the window open (it is backed by
+    // `lastTouchDoubleAt` too, but clearing here would defeat that belt too).
+    if (Date.now() < suppressClickUntil) return;
     // The pointer is captured by the stage, so `event.target` is always the
     // stage — never the media or a control. Hit-test the point instead, or a
     // click on the card would page like a click on the black mask. Hit-testing
