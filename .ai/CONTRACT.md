@@ -299,6 +299,15 @@ Back-filled from the commit history. Tagged sections are not yet written.
     keyed on the release having travelled less than `TAP_SLOP`; a drag that genuinely moved is
     still a pan. Only the touch path needs this — the desktop equivalent is the native
     `dblclick`, which enters no state machine and so never showed the bug.
+  - **The touch double-tap and the native `dblclick` are the same gesture, so the zoom must not
+    toggle twice.** A real mobile browser fires native `click` (per tap) and `dblclick` (after the
+    pair) on top of the pointer events. The manual touch path already zoomed on the second tap, so
+    that trailing `dblclick` must be suppressed or it re-toggles the zoom back to 1 — the photo
+    appeared to zoom in and then snap back. `handleStageClick` swallows the trailing `click`; it no
+    longer clears `suppressClickUntil` (that left the window open for the `dblclick`), and
+    `onDblClick` carries a dedicated guard on `lastTouchDoubleAt` (≈600 ms) so the native
+    `dblclick` is skipped even though it lands after the swallowed click. The e2e harness replays
+    those native events (`sendMouse`) because driving pointer events alone never exposed the bug.
   - All gesture/transform math (zoom-to-point, pinch, `Ctrl`+drag, pan clamp, overflow gate,
     rotation snap, double-tap/swipe/click-nav classification) lives in the pure module
     `web/src/base/lib/lightboxEngine.ts` and is covered by `web/tests/unit/lightboxEngine.test.ts`
