@@ -20,7 +20,7 @@
 
     <a
       href="/"
-      class="mt-12 inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-md transition-all hover:bg-primary/90 hover:shadow-lg active:scale-[0.98]"
+      class="mt-12 inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-md transition-all duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/90 hover:shadow-lg active:scale-[0.98]"
     >
       {copy.errorPage.backHome}
     </a>

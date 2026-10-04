@@ -6,7 +6,7 @@
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
   import { batchProgress, indeterminateRow, type UploadRow } from '../../transcode/pipeline';
-  import { motionMs } from '$base/lib/motion';
+  import { motionEaseFn, motionMs } from '$base/lib/motion';
   import { createHoverIntent } from '$base/lib/hover.svelte';
 
   interface Props {
@@ -32,6 +32,10 @@
 
   /** Matches the row's collapse transition, so the shell outlives the last collapse. */
   const ROW_EXIT_MS = motionMs('enter');
+
+  // The header count's fade-hop rides the exit phase, like every short leave/replace motion.
+  const HOP_MS = motionMs('exit');
+  const HOP_EASE = motionEaseFn('exit');
 
   // Keep the shell mounted for one transition after the last row leaves — tearing it
   // down on `tasks.length === 0` would cut that row's collapse in half.
@@ -222,8 +226,8 @@
             {#key remaining}
               <span
                 class="col-start-1 row-start-1"
-                in:fly={{ y: 5, duration: 200 }}
-                out:fly={{ y: -5, duration: 200 }}
+                in:fly={{ y: 5, duration: HOP_MS, easing: HOP_EASE }}
+                out:fly={{ y: -5, duration: HOP_MS, easing: HOP_EASE }}
               >
                 {remaining}
               </span>

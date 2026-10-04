@@ -80,7 +80,13 @@ that has to land on a computed size.
   follow the token it was copied from, and it is the only kind of drift no test catches.
 - **JS-driven animation reads the tokens, it does not restate them.** Re-typing
   `cubic-bezier(0.2, 0, 0, 1)` in a component is how the token file and the components
-  diverged once already.
+  diverged once already. The executable gate only scans `transition:` declarations, so
+  three blind spots stay on discipline alone: WAAPI keyframe options use
+  `motionMs(phase)` / `motionEase(phase)`, Svelte `transition:` params use
+  `motionMs(phase)` / `motionEaseFn(phase)` (see `bubbleTransition`), and a Tailwind
+  `transition-*` utility pairs `duration-[var(--duration-*)]` with
+  `ease-[var(--ease-*)]` — a duration without its ease falls back to Tailwind's default
+  curve, and a bare utility falls back to 150ms at a curve no phase declares.
 - **One measurement, no re-derived formula downstream.** The top bar publishes what it
   measures: `barCssVars` emits `--bar-h` and `--bar-icon` / `--bar-badge` /
   `--bar-badge-text`, and eight `size-[calc(var(--bar-h)*0.3125)]` strings became
@@ -254,7 +260,8 @@ Back-filled from the commit history. Tagged sections are not yet written.
     turn) — the desktop path had been missing the snap. The snap eases via the **Web Animations API**, not the inline CSS `transition`: a pinch's surviving
     finger is armed for panning and `isRotated()` is true even at 90°, so any stray move rewrites the transform with `transition:'none'` and cancels a
     CSS-transition ease mid-flight — which is exactly why a two-finger rotate sometimes snapped with no easing, depending on whether the leftover finger
-    twitched within the 160ms settle. WAAPI composites over the inline style, so the pan writes that follow cannot kill the ease; the rotation settles and
+    twitched within the exit-phase settle (`motionMs('exit')`, currently 160ms — the WAAPI options read the
+    tokens, they do not restate them). WAAPI composites over the inline style, so the pan writes that follow cannot kill the ease; the rotation settles and
     only then does the panned position take over. A new gesture cancels any in-flight snap (see `snapWithEase` / `onPointerDown`). Rotation survives zoom
     resets (double-tap,
     double-`Ctrl`) and is only cleared on a photo switch. Panning (and rotation) is

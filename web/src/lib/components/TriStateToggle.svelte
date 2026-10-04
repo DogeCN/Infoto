@@ -26,7 +26,7 @@
     aria-label={label}
     type="button"
     class={cn(
-      'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-all duration-[var(--duration-exit)] active:scale-95',
+      'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-all duration-[var(--duration-exit)] ease-[var(--ease-exit)] active:scale-95',
       STATE_CLASS[state],
     )}
     aria-pressed={state !== 'off'}

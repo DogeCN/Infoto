@@ -24,6 +24,7 @@
   import { proxyUrl } from '$shared/media';
   import { humanSize } from '$base/lib/format';
   import { copyToClipboard } from '$base/lib/clipboard';
+  import { motionEase, motionMs } from '$base/lib/motion';
   import ActionSheet from './ActionSheet.svelte';
   import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
@@ -259,8 +260,8 @@
     applyWrap(0, 0, false);
     snapAnim?.cancel();
     snapAnim = wrapEl.animate([{ transform: startTransform }, { transform: endTransform }], {
-      duration: 160,
-      easing: 'cubic-bezier(0.3, 0, 0.8, 0.15)',
+      duration: motionMs('exit'),
+      easing: motionEase('exit'),
     });
   }
 
