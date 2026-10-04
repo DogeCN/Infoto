@@ -134,6 +134,9 @@
   let ctrlZoomStartAngle = 0;
   let ctrlZoomStartScale = 1;
   let ctrlZoomStartRot = 0;
+  /** The active rotation-snap ease (Web Animations API). Kept separate from the
+   *  inline `transition` so a pan write on the surviving finger cannot cancel it. */
+  let snapAnim: Animation | null = null;
   /** True while Ctrl is held; lets a plain drag switch into the Ctrl zoom/rotate mode. */
   let ctrlPressed = false;
   const active = new Map<number, { x: number; y: number }>();
@@ -233,6 +236,34 @@
     if (zoomX !== beforeX || zoomY !== beforeY) applyWrap(0, 0, animate);
   }
 
+  /**
+   * Snap the free rotation to the nearest 90° and ease into it with the Web
+   * Animations API rather than the inline `transition`.
+   *
+   * A plain CSS transition is cancelled the moment the surviving finger of a pinch
+   * (or any stray move during a rotate) rewrites the transform with
+   * `transition:'none'` to pan — which is exactly how a two-finger rotate used to
+   * snap with no easing, depending on whether the leftover finger twitched within
+   * the 160ms settle. WAAPI plays on top of the inline style, so the pan writes
+   * that follow it cannot kill the ease; the rotation settles and only then does
+   * the panned position take over.
+   */
+  function snapWithEase(): void {
+    if (!wrapEl) return;
+    const gestureRot = rot;
+    const startTransform = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${gestureRot}deg)`;
+    rot = snapRotation(rot);
+    clampPan();
+    const endTransform = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${rot}deg)`;
+    // Commit the resting state with no transition; WAAPI supplies the ease.
+    applyWrap(0, 0, false);
+    snapAnim?.cancel();
+    snapAnim = wrapEl.animate([{ transform: startTransform }, { transform: endTransform }], {
+      duration: 160,
+      easing: 'cubic-bezier(0.3, 0, 0.8, 0.15)',
+    });
+  }
+
   /** Write a provisional transform, then clamp against the *newly rendered*
    *  rects and write again. Clamping before the write would judge the previous
    *  frame's geometry, which is already legal, so the new value escaped
@@ -265,6 +296,8 @@
 
   function onPointerDown(e: PointerEvent) {
     if (showMenu || ctrlZoomPointer !== null || e.button !== 0) return;
+    // A fresh gesture overrides any rotation-snap ease still playing.
+    snapAnim?.cancel();
     hintAt = scaledThreshold(HINT_THRESHOLD);
     triggerAt = scaledThreshold(SWIPE_THRESHOLD);
 
@@ -494,9 +527,7 @@
       panning = false;
       // Snap the free rotation to the nearest 90° on release (matches the pinch
       // path). The pivot stays centred, so the snap only re-orients the image.
-      rot = snapRotation(rot);
-      applyWrap(0, 0, true);
-      clampSettled(true);
+      snapWithEase();
       return;
     }
     const start = active.get(e.pointerId);
@@ -511,7 +542,6 @@
     // voted as a swipe.
     if (pinchActive && active.size < 2) {
       pinchActive = false;
-      rot = snapRotation(rot);
       gestureMoved = true;
       if (active.size === 1) {
         const [rem] = [...active.values()];
@@ -523,11 +553,12 @@
         dragging = false;
         panning = false;
       }
-      // Write the snapped rotation *before* clamping. Snapping moves the box's edges
-      // by tens of pixels, so clamping against the pre-snap rect is how the image used
-      // to settle out of frame at an angle it was no longer rendered at.
-      applyWrap(0, 0, true);
-      clampSettled(true);
+      // Snap the rotation to the nearest 90° and ease it with WAAPI (so the
+      // surviving finger's pan writes cannot cancel the settle). The snap writes
+      // the rotated box *before* clamping — snapping moves the edges by tens of
+      // pixels, and clamping against the pre-snap rect is how the image used to
+      // settle out of frame at an angle it was no longer rendered at.
+      snapWithEase();
       if (active.size === 0) pinchSequence = false;
       return;
     }
@@ -630,9 +661,7 @@
     // a system takeover mid-zoom then voted on the photo, on top of losing the zoom.
     if (pinchActive) {
       pinchActive = false;
-      rot = snapRotation(rot);
-      applyWrap(0, 0, true);
-      clampSettled(true);
+      snapWithEase();
     }
 
     // Partner fingers are still down: the gesture is not over. Nothing resets yet

@@ -255,6 +255,31 @@ test('two-finger pinch rotates the photo', async ({ page }) => {
   await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
 });
 
+test('the rotation snap eases even while the leftover finger keeps moving', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  // Rotate roughly 60° with two fingers (not a clean 90°), so the release has to
+  // snap and the ease is observable rather than a no-op.
+  await down(page, [95, 422], [295, 422]);
+  await move(page, [120, 380], [270, 464]);
+  await move(page, [145, 335], [245, 509]);
+  // Lift finger 1: the rotation snaps to 90° and should start easing. Finger 2 is
+  // still down and we immediately drag it — in the old code that pan write set
+  // transition:'none' and cancelled the snap, so the rotation jumped to 90° with
+  // no ease (it depended on whether the leftover finger twitched in the 160ms).
+  await lift(page, 1, [145, 335]);
+  await drag(page, 2, [255, 509]);
+  await page.waitForTimeout(30);
+  const running = await lightbox
+    .locator('.will-change-transform')
+    .evaluate(
+      (n) => (n as HTMLElement).getAnimations().filter((a) => a.playState === 'running').length,
+    );
+  expect(running).toBeGreaterThan(0);
+  await lift(page, 2, [255, 509]);
+  await page.waitForTimeout(600);
+  expect(await transformOf(lightbox)).toContain('rotate(90deg)');
+});
+
 test('a pinch tail never votes, pages or opens the menu', async ({ page }) => {
   const lightbox = await openLightbox(page);
   // Pinch closed to 0.5: the photo is now smaller than the stage, so it neither
