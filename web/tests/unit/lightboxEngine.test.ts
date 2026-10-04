@@ -15,12 +15,16 @@ import {
   ctrlZoomTransform,
   classifyTap,
   classifySwipe,
+  rotatedBounds,
   classifyRelease,
   classifyClickNav,
   type Rect,
+  type Box,
 } from '../../src/base/lib/lightboxEngine.ts';
 
 const stage: Rect = { left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800 };
+/** The wrap's *layout* box: its size before any transform. */
+const boxOf = (width: number, height: number): Box => ({ width, height });
 const at = (left: number, top: number, width: number, height: number): Rect => ({
   left,
   top,
@@ -83,31 +87,64 @@ test('snapRotation lands on the nearest 90° keeping sign', () => {
   assert.equal(snapRotation(-179), -180);
 });
 
+// The clamp takes the wrap's layout box — the size it has before any transform —
+// because during an animated zoom the rendered rect still describes the previous
+// frame. Each case below names the layout box and lets scale/rotation do the rest.
 test('clampPan bounds pan to half the overflow (no blank edges)', () => {
-  // A 2x image of native 1000x800 renders at 2000x1600 inside the 1000x800
-  // stage: the offset may reach (2000-1000)/2 = 500 and (1600-800)/2 = 400.
-  const overflow = at(-500, -400, 2000, 1600);
-  // Centred overflow: already inside the bounds, no nudge.
+  // Native 1000x800 at 2x renders 2000x1600 inside the 1000x800 stage: the offset
+  // may reach (2000-1000)/2 = 500 and (1600-800)/2 = 400.
+  const box = boxOf(1000, 800);
   {
-    const out = clampPan({ scale: 2, zoomX: 0, zoomY: 0, rot: 0 }, stage, overflow);
+    const out = clampPan({ scale: 2, zoomX: 0, zoomY: 0, rot: 0 }, stage, box);
     assert.equal(out.zoomX, 0);
     assert.equal(out.zoomY, 0);
   }
   // Dragged 600px right: past the 500 bound, so it is pulled back to 500.
   {
-    const shifted = at(100, -400, 2000, 1600);
-    const out = clampPan({ scale: 2, zoomX: 600, zoomY: 0, rot: 0 }, stage, shifted);
+    const out = clampPan({ scale: 2, zoomX: 600, zoomY: 0, rot: 0 }, stage, box);
     assert.equal(out.zoomX, 500);
   }
   // Vertical analogue, and the negative direction.
   {
-    const shifted = at(-500, 100, 2000, 1600);
-    const out = clampPan({ scale: 2, zoomX: 0, zoomY: 600, rot: 0 }, stage, shifted);
+    const out = clampPan({ scale: 2, zoomX: 0, zoomY: 600, rot: 0 }, stage, box);
     assert.equal(out.zoomY, 400);
-    const back = clampPan({ scale: 2, zoomX: -600, zoomY: -600, rot: 0 }, stage, shifted);
+    const back = clampPan({ scale: 2, zoomX: -600, zoomY: -600, rot: 0 }, stage, box);
     assert.equal(back.zoomX, -500);
     assert.equal(back.zoomY, -400);
   }
+});
+
+test('rotatedBounds swaps the axes at a quarter turn', () => {
+  const flat = rotatedBounds(1000, 800, 0);
+  assert.equal(flat.width, 1000);
+  assert.equal(flat.height, 800);
+  // A quarter turn about the centre: the bounds swap over.
+  const turned = rotatedBounds(1000, 800, 90);
+  assert.ok(Math.abs(turned.width - 800) < 1e-9);
+  assert.ok(Math.abs(turned.height - 1000) < 1e-9);
+  // Half a turn is back to the original bounds.
+  const flipped = rotatedBounds(1000, 800, 180);
+  assert.ok(Math.abs(flipped.width - 1000) < 1e-9);
+  assert.ok(Math.abs(flipped.height - 800) < 1e-9);
+  // 45° is the widest case: both axes contribute.
+  const diagonal = rotatedBounds(1000, 800, 45);
+  assert.ok(Math.abs(diagonal.width - 900 * Math.SQRT2) < 1e-6);
+});
+
+test("a double-tap's anchor survives the clamp (the zoom grows from the finger)", () => {
+  // This is what the rendered-rect clamp broke. Tapping a quarter in from the
+  // left edge asks to zoom to 2x anchored there; the clamp then measured the
+  // still-un-zoomed box (700x520, inside the 1000x800 stage), collapsed every
+  // bound to 0, and threw the anchor away — so the photo zoomed from its centre.
+  const box = boxOf(700, 520);
+  const anchored = zoomToPoint({ scale: 1, zoomX: 0, zoomY: 0, rot: 0 }, 2, 250, 400, stage);
+  assert.ok(Math.abs(anchored.zoomX - 250) < 1e-6, 'the engine anchors off-centre');
+  // At 2x the box is 1400x1040, so the bounds are ±200 horizontally and ±120
+  // vertically: the anchor is pulled to the bound rather than zeroed. The tap was
+  // level with the vertical centre, so nothing moves on that axis.
+  const clamped = clampPan(anchored, stage, box);
+  assert.equal(clamped.zoomX, 200);
+  assert.equal(clamped.zoomY, 0);
 });
 
 test('clampPan centres media smaller than the viewport (bug: corner slam)', () => {
@@ -115,19 +152,20 @@ test('clampPan centres media smaller than the viewport (bug: corner slam)', () =
   // Both edge conditions ("no gap left" and "no gap right") cannot hold at
   // once for a sub-viewport box; the only valid offset is the centre, so a
   // panned value must collapse to 0 instead of being pinned to a corner.
-  const small = at(110, 88, 780, 624);
+  const small = boxOf(600, 480);
   const out = clampPan({ scale: 1.3, zoomX: 240, zoomY: -180, rot: 0 }, stage, small);
   assert.equal(out.zoomX, 0);
   assert.equal(out.zoomY, 0);
-  // One axis bigger than the stage, the other smaller: clamp per axis.
-  const mixed = at(-300, 88, 1600, 624);
+  // One axis bigger than the stage, the other smaller: clamp per axis. Native
+  // 1000x390 at 1.6x is 1600x624 — wide enough to pan by 300, too short to move.
+  const mixed = boxOf(1000, 390);
   const mixedOut = clampPan({ scale: 1.6, zoomX: 999, zoomY: 999, rot: 0 }, stage, mixed);
   assert.equal(mixedOut.zoomX, 300);
   assert.equal(mixedOut.zoomY, 0);
 });
 
 test('clampPan resets to centre when scale is at/below 1', () => {
-  const small = at(200, 160, 600, 480);
+  const small = boxOf(600, 480);
   const out = clampPan({ scale: 1, zoomX: 40, zoomY: -20, rot: 0 }, stage, small);
   assert.equal(out.zoomX, 0);
   assert.equal(out.zoomY, 0);
@@ -137,18 +175,18 @@ test('clampPan recentres media shrunk below fit scale', () => {
   // MIN_SCALE is 0.5, so a pinch-out can leave the media smaller than the
   // stage: it must return to the centre rather than stay where the gesture
   // left it. `scale` 0.8 is at rest, so the offset collapses on both axes.
-  const shrunk = at(300, 240, 400, 320);
+  const shrunk = boxOf(500, 400);
   const out = clampPan({ scale: 0.8, zoomX: 150, zoomY: -90, rot: 0 }, stage, shrunk);
   assert.equal(out.zoomX, 0);
   assert.equal(out.zoomY, 0);
 });
 
 test('clampPan keeps a rotated image pannable at fit scale (rotate-then-drag)', () => {
-  // A landscape image (1000x1500) rotated 90° has an axis-aligned AABB of
-  // 1500x1000, which overflows the 1000x800 stage on the height axis by 200, so
-  // a vertical offset up to ±100 must be allowed. At fit scale this used to be
-  // force-centred on every frame, freezing the drag after a pure rotation.
-  const rotated = at(-250, -100, 1500, 1000);
+  // A portrait image (1000x1500) rotated 90° occupies a 1500x1000 box, which
+  // overflows the 1000x800 stage on the height axis by 200, so a vertical offset
+  // up to ±100 must be allowed. At fit scale this used to be force-centred on
+  // every frame, freezing the drag after a pure rotation.
+  const rotated = boxOf(1000, 1500);
   // 60px vertical offset is within the ±100 bound → kept (not zeroed).
   {
     const out = clampPan({ scale: 1, zoomX: 0, zoomY: 60, rot: 90 }, stage, rotated);
@@ -162,7 +200,7 @@ test('clampPan keeps a rotated image pannable at fit scale (rotate-then-drag)', 
   }
   // Rest + unrotated still centres (original behaviour unchanged).
   {
-    const small = at(200, 160, 600, 480);
+    const small = boxOf(600, 480);
     const out = clampPan({ scale: 1, zoomX: 40, zoomY: -20, rot: 0 }, stage, small);
     assert.equal(out.zoomX, 0);
     assert.equal(out.zoomY, 0);
@@ -301,6 +339,24 @@ test('classifyRelease never turns the tail of a pinch into a swipe', () => {
   // A finger that barely moved is a tap on touch; the mouse path keeps dblclick.
   assert.deepEqual(classifyRelease({ ...base, dx: 3, dy: 4 }), { kind: 'tap' });
   assert.deepEqual(classifyRelease({ ...base, dx: 3, dy: 4, isTouch: false }), { kind: 'none' });
+});
+
+test('a tap still lands once the photo is zoomed (double tap toggles back out)', () => {
+  // Once zoomed, every single-finger touch is a pan to `onPointerMove`, so
+  // `panning` is true even for a tap. Judging the pan first made the release
+  // unreachable as a tap: the double tap that zooms in worked (it starts
+  // un-panned) and the one that zooms back out silently did nothing — you had to
+  // pinch to get back to a whole photo, and pinch was the harder gesture. Mouse
+  // hid the bug entirely, because the desktop double-click never enters this
+  // state machine.
+  const zoomedAndPanned = { pinchSequence: false, panning: true, triggerAt: 30, isTouch: true };
+  assert.deepEqual(classifyRelease({ ...zoomedAndPanned, dx: 2, dy: -1 }), { kind: 'tap' });
+  // A real drag over the same zoomed photo still ends as a pan, not a tap.
+  assert.deepEqual(classifyRelease({ ...zoomedAndPanned, dx: 40, dy: 5 }), { kind: 'pan-end' });
+  // And the same small movement on a mouse is not a tap: the desktop has dblclick.
+  assert.deepEqual(classifyRelease({ ...zoomedAndPanned, dx: 2, dy: -1, isTouch: false }), {
+    kind: 'pan-end',
+  });
 });
 
 test('a two-finger rotate survives the release snap', () => {

@@ -40,6 +40,17 @@ export interface Rect {
   bottom: number;
 }
 
+/**
+ * An element's own box: `width`/`height` **excluding any transform**. Rendered
+ * rects are not usable for the pan clamp because they reflect whatever the
+ * transform currently interpolates to — measuring mid-transition reads the frame
+ * the gesture came *from*, see `clampPan`.
+ */
+export interface Box {
+  width: number;
+  height: number;
+}
+
 export interface ZoomState {
   scale: number;
   zoomX: number;
@@ -112,17 +123,42 @@ export function snapRotation(rot: number): number {
  * from being slammed into a corner, because the two edge conditions can never
  * both hold when the media is the smaller of the two.
  */
-export function clampPan(state: ZoomState, stage: Rect, wrap: Rect): ZoomState {
+/**
+ * The axis-aligned bounds a `width × height` box occupies once rotated about its
+ * own centre. Rotating a rectangle swaps its contribution per axis: at 90° the
+ * width comes entirely from what was the height.
+ */
+export function rotatedBounds(width: number, height: number, rot: number): Box {
+  const rad = (rot * Math.PI) / 180;
+  const c = Math.abs(Math.cos(rad));
+  const s = Math.abs(Math.sin(rad));
+  return { width: width * c + height * s, height: width * s + height * c };
+}
+
+/**
+ * Pan clamp from the wrap's **layout box**, scaled and rotated into the bounds it
+ * will settle at — never from its rendered rect.
+ *
+ * The rendered rect is unusable here. When a zoom is animated the transform has
+ * just been written but not yet interpolated, so `getBoundingClientRect` returns
+ * the *starting* box: for a double-tap that is the un-zoomed media, still smaller
+ * than the stage, so every bound collapses to 0 and the offset `zoomToPoint` had
+ * just computed to anchor the zoom on your finger is clamped straight back out —
+ * the photo zoomed from the middle however off-centre you tapped. Reading the
+ * layout box instead sidesteps the transition entirely: `offsetWidth` ignores
+ * transforms, so it already describes where the box lands.
+ */
+export function clampPan(state: ZoomState, stage: Box, box: Box): ZoomState {
   // Only force-centre when the media is at fit *and* unrotated. A rotated image
   // (even at fit scale) can have a bounding box that overflows the stage on an
   // axis, so it must stay pannable; forcing the offset to zero would freeze the
-  // drag after a pure rotation. When rotated, the per-axis bound is computed from
-  // the (rotated) wrap rect, which already reflects the rotation.
+  // drag after a pure rotation.
   if (isAtRest(state.scale) && !isRotated(state.rot)) {
     return { ...state, zoomX: 0, zoomY: 0 };
   }
-  const maxX = Math.max(0, (wrap.width - stage.width) / 2);
-  const maxY = Math.max(0, (wrap.height - stage.height) / 2);
+  const bounds = rotatedBounds(box.width * state.scale, box.height * state.scale, state.rot);
+  const maxX = Math.max(0, (bounds.width - stage.width) / 2);
+  const maxY = Math.max(0, (bounds.height - stage.height) / 2);
   return {
     ...state,
     zoomX: clampAxis(state.zoomX, maxX),
@@ -280,8 +316,17 @@ export function classifyRelease(input: {
   isTouch: boolean;
 }): Release {
   if (input.pinchSequence) return input.panning ? { kind: 'pan-end' } : { kind: 'pinch-tail' };
-  if (input.panning) return { kind: 'pan-end' };
+
+  // A tap outranks a pan, and the order is the whole point. Once the photo is
+  // zoomed, every single-finger touch is already a pan to `onPointerMove`, so
+  // judging the pan first meant a release could never be a tap again — and the
+  // second tap of a double-tap-to-reset did nothing. Zooming in then worked (the
+  // first double tap starts un-panned, where nothing has moved yet) while
+  // zooming back out did not: double tap to enlarge, pinch to get back. Mouse
+  // never showed it, because the desktop path is the native `dblclick` and never
+  // reaches this state machine. A drag that actually moved is still a pan.
   if (input.isTouch && Math.hypot(input.dx, input.dy) < TAP_SLOP) return { kind: 'tap' };
+  if (input.panning) return { kind: 'pan-end' };
   const dir = classifySwipe(input.dx, input.dy, input.triggerAt);
   return dir ? { kind: 'swipe', dir } : { kind: 'none' };
 }

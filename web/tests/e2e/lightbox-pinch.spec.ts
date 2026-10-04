@@ -118,6 +118,83 @@ async function transformOf(lightbox: Lightbox): Promise<string> {
     .evaluate((n) => (n as HTMLElement).style.transform);
 }
 
+/** Pull the numbers out of a `translate(Xpx, Ypx) scale(S) rotate(Rdeg)` string. */
+function parsed(transform: string) {
+  const translate = transform.match(/translate\(([^)]+)\)/)?.[1]?.split(',') ?? ['0px', '0px'];
+  return {
+    scale: Number(transform.match(/scale\(([^)]+)\)/)?.[1] ?? 1),
+    tx: Number.parseFloat(translate[0] ?? '0'),
+    ty: Number.parseFloat(translate[1] ?? '0'),
+  };
+}
+
+/**
+ * A tap as a finger makes it: a press, a few px of unavoidable travel, and a
+ * release. That travel matters — once zoomed, `onPointerMove` starts a pan from
+ * it, and a pan used to outrank the tap so the release never reached the
+ * double-tap check.
+ */
+async function tapAt(page: Page, id: number, x: number, y: number, travel = 0) {
+  await send(page, 'pointerdown', [{ id, x, y }]);
+  if (travel > 0) await drag(page, id, [x + travel, y + travel]);
+  await lift(page, id, [x + travel, y + travel]);
+}
+
+async function doubleTap(page: Page, x: number, y: number, travel = 0) {
+  await tapAt(page, 1, x, y, travel);
+  await page.waitForTimeout(120);
+  await tapAt(page, 2, x, y, travel);
+}
+
+test('a touch double tap zooms about the tapped point, not the centre', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  // Off-centre on purpose: the media is centred in the stage, so any anchoring
+  // at the tap point has to show up as a real translate.
+  await doubleTap(page, 100, 360);
+  const zoomed = parsed(await transformOf(lightbox));
+  expect(zoomed.scale).toBe(2);
+  expect(Math.abs(zoomed.tx)).toBeGreaterThan(20);
+  await page.waitForTimeout(600);
+  // Still there once it settles, and no vote, no paging.
+  expect(parsed(await transformOf(lightbox)).scale).toBe(2);
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+  await expect(
+    lightbox.getByRole('button', { name: enCopy.lightbox.like, exact: true }),
+  ).toContainText('0');
+});
+
+test('a second double tap zooms back out after a pinch', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  // Zoom in by pinch first: the photo now overflows the stage, which is what
+  // makes the next single-finger touch classify as a pan.
+  await down(page, [145, 422], [245, 422]);
+  await move(page, [95, 422], [295, 422]);
+  await move(page, [45, 422], [345, 422]);
+  await lift(page, 1, [45, 422]);
+  await lift(page, 2, [345, 422]);
+  await page.waitForTimeout(400);
+  expect(parsed(await transformOf(lightbox)).scale).toBeGreaterThan(1);
+
+  // Each tap carries real finger travel. Before the fix this ended as a pan —
+  // the photo merely shifted a few px and stayed at 3x, so double tapping could
+  // zoom in but never back out, and only a pinch got you back to the whole photo.
+  await doubleTap(page, 195, 422, 3);
+  await page.waitForTimeout(600);
+  expect(parsed(await transformOf(lightbox)).scale).toBe(1);
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+});
+
+test('the desktop double-click keeps the same anchor', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  // The mouse path is the native dblclick and never enters the release state
+  // machine, so it must behave identically to touch — including the anchor.
+  await page.mouse.dblclick(100, 360);
+  await page.waitForTimeout(600);
+  const zoomed = parsed(await transformOf(lightbox));
+  expect(zoomed.scale).toBe(2);
+  expect(Math.abs(zoomed.tx)).toBeGreaterThan(20);
+});
+
 test('two-finger pinch rotates the photo', async ({ page }) => {
   const lightbox = await openLightbox(page);
   // 200px apart about the centre, rotated to vertical at a constant distance:

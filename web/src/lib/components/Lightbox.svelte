@@ -158,14 +158,27 @@
     applyWrap(0, 0, animate);
   }
 
-  /** Pan clamping: keep the rendered media box inside the stage using the
-   *  actual post-transform rects (not stage dimensions). The geometry lives in
-   *  the lightbox engine; this reads the live rects and applies the result. */
+  /**
+   * Pan clamping: keep the rendered media box inside the stage. The geometry lives
+   * in the lightbox engine; this supplies it with the wrap's **layout** box.
+   *
+   * Deliberately `offsetWidth`, not `getBoundingClientRect`: the rendered rect
+   * follows the transform, and every animated zoom (double-tap, double-click, the
+   * pinch release snap) writes the transform and clamps in the same frame, while
+   * the transition has barely begun. The rect then still describes the *previous*
+   * scale, every bound collapses to 0, and the anchor `zoomToPoint` computed so
+   * the photo would grow out from your finger is discarded — the image zoomed
+   * from its centre instead. `offsetWidth` ignores transforms, so it already is
+   * the size the box is heading for.
+   */
   function clampPan(): void {
     if (!stageEl || !wrapEl) return;
     const sr = stageEl.getBoundingClientRect();
-    const wr = wrapEl.getBoundingClientRect();
-    const next = engineClampPan({ scale, zoomX, zoomY, rot }, sr, wr);
+    const next = engineClampPan(
+      { scale, zoomX, zoomY, rot },
+      { width: sr.width, height: sr.height },
+      { width: wrapEl.offsetWidth, height: wrapEl.offsetHeight },
+    );
     zoomX = next.zoomX;
     zoomY = next.zoomY;
   }

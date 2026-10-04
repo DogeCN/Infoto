@@ -258,16 +258,17 @@ Back-filled from the commit history. Tagged sections are not yet written.
     (still smaller than the viewport) no longer enters pan mode. A rotated image stays pannable
     **even at fit scale** (a pure rotation leaves `scale = 1` but its bounding box can overflow the
     stage), so `clampPan` force-centres only when at fit _and_ unrotated; otherwise it bounds the
-    offset by the rotated box's overflow. Panning is rect-based and bounded
-    by **half the overflow on each axis**: a media box larger than the stage may move until an
-    edge meets the stage edge, while one still smaller than the stage is held centred rather than
-    slammed into a corner — the two "no gap" edge conditions can never both hold for a
-    sub-viewport box, and applying both pinned it bottom-right. The clamp runs **after** the
-    transform write, against the freshly rendered rects (`clampSettled`); clamping the previous
-    frame's rect measured geometry that was already legal, so the new value escaped unclamped on
-    every move. **A pinch end writes the snapped rotation before clamping** — snapping moves the
-    box's edges by tens of pixels, so clamping against the pre-snap rect is how the image settled
-    out of frame at an angle it was no longer being rendered at.
+    offset by the rotated box's overflow. The clamp is bounded by **half the overflow on each
+    axis**: a media box larger than the stage may move until an edge meets the stage edge, while
+    one still smaller than the stage is held centred rather than slammed into a corner — the two
+    "no gap" edge conditions can never both hold for a sub-viewport box, and applying both pinned
+    it bottom-right. **The clamp reads the wrap's layout box (`offsetWidth`/`offsetHeight`), never
+    its rendered rect.** A rendered rect follows the transform, and every eased zoom writes the
+    transform and clamps within the same frame, before the transition has interpolated: the rect
+    therefore still describes the _previous_ scale, every bound collapses to 0, and the anchor
+    `zoomToPoint` had just computed is discarded — a double tap off-centre zoomed about the centre
+    instead of the tapped point. The clamp still runs **after** the transform write
+    (`clampSettled`), which matters for the unanimated frames for the mirror-image reason.
     The transform is written **directly to the DOM**, not through component state, and the
     counter-scaled corner control gets the identical transition string. Zoom resets on every
     photo switch.
@@ -290,6 +291,14 @@ Back-filled from the commit history. Tagged sections are not yet written.
     finger of a pinch ends the pinch exactly as a release would, and the reset only runs once
     **no** pointers remain — clearing the pinch while a partner finger was still down left that
     finger to be judged as a swipe from the original press point, on top of losing the zoom.
+  - **A tap outranks a pan.** Double tap must zoom both ways, but once the photo is zoomed every
+    single-finger touch is already a pan to `onPointerMove`, so judging the pan first left the
+    second tap of a double-tap unreachable: zooming _in_ worked (its first tap starts un-panned)
+    and zooming back _out_ silently did nothing — pinch was the only way back to a whole photo,
+    and pinch is the harder gesture. `classifyRelease` therefore decides `tap` before `pan-end`,
+    keyed on the release having travelled less than `TAP_SLOP`; a drag that genuinely moved is
+    still a pan. Only the touch path needs this — the desktop equivalent is the native
+    `dblclick`, which enters no state machine and so never showed the bug.
   - All gesture/transform math (zoom-to-point, pinch, `Ctrl`+drag, pan clamp, overflow gate,
     rotation snap, double-tap/swipe/click-nav classification) lives in the pure module
     `web/src/base/lib/lightboxEngine.ts` and is covered by `web/tests/unit/lightboxEngine.test.ts`
