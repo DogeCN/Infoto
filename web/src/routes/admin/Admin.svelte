@@ -39,7 +39,9 @@
     },
   });
   store.bindEngine(engine);
-  const pipeline = new UploadPipeline({ onEvent: (line) => console.log('[upload]', line) });
+  const pipeline = new UploadPipeline({
+    onEvent: import.meta.env.DEV ? (line) => console.log('[upload]', line) : undefined,
+  });
 
   let activeTab = $state<AdminTab>('announcements');
   let initialized = $state(false);

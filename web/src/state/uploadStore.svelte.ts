@@ -16,7 +16,7 @@ import { setMediaHostSink } from './appStore.svelte';
 export function createUploadStore(store: ReturnType<typeof createAppStore>, engine: SyncEngine) {
   let destroyed = false;
   const pipeline = new UploadPipeline({
-    onEvent: (line) => console.log('[upload]', line),
+    onEvent: import.meta.env.DEV ? (line) => console.log('[upload]', line) : undefined,
     // Append completed uploads to the sync engine without triggering an immediate snapshot.
     onUploadOp: async (op) => {
       await engine.addOp(op);
