@@ -251,7 +251,12 @@ Back-filled from the commit history. Tagged sections are not yet written.
     `Ctrl` mode on the `Control` keydown, and the `Control` keydown no longer resets the zoom,
     which used to fight "press Ctrl to begin"). **Both** touch pinch and `Ctrl`+drag rotation snap
     to the nearest 90° on release (kept as a signed value so a −90° gesture does not spin a full
-    turn) — the desktop path had been missing the snap. Rotation survives zoom resets (double-tap,
+    turn) — the desktop path had been missing the snap. The snap eases via the **Web Animations API**, not the inline CSS `transition`: a pinch's surviving
+    finger is armed for panning and `isRotated()` is true even at 90°, so any stray move rewrites the transform with `transition:'none'` and cancels a
+    CSS-transition ease mid-flight — which is exactly why a two-finger rotate sometimes snapped with no easing, depending on whether the leftover finger
+    twitched within the 160ms settle. WAAPI composites over the inline style, so the pan writes that follow cannot kill the ease; the rotation settles and
+    only then does the panned position take over. A new gesture cancels any in-flight snap (see `snapWithEase` / `onPointerDown`). Rotation survives zoom
+    resets (double-tap,
     double-`Ctrl`) and is only cleared on a photo switch. Panning (and rotation) is
     gated on the **rendered media actually exceeding the viewport** (`isZoomedBeyondViewport`)
     or being rotated — not on a bare scale comparison — so a small image zoomed to, say, 1.3×
