@@ -186,9 +186,7 @@ test('a touch double tap zooms about the tapped point, not the centre', async ({
   ).toContainText('0');
 });
 
-test('a real mobile double tap is not undone by the trailing native dblclick', async ({
-  page,
-}) => {
+test('a real mobile double tap is not undone by the trailing native dblclick', async ({ page }) => {
   const lightbox = await openLightbox(page);
   // The harness drives gestures with pointer events only, so the native click and
   // dblclick a real browser dispatches after a touch double tap never ran before.
