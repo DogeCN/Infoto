@@ -4,6 +4,7 @@ import { postUpload, type UploadResult } from '../../src/core/api/uploadClient';
 
 class FakeUpload {
   onprogress: ((event: ProgressEvent) => void) | null = null;
+  onload: (() => void) | null = null;
 }
 
 class FakeXhr {
@@ -98,13 +99,47 @@ test('postUpload: uses an idle watchdog, reports real progress, and names the pa
   slow.progress(5, 10);
   await vi.advanceTimersByTimeAsync(900);
   assert.equal(await snapshot(slowCall), undefined);
+  // Once the body is fully sent the attempt leaves the silence budget behind: the tail is the
+  // facade relaying upstream and the upstream storing the artifact, with nothing left to move.
   slow.progress(10, 10);
-  await vi.advanceTimersByTimeAsync(1_000);
-  const slowResult = await slowCall;
-  assert.equal(slowResult.ok, false);
-  if (!slowResult.ok) {
-    assert.equal(slowResult.error, 'timeout');
-  }
+  await vi.advanceTimersByTimeAsync(30_000);
+  assert.equal(await snapshot(slowCall), undefined);
+  slow.finish(200, JSON.stringify({ data: 'https://cdn.test/slow.webp' }));
+  assert.deepEqual(await slowCall, { ok: true, url: 'https://cdn.test/slow.webp' });
+
+  // The response wait has its own deadline, so a facade that never answers still fails.
+  const silent = new FakeXhr();
+  const silentCall = postUpload(blob, {
+    mediaHostUrl: MEDIA_HOST,
+    timeoutMs: 1_000,
+    responseTimeoutMs: 4_000,
+    xhrFactory: () => silent as unknown as XMLHttpRequest,
+  });
+  silent.progress(10, 10);
+  await vi.advanceTimersByTimeAsync(3_999);
+  assert.equal(await snapshot(silentCall), undefined);
+  await vi.advanceTimersByTimeAsync(1);
+  assert.deepEqual(await silentCall, {
+    ok: false,
+    error: 'timeout',
+    detail: 'no response before deadline',
+  });
+  assert.equal(silent.aborted, true);
+
+  // `upload.onload` ends the body too, on an engine that sends no final 100% progress event.
+  const uploaded = new FakeXhr();
+  const uploadedCall = postUpload(blob, {
+    mediaHostUrl: MEDIA_HOST,
+    timeoutMs: 1_000,
+    responseTimeoutMs: 5_000,
+    xhrFactory: () => uploaded as unknown as XMLHttpRequest,
+  });
+  uploaded.progress(3, 10);
+  uploaded.upload.onload?.();
+  await vi.advanceTimersByTimeAsync(2_000);
+  assert.equal(await snapshot(uploadedCall), undefined);
+  uploaded.finish(200, JSON.stringify({ data: 'https://cdn.test/onload.webp' }));
+  assert.deepEqual(await uploadedCall, { ok: true, url: 'https://cdn.test/onload.webp' });
 
   const fractions: number[] = [];
   const progressXhr = new FakeXhr();

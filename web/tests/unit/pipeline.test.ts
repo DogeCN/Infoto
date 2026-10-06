@@ -12,7 +12,9 @@ import {
   routeByMime,
   translateTaskError,
   uid,
-  UPLOAD_TIMEOUT_MS,
+  UPLOAD_IDLE_TIMEOUT_MS,
+  UPLOAD_RESPONSE_TIMEOUT_MS,
+  uploadPoolSize,
   videoPoolSize,
   VP9_QUANTIZER,
   WEBP_QUALITY,
@@ -41,7 +43,10 @@ test('classifies uploads, translates errors, and builds independent operations',
     assert.equal(VP9_QUANTIZER, 30);
     assert.equal(OPUS_BITRATE, 128_000);
     assert.equal(MAX_UPLOAD_BYTES, 100 * 1024 * 1024);
-    assert.equal(UPLOAD_TIMEOUT_MS, 45_000);
+    assert.equal(UPLOAD_IDLE_TIMEOUT_MS, 45_000);
+    // The response wait must outlast the body's silence budget: it is the facade relaying
+    // upstream and the upstream storing a large artifact, with no bytes left to move.
+    assert.equal(UPLOAD_RESPONSE_TIMEOUT_MS, 120_000);
     assert.equal(isOversize(MAX_UPLOAD_BYTES), false);
     assert.equal(isOversize(MAX_UPLOAD_BYTES + 1), true);
     assert.equal(artifactExt('image'), 'webp');
@@ -75,6 +80,13 @@ test('classifies uploads, translates errors, and builds independent operations',
     assert.equal(videoPoolSize({ deviceMemory: Number.NaN, hardwareConcurrency: 8 }), 2);
     assert.equal(videoPoolSize({ deviceMemory: 0, hardwareConcurrency: 4 }), 1);
     assert.equal(videoPoolSize({ deviceMemory: 64, hardwareConcurrency: 128 }), 2);
+
+    // The upload leg has its own ceiling, never the image pool's (up to 6).
+    assert.equal(uploadPoolSize(), 3);
+    assert.equal(uploadPoolSize(Number.NaN), 3);
+    assert.equal(uploadPoolSize(50), 3);
+    assert.equal(uploadPoolSize(1.5), 2);
+    assert.ok(uploadPoolSize() < imagePoolSize(16));
   }
 
   // GIF headers and failure text stay on the right leg.

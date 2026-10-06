@@ -419,6 +419,24 @@ hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
     before reporting `done`. The optimistic card therefore swaps its src from the OPFS
     object URL to the host URL over a warm cache instead of flashing a skeleton at the
     handoff. A slow host delays the completion state but never hangs it.
+  - **The card's curtain tops out at `CURTAIN_MAX_OPEN = 0.9`**, so an upload at 100% still
+    keeps a 10% veil across the top edge; only the `done` phase removes it. That veil is why a
+    stalled tail reads as "stuck at the last bit" rather than as a finished upload.
+  - **One POST is governed by two deadlines, because its two halves fail differently.** While
+    the body is moving, `UPLOAD_IDLE_TIMEOUT_MS = 45s` measures _silence_ and restarts on every
+    progress event (never a wall-clock cap). The body's end — `xhr.upload.onload`, or a final
+    progress event at 100% — switches the attempt to `UPLOAD_RESPONSE_TIMEOUT_MS = 120s`, which
+    covers the facade relaying the artifact upstream and the upstream storing it. Measuring that
+    window with the silence budget killed large artifacts exactly at their tail. A cancelled job
+    is `aborted`; either deadline is `timeout`, and the detail names which one (`no progress
+before deadline` / `no response before deadline`).
+  - **The upload leg has its own concurrency ceiling**, `uploadPoolSize()` = 3, or 2 below a
+    2 Mbps reported downlink. It is deliberately not the image pool: that one is sized for
+    cores (up to 6) and bounds _transcoding_, and letting it bound the network leg opened one
+    concurrent 100 MB POST per core against a single upstream. Every upload leg passes through
+    the one gate in `sw.ts` — image, video, editor and resumed alike — and a finishing job hands
+    its slot straight to the next waiter. A job waiting on the gate reports no fraction, so its
+    card stays fully veiled, exactly like the transcode phase.
   - `indeterminateRow` is true when the phase is `queued` or `lease-wait`, **or** when the
     fraction is `null`. An indeterminate row carries no `aria-valuenow` and sweeps.
   - `batchProgress` returns the mean of the measured rows **only if every row measures itself**;
@@ -621,6 +639,9 @@ The parts of this contract that are asserted by `npm test`:
 | `GLITCH_PALETTE` equals the matching `@theme` colours                      | `web/tests/unit/designTokens.test.ts`   |
 | The reflow flip window outlasts the reflow duration it brackets            | `web/tests/unit/motion.test.ts`         |
 | Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click           | `web/tests/unit/lightboxEngine.test.ts` |
+| The upload's silence budget ends where the response budget begins          | `web/tests/unit/uploadClient.test.ts`   |
+| The upload leg's ceiling holds independently of the image pool             | `web/tests/unit/uploadPool.test.ts`     |
+| `uploadPoolSize` stays under the image pool at its widest                  | `web/tests/unit/pipeline.test.ts`       |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are

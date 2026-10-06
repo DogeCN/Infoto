@@ -15,10 +15,16 @@ export const VP9_QUANTIZER = 30;
 export const OPUS_BITRATE = 128_000;
 /** Cloudflare request-body ceiling — artifacts above this never hit /upload. */
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-/** Per-attempt upload deadline, measured as *silence*: the attempt fails only after
- *  this long with no progress at all — not a wall-clock cap, so a large artifact on
+/** Idle deadline while the request body is still moving: the attempt fails only after
+ *  this long with no byte progress at all — not a wall-clock cap, so a large artifact on
  *  a slow uplink keeps moving for minutes. */
-export const UPLOAD_TIMEOUT_MS = 45_000;
+export const UPLOAD_IDLE_TIMEOUT_MS = 45_000;
+
+/** Deadline for the response once the body is fully sent. No bytes are expected to move in
+ *  that window — the facade is relaying the artifact upstream and the upstream is storing
+ *  it — so measuring it with the body's idle budget killed large artifacts exactly at their
+ *  tail: the transfer looked stalled at 100% and then failed. */
+export const UPLOAD_RESPONSE_TIMEOUT_MS = 120_000;
 
 // ---- file type routing (single exit point) ----------------------------------
 
@@ -66,6 +72,19 @@ export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: numbe
     cap = Math.min(cap, 2);
   }
   return cap;
+}
+
+/** Upload-leg concurrency: the POST leg has its own ceiling, separate from the CPU pool that
+ *  bounds transcoding. The image pool (up to 6, sized for cores) used to bound uploads too,
+ *  so one multi-file drop opened that many 100 MB POSTs at once against a single upstream —
+ *  which is how a transient rate-limit or one stalled stream became a terminal per-file
+ *  failure. Three concurrent uploads is the ceiling on a healthy link; a reported downlink
+ *  under 2 Mbps drops it to two, the same threshold the image pool uses. */
+export function uploadPoolSize(downlinkMbps?: number): number {
+  if (typeof downlinkMbps === 'number' && Number.isFinite(downlinkMbps) && downlinkMbps < 2) {
+    return 2;
+  }
+  return 3;
 }
 
 /** Video/GIF token pool size: deviceMemory ≥ 8 GB → 2, else 1; absent (Firefox/Safari)

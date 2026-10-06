@@ -8,9 +8,10 @@ import {
   isOversize,
   routeByMime,
   uid,
+  uploadPoolSize,
   videoPoolSize,
 } from '$base/upload/pipeline';
-import { postUpload } from '../core/api/uploadClient';
+import { postUpload, type UploadResult } from '../core/api/uploadClient';
 import {
   deletePendingUpload,
   isKnownAlbumSha,
@@ -81,6 +82,36 @@ const imageQueue: string[] = [];
 const videoQueue: string[] = []; // jobIds waiting for a token
 let imageRunning = 0;
 let db: IDBDatabase | null = null;
+
+/**
+ * Upload-leg concurrency, decoupled from the transcode pools: those bound CPU (image encode)
+ * and device memory (video encode), while this one bounds how many POSTs a single upstream
+ * sees at once. Every upload leg passes through it — image, video, editor and resumed alike.
+ */
+const uploadLimit = uploadPoolSize(
+  'navigator' in self
+    ? (navigator as Navigator & { connection?: { downlink?: number } }).connection?.downlink
+    : undefined,
+);
+let uploadRunning = 0;
+const uploadWaiters: Array<() => void> = [];
+
+/** Take one upload slot, waiting while the ceiling is reached. */
+function acquireUploadSlot(): Promise<void> {
+  if (uploadRunning < uploadLimit) {
+    uploadRunning++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => uploadWaiters.push(resolve));
+}
+
+/** Return one upload slot; a waiting job takes it directly, so the count never dips and a
+ *  newcomer cannot jump the queue. */
+function releaseUploadSlot(): void {
+  const next = uploadWaiters.shift();
+  if (next) next();
+  else uploadRunning--;
+}
 
 /** How long the post-upload URL prewarm may hold the completion state before the
  *  job is declared done anyway (the card then degrades to a normal lazy load). */
@@ -346,21 +377,34 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
     failJob(rec, 'oversize');
     return;
   }
-  rec.uploadAbort = new AbortController();
+  const abort = new AbortController();
+  rec.uploadAbort = abort;
   if (rec.cancelled) {
     rec.uploadAbort = undefined;
     return;
   }
-  const r = await postUpload(blob, {
-    mediaHostUrl,
-    fileName,
-    signal: rec.uploadAbort.signal,
-    onProgress: (fraction) => notify(rec, { fraction }),
-  });
-  rec.uploadAbort = undefined;
-  // Cancelled mid-upload: discard the result — no URL, no op write, no notify
+  // Wait for the upload leg's own slot: the transcode pools are sized for CPU and device
+  // memory, and letting them bound the network leg opened one concurrent POST per core
+  // against a single upstream. A cancel that lands while queued is caught below, and the
+  // slot it briefly takes is handed straight to the next waiter.
+  await acquireUploadSlot();
+  let r: UploadResult | null = null;
+  try {
+    if (!rec.cancelled) {
+      r = await postUpload(blob, {
+        mediaHostUrl,
+        fileName,
+        signal: abort.signal,
+        onProgress: (fraction) => notify(rec, { fraction }),
+      });
+    }
+  } finally {
+    rec.uploadAbort = undefined;
+    releaseUploadSlot();
+  }
+  // Cancelled mid-upload or while queued: discard the result — no URL, no op write, no notify
   // (a photo whose owner cancelled must never land in the album).
-  if (rec.cancelled) return;
+  if (!r || rec.cancelled) return;
   if (r.ok) {
     rec.url = r.url;
     // Prewarm the host URL before the page learns it. The optimistic card swaps its
