@@ -1,7 +1,7 @@
 # 0009: Image Host as a Standalone Facade
 
 - **Date**: 2026-09-30
-- **Status**: Accepted
+- **Status**: Accepted (the reference facade source lived at `media-proxy/` until v0.1.2, when it was removed from this repository's history; the decision and the API contract stand — the contract now lives in README §Media host facade)
 - **Context**: Uploads originally ran through `POST /upload` on the Infoto Worker, which held `TC_SECRET`, signed the request, and forwarded the multipart body to the image host at `tc.0147258.xyz`. That coupled three things: the album server held an image-host credential, the upstream hostname was compiled into `upload.ts`, and every dev upload spent real host quota. When the upstream needed replacing, the change touched album code. A local dev stand-in (added 2026-09-30) made this worse before it made it better — the stand-in's address was hardcoded as a module constant, so a deployed Worker still pointed at `127.0.0.1` and every production upload failed.
 - **Decision**: Move the image host behind its own deployable Worker (`media-proxy/worker.js`) that owns `TC_SECRET` and exposes a small uniform API. The browser POSTs artifacts directly to it; it signs, forwards upstream, and returns the URL the upstream gave back. The facade is **stateless and identity-free**: no KV, no user verification, no per-request state. Infoto keeps no `TC_SECRET` and has no `/upload` route: it stores the returned URL and publishes the facade address as `mediaHostUrl` in the `/sync` response, which the page forwards to the SharedWorker. `MEDIA_HOST_URL` selects the facade; unset means the local dev simulation, so a fresh clone never reaches the real host.
 - **Consequences**:

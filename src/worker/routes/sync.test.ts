@@ -463,7 +463,7 @@ test('negative and fractional media metadata is rejected', async () => {
   }
 });
 
-// Uploads are the standalone facade's job (media-proxy/worker.js): this Worker holds no
+// Uploads are the external facade's job (README §Media host facade): this Worker holds no
 // image-host credential and has no upload route. All it does is name the facade in /sync.
 test('the image host is decoupled: no /upload route, facade URL served by /sync', async () => {
   const { app } = makeApp();

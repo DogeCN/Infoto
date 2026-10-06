@@ -67,7 +67,8 @@ function parseMultipart(buf, boundary) {
 
 // The browser uploads here from the page origin, so the dev stand-in must answer CORS
 // exactly like the real facade does — otherwise dev fails for a reason production would not.
-// Mirrored from media-proxy/worker.js. Two of these are load-bearing:
+// Mirrored from the reference facade (removed from this repo's history in v0.1.2;
+// contract in README §Media host facade). Two of these are load-bearing:
 //   - max-age: without it the browser re-preflights every upload here, while production
 //     caches the preflight for a day.
 //   - JSON error envelopes: the client parses a failure body as JSON, so a plain-text reply

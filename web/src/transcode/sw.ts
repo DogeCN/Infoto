@@ -82,6 +82,10 @@ const videoQueue: string[] = []; // jobIds waiting for a token
 let imageRunning = 0;
 let db: IDBDatabase | null = null;
 
+/** How long the post-upload URL prewarm may hold the completion state before the
+ *  job is declared done anyway (the card then degrades to a normal lazy load). */
+const PREWARM_BUDGET_MS = 2_000;
+
 // ---- lease pool ----------------------------------------------------------------
 
 interface Lease {
@@ -359,6 +363,17 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   if (rec.cancelled) return;
   if (r.ok) {
     rec.url = r.url;
+    // Prewarm the host URL before the page learns it. The optimistic card swaps its
+    // src from the OPFS object URL to this URL the moment the notification lands,
+    // and an un-warmed src renders as a skeleton until the fetch finishes. Fetched
+    // no-cors so an opaque response can't throw; capped so a slow host only delays
+    // the completion state, never hangs it.
+    await Promise.race([
+      fetch(r.url, { mode: 'no-cors', signal: AbortSignal.timeout(PREWARM_BUDGET_MS) }).catch(
+        () => undefined,
+      ),
+      new Promise<void>((resolve) => setTimeout(resolve, PREWARM_BUDGET_MS)),
+    ]);
     rec.phase = 'done';
     // The resume record only covers an upload interrupted mid-transfer. Once the artifact
     // has landed there is nothing to resume, and leaving the record replayed the whole

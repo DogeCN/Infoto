@@ -10,7 +10,7 @@ import { adminApp } from './routes/admin.ts';
 
 export interface AppEnv {
   db: Db;
-  /** Standalone image-host facade the browser uploads to (see media-proxy/worker.js).
+  /** External image-host facade the browser uploads to (contract: README §Media host facade).
    *  Delivered in the /sync response; defaults to the local simulated host in dev. */
   mediaHostUrl?: string;
   /** Cloudflare Turnstile secret key. */
