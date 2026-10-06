@@ -17,3 +17,6 @@ test-results/
 # Seeded sample media (downloaded + transcoded once into the repo for local-DB seeding).
 .local-media/
 .tmp-*
+
+# Facade source stays local-only since the v0.1.2 history rewrite
+media-proxy/
