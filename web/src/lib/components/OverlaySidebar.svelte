@@ -4,6 +4,7 @@
   import { overlay } from '$base/lib/overlay';
   import { startPointerResize } from '$base/lib/pointer';
   import { copy } from '$lib/i18n.svelte';
+  import Tooltip from './Tooltip.svelte';
   import { X } from '@lucide/svelte';
 
   let {
@@ -139,16 +140,17 @@
 >
   <!-- Drag the inner edge to resize (desktop). The button carries the interaction semantics;
        arrow keys adjust the width too. -->
-  <button
-    type="button"
-    aria-label={copy.sidebar.resizeAria}
-    title={copy.sidebar.resizeTitle}
-    class="absolute inset-y-0 hidden w-1.5 cursor-col-resize transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/40 md:block {dragging
-      ? 'bg-primary/60'
-      : ''} {side === 'left' ? 'right-0' : 'left-0'}"
-    onpointerdown={startResize}
-    onkeydown={onResizeKey}
-  ></button>
+  <Tooltip text={copy.sidebar.resizeTitle} side={side === 'left' ? 'right' : 'left'}>
+    <button
+      type="button"
+      aria-label={copy.sidebar.resizeAria}
+      class="absolute inset-y-0 hidden w-1.5 cursor-col-resize transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-primary/40 md:block {dragging
+        ? 'bg-primary/60'
+        : ''} {side === 'left' ? 'right-0' : 'left-0'}"
+      onpointerdown={startResize}
+      onkeydown={onResizeKey}
+    ></button>
+  </Tooltip>
 
   <!-- The header hides with the preview too: it sits beside the scroll region, so its own
        opacity never multiplies into the live slider (that rule forbids only ancestors). -->
@@ -163,15 +165,16 @@
       {/if}
       <h2 class="text-lg font-semibold tracking-tight">{title}</h2>
     </div>
-    <button
-      class="icon-button rounded-lg p-1.5 hover:scale-105 active:scale-95"
-      onclick={close}
-      title={copy.sidebar.close}
-      aria-label={copy.sidebar.close}
-      data-autofocus
-    >
-      <X class="size-5" />
-    </button>
+    <Tooltip text={copy.sidebar.close} side="bottom">
+      <button
+        class="icon-button rounded-lg p-1.5 hover:scale-105 active:scale-95"
+        onclick={close}
+        aria-label={copy.sidebar.close}
+        data-autofocus
+      >
+        <X class="size-5" />
+      </button>
+    </Tooltip>
   </div>
 
   <!-- Independent scroll area; child panels provide bottom spacing for sticky controls.

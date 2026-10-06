@@ -2,6 +2,7 @@
   // Pager control, one instance per screen. The off-screen copy rides the sliding track.
   // Rotation follows `screen`, not hover, so the chevron always points at the other screen.
   import { ChevronLeft } from '@lucide/svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
@@ -15,13 +16,7 @@
   const label = $derived(screen === 0 ? copy.topbar.more : copy.topbar.back);
 </script>
 
-<button
-  type="button"
-  class="icon-button shrink-0 p-2"
-  onclick={onToggle}
-  title={label}
-  aria-label={label}
->
+<TooltipIconButton text={label} side="bottom" class="shrink-0 p-2" onclick={onToggle}>
   <!-- Shares the track's enter timing, so the chevron turns as the track arrives. -->
   <span
     class="flex transition-transform duration-[var(--duration-enter)] ease-[var(--ease-enter)] {screen ===
@@ -32,4 +27,4 @@
     <!-- ChevronLeft points at screen 1; screen 1's rotation turns it the other way. -->
     <ChevronLeft class="size-[var(--bar-icon)]" />
   </span>
-</button>
+</TooltipIconButton>

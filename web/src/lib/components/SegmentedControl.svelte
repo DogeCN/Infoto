@@ -4,6 +4,7 @@
   // (pill translation), text color uses --ease-exit / --duration-exit, like other site controls.
   import type { Component } from 'svelte';
   import { cn } from '$base/lib/ui';
+  import Tooltip from './Tooltip.svelte';
   import { measurePillWidths, type PillWidths } from './pillMeasure';
 
   export type SegmentedItem<T extends string = string> = {
@@ -18,7 +19,9 @@
     onChange?: (value: T) => void;
     /** Fired when the already-active item is clicked again (e.g. "random" reshuffle). */
     onReselect?: (value: T) => void;
-    /** Show icons without labels when the parent selects compact density; titles retain accessible names. */
+    /** Show icons without labels when the parent selects compact density; the tooltip and
+     *  `data-label` retain the name (the label text is a measurement input, so it is a data
+     *  attribute — `pillMeasure` rebuilds the labelled clone from it). */
     hideLabel?: boolean;
     size?: 'sm' | 'md';
     ariaLabel?: string;
@@ -129,31 +132,33 @@
   {#each items as item, index (item.value)}
     {@const active = item.value === value}
     {@const Icon = item.icon}
-    <button
-      use:track={item.value}
-      type="button"
-      role="tab"
-      aria-selected={active}
-      tabindex={active || (value === undefined && index === 0) ? 0 : -1}
-      onkeydown={(event) => onKeydown(event, index)}
-      class={cn(
-        'relative z-10 inline-flex items-center rounded-full py-1.5 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
-        size === 'md' ? 'px-3.5' : 'px-3',
-        'gap-2',
-        active ? 'text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-      )}
-      title={item.label}
-      aria-label={hideLabel ? item.label : undefined}
-      onclick={() => pick(item.value)}
-    >
-      {#if Icon}<Icon class="size-[var(--bar-badge)]" />{/if}
-      <span
-        data-tab-label
-        aria-hidden={hideLabel}
-        class={hideLabel ? 'absolute left-0 top-full invisible whitespace-nowrap' : 'relative'}
+    <Tooltip text={item.label} side="bottom">
+      <button
+        use:track={item.value}
+        type="button"
+        role="tab"
+        aria-selected={active}
+        tabindex={active || (value === undefined && index === 0) ? 0 : -1}
+        onkeydown={(event) => onKeydown(event, index)}
+        class={cn(
+          'relative z-10 inline-flex items-center rounded-full py-1.5 text-sm font-medium transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)]',
+          size === 'md' ? 'px-3.5' : 'px-3',
+          'gap-2',
+          active ? 'text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+        data-label={item.label}
+        aria-label={hideLabel ? item.label : undefined}
+        onclick={() => pick(item.value)}
       >
-        {item.label}
-      </span>
-    </button>
+        {#if Icon}<Icon class="size-[var(--bar-badge)]" />{/if}
+        <span
+          data-tab-label
+          aria-hidden={hideLabel}
+          class={hideLabel ? 'absolute left-0 top-full invisible whitespace-nowrap' : 'relative'}
+        >
+          {item.label}
+        </span>
+      </button>
+    </Tooltip>
   {/each}
 </div>

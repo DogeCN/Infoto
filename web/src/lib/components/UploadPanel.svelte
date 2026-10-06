@@ -8,6 +8,7 @@
   import { batchProgress, indeterminateRow, type UploadRow } from '../../transcode/pipeline';
   import { motionEaseFn, motionMs } from '$base/lib/motion';
   import { createHoverIntent } from '$base/lib/hover.svelte';
+  import Tooltip from './Tooltip.svelte';
 
   interface Props {
     /** Already filtered by the caller: this panel is stage-agnostic. */
@@ -279,15 +280,16 @@
                       ></div>
                     {/if}
                   </div>
-                  <button
-                    type="button"
-                    class="icon-button icon-button--danger size-4 shrink-0 rounded-full hover:text-destructive"
-                    title={copy.uploadPanel.remove}
-                    aria-label={fmt(copy.uploadPanel.removeFile, { fileName: task.fileName })}
-                    onclick={() => onRemove(task.jobId)}
-                  >
-                    <X class="size-3" />
-                  </button>
+                  <Tooltip text={copy.uploadPanel.remove} side="top">
+                    <button
+                      type="button"
+                      class="icon-button icon-button--danger size-4 shrink-0 rounded-full hover:text-destructive"
+                      aria-label={fmt(copy.uploadPanel.removeFile, { fileName: task.fileName })}
+                      onclick={() => onRemove(task.jobId)}
+                    >
+                      <X class="size-3" />
+                    </button>
+                  </Tooltip>
                 </div>
               </div>
             {/each}

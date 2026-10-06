@@ -6,6 +6,7 @@
   import SortPill from './SortPill.svelte';
   import SyncButton from './SyncButton.svelte';
   import PagerArrow from './PagerArrow.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
   import SegmentedControl, { type SegmentedItem } from './SegmentedControl.svelte';
   import LocaleToggle from './LocaleToggle.svelte';
   import type { SortDirections, SortKey } from '../../core/gallery';
@@ -285,16 +286,15 @@
 
 {#snippet settingsBtn()}
   <div class="relative">
-    <button
-      type="button"
-      class="icon-button p-2"
-      class:text-primary={settingsActive}
+    <TooltipIconButton
+      text={copy.topbar.settings}
+      side="bottom"
+      active={settingsActive}
+      class="p-2"
       onclick={onSettingsClick}
-      title={copy.topbar.settings}
-      aria-label={copy.topbar.settings}
     >
       <Settings class="size-[var(--bar-icon)]" />
-    </button>
+    </TooltipIconButton>
     {#if filterCount > 0}
       <span
         class="pointer-events-none absolute -right-0.5 -top-0.5 flex size-[var(--bar-badge)] items-center justify-center rounded-full bg-primary text-primary-foreground"
@@ -306,35 +306,32 @@
 {/snippet}
 
 {#snippet homeRightGroup()}
-  <button
-    type="button"
-    class="icon-button relative p-2"
-    class:text-primary={announcementActive}
+  <TooltipIconButton
+    text={copy.topbar.announcements}
+    side="bottom"
+    active={announcementActive}
+    class="relative p-2"
     onclick={onAnnouncementClick}
-    title={copy.topbar.announcements}
-    aria-label={copy.topbar.announcements}
   >
     <Megaphone class="size-[var(--bar-icon)]" />
-  </button>
-  <button
-    type="button"
-    class="icon-button p-2"
-    class:text-primary={multiSelectActive}
+  </TooltipIconButton>
+  <TooltipIconButton
+    text={copy.topbar.multiSelect}
+    side="bottom"
+    active={multiSelectActive}
+    class="p-2"
     onclick={onMultiSelectClick}
-    title={copy.topbar.multiSelect}
-    aria-label={copy.topbar.multiSelect}
   >
     <CheckSquare class="size-[var(--bar-icon)]" />
-  </button>
-  <button
-    type="button"
-    class="icon-button p-2 hover:text-primary"
+  </TooltipIconButton>
+  <TooltipIconButton
+    text={copy.topbar.upload}
+    side="bottom"
+    class="p-2 hover:text-primary"
     onclick={onUploadClick}
-    title={copy.topbar.upload}
-    aria-label={copy.topbar.upload}
   >
     <UploadCloud class="size-[var(--bar-icon)]" />
-  </button>
+  </TooltipIconButton>
 {/snippet}
 
 {#snippet leftGroup()}
@@ -366,17 +363,16 @@
 {#snippet adminActionGroup()}
   <div class="flex shrink-0 items-center gap-1">
     {#if adminCreateLabel}
-      <button
-        type="button"
-        class="icon-button p-2"
-        class:text-primary={adminCreateActive}
+      <TooltipIconButton
+        text={adminCreateLabel}
+        side="bottom"
+        active={adminCreateActive}
+        ariaPressed={adminCreateActive}
+        class="p-2"
         onclick={onAdminCreateClick}
-        title={adminCreateLabel}
-        aria-label={adminCreateLabel}
-        aria-pressed={adminCreateActive}
       >
         <Plus class="size-[var(--bar-icon)]" />
-      </button>
+      </TooltipIconButton>
     {/if}
     {#if adminActions}{@render adminActions()}{/if}
   </div>

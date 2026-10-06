@@ -3,6 +3,7 @@
   import type { Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { reflowFlipWindowMs } from '$base/lib/motion';
+  import Tooltip from './Tooltip.svelte';
   import type { GeomStamp } from '$base/lib/layout';
   import {
     ThumbsUp,
@@ -285,10 +286,45 @@
     {#if overlay.failed}
       <!-- Failure cover with retry and dismiss controls. -->
       <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
+        <Tooltip text={copy.photoCard.dismiss} side="bottom">
+          <button
+            type="button"
+            class="icon-button icon-button--danger absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
+            aria-label={copy.photoCard.dismiss}
+            onclick={(e) => {
+              e.stopPropagation();
+              onDismissUpload?.();
+            }}
+          >
+            <X class="size-4" />
+          </button>
+        </Tooltip>
+        <!-- Retry is the primary action on a failed card: a 56px target with a 28px
+             glyph, so it is comfortable on touch and clearly the way out. -->
+        <Tooltip text={copy.photoCard.retry} side="bottom">
+          <button
+            type="button"
+            class="icon-button size-14 rounded-full text-primary/70 hover:bg-primary/10 hover:text-primary"
+            aria-label={copy.photoCard.retry}
+            onclick={(e) => {
+              e.stopPropagation();
+              onRetryUpload?.();
+            }}
+          >
+            <RotateCcw class="size-7" />
+          </button>
+        </Tooltip>
+      </div>
+    {:else}
+      <!-- Reveal media with upload progress while keeping a cancellation veil until server completion. -->
+      <div
+        class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70 transition-[height] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
+        style="height: {Math.max(0, 1 - Math.min(overlay.fraction ?? 0, CURTAIN_MAX_OPEN)) * 100}%"
+      ></div>
+      <Tooltip text={copy.photoCard.dismiss} side="bottom">
         <button
           type="button"
-          class="icon-button icon-button--danger absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
-          title={copy.photoCard.dismiss}
+          class="absolute top-2 right-2 z-30 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
           aria-label={copy.photoCard.dismiss}
           onclick={(e) => {
             e.stopPropagation();
@@ -297,39 +333,7 @@
         >
           <X class="size-4" />
         </button>
-        <!-- Retry is the primary action on a failed card: a 56px target with a 28px
-             glyph, so it is comfortable on touch and clearly the way out. -->
-        <button
-          type="button"
-          class="icon-button size-14 rounded-full text-primary/70 hover:bg-primary/10 hover:text-primary"
-          title={copy.photoCard.retry}
-          aria-label={copy.photoCard.retry}
-          onclick={(e) => {
-            e.stopPropagation();
-            onRetryUpload?.();
-          }}
-        >
-          <RotateCcw class="size-7" />
-        </button>
-      </div>
-    {:else}
-      <!-- Reveal media with upload progress while keeping a cancellation veil until server completion. -->
-      <div
-        class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70 transition-[height] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
-        style="height: {Math.max(0, 1 - Math.min(overlay.fraction ?? 0, CURTAIN_MAX_OPEN)) * 100}%"
-      ></div>
-      <button
-        type="button"
-        class="absolute top-2 right-2 z-30 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
-        title={copy.photoCard.dismiss}
-        aria-label={copy.photoCard.dismiss}
-        onclick={(e) => {
-          e.stopPropagation();
-          onDismissUpload?.();
-        }}
-      >
-        <X class="size-4" />
-      </button>
+      </Tooltip>
     {/if}
   {/if}
 

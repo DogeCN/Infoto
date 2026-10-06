@@ -5,6 +5,7 @@
   import { copy } from '$lib/i18n.svelte';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
   import PollReferences from './PollReferences.svelte';
+  import Tooltip from './Tooltip.svelte';
   import MarkdownView from './MarkdownView.svelte';
   import ReactionBar from './ReactionBar.svelte';
 
@@ -143,33 +144,41 @@
       {/if}
 
       <!-- Resize handle at the top right: drag up to grow, down to shrink -->
-      <button
-        type="button"
-        aria-label={copy.announcements.resizeHandle}
-        class="absolute right-1 top-1 flex h-5 w-5 cursor-ns-resize items-center justify-center text-muted-foreground/50 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-muted-foreground"
-        title={copy.announcements.resizeHandle}
-        onpointerdown={startResize}
-        onkeydown={(event) => {
-          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-          event.preventDefault();
-          taH = Math.min(480, Math.max(120, taH + (event.key === 'ArrowUp' ? 16 : -16)));
-        }}
-      >
-        <ChevronsUpDown class="size-3.5" />
-      </button>
+      <Tooltip text={copy.announcements.resizeHandle} side="left">
+        <button
+          type="button"
+          aria-label={copy.announcements.resizeHandle}
+          class="absolute right-1 top-1 flex h-5 w-5 cursor-ns-resize items-center justify-center text-muted-foreground/50 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-muted-foreground"
+          onpointerdown={startResize}
+          onkeydown={(event) => {
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+            event.preventDefault();
+            taH = Math.min(480, Math.max(120, taH + (event.key === 'ArrowUp' ? 16 : -16)));
+          }}
+        >
+          <ChevronsUpDown class="size-3.5" />
+        </button>
+      </Tooltip>
 
-      <button
-        type="button"
-        class="icon-button absolute right-8 top-2 size-7"
-        title={previewMode ? copy.announcements.editToggle : copy.announcements.previewToggle}
-        onclick={() => (previewMode = !previewMode)}
+      <Tooltip
+        text={previewMode ? copy.announcements.editToggle : copy.announcements.previewToggle}
+        side="bottom"
       >
-        {#if previewMode}
-          <Pencil class="size-4" />
-        {:else}
-          <Eye class="size-4" />
-        {/if}
-      </button>
+        <button
+          type="button"
+          class="icon-button absolute right-8 top-2 size-7"
+          aria-label={previewMode
+            ? copy.announcements.editToggle
+            : copy.announcements.previewToggle}
+          onclick={() => (previewMode = !previewMode)}
+        >
+          {#if previewMode}
+            <Pencil class="size-4" />
+          {:else}
+            <Eye class="size-4" />
+          {/if}
+        </button>
+      </Tooltip>
 
       {#if feedbackText.trim()}
         <button

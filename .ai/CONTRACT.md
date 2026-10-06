@@ -169,7 +169,9 @@ Back-filled from the commit history. Tagged sections are not yet written.
     `cloneNode(true)` re-shaped into normal flow at `width: max-content`, appended to
     `document.body` — never inside the header, where an absolute twin becomes the containing
     block for the paged track and drags both screens off-screen. Every span is stripped and
-    rebuilt from the button's `title`, which is the only lossless copy of the label text.
+    rebuilt from the button's `data-label`, which is the only lossless copy of the label text.
+    It is a data attribute, **not `title`**: the tabs' tooltips are the custom component now,
+    and a measurement must not depend on a tooltip's attribute to work.
   - Re-measure triggers: mount, a `ResizeObserver` on the observed node (rAF-coalesced to one
     measurement per frame), and `update()`. `TopBar.remeasure()` bails unless _every_ measured
     width is non-zero, and also runs from the header observer, `window.resize` and a 250ms
@@ -178,6 +180,21 @@ Back-filled from the commit history. Tagged sections are not yet written.
     pager leaves the other screen with no way to switch.
   - **Nothing asserts any of this.** `pillMeasure.ts` has zero tests, and on the `SortTabs`
     path its report is discarded because that component takes no `onWidths`.
+- **Tooltips are always the custom component.** Every hover hint is `Tooltip.svelte`, or
+  `TooltipIconButton.svelte` when the trigger is an icon button (it takes the text once, as
+  both tooltip and `aria-label`; `ariaLabel` overrides when the spoken name is longer, and
+  `ariaPressed` publishes toggle state). A native `title` is **never** used as a tooltip: it
+  renders in OS chrome, never appears on touch, and carries none of the `aria-describedby`
+  wiring. There are two `title` attributes left in the app and neither is a tooltip — the
+  `OverlaySidebar` `title` prop, which names the dialog.
+  - The wrapper is `display: contents`, so it is never a containing block (an absolutely
+    positioned trigger keeps its own positioning) and never changes a measured width: the
+    top-bar probes measure their group **containers**, whose widths sum the same children.
+  - Touch deliberately gets nothing (`hover: none` short-circuits `show`), so a tooltip can
+    never be the only way to learn what a control does — the `aria-label` is.
+  - The tooltip follows its trigger while open (scroll, resize, sidebar drag) and flips to the
+    opposite side when the preferred one has no room; placement is fixed-positioned above
+    `<body>` via `portal`, so overflow clipping and transformed ancestors cannot trap it.
 - **Waterfall card.** The card positions itself at `0,0` and moves purely by transform; its
   box arrives entirely as props.
   - `tight` = `width < 140 || height < 64`. There are exactly two density shapes and no third.

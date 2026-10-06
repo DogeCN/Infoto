@@ -26,10 +26,13 @@ function forceLabels(clone: HTMLElement, labelled: boolean): void {
   // "spans exist" cannot mean "already labelled" — and an early return there would leave
   // the hidden copies in the clone, measuring the icon width as the labelled width and
   // flapping the bar's density at the collapse threshold.
+  //
+  // The label text rides `data-label`, never `title`: the tabs' tooltips are the custom
+  // component now, and a measurement must not read a tooltip's attribute to work.
   for (const span of clone.querySelectorAll('[role="tab"] > span')) span.remove();
   if (!labelled) return;
   for (const tab of clone.querySelectorAll('[role="tab"]')) {
-    const label = tab.getAttribute('title');
+    const label = tab.getAttribute('data-label');
     if (!label) continue;
     const span = document.createElement('span');
     span.textContent = label;

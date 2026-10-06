@@ -17,6 +17,8 @@
     active?: boolean;
     /** The destructive icon-button variant. */
     danger?: boolean;
+    /** Toggle buttons publish their state; a native `title` used to be the only channel. */
+    ariaPressed?: boolean;
     side?: 'top' | 'bottom' | 'left' | 'right';
     /** Extra button classes (padding, size, colour tail). */
     class?: string;
@@ -30,6 +32,7 @@
     disabled = false,
     active = false,
     danger = false,
+    ariaPressed,
     side = 'top',
     class: className = '',
     children,
@@ -41,6 +44,7 @@
     type="button"
     class={cn('icon-button', danger && 'icon-button--danger', active && 'text-primary', className)}
     aria-label={ariaLabel ?? text}
+    aria-pressed={ariaPressed}
     {disabled}
     {onclick}
   >

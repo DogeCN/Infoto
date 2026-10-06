@@ -2,6 +2,7 @@
   import { Languages } from '@lucide/svelte';
   import type { LocaleCode } from '$shared/types';
   import { copy, getLocale, LOCALE_OPTIONS, setLocale } from '$lib/i18n.svelte';
+  import Tooltip from './Tooltip.svelte';
 
   interface Props {
     variant?: 'settings' | 'topbar';
@@ -29,16 +30,17 @@
   }
 </script>
 
-<button
-  type="button"
-  aria-label={label}
-  title={label || copy.settings.language}
-  aria-pressed={current === 'zh-CN'}
-  disabled={!target}
-  class="{variant === 'settings'
-    ? 'inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80'
-    : 'icon-button shrink-0 p-2'} {variant === 'topbar' ? 'disabled:pointer-events-none' : ''}"
-  onclick={toggle}
->
-  <Icon class={variant === 'settings' ? 'size-4' : 'size-[var(--bar-icon)]'} />
-</button>
+<Tooltip text={label} side={variant === 'topbar' ? 'bottom' : 'top'}>
+  <button
+    type="button"
+    aria-label={label}
+    aria-pressed={current === 'zh-CN'}
+    disabled={!target}
+    class="{variant === 'settings'
+      ? 'inline-flex size-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-secondary/80'
+      : 'icon-button shrink-0 p-2'} {variant === 'topbar' ? 'disabled:pointer-events-none' : ''}"
+    onclick={toggle}
+  >
+    <Icon class={variant === 'settings' ? 'size-4' : 'size-[var(--bar-icon)]'} />
+  </button>
+</Tooltip>
