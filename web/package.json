@@ -1,6 +1,6 @@
 {
   "name": "infoto-web",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Infoto SPA (built into ../dist, served by the Worker ASSETS binding)",
