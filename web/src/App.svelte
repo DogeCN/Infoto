@@ -7,6 +7,7 @@
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import type { LayoutPreviewControl } from '$lib/components/SettingsPanel.svelte';
   import AnnouncementSidebar from '$lib/components/AnnouncementSidebar.svelte';
+  import GithubMark from '$lib/components/GithubMark.svelte';
   import { onDestroy, onMount, tick } from 'svelte';
 
   import { Toaster, toast } from 'svelte-sonner';
@@ -321,6 +322,19 @@
   >
     {#snippet icon()}
       <SettingsIcon class="size-5 text-primary" />
+    {/snippet}
+    {#snippet footer()}
+      <!-- Subtle source link pinned to the sidebar's bottom-left. -->
+      <a
+        href="https://github.com/DogeCN/Infoto"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={copy.sidebar.sourceOnGitHub}
+        title={copy.sidebar.sourceOnGitHub}
+        class="inline-flex rounded-md text-muted-foreground/50 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-foreground"
+      >
+        <GithubMark class="size-4" />
+      </a>
     {/snippet}
     <SettingsPanel
       onSettingsChange={handleSettingsChange}

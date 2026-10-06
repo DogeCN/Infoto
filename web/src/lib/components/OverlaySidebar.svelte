@@ -12,6 +12,7 @@
     title = '',
     icon,
     children,
+    footer,
     previewTransparent = false,
   }: {
     side?: 'left' | 'right';
@@ -19,6 +20,7 @@
     title?: string;
     icon?: Snippet;
     children?: Snippet;
+    footer?: Snippet;
     previewTransparent?: boolean;
   } = $props();
 
@@ -185,4 +187,13 @@
       {@render children()}
     {/if}
   </div>
+
+  <!-- Pinned footer below the scroll region (a link that should always be reachable
+       without scrolling). It never overlaps the scroll area, so it needs no opacity
+       treatment during a layout preview. -->
+  {#if footer}
+    <div class="px-5 pb-4 pt-2">
+      {@render footer()}
+    </div>
+  {/if}
 </div>

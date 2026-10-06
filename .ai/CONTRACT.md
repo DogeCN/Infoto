@@ -387,6 +387,13 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - The action sets **no** `inert` and no `aria-hidden` — components own those themselves
     (`OverlaySidebar` sets both on its own root).
   - **Nothing asserts any of this**; `overlay.ts` has no test at all.
+  - `OverlaySidebar` takes an optional `footer` snippet, pinned below the scroll region —
+    always reachable without scrolling, and never under a layout preview's transparency
+    (it does not overlap the scroll area, so it needs no opacity treatment). The settings
+    sidebar uses it for the **GitHub source link**: bottom-left, the octocat mark inlined
+    as SVG (`GithubMark.svelte` — lucide ships no brand icons) at `text-muted-foreground/50`,
+    brightening to `text-foreground` on hover. Deliberately unobtrusive: no border, no
+    background, no shadow.
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.

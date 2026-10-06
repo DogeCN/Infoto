@@ -144,6 +144,7 @@ export const enUS = {
     resizeAria: 'Resize sidebar width',
     resizeTitle: 'Drag to resize width',
     close: 'Close',
+    sourceOnGitHub: 'View source on GitHub',
   },
 
   settings: {
@@ -499,6 +500,7 @@ const zhCN: Copy = {
     resizeAria: '调整侧栏宽度',
     resizeTitle: '拖动调整宽度',
     close: '关闭',
+    sourceOnGitHub: '在 GitHub 查看源码',
   },
 
   settings: {
