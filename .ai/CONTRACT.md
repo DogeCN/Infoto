@@ -445,6 +445,23 @@ before deadline` / `no response before deadline`).
   - The header's `{done}/{total}` pair appears only when `total > 0`.
   - Hover expands the row list; on touch, dragging controls the panel's height. Collapsed, the
     batch total rides the bottom edge.
+  - **Deleting a pending photo withdraws its ops; it does not delete after the fact.** A sha
+    with no server row is a pending upload, so `deletePhotos` routes it to
+    `withdrawPendingUpload`: the card's cancel sink (registered by the upload store through
+    `setPendingUploadCancelSink`, the same layering bridge as the media-host sink) aborts an
+    in-flight transfer before it can write its upload op, `engine.removeOpsBySha` withdraws
+    every queued op carrying that sha (the upload op and any marks — a like on a photo that
+    never lands is a server no-op but a lie in the log), and only then is a `delete` op filed.
+    That op is the **tombstone**, and it must come after the withdrawal — `removeOpsBySha`
+    matches by sha and would otherwise take the tombstone with it. The tombstone covers the one
+    race this cannot close locally: an upload op already claimed by an in-flight sync request
+    cannot be un-sent, so if it lands the next sync deletes the row it created, and if it fails
+    the op is simply gone. Before this, deleting a pending photo touched neither the card nor
+    the oplog: the card stayed as a ghost until a reload (the optimistic card is the upload
+    store's, not the photo store's), and a delete filed while the upload was still in flight
+    appended as `[delete, upload]` — the server no-ops the delete on an unknown sha and then
+    creates the row, so the "deleted" photo landed for real. The store glue is untested;
+    `removeOpsBySha` itself is (oplog + engine suites).
 - **Admin layout.** The admin main area insets with `pt-[calc(var(--bar-h, 3.5rem)+16px)]` — it
   derives from the bar like every other surface beneath it. The fixed `pt-20`/`md:pt-24` form
   predates the height ramp and is gone.

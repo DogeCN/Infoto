@@ -2,7 +2,7 @@
 
 import { MAX_SYNC_OPS, type Op, type SyncRequest, type SyncResponse } from '$shared/types';
 import { postSync } from './api/syncClient';
-import { rebuildCache, appendOp, countOps, openOplogDb, readOps } from './oplog';
+import { rebuildCache, appendOp, countOps, openOplogDb, readOps, removeOpsBySha } from './oplog';
 
 /** Browser hard limit for a keepalive request body. */
 export const KEEPALIVE_BODY_LIMIT = 65_536;
@@ -106,6 +106,23 @@ export class SyncEngine {
     this.pending = await countOps(this.db);
     this.emit();
     return Number(key);
+  }
+
+  /**
+   * Withdraw every queued operation addressed to `sha256` — a pending upload the user deleted
+   * before its first sync. An operation already claimed by an in-flight request is withdrawn
+   * too: the request cannot be un-sent, so the caller files a delete op *afterwards* and the
+   * server ends up correct whether that request lands or fails (create+delete, or nothing).
+   * Returns how many operations were withdrawn.
+   */
+  async removeOpsBySha(sha256: string): Promise<number> {
+    if (!this.db) this.db = await openOplogDb();
+    const removed = await removeOpsBySha(this.db, sha256);
+    if (removed > 0) {
+      this.pending = await countOps(this.db);
+      this.emit();
+    }
+    return removed;
   }
 
   private pagehideUrl(): string {

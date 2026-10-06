@@ -266,6 +266,16 @@ export function setMediaHostSink(sink: (url: string) => void): void {
 
 const setMediaHost = (url: string): void => mediaHostSink?.(url);
 
+/** Pending-card cancel sink, wired by the upload store. Same layering note as above: a
+ *  pending card belongs to the upload pipeline, and appStore cannot import it. */
+let pendingUploadCancelSink: ((sha: string) => void) | null = null;
+
+export function setPendingUploadCancelSink(sink: (sha: string) => void): void {
+  pendingUploadCancelSink = sink;
+}
+
+const cancelPendingUpload = (sha: string): void => pendingUploadCancelSink?.(sha);
+
 /** One locale's slice of an all-locale list; order is preserved. */
 function localeSlice<T extends { locale: LocaleCode }>(all: T[], locale: LocaleCode): T[] {
   return all.filter((row) => row.locale === locale);
@@ -418,6 +428,23 @@ class AppState {
     void this.submit({ ...op, targetSha: sha256 });
   }
 
+  /**
+   * A pending card's sha has no server row, so there is nothing to delete remotely: the queued
+   * upload op is withdrawn instead, and the card's own cancel (registered by the upload store)
+   * stops an in-flight transfer before it can write one. The delete op is still filed — after
+   * the withdrawal resolves — as the tombstone that covers the race where the upload op was
+   * already claimed by an in-flight sync request and lands anyway: create then delete, net
+   * nothing. That is also why the withdrawal must run first: it matches every op by sha and
+   * would otherwise take the tombstone with it.
+   */
+  private async withdrawPendingUpload(sha: string): Promise<void> {
+    // The card goes regardless — a failed transcode carries no sha and still has a card.
+    cancelPendingUpload(sha);
+    if (!sha || !this.engine) return;
+    await this.engine.removeOpsBySha(sha);
+    await this.submit({ type: 'delete', targetSha: sha });
+  }
+
   /** A pending card is gone for good (cancelled / failed / dismissed): drop its state. */
   forgetPendingPhoto(sha256: string): void {
     if (!sha256) return;
@@ -497,11 +524,15 @@ class AppState {
   /** Optimistic root delete for multi-selection (sha-addressed, pending cards included). */
   deletePhotos(shas: string[]): void {
     if (this.selfId !== 0) return;
+    const known = new Set(this.photos.map((p) => p.sha256));
     const ids = shas
-      .filter((sha) => this.photos.some((p) => p.sha256 === sha))
+      .filter((sha) => known.has(sha))
       .map((sha) => this.photos.find((p) => p.sha256 === sha)!.id);
     if (ids.length > 0) this.removePhotos(ids);
-    for (const sha of shas) this.submitPhotoOp(sha, { type: 'delete' });
+    for (const sha of shas) {
+      if (known.has(sha)) this.submitPhotoOp(sha, { type: 'delete' });
+      else void this.withdrawPendingUpload(sha);
+    }
   }
 
   // Announcements

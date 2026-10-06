@@ -97,6 +97,22 @@ export function countOps(db: IDBDatabase): Promise<number> {
   return withStore(db, STORE, 'readonly', (store) => store.count());
 }
 
+/** Delete every queued operation addressed to `sha256` and return how many went. Used to
+ *  withdraw a pending upload's ops before its first sync, so the server never sees them. */
+export async function removeOpsBySha(db: IDBDatabase, sha256: string): Promise<number> {
+  const entries = await readOps(db);
+  const keys = entries.filter((e) => e.op.targetSha === sha256).map((e) => e.key);
+  if (keys.length === 0) return 0;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const key of keys) store.delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('oplog removeOpsBySha failed'));
+  });
+  return keys.length;
+}
+
 /** Clear the oplog for isolated test setup. */
 export function clearOps(db: IDBDatabase): Promise<void> {
   return withStore(db, STORE, 'readwrite', (store) => store.clear());

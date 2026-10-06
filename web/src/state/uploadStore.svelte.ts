@@ -10,7 +10,7 @@ import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from '../t
 import { readArtifact } from '../transcode/opfs';
 import type { SyncEngine } from '../core/engine';
 import type { createAppStore } from './appStore.svelte';
-import { setMediaHostSink } from './appStore.svelte';
+import { setMediaHostSink, setPendingUploadCancelSink } from './appStore.svelte';
 
 /** Album upload state, optimistic cards, progress, and preview resource ownership. */
 export function createUploadStore(store: ReturnType<typeof createAppStore>, engine: SyncEngine) {
@@ -37,6 +37,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
 
   // /sync names the upload facade; the SharedWorker needs it before any job can upload.
   setMediaHostSink((url) => pipeline.setMediaHost(url));
+  // Deleting a pending photo reaches here through the app store: cancel the job (stops an
+  // in-flight transfer before it can write its upload op) and drop the card.
+  setPendingUploadCancelSink((sha) => cancelPendingBySha(sha));
   /** Source dimensions probed at enqueue — failed transcodes keep the real aspect ratio. */
   const probedSizeByJob = new SvelteMap<string, { width: number; height: number }>();
 
@@ -302,6 +305,20 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     if (!jobId) return;
     pipeline.cancel(jobId);
     dropTask(jobId);
+  }
+
+  /**
+   * Drop every pending card for a sha the user deleted: cancel the job — the SharedWorker
+   * drops its record and the OPFS artifact, and a transfer still in flight is aborted before
+   * it can write its upload op — and drop the card locally even when the worker no longer
+   * holds the record. Same shape as the failed-card dismiss.
+   */
+  function cancelPendingBySha(sha: string): void {
+    for (const t of [...uploadTasks.values()]) {
+      if (t.sha256 !== sha) continue;
+      pipeline.cancel(t.jobId);
+      dropTask(t.jobId);
+    }
   }
 
   // Task sink lives in its own effect so its unsubscribe is honoured on teardown.

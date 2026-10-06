@@ -599,3 +599,32 @@ test('keepalivePrefix: sends the longest prefix that fits the browser body cap',
   assert.equal(keepalivePrefix([giant]), null);
   assert.deepEqual(keepalivePrefix([op(1), giant])!.ops, [op(1)]);
 });
+
+test('removeOpsBySha withdraws a pending upload op and keeps the pending count honest', async () => {
+  const uploadOp = (sha: string): Op => ({
+    type: 'upload',
+    targetSha: sha,
+    payload: {
+      sha256: sha,
+      url: `https://cdn.test/${sha}.webp`,
+      width: 1,
+      height: 1,
+      size: 1,
+      type: 0,
+    },
+  });
+  const e = engine();
+  await e.addOp(uploadOp('sha-a'));
+  await e.addOp(uploadOp('sha-b'));
+  assert.equal(e.state.pending, 2);
+
+  assert.equal(await e.removeOpsBySha('sha-a'), 1);
+  assert.equal(e.state.pending, 1);
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => entry.op.targetSha),
+    ['sha-b'],
+  );
+  // Withdrawing an absent sha changes nothing, including the pending count.
+  assert.equal(await e.removeOpsBySha('sha-a'), 0);
+  assert.equal(e.state.pending, 1);
+});
