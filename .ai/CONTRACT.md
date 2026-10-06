@@ -390,6 +390,11 @@ Back-filled from the commit history. Tagged sections are not yet written.
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
+  - Upload completion is held back by a **URL prewarm**: after the host accepts an artifact,
+    the SharedWorker fetches the returned URL (no-cors, capped at `PREWARM_BUDGET_MS = 2s`)
+    before reporting `done`. The optimistic card therefore swaps its src from the OPFS
+    object URL to the host URL over a warm cache instead of flashing a skeleton at the
+    handoff. A slow host delays the completion state but never hangs it.
   - `indeterminateRow` is true when the phase is `queued` or `lease-wait`, **or** when the
     fraction is `null`. An indeterminate row carries no `aria-valuenow` and sweeps.
   - `batchProgress` returns the mean of the measured rows **only if every row measures itself**;
