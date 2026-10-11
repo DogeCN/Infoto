@@ -1,7 +1,7 @@
 # 0010: Locale-Scoped Content and Standalone Multi-Select Polls
 
 - **Date**: 2026-10-01
-- **Status**: Superseded by 0013 for the locale-selected snapshot, the poll title, and the `::vote:<id>` token; the locale-scoped data model and normalized votes stand.
+- **Status**: Superseded by 0013 for the locale-selected snapshot, the poll title, and the `::vote:<id>` token, and by 0018 for the vote-clearing rule; the locale-scoped data model and normalized votes stand.
 - **Context**: Announcements, suggestions, and polls need independent Chinese and English content. The previous poll model embedded voting metadata in announcement Markdown and keyed responses to an announcement, which coupled two separately managed concepts and did not model multi-select responses cleanly. A translation must not leak into the other locale's public or admin view.
 - **Decision**:
   - Store `locale` on announcements, feedback, and polls. The sync snapshot carries every locale and the client selects the current one for those records; photos remain shared.

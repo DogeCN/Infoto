@@ -321,8 +321,8 @@ export const enUS = {
       copyFailed: 'Could not copy poll code',
       multipleAnswers: 'Multiple choices',
       singleAnswer: 'Single choice',
-      editResetVotesHint:
-        'Changing the options or choice mode clears votes; reordering keeps them.',
+      editVotesHint:
+        'Editing an option keeps votes. Changing the choice mode or the number of options clears them.',
       saveFailed: 'Failed to save poll',
       publishFailed: 'Failed to create poll',
       deleteFailed: 'Failed to delete poll',
@@ -680,7 +680,7 @@ const zhCN: Copy = {
       copyFailed: '无法复制投票代码',
       multipleAnswers: '多选',
       singleAnswer: '单选',
-      editResetVotesHint: '修改选项或投票模式会清空票数；调整顺序会保留票数。',
+      editVotesHint: '修改选项文案会保留票数；修改投票模式或选项数量会清空票数。',
       saveFailed: '投票保存失败',
       publishFailed: '投票创建失败',
       deleteFailed: '投票删除失败',

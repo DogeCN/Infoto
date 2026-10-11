@@ -110,7 +110,7 @@
       </fieldset>
 
       {#if poll}
-        <p class="text-xs text-muted-foreground">{copy.admin.poll.editResetVotesHint}</p>
+        <p class="text-xs text-muted-foreground">{copy.admin.poll.editVotesHint}</p>
       {/if}
     </div>
   {/snippet}

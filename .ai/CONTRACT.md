@@ -462,6 +462,15 @@ tabular-nums`, swapping in place inside one grid cell so the cross-fade never re
     "2 votes", and `web/tests/e2e/admin.spec.ts` asserts that name as well as the digit.
   - A poll nobody has answered yet shows no number at all — an empty poll is already legible
     from the fill bar, and "0" on every row is noise.
+- **Editing a poll keeps its votes unless the question changed.** A vote is stored as an option
+  _index_, and the editor keeps options in order, so a same-length edit — fixing an option's
+  wording — leaves every index addressing the same choice and the votes stand. Changing the
+  choice mode or the number of options asks a different question, so the votes clear. The
+  `PollEditorDialog` footer states this in one line (`admin.poll.editVotesHint`), and the client's
+  optimistic fold (`ops.applyPollUpdate`) applies the same two conditions the server does, so an
+  edit cannot show a count the next snapshot contradicts. ⚠️ An API caller that **reorders** a
+  same-length option list gets votes silently re-pointed at different labels — the editor has no
+  reorder gesture, which is what makes the length test sufficient.
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
@@ -713,11 +722,11 @@ longer differ without a visible diff in one file.
 
 Two consequences worth keeping in mind:
 
-- **The JS half cannot be unified, by construction.** The scramble-on-mount, the random idle
-  burst and the hover trigger all need JavaScript, and the Worker page must ship without a
-  `<script>` (`errors.test.ts` asserts there is none). The Worker's glyph therefore runs the
-  ambient slice/jitter and can never burst. Same visual language, less capability — that is the
-  intended end state, not an oversight.
+- **The glitch's JS half cannot be unified, by construction.** The scramble-on-mount, the random
+  idle burst and the hover trigger all need JavaScript, and the Worker page ships no glitch
+  script (`errors.test.ts` asserts the page's only `<script>` is the font race). The Worker's
+  glyph therefore runs the ambient slice/jitter and can never burst. Same visual language, less
+  capability — that is the intended end state, not an oversight.
 - **Reduced motion now behaves the same on both**: the echoes are removed and the glow is
   dropped, rather than the Worker freezing a mid-glitch frame.
 - **Sharing the glyph changed the Worker's typography, and one weight had to be added.**
@@ -792,6 +801,41 @@ also moved onto `base/lib/pointer.ts#startPointerResize`, which the other resize
 use; the hand-rolled `pointermove`/`up`/`cancel` handlers were the second copy MEMORY.md warns
 against.
 
+### 4.12 Two copies of the same thing are only duplicates while both work
+
+**Resolved 2026-10-12 (ADR 0017).** The web fonts raced two sources once (ADR 0006) and the race
+was removed twice over — first because the mirror's TLS handshake failed, then because both
+endpoints are Google's own and "racing them adds a request and a script to pick between two
+copies of the same thing" (ADR 0011). The premise of that second rejection was never measured,
+and the measurement sitting in ADR 0011 contradicts it: fetching 14 of the family's `woff2`
+subsets took **45 s and zero failures** from `fonts.gstatic.cn` against **102 s and two
+failures** from `fonts.gstatic.com`. A source that drops two of fourteen subset fetches is a
+fallback, not a duplicate.
+
+Both endpoints now load concurrently and the first to load **cancels every other link in the same
+task**, so a loser never declares the families and never triggers its own font downloads. A
+source that _fails_ removes only itself and leaves the rest racing; a link already detached
+ignores its own late events, so a removed link can never settle the race afterwards.
+
+The script sits **before** the stylesheet links, and that order is load-bearing: a pending
+stylesheet blocks the scripts after it, so a race script written last cannot start until the
+slowest source has already downloaded — measured at 1516 ms against a deliberately-slow 1500 ms
+endpoint. Because the links arrive after it, the script claims each through a
+`MutationObserver`. What "cancelled" buys was measured too: with a 0 ms endpoint against a
+1500 ms one the loser's link was detached at **221 ms**, though its HTTP response still reached
+the server and was discarded. The saved work is the _application_ — no `@font-face` from a
+loser, no `woff2` requested — not the duplicate CSS transfer.
+
+The rule this leaves behind: **"the same thing served twice" is a redundancy argument only after
+both copies have been observed failing.** Endpoint identity is not availability, and a shared
+vendor is not a shared failure mode. The mirror case stays retired for the reason that was
+measured — a handshake it cannot complete — and a source earns its place in the race by
+completing an end-to-end check, not by existing.
+
+The error page's only `<script>` is this race, and it runs by SHA-256 hash rather than
+`script-src 'unsafe-inline'`, so the page that has no other JavaScript keeps that hole shut
+(ADR 0006 needed `'unsafe-inline'`; dropping it was one of its stated wins).
+
 ---
 
 ## 5. Executable gates
@@ -819,6 +863,8 @@ The parts of this contract that are asserted by `npm test`:
 | A media URL's extension picks the Markdown element (video / audio / image)  | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links        | `web/tests/unit/markdown.test.ts`        |
 | The editor uploads any file, not only images and videos                     | `web/tests/unit/editorUpload.test.ts`    |
+| The font race cancels the losers, and a failed source removes only itself   | `src/shared/fonts.test.ts`               |
+| The error page's CSP hash equals the race script it authorises              | `src/shared/fonts.test.ts`               |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are

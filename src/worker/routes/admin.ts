@@ -159,25 +159,25 @@ function pollsApp(env: AppEnv): Hono {
     const draft = await readPollDraft(c);
     if (!draft) return badRequest(c);
     const existing = await env.db
-      .prepare('SELECT options, allow_multiple, locale FROM polls WHERE id = ?')
+      .prepare('SELECT options, allow_multiple FROM polls WHERE id = ?')
       .bind(id)
-      .first<{ options: string; allow_multiple: number; locale: LocaleCode }>();
+      .first<{ options: string; allow_multiple: number }>();
     if (!existing) return c.json({ ok: false, error: 'not_found' }, 404);
 
-    let previousOptions: unknown;
+    let previousCount = 0;
     try {
-      previousOptions = JSON.parse(existing.options);
+      const previousOptions: unknown = JSON.parse(existing.options);
+      if (Array.isArray(previousOptions)) previousCount = previousOptions.length;
     } catch {
-      previousOptions = null;
+      previousCount = 0;
     }
-    const optionsChanged =
-      !Array.isArray(previousOptions) ||
-      previousOptions.length !== draft.options.length ||
-      previousOptions.some((option, index) => option !== draft.options[index]);
+    // A vote addresses its option by index and the editor keeps the options in order, so a same
+    // length list means the same indices: changing an option's text keeps everyone's vote. Adding
+    // or removing options, or switching the choice mode, asks a different question, so the votes
+    // do not carry over. The client's fold applies the same two conditions.
     const definitionChanged =
-      optionsChanged ||
       existing.allow_multiple !== Number(draft.allowMultiple) ||
-      existing.locale !== draft.locale;
+      previousCount !== draft.options.length;
     const statements = [
       {
         sql: 'UPDATE polls SET options = ?, allow_multiple = ?, locale = ?, updated_at = ? WHERE id = ?',

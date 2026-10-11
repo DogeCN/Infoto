@@ -1,7 +1,10 @@
 # 0011: Web Fonts Load From Google's China Endpoint
 
 - **Date**: 2026-10-01
-- **Status**: Accepted
+- **Status**: Superseded by 0017 — the single-source decision stands on "racing the two adds a
+  request for two copies of the same thing", which holds only while neither copy fails. 0011's
+  own measurement recorded the global host failing two of fourteen subset fetches, so it is a
+  real fallback and the race is worth one extra request.
 - **Context**: ADR 0006-revised moved the web fonts to the global host alone (`fonts.googleapis.com` / `fonts.gstatic.com`) after the USTCLUG mirror's TLS handshake failed, and accepted as the cost that font CSS became a dependency on a host that is slow from here. It was not measured — the decision reasoned only about the mirror's failure and never timed the host it kept. Visitors still saw multi-second font loads.
 - **Decision**: Use Google's own China endpoint, `fonts.googleapis.cn` for the stylesheet and `fonts.gstatic.cn` for the files. Still a single source: no race, no script, no extra CSP host.
 - **Consequences**:

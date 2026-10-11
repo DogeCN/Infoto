@@ -1,7 +1,7 @@
 # 0013: All-Locale Sync Snapshots and Language-Addressed Poll References
 
 - **Date**: 2026-10-03
-- **Status**: Accepted (supersedes the locale-selected snapshot, the poll title, and the `::vote:<id>` token in 0010)
+- **Status**: Accepted (supersedes the locale-selected snapshot, the poll title, and the `::vote:<id>` token in 0010; its vote-clearing consequence is superseded by 0018)
 - **Context**: `/sync` selected one locale and returned only that locale's announcements, polls, and feedback, so changing the UI language had to clear the content lists and issue another request. Two problems followed. First, the client had to keep the request's locale and its `contentLocale` in agreement; when the engine read `activeLocale()` while writes were filed under `store.contentLocale`, rows were written but never displayed after a reload. Second, a poll reference could only carry an id, so a snapshot holding a single locale could not resolve a reference whose poll belonged to another one, and the renderer had no way to tell a missing poll from a wrong-language one.
 - **Decision**:
   - `/sync` returns every locale's announcements, polls, and feedback in one snapshot. The client stores them per locale and derives the visible lists from `contentLocale`; `SyncRequest`/`SyncResponse` carry no locale. Changing the language is a local re-render and issues no request.

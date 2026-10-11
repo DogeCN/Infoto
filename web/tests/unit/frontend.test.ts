@@ -101,12 +101,21 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
   polls = ops.applyVote(polls, 1, 4, []);
   assert.deepEqual(polls[0]!.votes, []);
   polls = ops.applyVote(polls, 1, 4, [0, 2]);
-  polls = ops.applyPollUpdate(polls, 1, ['A', 'B', 'C'], true, 2_000);
+  // Same option count and same mode: rewriting the text keeps the votes.
+  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B', 'C'], true, 2_000);
   assert.deepEqual(polls[0]!.votes, [
     { userId: 4, option: 0 },
     { userId: 4, option: 2 },
   ]);
-  polls = ops.applyPollUpdate(polls, 1, ['C', 'A', 'B'], true, 3_000);
+  // Switching the choice mode clears them.
+  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B', 'C'], false, 3_000);
+  assert.deepEqual(polls[0]!.votes, []);
+  // So does changing the option count, in either direction.
+  polls = ops.applyVote(polls, 1, 4, [1]);
+  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B'], false, 4_000);
+  assert.deepEqual(polls[0]!.votes, []);
+  polls = ops.applyVote(polls, 1, 4, [0]);
+  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B', 'C', 'D'], false, 5_000);
   assert.deepEqual(polls[0]!.votes, []);
 
   let announcements = [ann({ id: 1 })];

@@ -149,7 +149,7 @@ test('the snapshot carries announcements and feedback from every locale', async 
   ]);
 });
 
-test('poll CRUD persists multiple-choice selections and validates single-choice polls', async () => {
+test('poll CRUD keeps votes across an edit that changes neither the option count nor the choice mode', async () => {
   const { app } = makeApp();
   const { root, guest } = await twoIdentities(app);
   const created = await pollCreate(app, root, ['A', 'B', 'C'], true);
@@ -166,29 +166,30 @@ test('poll CRUD persists multiple-choice selections and validates single-choice 
   assert.deepEqual((await snap(app, root)).polls[0]!.votes, originalVotes);
 
   assert.equal((await pollCreate(app, root, ['only one'])).status, 400);
-  assert.equal(
-    (
-      await pollRequest(app, 'PUT', `/${poll.id}`, root, {
-        options: ['A', 'B', 'C'],
-        allowMultiple: true,
-        locale: 'en-US',
-      })
-    ).status,
-    200,
-  );
+
+  const put = (body: { options: string[]; allowMultiple: boolean }) =>
+    pollRequest(app, 'PUT', `/${poll.id}`, root, { ...body, locale: 'en-US' });
+
+  // Rewriting an option's text keeps every vote: the count and the mode are unchanged, and the
+  // editor keeps the options in order, so the indices still address the same choices.
+  assert.equal((await put({ options: ['A!', 'B', 'C'], allowMultiple: true })).status, 200);
   assert.deepEqual((await snap(app, root)).polls[0]!.votes, originalVotes);
 
-  assert.equal(
-    (
-      await pollRequest(app, 'PUT', `/${poll.id}`, root, {
-        options: ['Yes', 'No'],
-        allowMultiple: false,
-        locale: 'en-US',
-      })
-    ).status,
-    200,
-  );
+  // Switching the choice mode asks a different question, so the votes do not carry over.
+  assert.equal((await put({ options: ['A!', 'B', 'C'], allowMultiple: false })).status, 200);
   assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
+
+  // So does changing how many options there are, in either direction.
+  await postOps(app, guest, [{ type: 'vote', target: poll.id, payload: { options: [1] } }]);
+  assert.deepEqual((await snap(app, root)).polls[0]!.votes, [{ userId: 1, option: 1 }]);
+  assert.equal((await put({ options: ['A!', 'B'], allowMultiple: false })).status, 200);
+  assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
+
+  await postOps(app, guest, [{ type: 'vote', target: poll.id, payload: { options: [0] } }]);
+  assert.equal((await put({ options: ['A!', 'B', 'C'], allowMultiple: false })).status, 200);
+  assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
+
+  // A single-choice poll still refuses more than one selection.
   await postOps(app, guest, [{ type: 'vote', target: poll.id, payload: { options: [0, 1] } }]);
   assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
 });

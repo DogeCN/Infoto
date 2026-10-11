@@ -253,6 +253,15 @@ export function applyPollCreate(
   ];
 }
 
+/**
+ * Apply a poll edit, keeping the votes unless the edit asks a different question.
+ *
+ * A vote addresses its option by index, and the editor keeps the options in order, so a same
+ * length list means the same indices — editing an option's text keeps everyone's vote. Adding or
+ * removing an option, or switching the choice mode, invalidates the indices or changes what the
+ * question means, and clears them. Client and server must agree exactly: a row the optimistic
+ * update kept and the server dropped shows a count the next snapshot contradicts.
+ */
 export function applyPollUpdate(
   polls: Poll[],
   id: number,
@@ -263,9 +272,7 @@ export function applyPollUpdate(
   return polls.map((poll) => {
     if (poll.id !== id) return poll;
     const definitionChanged =
-      allowMultiple !== poll.allowMultiple ||
-      options.length !== poll.options.length ||
-      options.some((option, index) => option !== poll.options[index]);
+      allowMultiple !== poll.allowMultiple || options.length !== poll.options.length;
     return {
       ...poll,
       options,
