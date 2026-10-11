@@ -66,18 +66,19 @@ dist/              Vite build output (not in git, served by wrangler [assets])
 
 Run from the repo root:
 
-| Command              | Purpose                                                              |
-| -------------------- | -------------------------------------------------------------------- |
-| `npm ci`             | Install all deps (worker + web, one-shot)                            |
-| `npm run dev`        | Local dev: D1 local seed + Worker (:8787) + Vite (:5173) in parallel |
-| `npm run build`      | Build SPA → `dist/`                                                  |
-| `npm test`           | All unit tests (root vitest + web vitest)                            |
-| `npm run lint`       | ESLint + Prettier check (CI gate)                                    |
-| `npm run lint:fix`   | Auto-fix + format                                                    |
-| `npm run ts-check`   | Type gate: tsc × 3 + `svelte-check --fail-on-warnings`               |
-| `npm run db:local`   | Seed local D1 with `schema.sql` (idempotent; `--force` to reset)     |
-| `npm run db:reset`   | Reset local D1 data                                                  |
-| `npm run gen-schema` | Generate `src/worker/schema-ddl.ts` from `schema.sql`                |
+| Command              | Purpose                                                                                                                             |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `npm ci`             | Install all deps (worker + web, one-shot)                                                                                           |
+| `npm run dev`        | Local dev: D1 local seed + Worker (:8787) + Vite (:5173) in parallel                                                                |
+| `npm run build`      | Build SPA → `dist/`                                                                                                                 |
+| `npm test`           | All unit tests (root vitest + web vitest)                                                                                           |
+| `npm run lint`       | ESLint + Prettier check (CI gate)                                                                                                   |
+| `npm run lint:fix`   | Auto-fix + format                                                                                                                   |
+| `npm run ts-check`   | Type gate: tsc × 3 + `svelte-check --fail-on-warnings`                                                                              |
+| `npm run db:local`   | Seed local D1 with `schema.sql` (idempotent; `--force` to reset)                                                                    |
+| `npm run db:reset`   | Reset local D1 data                                                                                                                 |
+| `npm run gen-schema` | Generate `src/worker/schema-ddl.ts` from `schema.sql`                                                                               |
+| `npm run release`    | Cut a release: bump both manifests + lockfile, commit, tag, push (refuses a dirty tree / non-`main` / an existing tag; `--dry-run`) |
 
 Web-only: `npm run e2e -w infoto-web` (Playwright, local manual; requires `msedge`/`chromium`), `npm run test:watch -w infoto-web`. Run `npm run e2e -w infoto-web -- ui.spec.ts` for mocked gallery, keyboard, overlay, locale, narrow-screen, and failed-upload regressions. Full pipeline specs require the real upload service configuration.
 

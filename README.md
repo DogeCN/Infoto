@@ -159,6 +159,17 @@ Flow: ensure the D1 database exists → patch `wrangler.toml` per target → app
 idempotently → `wrangler deploy` → inject secrets. A missing `MEDIA_HOST_URL` hard-fails
 the deploy rather than silently pointing production at localhost.
 
+**Releasing is a tag push.** The SPA's version label reads the latest tag at build time, so
+nothing in the repo has to be edited to cut a version:
+
+```bash
+npm run release -- minor "what changed in this one"
+```
+
+That bumps both `package.json` files and the lockfile together, commits, tags `v<x.y.z>` and
+pushes with `--follow-tags`. It refuses a dirty working tree, a branch other than `main`, and
+a tag that already exists; `--dry-run` prints the plan without writing anything.
+
 ### License
 
 [AGPL-3.0](LICENSE) — see [NOTICE](NOTICE).
@@ -293,6 +304,16 @@ Cloudflare WAF / 速率限制规则，或在请求头里要求 Turnstile token�
 流程：确保同名 D1 存在 → 按目标补丁 `wrangler.toml` → 幂等应用 schema →
 `wrangler deploy` → 注入 secrets。`MEDIA_HOST_URL` 缺失会硬失败，绝不悄悄把生产指向
 localhost。
+
+**发版就是打 tag。** SPA 的版本号在构建时读取最新 tag，所以仓库里没有任何文件需要手改：
+
+```bash
+npm run release -- minor "这次改了什么"
+```
+
+它会同时更新两个 `package.json` 和 lockfile，提交，打上 `v<x.y.z>`，并用 `--follow-tags`
+推送。工作区不干净、不在 `main` 分支、tag 已存在，这三种情况都会被拒绝；`--dry-run`
+只打印计划，不写任何东西。
 
 ### 许可证
 

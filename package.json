@@ -22,6 +22,7 @@
     "db:seed": "node scripts/seed-dev-content.mjs",
     "db:reset": "node scripts/reset-local-db.mjs",
     "gen-schema": "node scripts/gen-schema-ddl.mjs",
+    "release": "node scripts/release.mjs",
     "test": "vitest run && npm test -w infoto-web",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
