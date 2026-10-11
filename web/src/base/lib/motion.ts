@@ -100,6 +100,20 @@ export const bubbleTransition = {
 };
 
 /**
+ * `transition:fly` params for a counter that fade-hops when its number changes — the upload
+ * panel's remaining count and a poll row's count. One number replaces another in the same
+ * grid cell, so the cross-fade never reflows whatever it sits in.
+ *
+ * This is the generic shape of the upload panel's hop, moved here so a second counter cannot
+ * re-type the pair it is made of (the same drift §1.2 forbids for literal durations).
+ */
+export const countHop = {
+  y: 5,
+  duration: motionMs('exit'),
+  easing: motionEaseFn('exit'),
+};
+
+/**
  * How long after a layout commit a card may still remount and glide from the box it last
  * rendered at, rather than appearing at the new one.
  *

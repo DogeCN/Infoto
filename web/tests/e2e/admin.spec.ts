@@ -71,8 +71,10 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
   const preview = dialog.getByLabel(copy.editor.previewAria);
   await expect(preview.getByRole('region', { name: copy.admin.tabs.polls })).toBeVisible();
   await expect(preview).toContainText('Choice A');
-  await expect(preview).toContainText('67%');
-  await expect(preview).toContainText(voteCount(2));
+  // One number per row: the count. The proportion lives in the fill bar, and the full
+  // reading survives as the number's accessible name.
+  await expect(preview.getByLabel(voteCount(2))).toHaveText('2');
+  await expect(preview.getByLabel(voteCount(1))).toHaveText('1');
   await expect(preview).not.toContainText(`::poll:${locale}:42`);
   await expect(preview.locator('img')).toHaveCount(1);
   await expect(preview.locator('img')).toHaveAttribute('src', 'https://example.com/image.png');
@@ -136,8 +138,7 @@ test('admin manages independent multiple-choice polls and copies stable referenc
   await page.getByRole('tab', { name: copy.admin.tabs.polls, exact: true }).click();
 
   const existingRow = page.getByRole('listitem').filter({ hasText: 'Choice A' });
-  await expect(existingRow).toContainText('67%');
-  await expect(existingRow).toContainText(voteCount(2));
+  await expect(existingRow.getByLabel(voteCount(2))).toHaveText('2');
 
   await page.getByRole('button', { name: copy.admin.newPoll, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: copy.admin.newPoll, exact: true });

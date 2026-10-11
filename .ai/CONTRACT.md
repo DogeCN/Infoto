@@ -434,6 +434,16 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - Consequence, and the point: **a release is a tag push — there is no file to edit.** The
     deploy workflow's checkout therefore runs with `fetch-depth: 0`, because the default
     shallow, tag-less clone leaves `git describe` with nothing to report.
+- **Poll rows carry one number: the count.** `VoteBlock.svelte` shows no percentage — at row
+  size the percentage and the count read as clutter, and the fill bar already carries the
+  proportion. The number is the transcode panel's counter exactly: `text-sm font-semibold
+  tabular-nums`, swapping in place inside one grid cell so the cross-fade never reflows the
+  row. Its hop is `countHop` from `base/lib/motion.ts` (entry downward, exit upward), the
+  generic form of the upload panel's own hop, so the two counters cannot drift apart.
+  - The full reading is not lost, only moved: the number's `aria-label` still says
+    "2 votes", and `web/tests/e2e/admin.spec.ts` asserts that name as well as the digit.
+  - A poll nobody has answered yet shows no number at all — an empty poll is already legible
+    from the fill bar, and "0" on every row is noise.
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.

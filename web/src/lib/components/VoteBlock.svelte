@@ -1,8 +1,13 @@
 <script lang="ts">
   // Poll control: one selected option for single-choice polls, a set for multi-choice polls.
+  import { fly } from 'svelte/transition';
   import type { Vote } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { fmt, plural } from '$shared/copy';
+  import { countHop } from '$base/lib/motion';
+
+  /** The outgoing number leaves upward, mirroring `countHop`'s entry. */
+  const countHopOut = { ...countHop, y: -countHop.y };
 
   interface Props {
     options: string[];
@@ -82,14 +87,23 @@
         >
           {label}
         </span>
-        <!-- A poll nobody has answered yet would read as "0% 0 votes" on every row, which
-             is noise rather than information. The fill bar already shows an empty poll. -->
+        <!-- One number: the count, matching the transcode panel's counter (its type, and its
+             hop when the number changes). The percentage went with it — at this size the pair
+             read as clutter, and the fill bar already carries the proportion. The full reading
+             stays available to a screen reader. -->
         {#if total > 0}
-          <span class="inline-flex items-baseline gap-1.5 tabular-nums">
-            <span class="font-mono text-xs text-primary">{pct.toFixed(0)}%</span>
-            <span class="font-mono text-[11px] text-muted-foreground/70">
-              {fmt(plural(count, copy.vote.count), { count })}
-            </span>
+          <span
+            class="inline-grid shrink-0 justify-items-end text-sm font-semibold tabular-nums {isChosen ||
+            isWinner
+              ? 'text-primary'
+              : 'text-foreground'}"
+            aria-label={fmt(plural(count, copy.vote.count), { count })}
+          >
+            {#key count}
+              <span class="col-start-1 row-start-1" in:fly={countHop} out:fly={countHopOut}>
+                {count}
+              </span>
+            {/key}
           </span>
         {/if}
       </span>
