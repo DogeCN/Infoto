@@ -1,8 +1,32 @@
+<script module lang="ts">
+  /**
+   * Exactly one tooltip may be on screen. Hovering one control while focus sits on another
+   * used to leave two bubbles up at once, each instance blind to the other — and a bubble
+   * that nothing on screen is pointing at reads as stuck.
+   */
+  let activeClose: (() => void) | null = null;
+
+  /** Touch gets no tooltip: the long-press copy blocked the view on phones, and the
+   *  labelled control itself is the touch affordance. */
+  function noHover(): boolean {
+    return typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches;
+  }
+
+  /** True for keyboard-driven focus only — see `onFocusIn`. */
+  function focusVisible(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    try {
+      return target.matches(':focus-visible');
+    } catch {
+      // A browser without :focus-visible support never shows a focus tooltip.
+      return false;
+    }
+  }
+</script>
+
 <script lang="ts">
   // Accessible tooltip for a single trigger element. Visible on hover and keyboard focus.
   // Portaled above <body> so overflow clipping and transformed ancestors can't trap it; placement flips to the opposite side near a viewport edge.
-  // Touch deliberately gets no tooltip (user call): the long-press copy blocked the view
-  // on phones, and the labelled control itself is the touch affordance.
   import { onDestroy, type Snippet } from 'svelte';
   import { portal } from '$base/lib/portal';
 
@@ -30,6 +54,7 @@
   onDestroy(() => {
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
+    if (activeClose === closeNow) activeClose = null;
   });
 
   const SHOW_DELAY_MS = 350;
@@ -89,42 +114,68 @@
         : nextY;
   }
 
+  /** Close without touching the registry; the caller decides whether it still owns it. */
+  function closeNow(): void {
+    open = false;
+  }
+
+  /** Close and give up the single-instance slot. */
+  function dismiss(): void {
+    if (activeClose === closeNow) activeClose = null;
+    closeNow();
+  }
+
+  /** Put this tooltip on screen, taking the slot from whichever one holds it. */
+  function reveal(): void {
+    if (activeClose !== closeNow) activeClose?.();
+    position();
+    open = true;
+    activeClose = closeNow;
+  }
+
   function show(immediate = false): void {
     if (!text) return;
     if (hideTimer) clearTimeout(hideTimer);
     if (showTimer) clearTimeout(showTimer);
     if (immediate) {
-      position();
-      open = true;
+      reveal();
     } else {
-      showTimer = setTimeout(() => {
-        position();
-        open = true;
-      }, SHOW_DELAY_MS);
+      showTimer = setTimeout(reveal, SHOW_DELAY_MS);
     }
   }
 
   function hide(): void {
     if (showTimer) clearTimeout(showTimer);
     if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => (open = false), HIDE_DELAY_MS);
+    hideTimer = setTimeout(dismiss, HIDE_DELAY_MS);
   }
 
   function onPointerOver(): void {
-    if (window.matchMedia('(hover: none)').matches) return;
+    if (noHover()) return;
     show();
   }
   function onPointerOut(): void {
     hide();
   }
-  function onFocusIn(): void {
+  /**
+   * Keyboard focus earns a tooltip; a pointer-driven or programmatic one does not.
+   *
+   * Every incidental focus used to pop a tooltip with no hover at all: clicking a button
+   * (the browser focuses it on mousedown), the overlay's initial focus landing on a
+   * `[data-autofocus]` control, and the focus restore that returns to the trigger when a
+   * dialog closes. `:focus-visible` is false for all three and true for Tab navigation, so
+   * it separates "the user is looking for this control" from "focus merely happened to
+   * land here". Touch is refused for the same reason it is refused on hover.
+   */
+  function onFocusIn(event: FocusEvent): void {
+    if (noHover() || !focusVisible(event.target)) return;
     show(true);
   }
   function onFocusOut(): void {
     hide();
   }
   function onKeyDown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') open = false;
+    if (e.key === 'Escape' && open) dismiss();
   }
 
   $effect(() => {

@@ -190,8 +190,19 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - The wrapper is `display: contents`, so it is never a containing block (an absolutely
     positioned trigger keeps its own positioning) and never changes a measured width: the
     top-bar probes measure their group **containers**, whose widths sum the same children.
-  - Touch deliberately gets nothing (`hover: none` short-circuits `show`), so a tooltip can
-    never be the only way to learn what a control does — the `aria-label` is.
+  - Touch deliberately gets nothing (`hover: none` short-circuits both `show` paths), so a
+    tooltip can never be the only way to learn what a control does — the `aria-label` is.
+  - **Only hover and keyboard focus raise a tooltip.** The focus path additionally requires
+    `:focus-visible`, because focus lands on controls for reasons the user did not choose:
+    the browser focuses a button on mousedown, an overlay's `focusFirst()` focuses its
+    `[data-autofocus]` node, and closing a dialog restores focus to the trigger. All three
+    used to pop a bubble with the pointer parked across the screen (see ⚠️ §4.10).
+    `:focus-visible` is false for those and true for Tab, which is the modality that earns a
+    tooltip. The residual case is deliberate: closing a sheet with Escape is keyboard-driven,
+    so the restored trigger does show its bubble, telling the user where focus went.
+  - **One tooltip at a time.** A module-level slot holds the open instance's closer, and a
+    revealing tooltip closes whichever one holds it. Without that, hovering one control while
+    focus sat on another left two bubbles on screen, each instance blind to the other.
   - The tooltip follows its trigger while open (scroll, resize, sidebar drag) and flips to the
     opposite side when the preferred one has no room; placement is fixed-positioned above
     `<body>` via `portal`, so overflow clipping and transformed ancestors cannot trap it.
@@ -640,6 +651,34 @@ by `web/tests/unit/designTokens.test.ts`, closing the gap that §5 used to list 
 `0x0000…00` was written into the deploy workflow as a Turnstile test secret; it is on no
 Cloudflare document, so every identity creation on the test deployment failed silently
 while CI stayed green (`819bf06`). Copy the vendor's published value.
+
+### 4.10 A tooltip popped on focus, and focus lands by itself
+
+**Resolved 2026-10-11.** Converting every native `title` to the custom Tooltip (`5fa4d3c`)
+made a latent trap visible in thirteen files at once: `Tooltip` showed on `focusin` with
+`show(true)` — immediately, with no hover, and past the `(hover: none)` guard that the
+pointer path obeys. Focus lands on controls without the user asking: the browser focuses a
+button on mousedown, an overlay's `focusFirst()` focuses its `[data-autofocus]` node, and
+deactivating a layer restores focus to the trigger.
+
+The symptoms, all reproduced with the pointer parked across the screen: opening the settings
+sheet popped "Close" (its close button carries `data-autofocus`), closing it popped
+"Settings" (focus restored to the trigger), a plain click popped a bubble instantly instead
+of after the 350ms hover delay, and hovering one control while focus sat on another left
+**two** bubbles up at once, each instance blind to the other.
+
+A native `title` never appears on focus, so none of this existed before the conversion — the
+trap was invisible, not absent. The Lightbox had already been bitten by it once (⚠️ §3: its
+`data-autofocus` moved off the like button onto the stage, because focusing the button
+"popped its tooltip immediately"); that was a workaround at one call site, and this is the
+rule: **the focus path requires `:focus-visible`** — false for mousedown focus, overlay
+initial focus and focus restore, true for Tab — plus the same touch guard as hover, and a
+module-level slot so only one tooltip is on screen at a time. `web/tests/e2e/ui.spec.ts`
+asserts the whole sequence.
+
+Deliberately left alone: closing a sheet with **Escape** is a keyboard interaction, so
+Chromium treats the restored focus as `:focus-visible` and the trigger does show its bubble.
+That is the modality that earns tooltips, and the bubble tells the user where focus went.
 
 ---
 

@@ -520,3 +520,41 @@ test('verification failures stay stopped and manual sync can recover', async ({ 
   await page.clock.runFor(120_000);
   expect(requests).toBe(5);
 });
+
+test('a tooltip needs hover or keyboard focus, never incidental focus', async ({ page }) => {
+  await page.goto('/');
+  const settings = page.getByRole('button', { name: enCopy.topbar.settings });
+  const tip = page.getByRole('tooltip');
+  await expect(settings).toBeVisible();
+
+  // Hover still shows it.
+  await settings.hover();
+  await expect(tip).toHaveText(enCopy.topbar.settings);
+  await page.mouse.move(640, 600);
+  await expect(tip).toHaveCount(0);
+
+  // Opening the sidebar lands focus on its [data-autofocus] close button. That focus is
+  // incidental — it follows a click, not Tab — so the close button raises no bubble.
+  await settings.click();
+  await page.mouse.move(640, 600);
+  await page.waitForTimeout(150);
+  await expect(tip).toHaveCount(0);
+
+  // Closing by pointer hands focus back to the trigger. Same rule: the focus that returns
+  // is not focus-visible, so no bubble. (Closing by Escape is keyboard-driven and does
+  // raise one — that is the modality that earns tooltips, and it tells the user where
+  // focus went.)
+  await page.getByRole('button', { name: enCopy.sidebar.close }).click();
+  await page.mouse.move(640, 600);
+  await page.waitForTimeout(150);
+  await expect(tip).toHaveCount(0);
+
+  // Tab navigation is the one path that still earns a tooltip.
+  let seen = false;
+  for (let i = 0; i < 12 && !seen; i += 1) {
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(30);
+    seen = (await tip.count()) > 0;
+  }
+  expect(seen).toBe(true);
+});
