@@ -485,9 +485,14 @@ tabular-nums`, swapping in place inside one grid cell so the cross-fade never re
     thin". GitHub runs every level at one weight. `app.css` now pins: all six headings at
     `font-weight: 600`; GitHub's size ladder 2 / 1.5 / 1.25 / 1 / .875 / .875 em; a hairline under
     h1 and h2 with `padding-bottom: .3em`; the quote as `padding: 0 1em` + a `0.25em` left bar,
-    weight 400, upright; lists indented `2em`; `hr` as a `0.25em` band with a 1px rule; inline code
-    as a chip (`.2em .4em`, 6px radius, 85% size, `--color-border` at 45% alpha); table cells
-    `6px 13px` on a 1px grid.
+    weight 400, upright, **and no quote glyph**; lists indented `2em`; `hr` as a `0.25em` band
+    with a 1px rule; inline code as a chip (`.2em .4em`, 6px radius, 85% size, `--color-border` at
+    45% alpha); table cells `6px 13px` on a 1px grid.
+  - **The quote carries no `open-quote` / `close-quote`.** The plugin hangs typographic quotes on
+    a quote's first and last paragraph via `::before` / `::after`. They render flush against the
+    text, so a quoted line reads as one run rather than a quote, and the bar already marks the
+    block. Overridden to `content: none`, which GitHub also does by emitting no glyphs. The
+    inline-code backtick is a different feature and **stays** — it is what marks a run as code.
   - **Interactive elements are excluded, deliberately.** Links keep `--color-primary`, and
     `MarkdownView`'s own file / media affordances are untouched — this palette is GitHub's answer
     for reading, not for the controls layered over it.
@@ -970,6 +975,7 @@ The parts of this contract that are asserted by `npm test`:
 | The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer | `web/tests/unit/designTokens.test.ts`    |
 | Markdown structure follows GitHub: heading ladder, quote bar, code chip        | `web/tests/unit/designTokens.test.ts`    |
 | A block-opening or block-closing image carries no rhythm margin                | `web/tests/unit/designTokens.test.ts`    |
+| A blockquote carries no quote glyph                                            | `web/tests/unit/designTokens.test.ts`    |
 | The font race cancels the losers, and a failed source removes only itself      | `src/shared/fonts.test.ts`               |
 | The error page's CSP hash equals the race script it authorises                 | `src/shared/fonts.test.ts`               |
 

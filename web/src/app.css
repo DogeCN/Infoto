@@ -219,12 +219,23 @@
   }
 
   /* `padding: 0 1em` with a 0.25em left rule — GitHub's quote is an indent plus a bar, and the
-     bar is thick enough to read as a structural divider rather than a hairline. */
+     bar is thick enough to read as a structural divider rather than a hairline.
+
+     The plugin also hangs typographic quotes on the first and last paragraph via
+     `blockquote p:first-of-type::before { content: open-quote }` and its `::after` twin. They
+     render immediately against the text, so a quoted line reads as one run rather than a quote,
+     and the quote bar already marks the block — GitHub emits no glyphs here either. `:where()`
+     keeps this at the same zero specificity as the plugin's own rules, so it wins on order inside
+     the layer rather than outranking anything. */
   .prose :where(blockquote) {
     padding: 0 1em;
     border-left-width: 0.25em;
     font-weight: 400;
     font-style: normal;
+  }
+  .prose :where(blockquote p:first-of-type)::before,
+  .prose :where(blockquote p:last-of-type)::after {
+    content: none;
   }
 
   /* 2em of indent, matching GitHub's list inset. */

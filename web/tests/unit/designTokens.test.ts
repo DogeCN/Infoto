@@ -268,3 +268,23 @@ test('prose rhythm: a block-opening or block-closing image carries no margin', (
   // would flatten multi-image announcements too.
   assert.doesNotMatch(css, /\.prose\s*:where\(img\)\s*\{[^}]*margin/);
 });
+
+// The plugin hangs typographic quotes on a quote's first and last paragraph via `open-quote` /
+// `close-quote`. They render flush against the text, so the line reads as one run rather than a
+// quote, and the quote bar already marks the block. GitHub emits no glyphs here either.
+test('prose quote: a blockquote carries no quote glyph', () => {
+  const block = /@layer utilities\s*\{([\s\S]*?)\n\}/.exec(appCss)?.[1];
+  assert.ok(block, 'app.css has no @layer utilities block for the prose palette');
+  const css = block.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  assert.match(
+    css,
+    /\.prose\s*:where\(blockquote p:first-of-type\)::before[^{]*,\s*\n?\s*\.prose\s*:where\(blockquote p:last-of-type\)::after\s*\{[^}]*content:\s*none/,
+    'a quote must not hang open-quote / close-quote glyphs on its first and last paragraph',
+  );
+  // `:where()` keeps the override at the plugin's own zero specificity, so it wins on order
+  // inside the layer instead of outranking a rule elsewhere.
+  assert.match(css, /:where\(blockquote p:first-of-type\)::before/);
+  // The inline-code backtick is a different feature and stays: it is what marks the run as code.
+  assert.doesNotMatch(css, /\.prose\s*:where\(code\):not\([^)]*\)\s*\{[^}]*content:/);
+});
