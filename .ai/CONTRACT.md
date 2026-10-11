@@ -471,6 +471,39 @@ tabular-nums`, swapping in place inside one grid cell so the cross-fade never re
   edit cannot show a count the next snapshot contradicts. ⚠️ An API caller that **reorders** a
   same-length option list gets votes silently re-pointed at different labels — the editor has no
   reorder gesture, which is what makes the length test sufficient.
+- **Markdown follows `github-markdown-css` (light mode) for its non-interactive elements.** Two
+  things were wrong at once, and the second was the more visible one.
+  - **Colour.** `@tailwindcss/typography` styles `.prose` entirely through `--tw-prose-*` variables
+    and ships a **light-surface** palette — body defaults to `oklch(37.3% .034 259.733)`, a
+    near-black that renders as a dark slab on this background. GitHub's own values are defined for
+    a white canvas (`#1f2328` on `#ffffff`), so they are **not pasted**; each maps onto the nearest
+    site token, which keeps GitHub's tonal _relationships_ (body brightest, one muted tier for
+    quotes / lead / markers / captions, borders quietest) without importing a second palette.
+    Measured on the rendered page: body **15.62:1**, links **10.65:1**.
+  - **Structure.** The plugin ships headings at 800/700/600/600/**400/400**, so **h5 and h6 rendered
+    at body weight — the faintest thing in a document**, and the likeliest reason the text "read
+    thin". GitHub runs every level at one weight. `app.css` now pins: all six headings at
+    `font-weight: 600`; GitHub's size ladder 2 / 1.5 / 1.25 / 1 / .875 / .875 em; a hairline under
+    h1 and h2 with `padding-bottom: .3em`; the quote as `padding: 0 1em` + a `0.25em` left bar,
+    weight 400, upright; lists indented `2em`; `hr` as a `0.25em` band with a 1px rule; inline code
+    as a chip (`.2em .4em`, 6px radius, 85% size, `--color-border` at 45% alpha); table cells
+    `6px 13px` on a 1px grid.
+  - **Interactive elements are excluded, deliberately.** Links keep `--color-primary`, and
+    `MarkdownView`'s own file / media affordances are untouched — this palette is GitHub's answer
+    for reading, not for the controls layered over it.
+  - ⚠️ **The block must stay in `@layer utilities`, not `base`.** `.prose-invert` declares the
+    same variables and the plugin emits it into that layer; a later layer beats an earlier one
+    regardless of source order, so a binding in `base` is silently dropped and the page falls back
+    to the light-surface default. This is invisible in a diff — the rule is present and correct.
+    The `:where()` structural overrides depend on the same layer for the same reason, and win by
+    order within it (verified in a browser, not reasoned about).
+  - ⚠️ **Do not pass a colour class to `MarkdownView`.** `class="text-muted-foreground"` sets `color`
+    on the container, which beats `var(--tw-prose-body)` and drags every paragraph to 5.23:1.
+    Tone a prose surface through the variables, not from the call site. `class` remains for
+    layout only (width, margin).
+  - `designTokens.test.ts` asserts the layer, that every value names a declared token, the heading
+    ladder and shared weight, the quote bar, the code chip, and that no structural rule hardcodes
+    a hex. Each guard was verified against the regression it exists for.
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
@@ -515,10 +548,10 @@ before deadline` / `no response before deadline`).
     leg. The picked file is uploaded as-is, so its extension survives into the returned URL. How
     it lands in Markdown is decided by the extension — and the same predicate decides how it
     renders, so what is inserted is what appears:
-    - `isImageArtifact` (a real image extension: webp/jpg/png/gif/avif/heic/svg…) →
-      `![name](url)`, rendered as `<img>`.
-    - a video extension → `![name](url)`, rendered as `<video>` (muted, looping, click to
-      unmute); an audio extension → `![name](url)`, rendered as `<audio controls>`.
+    - a real image extension (webp/jpg/png/gif/avif/heic/svg…) → `![](url)`, rendered as
+      `<img>`.
+    - a video extension → `![](url)`, rendered as `<video>` (muted, looping, click to
+      unmute); an audio extension → `![](url)`, rendered as `<audio controls>`.
     - **anything else — a `.pdf`, a `.zip`, no extension at all — becomes `[name](url)`**, a
       plain link the reader clicks to open or download. `isEmbeddableArtifact` is the one
       predicate (image ∪ video ∪ audio extensions) and is shared by `insertMediaAt` and
@@ -526,7 +559,23 @@ before deadline` / `no response before deadline`).
       also turns a stray `![alt](url.pdf)` into `<a class="markdown-file" download>`, because an
       `<img>` pointed at a PDF is a broken image, not a link. The toolbar button is **File**,
       not Image.
+    - **No alt text.** The file name used to be the alt, and the browser paints alt as
+      broken-image text while the image decodes — it read as an ugly caption over the
+      placeholder. `alt` is now empty; the name is still worth keeping as a link label, which is
+      what `insertLinkAt` falls back to when a file has no embedded name.
       The album's own `image/*,video/*` gate and its transcode legs are untouched.
+  - **The editor previews the picked file locally, at its measured size.** The editor leg
+    uploads the picked file as-is, so the bytes in hand are the bytes the hosted URL will serve:
+    `AnnouncementEditorDialog` creates an object URL and calls `probeSourceSize` the moment a
+    file is picked, and the preview pane renders that image inside a box reserved at the **probed
+    ratio**. It is cleared the moment the hosted URL lands, so the local stand-in and the hosted
+    image are never both on screen. This is the card curtain's mechanism applied to the editor,
+    and it exists because of what it removes — ⚠️ §4.12.
+    - `.md-media`'s hardcoded `aspect-ratio: 16 / 10` is the **fallback**, not the normal path.
+      A picked image is measured before it is shown, so the guess should never be seen; it
+      survives only for media whose dimensions arrive late or never.
+    - `isImageFile` gates the preview on MIME **or** file name, because a Windows pick with an
+      empty MIME must still preview.
   - **A returning visitor renders the persisted snapshot before the network answers.** The last
     `/sync` response is stored whole in `metaCache` (under the reserved key `snapshot`, which a
     64-hex album hash can never collide with) and `engine.init` hands it to the store before the
@@ -834,7 +883,61 @@ completing an end-to-end check, not by existing.
 
 The error page's only `<script>` is this race, and it runs by SHA-256 hash rather than
 `script-src 'unsafe-inline'`, so the page that has no other JavaScript keeps that hole shut
-(ADR 0006 needed `'unsafe-inline'`; dropping it was one of its stated wins).
+(ADR 0006 needed `'unsafe-inline'`; dropping it was one of that ADR's stated wins).
+
+### 4.13 A rhythm margin only looks wrong when nothing absorbs it
+
+**Resolved 2026-10-12.** An announcement whose Markdown is a single image rendered a 24px empty
+line above the picture. `@tailwindcss/typography` gives every `img` inside `.prose` a
+`margin: 1.71429em 0`, and that number is not arbitrary — it equals `prose-sm`'s
+`line-height: 1.71429` exactly, so an image _between_ two paragraphs reads as precisely one blank
+line. That is the intent: the margin is a paragraph rhythm, and it is designed to sit against
+text.
+
+The plugin's own `.prose > :first-child { margin-top: 0 }` cannot absorb it, because a lone image
+is wrapped in a `<p>` and **the margin lives inside that `<p>`, not on it** — the reset only zeroes
+the `<p>`'s own margin. So a block with a text neighbour looks right and a block of only images
+shows the rhythm as raw whitespace. The same margin is _also_ invisible in a normal
+multi-paragraph document, which is why nothing about it reads as a defect in the plugin.
+
+Fixed by collapsing the margin only where the image opens or closes the block, matching GitHub,
+which gives a lone image no margin at all and lets the surrounding blocks set the spacing.
+
+**Two lessons, both about measuring the thing the user sees.** An `img` margin collapses out of its
+`<p>`, so a probe that measures from the top of `.prose` to the top of the image reads a different
+number than the rendered gap — measure from the element _above_ the prose block. And the first
+version of the fix asserted "multi-image announcements are untouched", which the measurement
+refuted (two adjacent images went 24 → 16, because each is both first and last child); the comment
+was corrected to the measured numbers rather than the intent.
+
+### 4.14 The editor upload rendered in three phases, and all three were one bug
+
+**Resolved 2026-10-12.** Uploading a file in the announcement editor visibly went through three
+states: a fixed-size skeleton wearing the file name, then a resize as the picture appeared, then
+the correct size. Reported as three symptoms; it was one.
+
+The editor inserted the markdown **after** the upload resolved, so for the whole upload there was
+nothing in the preview to measure, and `.md-media` falls back to a hardcoded `aspect-ratio: 16 / 10`
+until the browser reports `naturalWidth/Height` on load. The three phases were therefore: the
+16:10 guess (phase 1), the snap to the real ratio when the image decoded (phase 2), and the true
+box (phase 3). The "ugly filename" was the `alt` text — browsers paint `alt` as broken-image text
+while the image is still decoding, so the file name read as a caption over the placeholder.
+
+The fix uses what the waterfall has used all along: `probeSourceSize` already reads the real
+dimensions from the picked file (`createImageBitmap`, or `videoWidth/Height` for video). The editor
+never called it. It now creates an object URL and probes at pick time, so the preview shows the
+real bytes in a box reserved at the **probed** ratio — and because the editor leg uploads the file
+as-is, those are the same bytes the hosted URL will serve, which is why a local preview is honest
+here in a way it would not be on the album's transcoding leg.
+
+Measured over a full upload, sampling every 0.9s: a 600×300 landscape held **648×324** and a
+300×900 portrait held **648×1944** for every sample, start to finish, with `alt` empty. The
+worst-case portrait is the one that matters — under the old path it snapped from 16:10 to 1:3.
+
+The general lesson, and the reason this is in the register: **a hardcoded placeholder ratio is a
+guess that hides a measurement you could have taken.** The same `isImageFile` gate accepts either
+a MIME type or a file name, because Windows picks often arrive with an empty MIME and refusing to
+preview those would be worse than an imprecise type.
 
 ---
 
@@ -842,29 +945,33 @@ The error page's only `<script>` is this race, and it runs by SHA-256 hash rathe
 
 The parts of this contract that are asserted by `npm test`:
 
-| Invariant                                                                   | Enforced by                              |
-| --------------------------------------------------------------------------- | ---------------------------------------- |
-| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions  | `web/tests/unit/designTokens.test.ts`    |
-| `motion.ts` motion fallbacks equal the `@theme` motion tokens               | `web/tests/unit/designTokens.test.ts`    |
-| `schema.sql` equals `schema-ddl.ts` byte for byte                           | `src/worker/schema-alignment.test.ts`    |
-| No `transition` in `web/src` carries a literal duration or easing curve     | `web/tests/unit/designTokens.test.ts`    |
-| `GLITCH_PALETTE` equals the matching `@theme` colours                       | `web/tests/unit/designTokens.test.ts`    |
-| The reflow flip window outlasts the reflow duration it brackets             | `web/tests/unit/motion.test.ts`          |
-| Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click            | `web/tests/unit/lightboxEngine.test.ts`  |
-| The upload's silence budget ends where the response budget begins           | `web/tests/unit/uploadClient.test.ts`    |
-| The upload leg's ceiling holds independently of the image pool              | `web/tests/unit/uploadPool.test.ts`      |
-| `uploadPoolSize` stays under the image pool at its widest                   | `web/tests/unit/pipeline.test.ts`        |
-| Which op dimensions collapse, and which never do (ADR 0016)                 | `web/tests/unit/frontend.test.ts`        |
-| The local fold clears the opposite attitude, as the server does             | `web/tests/unit/frontend.test.ts`        |
-| A queued op is superseded in place, and an in-flight one never is           | `web/tests/unit/syncEngine.test.ts`      |
-| A photo op waits for the upload op that creates its row                     | `web/tests/unit/pendingPhotoOps.test.ts` |
-| The server clears the opposite attitude when either is added                | `src/worker/routes/sync.test.ts`         |
-| The cached snapshot round-trips through `metaCache` and is replaced on sync | `web/tests/unit/oplog.test.ts`           |
-| A media URL's extension picks the Markdown element (video / audio / image)  | `web/tests/unit/markdown.test.ts`        |
-| Only a real image extension renders in place; a non-media file links        | `web/tests/unit/markdown.test.ts`        |
-| The editor uploads any file, not only images and videos                     | `web/tests/unit/editorUpload.test.ts`    |
-| The font race cancels the losers, and a failed source removes only itself   | `src/shared/fonts.test.ts`               |
-| The error page's CSP hash equals the race script it authorises              | `src/shared/fonts.test.ts`               |
+| Invariant                                                                      | Enforced by                              |
+| ------------------------------------------------------------------------------ | ---------------------------------------- |
+| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions     | `web/tests/unit/designTokens.test.ts`    |
+| `motion.ts` motion fallbacks equal the `@theme` motion tokens                  | `web/tests/unit/designTokens.test.ts`    |
+| `schema.sql` equals `schema-ddl.ts` byte for byte                              | `src/worker/schema-alignment.test.ts`    |
+| No `transition` in `web/src` carries a literal duration or easing curve        | `web/tests/unit/designTokens.test.ts`    |
+| `GLITCH_PALETTE` equals the matching `@theme` colours                          | `web/tests/unit/designTokens.test.ts`    |
+| The reflow flip window outlasts the reflow duration it brackets                | `web/tests/unit/motion.test.ts`          |
+| Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click               | `web/tests/unit/lightboxEngine.test.ts`  |
+| The upload's silence budget ends where the response budget begins              | `web/tests/unit/uploadClient.test.ts`    |
+| The upload leg's ceiling holds independently of the image pool                 | `web/tests/unit/uploadPool.test.ts`      |
+| `uploadPoolSize` stays under the image pool at its widest                      | `web/tests/unit/pipeline.test.ts`        |
+| Which op dimensions collapse, and which never do (ADR 0016)                    | `web/tests/unit/frontend.test.ts`        |
+| The local fold clears the opposite attitude, as the server does                | `web/tests/unit/frontend.test.ts`        |
+| A queued op is superseded in place, and an in-flight one never is              | `web/tests/unit/syncEngine.test.ts`      |
+| A photo op waits for the upload op that creates its row                        | `web/tests/unit/pendingPhotoOps.test.ts` |
+| The server clears the opposite attitude when either is added                   | `src/worker/routes/sync.test.ts`         |
+| The cached snapshot round-trips through `metaCache` and is replaced on sync    | `web/tests/unit/oplog.test.ts`           |
+| A media URL's extension picks the Markdown element (video / audio / image)     | `web/tests/unit/markdown.test.ts`        |
+| Only a real image extension renders in place; a non-media file links           | `web/tests/unit/markdown.test.ts`        |
+| A picked file previews locally by MIME **or** file name                        | `web/tests/unit/markdown.test.ts`        |
+| The editor uploads any file, not only images and videos                        | `web/tests/unit/editorUpload.test.ts`    |
+| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer | `web/tests/unit/designTokens.test.ts`    |
+| Markdown structure follows GitHub: heading ladder, quote bar, code chip        | `web/tests/unit/designTokens.test.ts`    |
+| A block-opening or block-closing image carries no rhythm margin                | `web/tests/unit/designTokens.test.ts`    |
+| The font race cancels the losers, and a failed source removes only itself      | `src/shared/fonts.test.ts`               |
+| The error page's CSP hash equals the race script it authorises                 | `src/shared/fonts.test.ts`               |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are
