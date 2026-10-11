@@ -3,7 +3,8 @@
   import EditorDialog from '$lib/components/EditorDialog.svelte';
   import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
   import type { Poll } from '$shared/types';
-  import type { UploadRow } from '../../transcode/pipeline';
+  import { probeSourceSize, type UploadRow } from '../../transcode/pipeline';
+  import { isImageFile } from '../../core/markdown';
   import { copy } from '$lib/i18n.svelte';
 
   interface Props {
@@ -45,7 +46,13 @@
   let titleInput: HTMLInputElement | undefined = $state(undefined);
   let imageInput: HTMLInputElement | undefined = $state(undefined);
   let uploadBusy = $state(false);
-  let uploadName = $state('');
+  /** Object URL for the picked file, so the live preview can show the real image (and its
+   *  real box) while the upload is still running. The editor leg uploads the picked file
+   *  as-is, so these bytes are the bytes the hosted URL will serve — this is the editor's
+   *  equivalent of the card's OPFS preview, and it needs no upload to exist first. */
+  let previewUrl = $state<string | null>(null);
+  /** Measured source dimensions, so the preview reserves the true box instead of the 16:10 guess. */
+  let previewSize = $state<{ width: number; height: number } | null>(null);
   // Track the in-flight editor job id so we can cancel it if the dialog closes
   // mid-upload (otherwise the artifact is uploaded and immediately discarded).
   let currentJobId: string | null = null;
@@ -53,6 +60,12 @@
   let destroyed = false;
   $effect(() => {
     if (uploadTask) currentJobId = uploadTask.jobId;
+  });
+  // The object URL outlives every dialog unmount, or the next open paints a revoked src.
+  $effect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
   });
   onDestroy(() => {
     destroyed = true;
@@ -95,8 +108,20 @@
     const file = input.files?.[0] ?? null;
     input.value = '';
     if (!file || destroyed) return null;
-    uploadName = file.name;
     uploadBusy = true;
+    // Show the picked file immediately and measure it, so the preview renders the real
+    // image at its real size from the first frame. Probing and creating the object URL
+    // are both cheap and independent, so neither gates the other.
+    if (!isImageFile(file)) {
+      previewUrl = null;
+      previewSize = null;
+    } else {
+      previewUrl = URL.createObjectURL(file);
+      void probeSourceSize(file).then((size) => {
+        if (destroyed || !size) return;
+        previewSize = size;
+      });
+    }
     try {
       return await onPickImage(file);
     } catch (error) {
@@ -106,9 +131,10 @@
       throw error;
     } finally {
       uploadBusy = false;
-      // `uploadName` is kept: the editor reads it *after* the await to build the
-      // alt text / aria-label, so clearing it here (before the caller resumes)
-      // yields an empty `![](url)`.
+      // The hosted URL is now in the markdown, so the local stand-in has done its job.
+      // Leaving it would double-render the same image; the $effect above reclaims it.
+      previewUrl = null;
+      previewSize = null;
     }
   }
 
@@ -158,8 +184,9 @@
           onPickImage={pickImage}
           {polls}
           {selfId}
-          {uploadName}
           {uploadTask}
+          {previewUrl}
+          {previewSize}
           {onRetryUpload}
         />
       </div>

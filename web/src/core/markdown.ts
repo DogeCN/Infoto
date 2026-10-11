@@ -217,6 +217,16 @@ export function isEmbeddableArtifact(url: string | null | undefined): boolean {
   return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
 }
 
+/** True when a picked File is an image, so the editor can preview it locally and measure it.
+ *  A file with no name extension still qualifies on its MIME type — Windows picks often arrive
+ *  that way, and refusing to preview them would be worse than the MIME being wrong. */
+export function isImageFile(file: { type?: string; name?: string }): boolean {
+  if ((file.type || '').toLowerCase().startsWith('image/')) return true;
+  const name = file.name || '';
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
 function makeMarkdownVideo(src: string): HTMLVideoElement {
   const video = document.createElement('video');
   video.src = src;

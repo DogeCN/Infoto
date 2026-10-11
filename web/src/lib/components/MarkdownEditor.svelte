@@ -28,10 +28,13 @@
     /** Current language's poll registry powers embedded live previews. */
     polls?: Poll[];
     selfId?: number;
-    /** File name shown on the in-flight upload card (defaults to "image"). */
-    uploadName?: string;
     /** Live snapshot of that upload (its phase drives the failed-state retry link). */
     uploadTask?: UploadRow | null;
+    /** Object URL of the picked file, shown in the preview while the upload runs so the
+     *  image and its box are real from the first frame instead of a 16:10 guess. */
+    previewUrl?: string | null;
+    /** Measured source dimensions; reserves the true box before the image decodes. */
+    previewSize?: { width: number; height: number } | null;
     /** Retry a failed editor upload; the parent calls pipeline.retryEditorUpload(jobId). */
     onRetryUpload?: (jobId: string) => Promise<string>;
   }
@@ -43,10 +46,19 @@
     onChange,
     polls = [],
     selfId = -1,
-    uploadName = '',
     uploadTask = null,
+    previewUrl = null,
+    previewSize = null,
     onRetryUpload,
   }: Props = $props();
+
+  /** The preview's reserved ratio: the measured source when known, else nothing (the shared
+   *  16:10 placeholder). Derived, so the box follows the measurement as it lands. */
+  let previewRatio = $derived(
+    previewSize && previewSize.width > 0 && previewSize.height > 0
+      ? `${previewSize.width} / ${previewSize.height}`
+      : null,
+  );
 
   let textareaEl: HTMLTextAreaElement | undefined = $state(undefined);
   let imageUploading = $state(false);
@@ -113,9 +125,9 @@
       if (url) {
         const caret = pendingImageCaret ?? selection().start;
         // Media renders in place; anything else becomes a link to the hosted file.
-        // The file name (minus extension) is the alt text / video aria-label.
-        const alt = (uploadName || '').replace(/\.[^.]+$/, '');
-        applyTransform(insertMediaAt(value, caret, url, alt));
+        // No alt text: the browser paints alt as broken-image text while the image
+        // decodes, so a file name there reads as an ugly caption over the placeholder.
+        applyTransform(insertMediaAt(value, caret, url));
       }
     } catch (error) {
       // A deliberate cancel is not a failure: no error line, no message under the editor.
@@ -218,8 +230,7 @@
                 const url = await onRetryUpload(id);
                 if (url) {
                   const caret = pendingImageCaret ?? selection().start;
-                  const alt = (uploadName || '').replace(/\.[^.]+$/, '');
-                  applyTransform(insertMediaAt(value, caret, url, alt));
+                  applyTransform(insertMediaAt(value, caret, url));
                 }
               } catch (error) {
                 if (isCancelled(error)) return;
@@ -243,9 +254,22 @@
     class="min-h-[12rem] min-w-0 h-full overflow-y-auto rounded-md border border-border bg-card px-4 py-3"
     aria-label={copy.editor.previewAria}
   >
+    <!-- The picked file is on screen from the first frame, at its real size: the object URL
+         shows the same bytes the hosted URL will serve, and the probed ratio reserves the
+         true box. So there is no 16:10 guess and no snap when the real image decodes — the
+         card's curtain, applied to the editor. The shimmer only covers the brief window
+         before the probe lands; `object-contain` means the picture never letterboxes. -->
+    {#if previewUrl}
+      <div
+        class="mb-3 overflow-hidden rounded-[0.5rem] {previewRatio ? '' : 'skeleton'}"
+        style={previewRatio ? `aspect-ratio: ${previewRatio};` : 'aspect-ratio: 16 / 10;'}
+      >
+        <img src={previewUrl} alt="" class="size-full object-contain" />
+      </div>
+    {/if}
     {#if value.trim()}
       <PollReferences content={value} {polls} {selfId} />
-    {:else}
+    {:else if !previewUrl}
       <p class="text-sm text-muted-foreground">{copy.editor.previewEmpty}</p>
     {/if}
   </div>

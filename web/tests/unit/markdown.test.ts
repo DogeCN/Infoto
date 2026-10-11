@@ -6,6 +6,7 @@ import {
   insertMediaAt,
   insertMarkdownBlock,
   isEmbeddableArtifact,
+  isImageFile,
   mapOffsetThroughEdit,
   prefixSelectedLines,
   wrapSelection,
@@ -91,6 +92,18 @@ test('markdown toolbar transforms: transforms Markdown selections and identifies
     assert.equal(isEmbeddableArtifact(null), false);
     assert.equal(isEmbeddableArtifact(undefined), false);
     assert.equal(isEmbeddableArtifact(''), false);
+  }
+
+  // The editor previews a picked file locally: an image qualifies by MIME or by name, so a
+  // Windows pick with an empty MIME still previews instead of silently not.
+  {
+    assert.equal(isImageFile({ type: 'image/png', name: 'a.bin' }), true);
+    assert.equal(isImageFile({ type: '', name: 'a.JPEG' }), true);
+    assert.equal(isImageFile({ type: '', name: 'noextension' }), false);
+    assert.equal(isImageFile({ type: 'video/mp4', name: 'clip.mp4' }), false);
+    assert.equal(isImageFile({ type: 'application/pdf', name: 'notes.pdf' }), false);
+    assert.equal(isImageFile({ type: '', name: '' }), false);
+    assert.equal(isImageFile({}), false);
   }
 
   // Inserting a hosted file: media becomes ![name](url), everything else [name](url).
