@@ -337,16 +337,25 @@ Back-filled from the commit history. Tagged sections are not yet written.
     and zooming back _out_ silently did nothing — pinch was the only way back to a whole photo,
     and pinch is the harder gesture. `classifyRelease` therefore decides `tap` before `pan-end`,
     keyed on the release having travelled less than `TAP_SLOP`; a drag that genuinely moved is
-    still a pan. Only the touch path needs this — the desktop equivalent is the native
-    `dblclick`, which enters no state machine and so never showed the bug.
-  - **The touch double-tap and the native `dblclick` are the same gesture, so the zoom must not
-    toggle twice.** A real mobile browser fires native `click` (per tap) and `dblclick` (after the
-    pair) on top of the pointer events. The manual touch path already zoomed on the second tap, so
-    that trailing `dblclick` must be suppressed or it re-toggles the zoom back to 1 — the photo
-    appeared to zoom in and then snap back. `handleStageClick` swallows the trailing `click`; it no
-    longer clears `suppressClickUntil` (that left the window open for the `dblclick`), and
-    `onDblClick` carries a dedicated guard on `lastTouchDoubleAt` (≈600 ms) so the native
-    `dblclick` is skipped even though it lands after the swallowed click. The e2e harness replays
+    still a pan. Only the touch path needs this — the mouse never enters the release state
+    machine at all, pairing its own clicks in the component (below).
+  - **The app pairs its own double-clicks; the native `dblclick` is never trusted.** The browser
+    pairs two *physical* clicks and knows nothing about what the first one was spent on. A mask
+    click is spent paging, yet the click after it still got paired — and the pair was judged
+    against the layout *after* the page change, where the same point may have moved from black
+    mask onto the next photo. "Click the mask to advance, click again" therefore zoomed instead,
+    most visibly in an album mixing portrait and landscape, where consecutive photos differ
+    enough for the media to land under the pointer. Both modalities now keep their own pairing
+    state (`lastTap` for touch, `lastMediaClick` for mouse) and zoom through the shared
+    `toggleZoomAt`; **only a media click ever arms the next one**, which makes a spent click
+    structurally unable to take part. A photo switch clears the armed click too, since it
+    describes the photo just left. `DBL_MS = 500` matches the platform threshold a native
+    `dblclick` imposed, so the gesture keeps its rhythm.
+  - **The trailing `click` a touch double-tap leaves behind must not page.** A real mobile browser
+    fires native `click` per tap on top of the pointer events, so the second tap's click would
+    read as a mask click and page the photo the user had just zoomed; `suppressClickUntil` (600 ms)
+    swallows it. Nothing listens for the native `dblclick` any more, so it needs no guard of its
+    own — `handleStageClick` neither clears the window nor pairs. The e2e harness still replays
     those native events (`sendMouse`) because driving pointer events alone never exposed the bug.
   - All gesture/transform math (zoom-to-point, pinch, `Ctrl`+drag, pan clamp, overflow gate,
     rotation snap, double-tap/swipe/click-nav classification) lives in the pure module

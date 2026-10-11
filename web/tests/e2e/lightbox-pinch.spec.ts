@@ -148,8 +148,9 @@ async function doubleTap(page: Page, x: number, y: number, travel = 0) {
 
 /** A real mobile browser fires native `click` (after each tap) and `dblclick`
  *  (after the pair) on top of the pointer events. The harness drives gestures
- *  with pointer events only, so it has to replay those too — they are exactly
- *  what used to undo the zoom the touch path had just applied. */
+ *  with pointer events only, so it has to replay those too. Nothing listens for
+ *  the native `dblclick` any more — the zoom is paired by the component — but a
+ *  browser still sends one, and the trailing `click` is what must not page. */
 async function sendMouse(page: Page, type: 'click' | 'dblclick', x: number, y: number) {
   await page.evaluate(
     ({ type, x, y, label }) => {
@@ -186,12 +187,13 @@ test('a touch double tap zooms about the tapped point, not the centre', async ({
   ).toContainText('0');
 });
 
-test('a real mobile double tap is not undone by the trailing native dblclick', async ({ page }) => {
+test('the clicks a touch double tap leaves behind neither page nor zoom', async ({ page }) => {
   const lightbox = await openLightbox(page);
   // The harness drives gestures with pointer events only, so the native click and
-  // dblclick a real browser dispatches after a touch double tap never ran before.
-  // They are what undid the zoom: the trailing click swallowed and cleared the
-  // suppression window, so the dblclick that followed re-toggled the zoom back to 1.
+  // dblclick a real browser dispatches after a touch double tap never run on their own.
+  // They used to undo the zoom: the trailing click cleared the suppression window and
+  // the dblclick that followed re-toggled it back to 1. Nothing listens for that dblclick
+  // now; the trailing clicks must still not page the photo.
   await doubleTap(page, 100, 360);
   // Replay what Chrome-on-Android emits: a click per tap, then a dblclick.
   await sendMouse(page, 'click', 100, 360);
@@ -231,8 +233,9 @@ test('a second double tap zooms back out after a pinch', async ({ page }) => {
 
 test('the desktop double-click keeps the same anchor', async ({ page }) => {
   const lightbox = await openLightbox(page);
-  // The mouse path is the native dblclick and never enters the release state
-  // machine, so it must behave identically to touch — including the anchor.
+  // The mouse path pairs its own clicks (a native dblclick cannot know the click
+  // before it was already spent paging) and never enters the release state machine,
+  // so it must behave identically to touch — including the anchor.
   await page.mouse.dblclick(100, 360);
   await page.waitForTimeout(600);
   const zoomed = parsed(await transformOf(lightbox));

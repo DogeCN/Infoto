@@ -558,3 +558,75 @@ test('a tooltip needs hover or keyboard focus, never incidental focus', async ({
   }
   expect(seen).toBe(true);
 });
+
+test('a click spent paging cannot join the next one into a zoom', async ({ page }) => {
+  // Geometry is the whole point: the first photo is narrow, so the point picked below
+  // is the black mask; the second is ultrawide, so after paging that same point sits on
+  // its media. A native dblclick judges the pair against the layout *after* the page
+  // change, which is how "click the mask, click again" became an unintended zoom.
+  const narrow = { ...photos[0]!, width: 2400, height: 900, url: 'https://media.test/wide.svg' };
+  const wide = { ...photos[1]!, width: 600, height: 1200, url: 'https://media.test/narrow.svg' };
+  await mockAlbum(page, [narrow, wide]);
+  await page.goto('/');
+  await page.locator('main img').first().click();
+  const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
+  await expect(lightbox.locator('img.lb-media')).toBeVisible();
+  await page.waitForTimeout(600);
+
+  // The wrapper is always mounted and always carries the settled layout, so it is the
+  // honest thing to measure — the <img> can still be the previous photo's.
+  const box = (await lightbox.locator('[data-lb-media]').boundingBox())!;
+  const x = Math.round(box.x - 60);
+  const y = Math.round(box.y + box.height / 2);
+  expect(
+    await page.evaluate(
+      ({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.lb-media'),
+      { x, y },
+    ),
+  ).toBe(false);
+
+  // One physical double-click: the first click pages, the second lands on the new media.
+  // (`page.mouse.dblclick` is what makes the browser pair them; two separate `click()`
+  // calls keep clickCount 1 and never pair.)
+  await page.mouse.dblclick(x, y);
+  await page.waitForTimeout(600);
+
+  // The hazard has to actually be present for "no zoom" to mean anything: after paging,
+  // that same point must now sit on the new photo's media — which is exactly what a
+  // native dblclick would have zoomed.
+  expect(
+    await page.evaluate(
+      ({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.lb-media'),
+      { x, y },
+    ),
+  ).toBe(true);
+
+  const transform = await lightbox
+    .locator('.will-change-transform')
+    .evaluate((n) => (n as HTMLElement).style.transform);
+  expect(transform).not.toContain('scale(2)');
+});
+
+test('a real double-click on the media still zooms, and a mask double-click does not', async ({
+  page,
+}) => {
+  await mockAlbum(page, [photos[0]!, photos[1]!]);
+  await page.goto('/');
+  await page.locator('main img').first().click();
+  const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
+  await expect(lightbox.locator('img.lb-media')).toBeVisible();
+  await page.waitForTimeout(600);
+
+  const box = (await lightbox.locator('[data-lb-media]').boundingBox())!;
+  await page.mouse.dblclick(
+    Math.round(box.x + box.width / 2),
+    Math.round(box.y + box.height / 2),
+  );
+  await page.waitForTimeout(600);
+  const zoomed = await lightbox
+    .locator('.will-change-transform')
+    .evaluate((n) => (n as HTMLElement).style.transform);
+  expect(zoomed).toContain('scale(2)');
+  // One photo forward, not two: the pair was a zoom, not two navigations.
+  await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
+});

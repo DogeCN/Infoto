@@ -322,9 +322,9 @@ export function classifyRelease(input: {
   // judging the pan first meant a release could never be a tap again — and the
   // second tap of a double-tap-to-reset did nothing. Zooming in then worked (the
   // first double tap starts un-panned, where nothing has moved yet) while
-  // zooming back out did not: double tap to enlarge, pinch to get back. Mouse
-  // never showed it, because the desktop path is the native `dblclick` and never
-  // reaches this state machine. A drag that actually moved is still a pan.
+  // zooming back out did not: double tap to enlarge, pinch to get back. The mouse
+  // never showed it — it never reaches this state machine, pairing its own clicks in
+  // the component. A drag that actually moved is still a pan.
   if (input.isTouch && Math.hypot(input.dx, input.dy) < TAP_SLOP) return { kind: 'tap' };
   if (input.panning) return { kind: 'pan-end' };
   const dir = classifySwipe(input.dx, input.dy, input.triggerAt);

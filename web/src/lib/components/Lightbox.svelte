@@ -120,14 +120,13 @@
   let pinchSequence = false;
   /** Touch double-tap bookkeeping (native dblclick is unreliable on touch). */
   let lastTap: Tap | null = null;
+  /** Mouse double-click bookkeeping. The app pairs these clicks itself, for the
+   *  reason spelled out at `handleStageClick`: the browser pairs *physical* clicks
+   *  and cannot know the previous one was already spent paging. */
+  let lastMediaClick: Tap | null = null;
+  /** Swallow the trailing `click` a touch double-tap leaves behind; otherwise it
+   *  reads as a mask click and pages the photo the user just zoomed. */
   let suppressClickUntil = 0;
-  /** When a touch double-tap was handled in `onPointerUp`. A real mobile browser
-   *  still dispatches a native `dblclick` after the second tap; it arrives *after*
-   *  the trailing `click` (which `handleStageClick` swallows), so the
-   *  `suppressClickUntil` window is gone by then. This timestamp is a dedicated,
-   *  longer-lived guard so that native `dblclick` never re-toggles the zoom the
-   *  touch path already applied — otherwise the photo zooms in then snaps back. */
-  let lastTouchDoubleAt = 0;
   let ctrlZoomPointer: number | null = null;
   /** Fixed pivot for the Ctrl gesture: the card centre (stage centre at rest). */
   let ctrlZoomCenter = { x: 0, y: 0 };
@@ -614,21 +613,16 @@
       return;
     }
 
-    // Touch tap: detect a double-tap on the media to toggle zoom (native dblclick
-    // is unreliable on touch, so it is handled here; the mouse path keeps onDblClick).
+    // Touch tap: double-tap on the media toggles zoom. The app pairs its own taps,
+    // the same way the mouse path does in `handleStageClick`.
     if (release.kind === 'tap') {
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       if (hit?.closest('.lb-media') && !hit.closest('.lb-corner, button')) {
         const now = Date.now();
         if (classifyTap(lastTap, now, e.clientX, e.clientY) === 'double') {
-          if (!isAtRest(scale)) resetZoom(true, true);
-          else {
-            const r = stageEl!.getBoundingClientRect();
-            zoomToPoint(2, e.clientX - r.left, e.clientY - r.top, true);
-          }
           lastTap = null;
+          toggleZoomAt(e.clientX, e.clientY);
           suppressClickUntil = now + 600;
-          lastTouchDoubleAt = now;
           return;
         }
         lastTap = { t: now, x: e.clientX, y: e.clientY };
@@ -689,22 +683,15 @@
     applyWrap();
   }
 
-  function onDblClick(e: MouseEvent): void {
-    // Mouse double-click zooms around the cursor; hit-test against media.
-    // Guarded so a touch double-tap handled in onPointerUp is not doubled. The
-    // click the double-tap leaves behind already cleared `suppressClickUntil`
-    // when it was swallowed, so a second, dedicated guard on `lastTouchDoubleAt`
-    // is what actually stops the native `dblclick` from re-toggling the zoom.
-    if (Date.now() < suppressClickUntil) return;
-    if (Date.now() - lastTouchDoubleAt < 600) return;
-    const hit = document.elementFromPoint(e.clientX, e.clientY);
-    if (!hit?.closest('.lb-media')) return;
-    if (showMenu || gestureMoved) return;
-    if (!isAtRest(scale)) resetZoom(true, true);
-    else {
-      const r = stageEl!.getBoundingClientRect();
-      zoomToPoint(2, e.clientX - r.left, e.clientY - r.top, true);
+  /** Toggle zoom around a stage point: out if already zoomed, to 2× if at rest.
+   *  Shared by the touch double-tap and the mouse one, so the two cannot disagree. */
+  function toggleZoomAt(clientX: number, clientY: number): void {
+    if (!isAtRest(scale)) {
+      resetZoom(true, true);
+      return;
     }
+    const r = stageEl!.getBoundingClientRect();
+    zoomToPoint(2, clientX - r.left, clientY - r.top, true);
   }
 
   /** Desktop wheel zoom; passive:false is required to stop the page/browser zoom,
@@ -801,18 +788,49 @@
     onNavigate?.(currentIndex < photos.length - 1 ? currentIndex + 1 : 0);
   }
 
+  /** How long two clicks on the media may be apart and still read as a double-click.
+   *  Matches the platform threshold a native `dblclick` used to impose, so the
+   *  gesture keeps the rhythm it had. */
+  const DBL_MS = 500;
+
   function handleStageClick(event: MouseEvent): void {
     if (showMenu || gestureMoved) return;
-    // Swallow the click that follows a touch double-tap zoom. Leave
-    // `suppressClickUntil` set: the native `dblclick` lands after this click, and
-    // its own guard in `onDblClick` still needs the window open (it is backed by
-    // `lastTouchDoubleAt` too, but clearing here would defeat that belt too).
+    // Swallow the click a touch double-tap leaves behind; it would otherwise read
+    // as a mask click and page the photo the user just zoomed.
     if (Date.now() < suppressClickUntil) return;
     // The pointer is captured by the stage, so `event.target` is always the
     // stage — never the media or a control. Hit-test the point instead, or a
     // click on the card would page like a click on the black mask. Hit-testing
     // respects the zoom transform, so the media's *rendered* box is what counts.
     const hit = document.elementFromPoint(event.clientX, event.clientY);
+
+    // A click on the media is a zoom candidate, and the app pairs these itself.
+    //
+    // A native `dblclick` cannot do this job: the browser pairs two *physical*
+    // clicks, with no idea that this one was already spent paging — and it judges
+    // the pair against the layout *after* that page change, where the same point
+    // may now be the photo rather than the mask. That turned "click the mask to
+    // advance, click again" into an unintended zoom. Owning the pairing is what
+    // the touch path already does, and it makes a consumed click structurally
+    // unable to take part: only a media click ever arms the next one.
+    if (hit?.closest('.lb-media') && !hit.closest('.lb-corner, button')) {
+      const now = Date.now();
+      if (
+        classifyTap(lastMediaClick, now, event.clientX, event.clientY, {
+          withinMs: DBL_MS,
+        }) === 'double'
+      ) {
+        lastMediaClick = null;
+        toggleZoomAt(event.clientX, event.clientY);
+        return;
+      }
+      lastMediaClick = { t: now, x: event.clientX, y: event.clientY };
+      return;
+    }
+
+    // Everything else — a control, or the media's own wrapper chrome — is a click
+    // this handler does not act on, and must not arm a pairing either.
+    lastMediaClick = null;
     if (
       !hit ||
       hit.closest('button, a, input, textarea, select, [data-lb-controls], [data-lb-media]')
@@ -827,6 +845,9 @@
   // after mount covers it).
   $effect(() => {
     void currentIndex;
+    // A photo switch is another consumed interaction: an armed media click describes the
+    // photo we just left, so it must not pair with a click on the one that replaced it.
+    lastMediaClick = null;
     volumeMuted = true;
     gestureDir = null;
     gestureRatio = 0;
@@ -930,7 +951,6 @@
     onpointerup={onPointerUp}
     onpointercancel={onPointerCancel}
     onclick={handleStageClick}
-    ondblclick={onDblClick}
     use:wheelZoom
   >
     <!-- Top bar info: bare text top-left, more/close top-right -->
