@@ -10,7 +10,7 @@ export interface TeeResult {
 }
 
 /** Write and hash each source chunk in one pass. Report cumulative bytes after both operations complete; propagate failures. */
-export async function teeToHash(
+async function teeToHash(
   source: ReadableStream<Uint8Array>,
   write: (chunk: Uint8Array) => Promise<void>,
   onBytes?: (bytes: number) => void,

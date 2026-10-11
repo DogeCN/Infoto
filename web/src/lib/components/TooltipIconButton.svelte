@@ -17,7 +17,7 @@
     active?: boolean;
     /** The destructive icon-button variant. */
     danger?: boolean;
-    /** Toggle buttons publish their state; a native `title` used to be the only channel. */
+    /** Toggle buttons publish their state, rather than relying on a native `title`. */
     ariaPressed?: boolean;
     side?: 'top' | 'bottom' | 'left' | 'right';
     /** Extra button classes (padding, size, colour tail). */

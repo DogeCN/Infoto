@@ -82,8 +82,6 @@ export function isAllowedMediaUrl(env: AppEnv, url: string): boolean {
 }
 
 export function mediaHandler(env: AppEnv) {
-  const acceptable = (url: string): boolean => isAllowedMediaUrl(env, url);
-
   return async (c: Context): Promise<Response> => {
     const id36 = c.req.param('id36') ?? '';
     const id = fromId36(id36);
@@ -99,7 +97,7 @@ export function mediaHandler(env: AppEnv) {
     try {
       let url = row.url;
       for (let redirects = 0; ; redirects++) {
-        if (!acceptable(url)) return notFoundPage(c.req.raw);
+        if (!isAllowedMediaUrl(env, url)) return notFoundPage(c.req.raw);
         upstream = await fetch(url, { redirect: 'manual' });
         if (![301, 302, 303, 307, 308].includes(upstream.status)) break;
         const location = upstream.headers.get('Location');

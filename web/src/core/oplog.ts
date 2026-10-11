@@ -1,11 +1,14 @@
 // Durable operations and the album's known media hashes in IndexedDB. Confirmed operations are removed after synchronization.
 
-import type { Op, Photo } from '$shared/types';
+import type { Op, SyncResponse } from '$shared/types';
 
 const DB_NAME = 'infoto';
 const DB_VERSION = 2;
 const STORE = 'oplog';
 const CACHE_STORE = 'metaCache';
+/** Reserved metaCache key holding the last full /sync snapshot. Album hashes are 64 hex
+ *  characters, so this word can never collide with one. */
+const SNAPSHOT_KEY = 'snapshot';
 /** Survivable upload jobs: enough metadata to resume an upload after a page reload
  *  (the artifact itself is in OPFS). */
 const RESUME_STORE = 'pendingUploads';
@@ -74,6 +77,17 @@ export function appendOp(db: IDBDatabase, op: Op): Promise<IDBValidKey> {
   });
 }
 
+/** Overwrite one queued operation in place, keeping its key — and with it its position in the
+ *  log, which is what makes superseding a queued op order-safe. */
+export function putOp(db: IDBDatabase, key: IDBValidKey, op: Op): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(op, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('oplog putOp failed'));
+  });
+}
+
 /** Read all pending ops in submission order. */
 export function readOps(db: IDBDatabase): Promise<Array<{ key: IDBValidKey; op: Op }>> {
   return new Promise((resolve, reject) => {
@@ -97,8 +111,8 @@ export function countOps(db: IDBDatabase): Promise<number> {
   return withStore(db, STORE, 'readonly', (store) => store.count());
 }
 
-/** Delete every queued operation addressed to `sha256` and return how many went. Used to
- *  withdraw a pending upload's ops before its first sync, so the server never sees them. */
+/** Delete every queued operation addressed to `sha256` and return how many went. Withdraws
+ *  a pending upload's ops before its first sync, so the server never sees them. */
 export async function removeOpsBySha(db: IDBDatabase, sha256: string): Promise<number> {
   const entries = await readOps(db);
   const keys = entries.filter((e) => e.op.targetSha === sha256).map((e) => e.key);
@@ -134,7 +148,7 @@ export function readPendingUploads(db: IDBDatabase): Promise<PendingUploadRecord
   );
 }
 
-// ---- sha cache -----------------------------------------------------------------
+// ---- sha cache + snapshot ---------------------------------------------------------
 
 /** True when this sha256 already belongs to a photo in the album. */
 export function isKnownAlbumSha(db: IDBDatabase, sha256: string): Promise<boolean> {
@@ -146,12 +160,25 @@ export function isKnownAlbumSha(db: IDBDatabase, sha256: string): Promise<boolea
   ).then((key) => key !== undefined);
 }
 
-/** Replace the cache with the snapshot's hashes; the snapshot is the only authority. */
-export function rebuildCache(db: IDBDatabase, photos: Photo[]): Promise<void> {
+/** Replace the cache with the snapshot: one entry per hash for dedupe, plus the snapshot
+ *  itself so the next open can render the album before the network answers. The snapshot is
+ *  the only authority. */
+export function rebuildCache(db: IDBDatabase, snapshot: SyncResponse): Promise<void> {
   return withStore(db, CACHE_STORE, 'readwrite', (store) => {
     const cleared = store.clear();
     // Queued after the clear, so every snapshot hash lands in an emptied store.
-    for (const photo of photos) store.put(1, photo.sha256);
+    for (const photo of snapshot.photos) store.put(1, photo.sha256);
+    store.put(snapshot, SNAPSHOT_KEY);
     return cleared;
   });
+}
+
+/** The last full /sync snapshot, or null when this device has never completed a sync. */
+export function readSnapshot(db: IDBDatabase): Promise<SyncResponse | null> {
+  return withStore(
+    db,
+    CACHE_STORE,
+    'readonly',
+    (store) => store.get(SNAPSHOT_KEY) as IDBRequest<SyncResponse | undefined>,
+  ).then((value) => value ?? null);
 }

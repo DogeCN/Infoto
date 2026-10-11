@@ -3,7 +3,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { toast } from 'svelte-sonner';
 import { copy, fmt } from '$shared/copy';
 import { extOfType } from '$shared/media';
-import type { Photo } from '$shared/types';
+import type { Op, Photo } from '$shared/types';
 import { getLocale } from '$lib/i18n.svelte';
 import { translateTaskError } from '$base/upload/pipeline';
 import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from '../transcode/pipeline';
@@ -19,7 +19,14 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     onEvent: import.meta.env.DEV ? (line) => console.log('[upload]', line) : undefined,
     // Append completed uploads to the sync engine without triggering an immediate snapshot.
     onUploadOp: async (op) => {
+      const sha = uploadOpSha(op);
+      // The card is gone — cancelled, dismissed, or its pending photo deleted. Writing the op
+      // now would recreate the row the user just removed, after the tombstone that deleted it,
+      // because /sync applies a batch in array order and a delete of an unknown sha is a no-op.
+      if (sha && !hasTaskForSha(sha)) return;
       await engine.addOp(op);
+      // Release the photo ops that were waiting for this row to exist.
+      if (sha) await store.photoOpQueued(sha);
     },
     // Remove cancelled jobs locally and count their panel work as resolved.
     onJobRemoved: (jobId) => {
@@ -34,6 +41,19 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   });
 
   let uploadTasks = $state<Map<string, PipelineTaskSnapshot>>(new Map());
+
+  /** The sha an upload op carries, or null for any other op kind. */
+  function uploadOpSha(op: Op): string | null {
+    if (op.type !== 'upload') return null;
+    const payload = op.payload as { sha256?: unknown } | null | undefined;
+    return typeof payload?.sha256 === 'string' ? payload.sha256 : null;
+  }
+
+  /** Whether any tracked task still owns this sha (see the `onUploadOp` guard). */
+  function hasTaskForSha(sha: string): boolean {
+    for (const t of uploadTasks.values()) if (t.sha256 === sha) return true;
+    return false;
+  }
 
   // /sync names the upload facade; the SharedWorker needs it before any job can upload.
   setMediaHostSink((url) => pipeline.setMediaHost(url));

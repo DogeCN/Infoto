@@ -10,7 +10,7 @@
  */
 
 /** Milliseconds a pointer may sit outside before the hover state is dropped. */
-export const LEAVE_DELAY_MS = 160;
+const LEAVE_DELAY_MS = 160;
 
 export interface HoverIntent {
   readonly hovered: boolean;

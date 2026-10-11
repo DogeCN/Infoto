@@ -75,9 +75,9 @@ export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: numbe
 }
 
 /** Upload-leg concurrency: the POST leg has its own ceiling, separate from the CPU pool that
- *  bounds transcoding. The image pool (up to 6, sized for cores) used to bound uploads too,
- *  so one multi-file drop opened that many 100 MB POSTs at once against a single upstream —
- *  which is how a transient rate-limit or one stalled stream became a terminal per-file
+ *  bounds transcoding. Sharing the image pool (up to 6, sized for cores) lets one multi-file
+ *  drop open that many 100 MB POSTs at once against a single upstream, which turns a
+ *  transient rate-limit or one stalled stream into a terminal per-file
  *  failure. Three concurrent uploads is the ceiling on a healthy link; a reported downlink
  *  under 2 Mbps drops it to two, the same threshold the image pool uses. */
 export function uploadPoolSize(downlinkMbps?: number): number {

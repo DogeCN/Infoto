@@ -3,7 +3,7 @@
   import { onDestroy } from 'svelte';
   import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
-  import { upgradeAnimatedMedia } from '../../core/markdown';
+  import { upgradeMarkdownMedia } from '../../core/markdown';
 
   // Two independent renderers: the default one blocks images (public sidebar
   // must not render arbitrary external image hosts); the trusted one allows them.
@@ -61,8 +61,9 @@
   function apply() {
     if (!el) return;
     el.innerHTML = html;
-    // ![alt](*.webm) renders as <img> — swap in a <video> so GIF/video plays.
-    upgradeAnimatedMedia(el);
+    // ![alt](url) always renders as <img> — swap it for the element its extension names so a
+    // video plays and a sound file gets a player.
+    upgradeMarkdownMedia(el);
     wrapPendingMedia(el);
   }
   $effect(() => {
@@ -95,6 +96,30 @@
     display: block;
     max-width: 100%;
     height: auto;
+  }
+
+  /* A sound file renders as the browser's own player, full width of the column. */
+  div :global(audio.markdown-audio) {
+    display: block;
+    width: 100%;
+  }
+
+  /* A file Markdown has no element for (a PDF, a zip) renders as a download link — not a
+     broken image, which is what an <img> pointing at a PDF would be. */
+  div :global(a.markdown-file) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    color: var(--color-foreground);
+    text-decoration: none;
+    word-break: break-all;
+  }
+  div :global(a.markdown-file:hover) {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
   }
 
   /* Loading placeholder: reserves a 16:10 box until the media reports its real aspect

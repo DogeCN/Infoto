@@ -114,7 +114,6 @@ export const enUS = {
       corrupt: 'The file may be corrupted',
       decodeFailed: 'Failed to decode the file — it may be corrupted',
       outOfMemory: 'Out of memory',
-      unsupportedFileType: 'Unsupported file type',
       summary: 'Transcode failed: {detail}',
       withCode: 'Transcode failed ({error})',
       failed: 'Transcode failed',
@@ -193,6 +192,10 @@ export const enUS = {
   photoCard: {
     dismiss: 'Remove',
     retry: 'Retry upload',
+    /** Accessible labels for the display-only mark badges (icon + count). */
+    likes: { one: '{count} like', other: '{count} likes' },
+    dislikes: { one: '{count} dislike', other: '{count} dislikes' },
+    reports: { one: '{count} report', other: '{count} reports' },
   },
 
   uploadPanel: {
@@ -262,7 +265,7 @@ export const enUS = {
       code: 'Code block',
       list: 'List',
       link: 'Link',
-      image: 'Image',
+      file: 'File',
     },
   },
 
@@ -470,7 +473,6 @@ const zhCN: Copy = {
       corrupt: '文件可能已损坏',
       decodeFailed: '文件解码失败，可能已损坏',
       outOfMemory: '内存不足',
-      unsupportedFileType: '不支持的文件类型',
       summary: '转码失败：{detail}',
       withCode: '转码失败（{error}）',
       failed: '转码失败',
@@ -549,6 +551,10 @@ const zhCN: Copy = {
   photoCard: {
     dismiss: '移除此项',
     retry: '重试上传',
+    /** Accessible labels for the display-only mark badges (icon + count). */
+    likes: { other: '{count} 个赞' },
+    dislikes: { other: '{count} 个踩' },
+    reports: { other: '{count} 次举报' },
   },
 
   uploadPanel: {
@@ -618,7 +624,7 @@ const zhCN: Copy = {
       code: '代码块',
       list: '列表',
       link: '链接',
-      image: '图片',
+      file: '文件',
     },
   },
 

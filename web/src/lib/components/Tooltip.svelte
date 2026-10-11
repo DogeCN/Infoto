@@ -1,7 +1,7 @@
 <script module lang="ts">
   /**
-   * Exactly one tooltip may be on screen. Hovering one control while focus sits on another
-   * used to leave two bubbles up at once, each instance blind to the other — and a bubble
+   * Exactly one tooltip may be on screen: hovering one control while focus sits on another
+   * otherwise leaves two bubbles up at once, each instance blind to the other — and a bubble
    * that nothing on screen is pointing at reads as stuck.
    */
   let activeClose: (() => void) | null = null;
@@ -160,7 +160,7 @@
   /**
    * Keyboard focus earns a tooltip; a pointer-driven or programmatic one does not.
    *
-   * Every incidental focus used to pop a tooltip with no hover at all: clicking a button
+   * Incidental focus otherwise pops a tooltip with no hover at all: clicking a button
    * (the browser focuses it on mousedown), the overlay's initial focus landing on a
    * `[data-autofocus]` control, and the focus restore that returns to the trigger when a
    * dialog closes. `:focus-visible` is false for all three and true for Tab navigation, so

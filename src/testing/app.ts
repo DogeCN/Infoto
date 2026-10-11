@@ -10,7 +10,7 @@ import { createApp } from '../worker/app.ts';
 import { VERIFY_URL } from '../worker/turnstile.ts';
 import { openLocalDb } from './localDb.ts';
 
-export const TEST_SECRET = 'test-secret';
+const TEST_SECRET = 'test-secret';
 
 const schema = readFileSync(path.join(import.meta.dirname, '..', '..', 'schema.sql'), 'utf8');
 

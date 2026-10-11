@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import type { Announcement, Feedback, Photo, Poll } from '$shared/types';
+import type { Announcement, Feedback, Op, Photo, Poll } from '$shared/types';
 import * as ops from '../../src/core/ops';
 import { splitPollReferences } from '../../src/core/markdown';
 import { reactionCounts } from '../../src/core/reactions';
@@ -65,6 +65,26 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
   assert.equal(ops.markOpType('like', false), 'unlike');
   assert.equal(ops.markOpType('dislike', true), 'dislike');
   assert.equal(ops.markOpType('report', false), 'unreport');
+
+  // Attitude is one choice: adding a like clears the dislike and vice versa, mirroring the
+  // statement the server runs. A report is separate and survives either.
+  const disagreed = [photo({ id: 4, dislikes: [7], reports: [7] })];
+  const agreed = ops.applyMark(disagreed, 4, 'like', 7, true);
+  assert.deepEqual(agreed[0]!.likes, [7]);
+  assert.deepEqual(agreed[0]!.dislikes, [], 'liking clears the dislike');
+  assert.deepEqual(agreed[0]!.reports, [7], 'a report is untouched');
+  const flipped = ops.applyMark(agreed, 4, 'dislike', 7, true);
+  assert.deepEqual(flipped[0]!.likes, []);
+  assert.deepEqual(flipped[0]!.dislikes, [7]);
+  // Removing one never touches the other.
+  const removed = ops.applyMark(flipped, 4, 'dislike', 7, false);
+  assert.deepEqual(removed[0]!.dislikes, []);
+  assert.deepEqual(removed[0]!.likes, []);
+  assert.deepEqual(
+    ops.applyMarkMany([photo({ id: 5, dislikes: [5] })], [5], 'like', 5, true)[0]!.dislikes,
+    [],
+  );
+
   assert.deepEqual(
     ops.applyDelete(list, [1]).map((p) => p.id),
     [2, 3],
@@ -244,4 +264,51 @@ test('frontend ops and filters: filters by type, ownership, marks, and ranges', 
   counted.likedByMe = 'only';
   counted.ranges = { size: [1, 2] };
   assert.equal(countActiveFilters(counted), 3);
+});
+
+// Which ops the engine may collapse into one queued entry: exactly the dimensions the server
+// writes last-write-wins. Everything else must keep its place in the log.
+test('frontend ops: coalesceKey names a last-write-wins dimension, and nothing else', () => {
+  const op = (over: Partial<Op> & { type: Op['type'] }): Op => ({
+    target: null,
+    payload: null,
+    ...over,
+  });
+  const key = (o: Op): string | null => ops.coalesceKey(o);
+
+  // A photo's attitude is one dimension: like, unlike, dislike and undislike all collapse,
+  // because the server clears the opposite column when either is added.
+  const attitude = [
+    op({ type: 'like', targetSha: 'a' }),
+    op({ type: 'unlike', targetSha: 'a' }),
+    op({ type: 'dislike', targetSha: 'a' }),
+    op({ type: 'undislike', targetSha: 'a' }),
+  ];
+  for (const one of attitude) assert.equal(key(one), key(attitude[0]!));
+  assert.notEqual(
+    key(op({ type: 'like', targetSha: 'a' })),
+    key(op({ type: 'like', targetSha: 'b' })),
+  );
+
+  // A report is its own dimension — it may coexist with either attitude.
+  assert.equal(
+    key(op({ type: 'report', targetSha: 'a' })),
+    key(op({ type: 'unreport', targetSha: 'a' })),
+  );
+  assert.notEqual(
+    key(op({ type: 'report', targetSha: 'a' })),
+    key(op({ type: 'like', targetSha: 'a' })),
+  );
+
+  // Votes and reactions collapse per target, never across kinds.
+  assert.equal(key(op({ type: 'vote', target: 1 })), key(op({ type: 'vote', target: 1 })));
+  assert.notEqual(key(op({ type: 'vote', target: 1 })), key(op({ type: 'vote', target: 2 })));
+  assert.notEqual(key(op({ type: 'vote', target: 1 })), key(op({ type: 'react', target: 1 })));
+
+  // Ordered, terminal and append-only ops never collapse, and neither does a targetless mark.
+  for (const type of ['upload', 'delete', 'fb_create'] as const) {
+    assert.equal(key(op({ type })), null);
+  }
+  assert.equal(key(op({ type: 'like' })), null);
+  assert.equal(key(op({ type: 'vote' })), null);
 });

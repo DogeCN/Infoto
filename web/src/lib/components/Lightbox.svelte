@@ -226,8 +226,8 @@
    *
    *  No "skip while at rest" escape hatch: `clampPan` collapses the offset itself when
    *  the media is at or below fit scale, and that collapse is exactly what a pinch-out
-   *  past 1 needs. Skipping it left the media parked off-centre at, say, 0.8 — a state
-   *  reachable only because `MIN_SCALE` is now below 1. */
+   *  past 1 needs. Skipping it parks the media off-centre at, say, 0.8, which
+   *  `MIN_SCALE` being below 1 makes reachable. */
   function clampSettled(animate: boolean): void {
     if (!stageEl || !wrapEl) return;
     const beforeX = zoomX;
@@ -242,9 +242,9 @@
    *
    * A plain CSS transition is cancelled the moment the surviving finger of a pinch
    * (or any stray move during a rotate) rewrites the transform with
-   * `transition:'none'` to pan — which is exactly how a two-finger rotate used to
-   * snap with no easing, depending on whether the leftover finger twitched within
-   * the 160ms settle. WAAPI plays on top of the inline style, so the pan writes
+   * `transition:'none'` to pan, so a two-finger rotate would snap with no easing
+   * whenever the leftover finger twitched within the 160ms settle. WAAPI plays on
+   * top of the inline style, so the pan writes
    * that follow it cannot kill the ease; the rotation settles and only then does
    * the panned position take over.
    */
@@ -556,8 +556,8 @@
       // Snap the rotation to the nearest 90° and ease it with WAAPI (so the
       // surviving finger's pan writes cannot cancel the settle). The snap writes
       // the rotated box *before* clamping — snapping moves the edges by tens of
-      // pixels, and clamping against the pre-snap rect is how the image used to
-      // settle out of frame at an angle it was no longer rendered at.
+      // pixels, so clamping against the pre-snap rect settles the image out of
+      // frame at an angle it is no longer rendered at.
       snapWithEase();
       if (active.size === 0) pinchSequence = false;
       return;
@@ -588,10 +588,10 @@
       isTouch: e.pointerType === 'touch',
     });
 
-    // The tail of a pinch is never a vote, a download or a menu. Closing a two-finger
-    // zoom used to land here with `dx` spanning the gap between the two fingers — far
-    // past the threshold — so zooming marked the photo and advanced, which also reset
-    // the rotation and made the rotate gesture look like it never happened.
+    // The tail of a pinch is never a vote, a download or a menu. Without this
+    // branch a two-finger zoom lands here with `dx` spanning the gap between the two
+    // fingers — far past the threshold — so zooming marks the photo and advances,
+    // which also resets the rotation and hides that a rotate gesture happened.
     if (release.kind === 'pinch-tail') {
       lastTap = null;
       gestureDir = null;
@@ -638,10 +638,10 @@
   /**
    * A cancelled gesture is not a finished one.
    *
-   * This used to be bound to `onPointerUp`, which ran the whole completion path: a system
-   * takeover (incoming call, edge-back, app switch, a second touch stealing the gesture)
-   * could mark a photo, start a download or open the menu that the user never asked for —
-   * and vote on it, which is a server write. Cancelling drops the gesture state, snaps any
+   * A system takeover (incoming call, edge-back, app switch, a second touch stealing
+   * the gesture) must not run the completion path: marking a photo, starting a download
+   * or opening the menu the user never asked for — and voting on it, which is a server
+   * write. Cancelling drops the gesture state, snaps any
    * in-flight rotation to a resting angle so the photo is not left tilted, and returns the
    * transform without animating: nothing was completed, so there is nothing to settle.
    */
@@ -720,8 +720,8 @@
 
     // Ctrl is the desktop zoom/rotate modifier. Pressing it mid-drag switches the plain
     // drag into the Ctrl mode (fixed-centre zoom + rotate) so you can start the gesture
-    // any time, not only with Ctrl held at the press. The modifier's own keydown used to
-    // reset the zoom, which fought the "press Ctrl to begin" flow and is removed.
+    // any time, not only with Ctrl held at the press. Its own keydown must not reset
+    // the zoom, which would fight that flow.
     if (e.key === 'Control') {
       if (!ctrlPressed) {
         ctrlPressed = true;
@@ -789,8 +789,7 @@
   }
 
   /** How long two clicks on the media may be apart and still read as a double-click.
-   *  Matches the platform threshold a native `dblclick` used to impose, so the
-   *  gesture keeps the rhythm it had. */
+   *  Matches the platform `dblclick` threshold, so the gesture keeps its native rhythm. */
   const DBL_MS = 500;
 
   function handleStageClick(event: MouseEvent): void {
@@ -809,8 +808,8 @@
     // A native `dblclick` cannot do this job: the browser pairs two *physical*
     // clicks, with no idea that this one was already spent paging — and it judges
     // the pair against the layout *after* that page change, where the same point
-    // may now be the photo rather than the mask. That turned "click the mask to
-    // advance, click again" into an unintended zoom. Owning the pairing is what
+    // may now be the photo rather than the mask, so "click the mask to advance,
+    // click again" reads as an unintended zoom. Owning the pairing is what
     // the touch path already does, and it makes a consumed click structurally
     // unable to take part: only a media click ever arms the next one.
     if (hit?.closest('.lb-media') && !hit.closest('.lb-corner, button')) {

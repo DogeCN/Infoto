@@ -2,6 +2,7 @@
   import { onDestroy, untrack } from 'svelte';
   import type { Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
+  import { fmt, plural } from '$shared/copy';
   import { reflowFlipWindowMs } from '$base/lib/motion';
   import Tooltip from './Tooltip.svelte';
   import type { GeomStamp } from '$base/lib/layout';
@@ -41,9 +42,6 @@
     /** Dismiss a failed upload card (removes it from the waterfall). */
     onDismissUpload?: () => void;
     onLongPress?: () => void;
-    onLike?: () => void;
-    onDislike?: () => void;
-    onRequestDelete?: () => void;
   }
 
   let {
@@ -62,9 +60,6 @@
     onRetryUpload,
     onDismissUpload,
     onLongPress,
-    onLike,
-    onDislike,
-    onRequestDelete,
   }: Props = $props();
 
   let isLiked = $derived(photo.likes.includes(selfId));
@@ -72,10 +67,12 @@
   let isReported = $derived(photo.reports.includes(selfId));
   /** Column or row is too small for the resting badge and volume sizes. */
   let tight = $derived(width < 140 || height < 64);
+  // Mark badges are read-only on the card: they report the counts, they do not toggle
+  // them. Every mark is made from the Lightbox, where the control is a real button.
   const badgeCls = $derived(
     tight
-      ? 'flex items-center gap-0.5 rounded-full bg-black/55 px-1 py-px text-[10px] font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75'
-      : 'flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-black/75',
+      ? 'flex items-center gap-0.5 rounded-full bg-black/55 px-1 py-px text-[10px] font-medium text-white/75 backdrop-blur-sm'
+      : 'flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm',
   );
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
@@ -284,21 +281,27 @@
   <!-- Upload curtain overlay: lifts bottom-to-top with progress; failure returns to full cover + retry / dismiss -->
   {#if overlay}
     {#if overlay.failed}
-      <!-- Failure cover with retry and dismiss controls. -->
-      <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/75">
-        <Tooltip text={copy.photoCard.dismiss} side="bottom">
-          <button
-            type="button"
-            class="icon-button icon-button--danger absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
-            aria-label={copy.photoCard.dismiss}
-            onclick={(e) => {
-              e.stopPropagation();
-              onDismissUpload?.();
-            }}
-          >
-            <X class="size-4" />
-          </button>
-        </Tooltip>
+      <!-- Failure cover with retry and dismiss controls. Semi-transparent on purpose: the
+           card underneath is still a card to select, not a hole in the grid. -->
+      <div class="absolute inset-0 z-20 flex items-center justify-center bg-black/55">
+        <!-- Multi-select owns the top-right corner here too: a failed card is selectable, so
+             its dismiss control would cover the checkbox and swallow the tap. Retry stays —
+             it is in the middle of the card, nowhere near the corner. -->
+        {#if !multiMode}
+          <Tooltip text={copy.photoCard.dismiss} side="bottom">
+            <button
+              type="button"
+              class="icon-button icon-button--danger absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
+              aria-label={copy.photoCard.dismiss}
+              onclick={(e) => {
+                e.stopPropagation();
+                onDismissUpload?.();
+              }}
+            >
+              <X class="size-4" />
+            </button>
+          </Tooltip>
+        {/if}
         <!-- Retry is the primary action on a failed card: a 56px target with a 28px
              glyph, so it is comfortable on touch and clearly the way out. -->
         <Tooltip text={copy.photoCard.retry} side="bottom">
@@ -321,19 +324,23 @@
         class="pointer-events-none absolute inset-x-0 top-0 z-20 bg-black/70 transition-[height] duration-[var(--duration-exit)] ease-[var(--ease-exit)]"
         style="height: {Math.max(0, 1 - Math.min(overlay.fraction ?? 0, CURTAIN_MAX_OPEN)) * 100}%"
       ></div>
-      <Tooltip text={copy.photoCard.dismiss} side="bottom">
-        <button
-          type="button"
-          class="absolute top-2 right-2 z-30 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
-          aria-label={copy.photoCard.dismiss}
-          onclick={(e) => {
-            e.stopPropagation();
-            onDismissUpload?.();
-          }}
-        >
-          <X class="size-4" />
-        </button>
-      </Tooltip>
+      <!-- Multi-select owns the top-right corner: its checkbox lives there, so the cancel
+           control would sit on top of it and swallow the tap. It returns with the mode. -->
+      {#if !multiMode}
+        <Tooltip text={copy.photoCard.dismiss} side="bottom">
+          <button
+            type="button"
+            class="absolute top-2 right-2 z-30 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
+            aria-label={copy.photoCard.dismiss}
+            onclick={(e) => {
+              e.stopPropagation();
+              onDismissUpload?.();
+            }}
+          >
+            <X class="size-4" />
+          </button>
+        </Tooltip>
+      {/if}
     {/if}
   {/if}
 
@@ -354,21 +361,21 @@
     </div>
   {/if}
 
-  <!-- Mark badges, hidden when the count is zero. The viewer's own mark is filled; others use the same hue at lower opacity. -->
+  <!-- Mark badges, hidden when the count is zero. Display only — the card reports the
+       counts, the Lightbox is where a mark is made. The viewer's own mark is filled;
+       others use the same hue at lower opacity. -->
   <div
     class="absolute z-10 flex flex-wrap items-center {tight
       ? 'bottom-1 left-1 max-w-[calc(100%-0.35rem)] gap-1'
       : 'bottom-2 left-2 max-w-[calc(100%-0.5rem)] gap-1.5'}"
   >
     {#if photo.likes.length > 0}
-      <button
-        type="button"
+      <span
         class={badgeCls}
-        aria-label={isLiked ? copy.lightbox.unlike : copy.lightbox.like}
-        onclick={(e) => {
-          e.stopPropagation();
-          onLike?.();
-        }}
+        role="img"
+        aria-label={fmt(plural(photo.likes.length, copy.photoCard.likes), {
+          count: photo.likes.length,
+        })}
       >
         <ThumbsUp
           class="{tight ? 'size-2.5' : 'size-3'} {isLiked
@@ -376,18 +383,16 @@
             : 'text-destructive/60'}"
         />
         <span class="tabular-nums">{photo.likes.length}</span>
-      </button>
+      </span>
     {/if}
 
     {#if photo.dislikes.length > 0}
-      <button
-        type="button"
+      <span
         class={badgeCls}
-        aria-label={isDisliked ? copy.lightbox.undislike : copy.lightbox.dislike}
-        onclick={(e) => {
-          e.stopPropagation();
-          onDislike?.();
-        }}
+        role="img"
+        aria-label={fmt(plural(photo.dislikes.length, copy.photoCard.dislikes), {
+          count: photo.dislikes.length,
+        })}
       >
         <ThumbsDown
           class="{tight ? 'size-2.5' : 'size-3'} {isDisliked
@@ -395,18 +400,16 @@
             : 'text-dislike/60'}"
         />
         <span class="tabular-nums">{photo.dislikes.length}</span>
-      </button>
+      </span>
     {/if}
 
     {#if photo.reports.length > 0}
-      <button
-        type="button"
+      <span
         class={badgeCls}
-        aria-label={isReported ? copy.lightbox.cancelReport : copy.lightbox.report}
-        onclick={(e) => {
-          e.stopPropagation();
-          onRequestDelete?.();
-        }}
+        role="img"
+        aria-label={fmt(plural(photo.reports.length, copy.photoCard.reports), {
+          count: photo.reports.length,
+        })}
       >
         <Flag
           class="{tight ? 'size-2.5' : 'size-3'} {isReported
@@ -414,7 +417,7 @@
             : 'text-warning/60'}"
         />
         <span class="tabular-nums">{photo.reports.length}</span>
-      </button>
+      </span>
     {/if}
   </div>
 
@@ -446,8 +449,8 @@
 <style>
   /* Demo-standard reflow motion: the layout writes transform/width/height and this
      transition interpolates, so a reflow glides and retargets mid-flight instead of
-     restart-jumping. border-color/opacity ride along because the Tailwind transition
-     utility they used previously would be overridden by this unlayered shorthand. */
+     restart-jumping. border-color/opacity ride along because a Tailwind transition
+     utility would be overridden by this unlayered shorthand. */
   .card-motion {
     transition:
       transform var(--duration-reflow) var(--ease-reflow),

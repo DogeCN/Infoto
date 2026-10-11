@@ -7,7 +7,7 @@ export interface RequestIo {
   timeoutMs?: number;
 }
 
-export const REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 15_000;
 
 export async function requestJson(
   path: string,

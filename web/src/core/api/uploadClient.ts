@@ -68,7 +68,9 @@ function parseMediaHostResponse(text: string, status: number): UploadResult {
   return { ok: true, url: data };
 }
 
-/** Choose the multipart filename extension from the Blob MIME type. */
+/** Choose the multipart filename extension from the Blob MIME type. The extension survives
+ *  into the returned URL, which is how the Markdown renderer later tells a video from a
+ *  sound file, so the audio/video entries here are load-bearing. */
 function extFor(blob: Blob): string {
   const mime = (blob.type || '').toLowerCase().split(';')[0]!.trim();
   const known: Record<string, string> = {
@@ -78,11 +80,23 @@ function extFor(blob: Blob): string {
     'image/gif': 'gif',
     'image/avif': 'avif',
     'image/heic': 'heic',
+    'image/svg+xml': 'svg',
+    'image/bmp': 'bmp',
     'video/webm': 'webm',
     'video/mp4': 'mp4',
     'video/quicktime': 'mov',
     'video/x-matroska': 'mkv',
     'video/x-msvideo': 'avi',
+    'video/ogg': 'ogv',
+    'audio/mpeg': 'mp3',
+    'audio/mp4': 'm4a',
+    'audio/aac': 'aac',
+    'audio/wav': 'wav',
+    'audio/x-wav': 'wav',
+    'audio/ogg': 'ogg',
+    'audio/opus': 'opus',
+    'audio/flac': 'flac',
+    'audio/webm': 'weba',
   };
   const hit = known[mime];
   if (hit) return hit;

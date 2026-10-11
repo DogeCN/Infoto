@@ -2,14 +2,14 @@
   // Markdown editor with a toolbar and a split live preview. Images go through
   // the shared upload pipeline; the returned URL is inserted at the remembered
   // caret so edits made while an upload is in flight do not move it.
-  import { Bold, Italic, Strikethrough, Quote, Code, List, Link, ImagePlus } from '@lucide/svelte';
+  import { Bold, Italic, Strikethrough, Quote, Code, List, Link, FileUp } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { cn } from '$base/lib/ui';
   import Tooltip from './Tooltip.svelte';
   import PollReferences from './PollReferences.svelte';
   import type { Poll } from '$shared/types';
   import {
-    insertImageAt,
+    insertMediaAt,
     insertMarkdownBlock,
     mapOffsetThroughEdit,
     prefixSelectedLines,
@@ -112,9 +112,10 @@
       const url = await onPickImage();
       if (url) {
         const caret = pendingImageCaret ?? selection().start;
-        // File name (minus extension) becomes the alt text / video aria-label.
+        // Media renders in place; anything else becomes a link to the hosted file.
+        // The file name (minus extension) is the alt text / video aria-label.
         const alt = (uploadName || '').replace(/\.[^.]+$/, '');
-        applyTransform(insertImageAt(value, caret, url, alt));
+        applyTransform(insertMediaAt(value, caret, url, alt));
       }
     } catch (error) {
       // A deliberate cancel is not a failure: no error line, no message under the editor.
@@ -158,7 +159,12 @@
       title: copy.editor.tools.link,
       run: () => surround('[', '](https://)', copy.editor.tools.link),
     },
-    { icon: ImagePlus, title: copy.editor.tools.image, run: () => void pickImage(), image: true },
+    {
+      icon: FileUp,
+      title: copy.editor.tools.file,
+      run: () => void pickImage(),
+      image: true,
+    },
   ];
 </script>
 
@@ -213,7 +219,7 @@
                 if (url) {
                   const caret = pendingImageCaret ?? selection().start;
                   const alt = (uploadName || '').replace(/\.[^.]+$/, '');
-                  applyTransform(insertImageAt(value, caret, url, alt));
+                  applyTransform(insertMediaAt(value, caret, url, alt));
                 }
               } catch (error) {
                 if (isCancelled(error)) return;

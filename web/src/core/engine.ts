@@ -2,7 +2,17 @@
 
 import { MAX_SYNC_OPS, type Op, type SyncRequest, type SyncResponse } from '$shared/types';
 import { postSync } from './api/syncClient';
-import { rebuildCache, appendOp, countOps, openOplogDb, readOps, removeOpsBySha } from './oplog';
+import { coalesceKey } from './ops';
+import {
+  rebuildCache,
+  appendOp,
+  countOps,
+  openOplogDb,
+  putOp,
+  readOps,
+  readSnapshot,
+  removeOpsBySha,
+} from './oplog';
 
 /** Browser hard limit for a keepalive request body. */
 export const KEEPALIVE_BODY_LIMIT = 65_536;
@@ -34,6 +44,9 @@ export interface EngineIo {
   postSyncFn?: typeof postSync;
   /** Response sink (store write). */
   onSyncResponse?: (r: SyncResponse, context: SyncSnapshotContext) => void;
+  /** Last persisted snapshot, delivered before the first request so a returning visitor
+   *  renders the album instead of an empty state for one round trip. */
+  onCachedSnapshot?: (r: SyncResponse) => void;
   onError?: (phase: 'submit' | 'pagehide', e: unknown) => void;
 }
 
@@ -94,18 +107,50 @@ export class SyncEngine {
 
   async init(): Promise<void> {
     if (!this.db) this.db = await openOplogDb();
+    // Paint the last snapshot first: a returning visitor sees the album instead of the empty
+    // state for the length of the first round trip. A read failure is not fatal — the sync
+    // below still fills the store from the server.
+    const cached = await readSnapshot(this.db).catch(() => null);
+    if (cached) this.io.onCachedSnapshot?.(cached);
     this.pending = await countOps(this.db);
     this.emit();
     void this.sync();
   }
 
-  /** Persist an operation and return its monotonic oplog key. */
+  /** Persist an operation and return its oplog key. An operation that supersedes a queued one
+   *  on the same dimension (see `coalesceKey`) replaces it in place, so a toggled mark, a
+   *  changed vote or a re-picked reaction costs one entry instead of a growing chain. */
   async addOp(op: Op): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
+    const superseded = await this.queuedKeyFor(op);
+    if (superseded !== null) {
+      await putOp(this.db, superseded, op);
+      // The pending count is unchanged, so there is nothing for a listener to re-read.
+      return Number(superseded);
+    }
     const key = await appendOp(this.db, op);
     this.pending = await countOps(this.db);
     this.emit();
     return Number(key);
+  }
+
+  /**
+   * The key of a queued op this one supersedes, or null to append. An op already claimed by an
+   * in-flight request is never superseded: that request carries the old value, and a successful
+   * response clears the key, which would take the replacement with it — a silently lost edit.
+   * The scan runs only for ops that have a dimension at all, so a batch of uploads never pays
+   * for it.
+   */
+  private async queuedKeyFor(op: Op): Promise<IDBValidKey | null> {
+    const key = coalesceKey(op);
+    if (key === null || !this.db) return null;
+    const entries = await readOps(this.db);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i]!;
+      if (this.inFlightKeys.has(entry.key)) continue;
+      if (coalesceKey(entry.op) === key) return entry.key;
+    }
+    return null;
   }
 
   /**
@@ -193,7 +238,7 @@ export class SyncEngine {
     context: SyncSnapshotContext,
   ): Promise<void> {
     this.io.onSyncResponse?.(response, context);
-    await rebuildCache(db, response.photos).catch((error) => {
+    await rebuildCache(db, response).catch((error) => {
       console.warn('[sync] SHA cache rebuild failed', error);
     });
   }

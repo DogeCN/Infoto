@@ -38,7 +38,7 @@ export const FALLBACK_EASE: Record<MotionPhase, string> = {
 };
 
 /** Resolve one motion custom property, falling back to its declared value. */
-export function motionToken(property: MotionProperty, fallback: string): string {
+function motionToken(property: MotionProperty, fallback: string): string {
   if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return fallback;
   const value = getComputedStyle(document.documentElement).getPropertyValue(property).trim();
   return value || fallback;
@@ -119,8 +119,8 @@ export const countHop = {
  *
  * Evaluated once at module load, not per card: `motionMs` reads a custom property through
  * `getComputedStyle`, and a waterfall mounts and unmounts cards on every scroll step. The
- * value comes from the token so it cannot drift — `ca1b082` hardcoded the pair this window
- * exists to bracket and is cited in ADR 0015 for exactly that. The margin is the frame in
+ * value comes from the token so it cannot drift from the duration it brackets; hard-coding
+ * the pair here is the mistake ADR 0015 records. The margin is the frame in
  * which a remount lands after the commit; with no document (unit tests) it degrades to the
  * asserted fallback rather than to a second literal.
  */

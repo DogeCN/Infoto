@@ -399,12 +399,8 @@ export class UploadPipeline {
 
   uploadEditorImage(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
-      // Same accept surface as the waterfall (image/*,video/*) and the same queue, but
-      // the editor leg has no transcode: the picked file is uploaded as it is.
-      if (!routeByMime(file.type)) {
-        reject(new Error(copy.transcode.errors.unsupportedFileType));
-        return;
-      }
+      // The editor takes any file and uploads it as-is: no transcode leg, and no MIME gate —
+      // the Markdown renderer decides by extension how to display whatever comes back.
       const jobId = uid();
       // Show the row immediately: the SW's own 'queued' echo is one hop away.
       this.emitEditor({ jobId, fileName: file.name, purpose: 'editor', phase: 'queued' });

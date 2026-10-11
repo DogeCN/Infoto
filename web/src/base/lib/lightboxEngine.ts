@@ -11,8 +11,8 @@
 /**
  * Zoom bounds. The lower bound is **below 1 on purpose**: pinching apart and Ctrl+wheel-up
  * have to be able to make the media smaller than the stage, which is how you get back to a
- * whole-photo view after a pinch went too far. With `MIN_SCALE = 1` both of those were dead
- * inputs that silently did nothing, and the only way back to fit was double-click.
+ * whole-photo view after a pinch goes too far. With `MIN_SCALE = 1` both of those are dead
+ * inputs that silently do nothing, and the only way back to fit is a double-click.
  *
  * Note what "zoomed in" means everywhere below: `scale > REST_SCALE + REST_EPSILON`, never
  * `scale > MIN_SCALE`. A 0.8 image is smaller than the stage, so it must centre and refuse to
@@ -22,9 +22,9 @@ export const MIN_SCALE = 0.5;
 export const MAX_SCALE = 5;
 
 /** Above this the media is treated as zoomed in; at or below it, it rests centred. */
-export const REST_SCALE = 1;
+const REST_SCALE = 1;
 /** Slack for the resting comparison, so a pinch settling at 1.0000001 still rests. */
-export const REST_EPSILON = 0.01;
+const REST_EPSILON = 0.01;
 
 /** True when the media is at (or below) fit scale: centred, and not pannable. */
 export function isAtRest(scale: number): boolean {
@@ -283,7 +283,7 @@ export function classifySwipe(dx: number, dy: number, triggerAt: number): SwipeD
 }
 
 /** How far a release may travel and still count as a tap, in px. */
-export const TAP_SLOP = 12;
+const TAP_SLOP = 12;
 
 export type Release =
   | { kind: 'pinch-tail' }

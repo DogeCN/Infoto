@@ -2,11 +2,14 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   insertImageAt,
+  insertLinkAt,
+  insertMediaAt,
   insertMarkdownBlock,
+  isEmbeddableArtifact,
   mapOffsetThroughEdit,
   prefixSelectedLines,
   wrapSelection,
-  isAnimatedArtifact,
+  markdownMediaKind,
 } from '../../src/core/markdown';
 
 test('markdown toolbar transforms: transforms Markdown selections and identifies animated artifacts', () => {
@@ -53,19 +56,70 @@ test('markdown toolbar transforms: transforms Markdown selections and identifies
     });
   }
 
-  // Treats a .webm path as animated and ignores everything else.
+  // Classifies a media URL by extension: video, audio, or (the default) image.
   {
-    assert.equal(isAnimatedArtifact('https://host/a.webm'), true);
-    assert.equal(isAnimatedArtifact('https://host/A.WEBM'), true);
-    assert.equal(isAnimatedArtifact('https://host/a.webm?v=2#t=1'), true);
-    assert.equal(isAnimatedArtifact('/static/a.webm'), true);
-    assert.equal(isAnimatedArtifact('a.webm'), true);
-    assert.equal(isAnimatedArtifact('https://host/a.webp'), false);
-    assert.equal(isAnimatedArtifact('https://host/a.png'), false);
-    assert.equal(isAnimatedArtifact('https://host/download?file=a.webm'), false);
-    assert.equal(isAnimatedArtifact('not a url'), false);
-    assert.equal(isAnimatedArtifact(null), false);
-    assert.equal(isAnimatedArtifact(undefined), false);
-    assert.equal(isAnimatedArtifact(''), false);
+    assert.equal(markdownMediaKind('https://host/a.webm'), 'video');
+    assert.equal(markdownMediaKind('https://host/A.WEBM'), 'video');
+    assert.equal(markdownMediaKind('https://host/a.webm?v=2#t=1'), 'video');
+    assert.equal(markdownMediaKind('/static/a.webm'), 'video');
+    assert.equal(markdownMediaKind('a.webm'), 'video');
+    assert.equal(markdownMediaKind('https://host/clip.mp4'), 'video');
+    assert.equal(markdownMediaKind('https://host/clip.mov'), 'video');
+    assert.equal(markdownMediaKind('https://host/song.mp3'), 'audio');
+    assert.equal(markdownMediaKind('https://host/song.flac'), 'audio');
+    assert.equal(markdownMediaKind('https://host/a.webp'), 'image');
+    assert.equal(markdownMediaKind('https://host/a.png'), 'image');
+    assert.equal(markdownMediaKind('https://host/download?file=a.webm'), 'image');
+    assert.equal(markdownMediaKind('not a url'), 'image');
+    assert.equal(markdownMediaKind(null), 'image');
+    assert.equal(markdownMediaKind(undefined), 'image');
+    assert.equal(markdownMediaKind(''), 'image');
+  }
+
+  // Only a real media extension renders in place; a non-media file must land as a link.
+  {
+    assert.equal(isEmbeddableArtifact('https://host/a.png'), true);
+    assert.equal(isEmbeddableArtifact('https://host/a.JPEG'), true);
+    assert.equal(isEmbeddableArtifact('https://host/a.avif'), true);
+    assert.equal(isEmbeddableArtifact('https://host/clip.mp4'), true);
+    assert.equal(isEmbeddableArtifact('https://host/song.mp3'), true);
+    assert.equal(isEmbeddableArtifact('https://host/notes.pdf'), false);
+    assert.equal(isEmbeddableArtifact('https://host/archive.zip'), false);
+    assert.equal(isEmbeddableArtifact('https://host/download?file=a.png'), false);
+    assert.equal(isEmbeddableArtifact('https://host/noextension'), false);
+    assert.equal(isEmbeddableArtifact('not a url'), false);
+    assert.equal(isEmbeddableArtifact(null), false);
+    assert.equal(isEmbeddableArtifact(undefined), false);
+    assert.equal(isEmbeddableArtifact(''), false);
+  }
+
+  // Inserting a hosted file: media becomes ![name](url), everything else [name](url).
+  {
+    assert.equal(
+      insertMediaAt('', 0, 'https://host/a.png', 'shot').value,
+      '![shot](https://host/a.png)',
+    );
+    assert.equal(
+      insertMediaAt('', 0, 'https://host/clip.mp4', 'clip').value,
+      '![clip](https://host/clip.mp4)',
+    );
+    assert.equal(
+      insertMediaAt('', 0, 'https://host/song.mp3', 'song').value,
+      '![song](https://host/song.mp3)',
+    );
+    assert.equal(
+      insertMediaAt('', 0, 'https://host/notes.pdf', 'notes').value,
+      '[notes](https://host/notes.pdf)',
+    );
+    // An unknown extension falls back to the URL as its label, never an empty link.
+    assert.equal(
+      insertMediaAt('', 0, 'https://host/f.bin', '').value,
+      '[https://host/f.bin](https://host/f.bin)',
+    );
+    // Brackets in a file name cannot break the link text.
+    assert.equal(
+      insertLinkAt('', 0, 'https://host/a.pdf', 'a]b[c').value,
+      '[abc](https://host/a.pdf)',
+    );
   }
 });

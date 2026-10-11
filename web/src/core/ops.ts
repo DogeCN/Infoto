@@ -35,6 +35,65 @@ export function markOpType(kind: MarkKind, add: boolean): Op['type'] {
   return add ? 'report' : 'unreport';
 }
 
+/** The mark a photo's opposite writes: a like and a dislike are one choice, never both. */
+const OPPOSITE_KIND: Partial<Record<MarkKind, MarkKind>> = { like: 'dislike', dislike: 'like' };
+
+/** The three mark columns of one photo. */
+export type MarkSet = { likes: number[]; dislikes: number[]; reports: number[] };
+
+/**
+ * Apply one mark to a photo's mark columns, mirroring the server: adding a like or a dislike
+ * also clears the other column, because the two are one choice. The server enforces that in
+ * the same statement it writes the mark, so a client that folded only the column it named
+ * would disagree with the snapshot it is about to receive. Reports stand alone.
+ */
+export function applyMarkToSet(
+  set: MarkSet,
+  kind: MarkKind,
+  userId: number,
+  add: boolean,
+): MarkSet {
+  const field = MARK_FIELD[kind];
+  const next = { ...set, [field]: toggleId(set[field], userId, add) };
+  const opposite = add ? OPPOSITE_KIND[kind] : undefined;
+  if (!opposite) return next;
+  const other = MARK_FIELD[opposite];
+  return { ...next, [other]: toggleId(next[other], userId, false) };
+}
+
+/**
+ * The dimension an op writes, used to supersede a queued op of the same dimension — null for
+ * ops that must keep their place in the log.
+ *
+ * The server's marks, votes and reactions are all last-write-wins per dimension: `setMark` is
+ * a set add/remove that also clears the opposite attitude, `vote` replaces the voter's whole
+ * option set, `react` is an upsert. Two queued ops on one dimension therefore collapse to the
+ * newest without changing the outcome — a like and a dislike share one key precisely because
+ * the server clears the opposite column when either is added, so the newest op states the
+ * whole intent. A report is a separate dimension and may coexist with either.
+ *
+ * `upload`, `delete` and `fb_create` return null: they are ordered (a mark must follow its
+ * upload), terminal, or append-only.
+ */
+export function coalesceKey(op: Op): string | null {
+  switch (op.type) {
+    case 'like':
+    case 'unlike':
+    case 'dislike':
+    case 'undislike':
+      return op.targetSha ? `attitude:${op.targetSha}` : null;
+    case 'report':
+    case 'unreport':
+      return op.targetSha ? `report:${op.targetSha}` : null;
+    case 'vote':
+      return op.target != null ? `vote:${op.target}` : null;
+    case 'react':
+      return op.target != null ? `react:${op.target}` : null;
+    default:
+      return null;
+  }
+}
+
 /** Optimistically apply a mark to one photo. */
 export function applyMark(
   photos: Photo[],
@@ -43,9 +102,8 @@ export function applyMark(
   userId: number,
   add: boolean,
 ): Photo[] {
-  const field = MARK_FIELD[kind];
   return photos.map((p) =>
-    p.id === photoId ? { ...p, [field]: toggleId(p[field], userId, add) } : p,
+    p.id === photoId ? { ...p, ...applyMarkToSet(p, kind, userId, add) } : p,
   );
 }
 
@@ -58,10 +116,7 @@ export function applyMarkMany(
   add: boolean,
 ): Photo[] {
   const set = new Set(ids);
-  const field = MARK_FIELD[kind];
-  return photos.map((p) =>
-    set.has(p.id) ? { ...p, [field]: toggleId(p[field], userId, add) } : p,
-  );
+  return photos.map((p) => (set.has(p.id) ? { ...p, ...applyMarkToSet(p, kind, userId, add) } : p));
 }
 
 /** Optimistically remove photos (root delete). */
@@ -183,10 +238,6 @@ export function applyAnnUpdate(
   return anns.map((a) => (a.id === id ? { ...a, title, contentMd, updatedAt: now } : a));
 }
 
-export function applyAnnDelete(anns: Announcement[], id: number): Announcement[] {
-  return anns.filter((a) => a.id !== id);
-}
-
 export function applyPollCreate(
   polls: Poll[],
   tempId: number,
@@ -223,10 +274,6 @@ export function applyPollUpdate(
       votes: definitionChanged ? [] : poll.votes,
     };
   });
-}
-
-export function applyPollDelete(polls: Poll[], id: number): Poll[] {
-  return polls.filter((poll) => poll.id !== id);
 }
 
 /** Order submitted IDs first, preserve omitted rows, and renumber sort values consecutively. */

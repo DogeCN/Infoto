@@ -6,9 +6,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** Inline-font buttons cluster in one horizontal group. */
-export const ICON_GROUP = 'flex shrink-0 items-center gap-1';
-
 /** The site's font stack. `app.css` declares the same list on `body`. */
 const FONT_STACK = '"Inter", "Noto Sans SC", system-ui, -apple-system, sans-serif';
 

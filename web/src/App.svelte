@@ -52,6 +52,11 @@
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
     },
+    // Render the persisted snapshot before the first request resolves; the sync below
+    // replaces it with the authoritative one moments later.
+    onCachedSnapshot: (r) => {
+      store.applySync(r);
+    },
     onError: (phase, e) => {
       console.error('[sync]', phase, e);
       notifySyncFailure();

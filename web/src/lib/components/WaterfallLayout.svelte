@@ -84,8 +84,8 @@
   /** Extra breathing room above the first row, on top of the bar's own height.
    *
    *  Zero on purpose. The bar is 56–64px tall but its controls are only ~20px, so it
-   *  already carries ~16px of padding above and below the icons; adding more here just
-   *  widened the empty band the bar looked like it was padding. The bar is transparent at
+   *  already carries ~16px of padding above and below the icons; adding more here only
+   *  widens the empty band the bar already pads itself with. The bar is transparent at
    *  rest and translucent once scrolled, so photos are meant to meet it, not float below it.
    */
   const TOP_GAP = 0;
@@ -305,8 +305,9 @@
     scroll.x = scrollLeftPos;
   }
 
-  // Optimistic cards use SHA-256 operations, queued behind their upload operation.
-  /** Failed upload cards are excluded from preview and selection. */
+  /** Failed upload cards are excluded from preview (there is nothing to look at) but not
+   *  from selection: the way out of a failed upload is the same batch action the other
+   *  cards take, and refusing to select the one card that needs it most is not a courtesy. */
   const isFailedUpload = (id: number) => overlays.get(id)?.failed === true;
 
   function handlePhotoClick(photo: Photo) {
@@ -337,7 +338,6 @@
   });
 
   function handleLongPress(photo: Photo) {
-    if (isFailedUpload(photo.id)) return;
     if (!multiMode) {
       multiMode = true;
       onMultiModeChange?.(true);
@@ -347,7 +347,6 @@
   }
 
   function toggleSelect(id: number) {
-    if (isFailedUpload(id)) return;
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -359,7 +358,7 @@
   }
 
   function selectAll() {
-    selected = new Set(allPhotos.filter((p) => !isFailedUpload(p.id)).map((p) => p.id));
+    selected = new Set(allPhotos.map((p) => p.id));
   }
 
   function deselectAll() {
@@ -412,7 +411,7 @@
       // Marquee hits join the selection in real time: base on the snapshot, avoiding writes to an effect's own dependency (a cycle)
       const next = new Set(marqueeBase);
       for (const id of marqueeHits(boxes, marqueeRect)) {
-        if (!isFailedUpload(id)) next.add(id);
+        next.add(id);
       }
       selected = next;
     };
@@ -567,9 +566,6 @@
             {multiMode}
             onClick={() => handlePhotoClick(photo)}
             onLongPress={() => handleLongPress(photo)}
-            onLike={() => onLike?.(photo)}
-            onDislike={() => onDislike?.(photo)}
-            onRequestDelete={() => onRequestDelete?.(photo)}
           />
         {/if}
       {/each}

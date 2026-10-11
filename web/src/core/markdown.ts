@@ -10,7 +10,7 @@ export interface TextTransform {
   selection: TextSelection;
 }
 
-export function normalizeSelection(value: string, selection: TextSelection): TextSelection {
+function normalizeSelection(value: string, selection: TextSelection): TextSelection {
   const start = Math.max(0, Math.min(value.length, selection.start));
   const end = Math.max(start, Math.min(value.length, selection.end));
   return { start, end };
@@ -74,8 +74,29 @@ export function insertMarkdownBlock(
   };
 }
 
+/** Inserts `[label](url)` at a position clamped to the value — a plain link to the hosted
+ *  file, for anything Markdown has no element for. */
+export function insertLinkAt(
+  value: string,
+  position: number,
+  url: string,
+  label = '',
+): TextTransform {
+  const safePosition = Math.max(0, Math.min(value.length, position));
+  // Brackets would break the link text; nothing else in Markdown needs escaping here.
+  const safeLabel = (label || url).replace(/[[\]]/g, '');
+  const markdown = `[${safeLabel}](${url})`;
+  return {
+    value: value.slice(0, safePosition) + markdown + value.slice(safePosition),
+    selection: {
+      start: safePosition + markdown.length,
+      end: safePosition + markdown.length,
+    },
+  };
+}
+
 /** Inserts `![alt](url)` at a position clamped to the value. `alt` doubles as the
- *  <video> aria-label once a WebM artifact is rendered, so it is worth passing the
+ *  <video> aria-label once an animated artifact is rendered, so it is worth passing the
  *  source file name. */
 export function insertImageAt(
   value: string,
@@ -116,45 +137,154 @@ export function mapOffsetThroughEdit(offset: number, before: string, after: stri
   return prefix;
 }
 
-// Identify animated Markdown media by its WebM path extension.
+// Identify Markdown media by its path extension so `![](url)` renders as the right element.
 
-/** True when the URL points at a WebM artifact (GIF → VP9, or real video). */
-export function isAnimatedArtifact(url: string | null | undefined): boolean {
-  if (!url) return false;
+/** Which element a Markdown `![alt](url)` should become. */
+export type MarkdownMediaKind = 'image' | 'video' | 'audio';
+
+const VIDEO_EXTENSIONS = new Set([
+  'webm',
+  'mp4',
+  'm4v',
+  'mov',
+  'mkv',
+  'avi',
+  'ogv',
+  '3gp',
+  'flv',
+  'wmv',
+  'mpeg',
+  'mpg',
+  'ts',
+]);
+const AUDIO_EXTENSIONS = new Set([
+  'mp3',
+  'm4a',
+  'wav',
+  'ogg',
+  'oga',
+  'opus',
+  'flac',
+  'aac',
+  'weba',
+  'wma',
+]);
+const IMAGE_EXTENSIONS = new Set([
+  'webp',
+  'jpg',
+  'jpeg',
+  'png',
+  'gif',
+  'avif',
+  'heic',
+  'heif',
+  'bmp',
+  'svg',
+  'ico',
+  'jxl',
+]);
+
+/** Lowercase path extension of a media URL, or '' when it has none. Query and hash never
+ *  carry the extension, and the base makes relative/protocol-relative URLs resolvable. */
+function mediaExtension(url: string | null | undefined): string {
+  if (!url) return '';
   let path: string;
   try {
-    // Base makes relative/protocol-relative URLs resolvable; query and hash
-    // never carry the extension.
     path = new URL(url, 'https://infoto.invalid/').pathname;
   } catch {
-    return false;
+    return '';
   }
-  return path.toLowerCase().endsWith('.webm');
+  const dot = path.lastIndexOf('.');
+  return dot < 0 ? '' : path.slice(dot + 1).toLowerCase();
 }
 
-/** Replace sanitized WebM images with video elements, preserving vetted source URLs and alt labels. */
-export function upgradeAnimatedMedia(root: ParentNode): void {
+/**
+ * The element a Markdown image URL should render as. The editor uploads any picked file
+ * as-is, so an mp4/mp3 arrives here as `![](url.mp4)`.
+ */
+export function markdownMediaKind(url: string | null | undefined): MarkdownMediaKind {
+  const ext = mediaExtension(url);
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video';
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
+  return 'image';
+}
+
+/** True when Markdown has an element for this URL — an image, a video or a sound file, by
+ *  extension. Anything else (a `.pdf`, a `.zip`, an extension-less URL) is **not** media: it
+ *  has to land as a link the reader can click instead. */
+export function isEmbeddableArtifact(url: string | null | undefined): boolean {
+  const ext = mediaExtension(url);
+  return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
+}
+
+function makeMarkdownVideo(src: string): HTMLVideoElement {
+  const video = document.createElement('video');
+  video.src = src;
+  video.autoplay = true;
+  video.loop = true;
+  // Muted autoplay is the only autoplay browsers allow — matches the GIF
+  // semantics most announcements want. Click unmutes real video.
+  video.muted = true;
+  video.playsInline = true;
+  video.className = 'markdown-video';
+  video.addEventListener('click', () => {
+    video.muted = !video.muted;
+    // Unmuting a playing element can pause it in some browsers.
+    void video.play().catch(() => undefined);
+  });
+  return video;
+}
+
+function makeMarkdownAudio(src: string): HTMLAudioElement {
+  const audio = document.createElement('audio');
+  audio.src = src;
+  audio.controls = true;
+  audio.className = 'markdown-audio';
+  return audio;
+}
+
+/** Replace sanitized `![alt](url)` images with the element their extension names: a `<video>`
+ *  for a video file, an `<audio>` for a sound file, and a plain `<a download>` link for a file
+ *  Markdown has no element for (a PDF, a zip). Real images stay `<img>`. */
+export function upgradeMarkdownMedia(root: ParentNode): void {
   for (const img of Array.from(root.querySelectorAll('img'))) {
-    const src = img.getAttribute('src');
-    if (!isAnimatedArtifact(src)) continue;
-    const video = document.createElement('video');
-    video.src = src ?? '';
-    video.autoplay = true;
-    video.loop = true;
-    // Muted autoplay is the only autoplay browsers allow — matches the GIF
-    // semantics most announcements want. Click unmutes real video.
-    video.muted = true;
-    video.playsInline = true;
-    video.className = 'markdown-video';
-    const alt = img.getAttribute('alt');
-    if (alt) video.setAttribute('aria-label', alt);
-    video.addEventListener('click', () => {
-      video.muted = !video.muted;
-      // Unmuting a playing element can pause it in some browsers.
-      void video.play().catch(() => undefined);
-    });
-    img.replaceWith(video);
+    const src = img.getAttribute('src') ?? '';
+    const alt = img.getAttribute('alt') ?? '';
+    if (!isEmbeddableArtifact(src)) {
+      const link = document.createElement('a');
+      link.href = src;
+      link.className = 'markdown-file';
+      link.setAttribute('download', '');
+      link.rel = 'noopener noreferrer';
+      link.textContent = alt || src;
+      img.replaceWith(link);
+      continue;
+    }
+    const kind = markdownMediaKind(src);
+    if (kind === 'image') continue;
+    const media = kind === 'video' ? makeMarkdownVideo(src) : makeMarkdownAudio(src);
+    if (alt) media.setAttribute('aria-label', alt);
+    img.replaceWith(media);
   }
+}
+
+/**
+ * Insert one hosted file into Markdown: an image, a video or a sound file as `![name](url)`
+ * so it renders in place, and anything else as `[name](url)` — a link the reader clicks to
+ * open or download. The editor takes any file, so a PDF or a zip has to land somewhere
+ * sensible, and `upgradeMarkdownMedia` classifies by extension too: the three extension sets
+ * are the single source, so what is inserted here is what renders there.
+ */
+export function insertMediaAt(
+  value: string,
+  position: number,
+  url: string,
+  fileName = '',
+): TextTransform {
+  const renderable = isEmbeddableArtifact(url);
+  return renderable
+    ? insertImageAt(value, position, url, fileName)
+    : insertLinkAt(value, position, url, fileName);
 }
 
 // Poll references are stable IDs owned by the poll manager, never poll content stored in Markdown.
@@ -164,7 +294,7 @@ export type MarkdownPollPart =
 /**
  * Split whole-line `::poll:<lang>:<id>` references from Markdown, preserving every text block.
  * A line whose language is not a registered locale, whose id is missing, or that uses the
- * legacy `::vote:<id>` form is not a poll reference and stays plain Markdown.
+ * `::vote:<id>` form is not a poll reference and stays plain Markdown.
  */
 export function splitPollReferences(contentMd: string): MarkdownPollPart[] {
   const parts: MarkdownPollPart[] = [];

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import type { Op } from '$shared/types';
+import type { Op, SyncResponse } from '$shared/types';
 import {
   appendOp,
   clearOps,
@@ -9,12 +9,23 @@ import {
   isKnownAlbumSha,
   openOplogDb,
   readOps,
+  readSnapshot,
   rebuildCache,
   removeOpsBySha,
 } from '../../src/core/oplog';
 
 const op = (i: number) => ({ type: 'like' as const, target: i, payload: null });
-const photo = (id: number) => ({ id, sha256: `sha-${id}` }) as never;
+const snapshot = (...ids: number[]): SyncResponse =>
+  ({
+    ok: true,
+    serverTime: 0,
+    selfId: 0,
+    mediaHostUrl: 'https://facade.test',
+    photos: ids.map((id) => ({ id, sha256: `sha-${id}` })),
+    announcements: [],
+    polls: [],
+    feedback: [],
+  }) as never;
 
 async function freshDb(): Promise<IDBDatabase> {
   await new Promise<void>((resolve) => {
@@ -40,13 +51,19 @@ test('appends, clears, and replaces the known-hash cache wholesale', async () =>
     await clearOps(db);
     assert.equal(await countOps(db), 0);
 
-    // The snapshot is the only authority: a rebuild both adds and drops hashes.
-    await rebuildCache(db, [photo(1), photo(2)]);
+    // The snapshot is the only authority: a rebuild both adds and drops hashes, and it
+    // leaves the full snapshot behind for the next open to render from.
+    await rebuildCache(db, snapshot(1, 2));
     assert.equal(await isKnownAlbumSha(db, 'sha-1'), true);
     assert.equal(await isKnownAlbumSha(db, 'missing'), false);
-    await rebuildCache(db, [photo(2)]);
+    assert.equal((await readSnapshot(db))?.photos.length, 2);
+    await rebuildCache(db, snapshot(2));
     assert.equal(await isKnownAlbumSha(db, 'sha-1'), false);
     assert.equal(await isKnownAlbumSha(db, 'sha-2'), true);
+    assert.deepEqual(
+      (await readSnapshot(db))?.photos.map((p) => p.id),
+      [2],
+    );
   } finally {
     db.close();
   }

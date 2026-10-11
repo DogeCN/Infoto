@@ -67,7 +67,7 @@ export function stepValue(position: number, min: number, max: number, step: numb
 }
 
 /** PageUp/PageDown travel as a fraction of the track, independent of the value scale. */
-export const PAGE_STEP = 0.1;
+const PAGE_STEP = 0.1;
 
 /** End stops for the keyboard, where a dual-thumb slider cannot reach the raw track edge. */
 export interface SliderKeyLimits {

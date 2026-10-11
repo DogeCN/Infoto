@@ -579,10 +579,10 @@ test('a click spent paging cannot join the next one into a zoom', async ({ page 
   const x = Math.round(box.x - 60);
   const y = Math.round(box.y + box.height / 2);
   expect(
-    await page.evaluate(
-      ({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.lb-media'),
-      { x, y },
-    ),
+    await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.lb-media'), {
+      x,
+      y,
+    }),
   ).toBe(false);
 
   // One physical double-click: the first click pages, the second lands on the new media.
@@ -595,10 +595,10 @@ test('a click spent paging cannot join the next one into a zoom', async ({ page 
   // that same point must now sit on the new photo's media — which is exactly what a
   // native dblclick would have zoomed.
   expect(
-    await page.evaluate(
-      ({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.lb-media'),
-      { x, y },
-    ),
+    await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.lb-media'), {
+      x,
+      y,
+    }),
   ).toBe(true);
 
   const transform = await lightbox
@@ -618,10 +618,7 @@ test('a real double-click on the media still zooms, and a mask double-click does
   await page.waitForTimeout(600);
 
   const box = (await lightbox.locator('[data-lb-media]').boundingBox())!;
-  await page.mouse.dblclick(
-    Math.round(box.x + box.width / 2),
-    Math.round(box.y + box.height / 2),
-  );
+  await page.mouse.dblclick(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
   await page.waitForTimeout(600);
   const zoomed = await lightbox
     .locator('.will-change-transform')

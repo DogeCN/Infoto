@@ -628,3 +628,59 @@ test('removeOpsBySha withdraws a pending upload op and keeps the pending count h
   assert.equal(await e.removeOpsBySha('sha-a'), 0);
   assert.equal(e.state.pending, 1);
 });
+
+test('addOp supersedes a queued op on the same dimension, and never an in-flight one', async () => {
+  const like = (sha: string): Op => ({ type: 'like', targetSha: sha, payload: null });
+  const e = engine();
+
+  // A toggled mark costs one entry, not a growing chain.
+  await e.addOp(like('sha-a'));
+  await e.addOp({ type: 'unlike', targetSha: 'sha-a', payload: null });
+  await e.addOp(like('sha-a'));
+  assert.equal(e.state.pending, 1);
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => entry.op.type),
+    ['like'],
+  );
+
+  // Another photo, or a report on the same photo, is a separate write: a report may coexist
+  // with either attitude, so it does not share the attitude's dimension.
+  await e.addOp(like('sha-b'));
+  await e.addOp({ type: 'report', targetSha: 'sha-a', payload: null });
+  assert.equal(e.state.pending, 3);
+
+  // A dislike replaces the queued like for the same photo — the server clears the opposite
+  // column, so the newest op states the whole intent — while the other two entries stand.
+  await e.addOp({ type: 'dislike', targetSha: 'sha-a', payload: null });
+  assert.equal(e.state.pending, 3);
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => [entry.op.type, entry.op.targetSha]),
+    [
+      ['dislike', 'sha-a'],
+      ['like', 'sha-b'],
+      ['report', 'sha-a'],
+    ],
+  );
+
+  // An op a request already carries keeps its key: the response clears that key on success, so
+  // replacing it would take the edit with it. The superseding op is appended instead.
+  await clearOps(db);
+  const held = deferred<SyncCallResult>();
+  const postSyncFn = vi.fn(() => held.promise);
+  const syncing = new SyncEngine({ db, postSyncFn });
+  await syncing.addOp(like('sha-c'));
+  const inFlight = syncing.sync();
+  await vi.waitFor(() => assert.equal(postSyncFn.mock.calls.length, 1));
+  await syncing.addOp({ type: 'unlike', targetSha: 'sha-c', payload: null });
+  assert.equal(syncing.state.pending, 2);
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => entry.op.type),
+    ['like', 'unlike'],
+  );
+  held.resolve(result(snapshot()));
+  await inFlight;
+  assert.deepEqual(
+    (await readOps(db)).map((entry) => entry.op.type),
+    ['unlike'],
+  );
+});

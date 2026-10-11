@@ -1,9 +1,9 @@
 /**
  * Small runtime guards and JSON helpers shared by the Worker and the browser.
  *
- * Both runtimes parse untrusted bodies and check record shapes, and each was doing it with
- * its own three-line version. These take no locale or copy input, so both halves may import
- * them.
+ * Both runtimes parse untrusted bodies and check record shapes, so the shape guard and the
+ * lenient parser live here once instead of in each half. These take no locale or copy input,
+ * so both halves may import them.
  */
 
 /** True for a plain object; arrays and null are excluded. */

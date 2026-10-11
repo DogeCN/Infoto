@@ -356,6 +356,10 @@ class AppState {
 
   private engine: SyncEngine | null = null;
 
+  /** Shas whose row now exists — the snapshot carries it, or its upload op was just written.
+   *  Plain (not `$state`): nothing renders from it. */
+  private queuedUploadShas = new Set<string>();
+
   /** Replace the engine subscription when binding a different engine. */
   bindEngine(engine: SyncEngine): void {
     if (this.engine === engine) return;
@@ -410,6 +414,15 @@ class AppState {
       r.selfId,
     );
     this.photos = refolded.photos;
+    const landed = new Set(this.photos.map((p) => p.sha256));
+    // A row that just arrived also states the marks its pending card was showing: its upload op
+    // was written in an earlier page session, so `photoOpQueued` will not fire for it again.
+    for (const sha of [...this.queuedUploadShas, ...this.pendingMarks.keys()]) {
+      if (landed.has(sha)) void this.photoOpQueued(sha);
+    }
+    // A sha the snapshot carries needs no upload-op flag: the row exists, so its ops go
+    // straight to the log. Dropping it here keeps the set from growing all session.
+    for (const sha of landed) this.queuedUploadShas.delete(sha);
     // The snapshot covers every locale, so an in-flight admin create filed under a
     // language the user has since switched away from is neither lost nor leaked: the
     // local-only row stays in its own bucket, and the views follow `contentLocale`.
@@ -423,9 +436,49 @@ class AppState {
 
   // Photos
 
-  private submitPhotoOp(sha256: string, op: Op): void {
+  /**
+   * Submit one mark, dropping it while the row it targets does not exist yet. Marks are the
+   * ops that *need* the row: a photo op is addressed by sha256 and /sync applies a batch in
+   * array order, so a mark sent before its upload is a no-op on an unknown sha
+   * (`resolvePhotoId` → null) and is then cleared as confirmed — the mark would be lost. The
+   * mark itself is already recorded in `pendingMarks`, and `photoOpQueued` states it as an op
+   * once the row exists.
+   *
+   * A delete is the opposite case and does not come through here: deleting an unknown sha is a
+   * harmless no-op on the server, and the tombstone that withdraws a pending photo depends on
+   * exactly that. `deletePhotos` submits its op directly, after the optimistic removal has
+   * already taken the row out of `photos` — routing it through this guard dropped every
+   * deletion silently, and the photo came back on the next snapshot.
+   */
+  private submitMarkOp(sha256: string, op: Op): void {
     if (!sha256) return;
+    if (!this.queuedUploadShas.has(sha256) && !this.photos.some((p) => p.sha256 === sha256)) {
+      return;
+    }
     void this.submit({ ...op, targetSha: sha256 });
+  }
+
+  /**
+   * The row for `sha256` exists now: state every mark its pending card is showing as an op.
+   * Awaited by the caller, so the marks land after the upload op by construction rather than by
+   * IndexedDB transaction ordering.
+   *
+   * The marks are the source, not a queue of clicks: the row is new, so its server-side marks
+   * are empty and the marks on screen are exactly the delta. That is also what makes this
+   * reload-proof — `pendingMarks` is persisted, a queue of ops would not be.
+   */
+  async photoOpQueued(sha256: string): Promise<void> {
+    if (!sha256) return;
+    this.queuedUploadShas.add(sha256);
+    const marks = this.pendingMarks.get(sha256);
+    if (!marks) return;
+    const adds: Op[] = [];
+    for (const kind of ['like', 'dislike', 'report'] as const) {
+      if (marks[ops.MARK_FIELD[kind]].includes(this.selfId)) {
+        adds.push({ type: ops.markOpType(kind, true), targetSha: sha256 });
+      }
+    }
+    await Promise.all(adds.map((op) => this.submit(op)));
   }
 
   /**
@@ -448,6 +501,8 @@ class AppState {
   /** A pending card is gone for good (cancelled / failed / dismissed): drop its state. */
   forgetPendingPhoto(sha256: string): void {
     if (!sha256) return;
+    // Nothing will ever state these marks: the row they belong to is not coming.
+    this.queuedUploadShas.delete(sha256);
     if (!this.pendingMarks.has(sha256)) return;
     const marks = new Map(this.pendingMarks);
     marks.delete(sha256);
@@ -467,10 +522,9 @@ class AppState {
 
   /** Apply one mark to a pending card and replace the map entry. */
   private setPendingMark(sha256: string, kind: ops.MarkKind, add: boolean): void {
-    const field = ops.MARK_FIELD[kind];
     const cur = this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
     const marks = new Map(this.pendingMarks);
-    marks.set(sha256, { ...cur, [field]: ops.toggleId(cur[field], this.selfId, add) });
+    marks.set(sha256, ops.applyMarkToSet(cur, kind, this.selfId, add));
     this.pendingMarks = marks;
     writePendingMarks(marks);
   }
@@ -484,25 +538,18 @@ class AppState {
     } else {
       this.setPendingMark(sha256, kind, add);
     }
-    this.submitPhotoOp(sha256, { type: ops.markOpType(kind, add) });
+    this.submitMarkOp(sha256, { type: ops.markOpType(kind, add) });
   }
 
-  /** Toggle one mark; likes and dislikes remain mutually exclusive. */
+  /** Toggle one mark. Like and dislike are one choice: `applyMarkToSet` clears the opposite
+   *  column locally and the server clears it in the same statement it writes the mark, so one
+   *  op states the whole change — there is no paired removal op to send. */
   toggleMark(sha256: string, kind: ops.MarkKind): void {
     const p = this.photos.find((x) => x.sha256 === sha256);
     const field = ops.MARK_FIELD[kind];
     const has = p
       ? p[field].includes(this.selfId)
       : (this.pendingMarks.get(sha256)?.[field] ?? []).includes(this.selfId);
-    if (!has && kind !== 'report') {
-      // One photo can carry either like or dislike, never both.
-      const other = kind === 'like' ? 'dislikes' : 'likes';
-      const otherKind: ops.MarkKind = kind === 'like' ? 'dislike' : 'like';
-      const hasOther = p
-        ? p[other].includes(this.selfId)
-        : (this.pendingMarks.get(sha256)?.[other] ?? []).includes(this.selfId);
-      if (hasOther) this.setMarkBySha(sha256, otherKind, false);
-    }
     this.setMarkBySha(sha256, kind, !has);
   }
 
@@ -518,7 +565,7 @@ class AppState {
       this.photos = ops.applyMarkMany(this.photos, ids, kind, this.selfId, add);
     }
     for (const sha of pending) this.setPendingMark(sha, kind, add);
-    for (const sha of unique) this.submitPhotoOp(sha, { type: ops.markOpType(kind, add) });
+    for (const sha of unique) this.submitMarkOp(sha, { type: ops.markOpType(kind, add) });
   }
 
   /** Optimistic root delete for multi-selection (sha-addressed, pending cards included). */
@@ -530,7 +577,10 @@ class AppState {
       .map((sha) => this.photos.find((p) => p.sha256 === sha)!.id);
     if (ids.length > 0) this.removePhotos(ids);
     for (const sha of shas) {
-      if (known.has(sha)) this.submitPhotoOp(sha, { type: 'delete' });
+      // Submitted directly, never through the mark guard: the optimistic removal above has
+      // already taken the row out of `photos`, and a delete of an unknown sha is a server
+      // no-op anyway — which is what makes the pending tombstone work.
+      if (known.has(sha)) void this.submit({ type: 'delete', targetSha: sha });
       else void this.withdrawPendingUpload(sha);
     }
   }

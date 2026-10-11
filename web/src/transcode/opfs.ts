@@ -12,7 +12,7 @@ async function getDir(): Promise<FileSystemDirectoryHandle> {
 }
 
 /** Artifact filename: {jobId}.{ext} (jobId is local-only, unrelated to media ids). */
-export function artifactPath(jobId: string, ext: 'webp' | 'webm'): string {
+function artifactPath(jobId: string, ext: 'webp' | 'webm'): string {
   return `${jobId}.${ext}`;
 }
 

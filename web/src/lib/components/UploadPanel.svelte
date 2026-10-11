@@ -1,6 +1,6 @@
 <script lang="ts">
   // Album progress panel with measured progress or an indeterminate sweep. Pointer hover expands the list; touch dragging controls its height.
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { fly } from 'svelte/transition';
   import { Clapperboard, X } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
@@ -8,6 +8,7 @@
   import { batchProgress, indeterminateRow, type UploadRow } from '../../transcode/pipeline';
   import { countHop, motionMs } from '$base/lib/motion';
   import { createHoverIntent } from '$base/lib/hover.svelte';
+  import { startPointerResize } from '$base/lib/pointer';
   import Tooltip from './Tooltip.svelte';
 
   interface Props {
@@ -93,57 +94,59 @@
   let expanded = $derived(pinned || (canHover && intent.hovered));
   onDestroy(intent.destroy);
 
-  // Touch dragging adjusts the bottom-anchored panel height; release chooses the nearest endpoint.
-  const HEADER_H = 44;
+  // Touch dragging adjusts the bottom-anchored panel height.
+  /** Header height: px-4 py-3.5 (28px) + the header's text-sm line box (20px). Measured, not
+   *  guessed — an under-measured constant jumps the sheet on every drag start. */
+  const HEADER_H = 48;
   /** Row pitch: py-1.5 (12px) + text-xs line-height (16px) = 28px. */
   const ROW_H = 28;
   let dragging = $state(false);
-  let dragStartY: number | null = null;
-  let dragBaseH = 0;
   let sheetH = $state(HEADER_H);
-  let lastPointerY = 0;
-  let lastPointerAt = 0;
-  let pointerVelocityY = 0;
+  /** Drag ceiling captured at pointerdown. */
+  let dragCeilingH = HEADER_H;
+  let stopResize: (() => void) | undefined;
 
-  function naturalH(): number {
+  /** Fully-open height for the current row count, capped to the viewport. */
+  function contentMaxH(): number {
     return Math.max(
       HEADER_H,
       Math.min(HEADER_H + tasks.length * ROW_H + 8, window.innerHeight * 0.42),
     );
   }
+
+  // A row leaving while the sheet rests open collapses it to the new content height, so the
+  // panel never floats over empty space. Skipped mid-drag: recomputing the ceiling there
+  // pulled the sheet back down while the finger was still moving up.
+  $effect(() => {
+    const max = contentMaxH();
+    const current = untrack(() => sheetH);
+    if (!dragging && current > max) sheetH = max;
+  });
+
   function onHeaderPointerDown(e: PointerEvent): void {
     if (canHover) return;
+    stopResize?.();
+    // Freeze the ceiling for the whole gesture: `tasks` shrinks as jobs finish, and a live
+    // ceiling yanked the sheet down under a finger that was still moving up.
+    dragCeilingH = contentMaxH();
+    const rendered = shellEl?.getBoundingClientRect().height ?? HEADER_H;
+    sheetH = Math.max(HEADER_H, Math.min(dragCeilingH, rendered));
     dragging = true;
-    dragStartY = e.clientY;
-    sheetH =
-      (e.currentTarget as HTMLElement).parentElement?.getBoundingClientRect().height || HEADER_H;
-    dragBaseH = sheetH;
-    lastPointerY = e.clientY;
-    lastPointerAt = performance.now();
-    pointerVelocityY = 0;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    stopResize = startPointerResize({
+      event: e,
+      axis: 'y',
+      sign: -1,
+      start: sheetH,
+      clamp: (value) => Math.max(HEADER_H, Math.min(dragCeilingH, value)),
+      onMove: (value) => (sheetH = value),
+      onStop: () => {
+        dragging = false;
+        stopResize = undefined;
+      },
+    });
   }
-  function onHeaderPointerMove(e: PointerEvent): void {
-    if (!dragging || dragStartY === null) return;
-    const now = performance.now();
-    const elapsed = now - lastPointerAt;
-    if (elapsed > 0) pointerVelocityY = (e.clientY - lastPointerY) / elapsed;
-    sheetH = Math.min(naturalH(), Math.max(HEADER_H, dragBaseH - (e.clientY - dragStartY)));
-    lastPointerY = e.clientY;
-    lastPointerAt = now;
-  }
-  function onHeaderPointerUp(e: PointerEvent): void {
-    if (!dragging) return;
-    const elapsed = performance.now() - lastPointerAt;
-    if (e.type === 'pointerup' && dragStartY !== null) {
-      sheetH = Math.min(naturalH(), Math.max(HEADER_H, dragBaseH - (e.clientY - dragStartY)));
-    }
-    const velocityY = e.type === 'pointerup' && elapsed <= 80 ? pointerVelocityY : 0;
-    const glide = Math.max(-72, Math.min(72, -velocityY * 110));
-    dragging = false;
-    dragStartY = null;
-    sheetH = Math.min(naturalH(), Math.max(HEADER_H, sheetH + glide));
-  }
+
+  onDestroy(() => stopResize?.());
 
   /** Collapse a departing row's slot instead of letting the list snap shut. */
   function collapse(node: HTMLElement): { duration: number; css: (t: number) => string } {
@@ -199,14 +202,11 @@
         aria-expanded={canHover ? expanded : sheetH > HEADER_H}
         aria-label={title}
         onpointerdown={onHeaderPointerDown}
-        onpointermove={onHeaderPointerMove}
-        onpointerup={onHeaderPointerUp}
-        onpointercancel={onHeaderPointerUp}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             if (canHover) pinned = !pinned;
-            else sheetH = sheetH > HEADER_H ? HEADER_H : naturalH();
+            else sheetH = sheetH > HEADER_H ? HEADER_H : contentMaxH();
           }
         }}
       >
@@ -242,12 +242,12 @@
           : dragging
             ? ''
             : 'transition-[height] duration-[var(--duration-enter)] ease-[var(--ease-enter)]'}"
-        style={!canHover ? `height: ${Math.max(0, Math.min(naturalH(), sheetH) - HEADER_H)}px` : ''}
+        style={!canHover ? `height: ${Math.max(0, sheetH - HEADER_H)}px` : ''}
       >
         <div
           class="min-h-0 overscroll-contain overflow-y-auto {canHover
             ? 'max-h-[min(40vh,17.5rem)]'
-            : 'h-full max-h-[calc(42svh-44px)]'}"
+            : 'h-full max-h-[calc(42svh-48px)]'}"
         >
           <div class="space-y-0.5 px-2 pb-2">
             {#each tasks as task (task.jobId)}

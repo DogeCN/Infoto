@@ -136,3 +136,26 @@ test('editor upload progress: words failures as uploads, aborts on cancel, and r
   });
   assert.equal(await retry, 'https://host/b.webp');
 });
+
+test('editor upload: takes any file, not only images and videos', async () => {
+  const { pipeline, port } = setup();
+  const rows: PipelineTaskSnapshot[] = [];
+  pipeline.onEditorTask((t) => rows.push(t));
+  const promise = pipeline.uploadEditorImage(
+    new File([new Uint8Array([1])], 'notes.pdf', { type: 'application/pdf' }),
+  );
+  assert.equal(rows[0]?.phase, 'queued');
+  assert.equal(
+    port.sent.some((m) => m['t'] === 'addJob'),
+    true,
+  );
+  const jobId = jobIdOf(port);
+  status(port, {
+    t: 'jobStatus',
+    jobId,
+    purpose: 'editor',
+    phase: 'done',
+    url: 'https://host/notes.pdf',
+  });
+  assert.equal(await promise, 'https://host/notes.pdf');
+});

@@ -129,7 +129,7 @@
   }
 </script>
 
-<input bind:this={imageInput} type="file" accept="image/*,video/*" class="hidden" />
+<input bind:this={imageInput} type="file" class="hidden" />
 
 <EditorDialog
   label={copy.admin.editor.titlePlaceholder}

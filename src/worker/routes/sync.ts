@@ -102,8 +102,31 @@ async function resolvePhotoId(db: Db, op: Op): Promise<number | null> {
   return row ? Number(row.id) : null;
 }
 
-/** Add or remove `userId` in one mark column. The membership test and the write are a
- * single statement, so two concurrent marks on one photo cannot drop each other. */
+/** The column an attitude's opposite writes: a like and a dislike are one choice, never both. */
+const OPPOSITE_MARK: Partial<Record<MarkColumn, MarkColumn>> = {
+  likes: 'dislikes',
+  dislikes: 'likes',
+};
+
+/** `col = col ∪ {userId}`, without a duplicate entry. */
+const addMarkSql = (col: MarkColumn): string => `${col} = CASE
+    WHEN EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?) THEN ${col}
+    ELSE json_insert(${col}, '$[#]', ?) END`;
+
+/** `col = col ∖ {userId}`, a no-op when the user is not in it. */
+const removeMarkSql = (col: MarkColumn): string => `${col} = CASE
+    WHEN NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?) THEN ${col}
+    ELSE (SELECT json_group_array(value) FROM json_each(${col}) WHERE value <> ?) END`;
+
+/**
+ * Add or remove `userId` in one mark column, in a single statement — the membership test and
+ * the write travel together, so two concurrent marks on one photo cannot drop each other.
+ *
+ * Adding a like or a dislike also clears the opposite column in that same statement. The two
+ * are one choice, and the server owns that invariant instead of trusting every client to send
+ * the paired removal, so a client can state a switch with one op. Reports stand alone and may
+ * coexist with either.
+ */
 async function setMark(
   db: Db,
   photoId: number | null,
@@ -112,16 +135,14 @@ async function setMark(
   add: boolean,
 ): Promise<void> {
   if (photoId === null) return;
-  const sql = add
-    ? `UPDATE photos SET ${col} = CASE
-         WHEN EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?) THEN ${col}
-         ELSE json_insert(${col}, '$[#]', ?) END
-       WHERE id = ?`
-    : `UPDATE photos SET ${col} = CASE
-         WHEN NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?) THEN ${col}
-         ELSE (SELECT json_group_array(value) FROM json_each(${col}) WHERE value <> ?) END
-       WHERE id = ?`;
-  await db.prepare(sql).bind(userId, userId, photoId).run();
+  const sets = [add ? addMarkSql(col) : removeMarkSql(col)];
+  const opposite = add ? OPPOSITE_MARK[col] : undefined;
+  if (opposite) sets.push(removeMarkSql(opposite));
+  const binds = sets.flatMap(() => [userId, userId]);
+  await db
+    .prepare(`UPDATE photos SET ${sets.join(', ')} WHERE id = ?`)
+    .bind(...binds, photoId)
+    .run();
 }
 
 /** True when the row exists, so an op never creates an orphan reaction or vote. */

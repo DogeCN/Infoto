@@ -555,3 +555,49 @@ test('https Set-Cookie includes Secure; plain http does not', async () => {
   });
   assert.ok(!(plain.headers.get('set-cookie') ?? '').includes('Secure'));
 });
+
+test('the server owns the like/dislike exclusion, so one op states a switch', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const guest = cookieFrom(await syncNew(app));
+  const up = (ops: Parameters<typeof sync>[1], c: string = cookie): Promise<SyncResponse> =>
+    sync(app, ops, c).then((r) => r.json() as Promise<SyncResponse>);
+  await up({
+    ops: [
+      {
+        type: 'upload',
+        payload: { sha256: 's', url: 'https://s', width: 1, height: 1, size: 1, type: 0 },
+      },
+    ],
+  });
+
+  // A client that states only the new attitude gets the old one cleared for it.
+  const disliked = await up({ ops: [{ type: 'dislike', targetSha: 's' }] });
+  assert.deepEqual(disliked.photos[0]!.dislikes, [0]);
+  assert.deepEqual(disliked.photos[0]!.likes, []);
+  const liked = await up({ ops: [{ type: 'like', targetSha: 's' }] });
+  assert.deepEqual(liked.photos[0]!.likes, [0], 'liking adds the like');
+  assert.deepEqual(liked.photos[0]!.dislikes, [], 'and clears the dislike in the same statement');
+
+  // A guest switching the other way does not disturb the first user's mark.
+  await up({ ops: [{ type: 'dislike', targetSha: 's' }] }, guest);
+  const both = await up({ ops: [{ type: 'like', targetSha: 's' }] }, guest);
+  assert.deepEqual(both.photos[0]!.likes, [0, 1]);
+  assert.deepEqual(both.photos[0]!.dislikes, [], 'only the switching user is cleared');
+
+  // A report is its own dimension: it survives an attitude change in both directions.
+  const reported = await up({ ops: [{ type: 'report', targetSha: 's' }] });
+  assert.deepEqual(reported.photos[0]!.reports, [0]);
+  const flipped = await up({ ops: [{ type: 'dislike', targetSha: 's' }] });
+  assert.deepEqual(flipped.photos[0]!.dislikes, [0]);
+  assert.deepEqual(flipped.photos[0]!.likes, [1], 'only the switching user leaves the likes');
+  assert.deepEqual(flipped.photos[0]!.reports, [0], 'the report stands');
+
+  // Switching clears a column that holds this user alone, which is the removal path's empty
+  // case: it must leave '[]', never NULL and never the old entry.
+  const lone = await up({ ops: [{ type: 'like', targetSha: 's' }] }, guest);
+  assert.deepEqual(lone.photos[0]!.likes, [1], 'the guest is already the only like');
+  const switched = await up({ ops: [{ type: 'dislike', targetSha: 's' }] }, guest);
+  assert.deepEqual(switched.photos[0]!.likes, [], 'and is gone from likes entirely');
+  assert.deepEqual(switched.photos[0]!.dislikes, [0, 1], 'both dislikes stand');
+});

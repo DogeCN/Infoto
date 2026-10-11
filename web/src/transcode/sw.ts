@@ -672,8 +672,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
   portLastSeen.set(pid, Date.now());
   switch (m.t) {
     case 'addJob': {
-      const route = routeByMime(m.mime);
-      if (!route) {
+      // The editor uploads whatever the author picked, as-is — no transcode, so no MIME
+      // routing. Every album upload still passes the one routing gate.
+      const editor = m.purpose === 'editor';
+      const route = editor ? null : routeByMime(m.mime);
+      if (!editor && !route) {
         port.postMessage({
           t: 'jobStatus',
           jobId: m.jobId,
@@ -690,10 +693,11 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
         fileName: m.fileName,
         mime: m.mime,
         file: m.file,
-        engine: route.engine,
+        // Only the album leg reads `engine`; the editor never transcodes.
+        engine: route?.engine ?? 'image',
         // The editor waits for nothing but the transfer: it never joins the image queue
         // nor the video token pool.
-        phase: m.purpose === 'editor' || route.engine === 'image' ? 'queued' : 'lease-wait',
+        phase: editor || route?.engine === 'image' ? 'queued' : 'lease-wait',
         opWritten: false,
         editorResultAcked: false,
         cancelled: false,
@@ -701,12 +705,12 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       jobs.set(m.jobId, rec);
       owners.set(m.jobId, portIds.get(port)!);
       notify(rec);
-      if (m.purpose === 'editor') {
+      if (editor) {
         // No transcode leg for the editor — the picked file is uploaded as-is.
         void runEditorUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));
         return;
       }
-      if (route.engine === 'image') {
+      if (route?.engine === 'image') {
         imageQueue.push(m.jobId);
         pumpImage();
       } else {

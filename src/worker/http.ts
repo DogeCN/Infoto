@@ -46,7 +46,7 @@ export function idParam(c: Context): number | null {
 }
 
 /** Distinct positive integer ids out of an `{ ids }` body; anything else is dropped. */
-export function bodyIds(body: { ids?: unknown } | null): number[] {
+function bodyIds(body: { ids?: unknown } | null): number[] {
   const raw: unknown[] = Array.isArray(body?.ids) ? body.ids : [];
   return [
     ...new Set(

@@ -221,11 +221,16 @@ Back-filled from the commit history. Tagged sections are not yet written.
     Every overlay control calls `stopPropagation()`, so it can never reach the card's own click.
   - The selection checkbox is a non-interactive `<div>` — selection is driven by clicking the
     card root. It sits above the media and below the curtain.
+  - **Multi-select hides both dismiss controls, and only them.** The uploading cancel and the
+    failed card's dismiss both live in the card's top-right corner, where the checkbox now goes,
+    so both are `!multiMode`. The failed card's **retry stays** — it sits in the middle of the
+    card, nowhere near the corner. Both return when the mode does.
   - Marks: like = `destructive`, dislike = `dislike`, report = `warning`. The viewer's own mark
     is filled; everyone else's is the same hue at 60%. "Active" means `selfId` is in the
     corresponding array — ownership, not a separate flag. Badges are
-    `bg-black/55 text-white/75 backdrop-blur-sm`, transitioned on the exit pair, and each stops
-    propagation.
+    `bg-black/55 text-white/75 backdrop-blur-sm` and are **display only**: the card reports the
+    counts (`role="img"` with a plural `{count} like(s)` label) and every mark is made from the
+    Lightbox, where the control is a real button. There is no hover state to promise a click.
   - The volume button exists only for `photo.type === 2 && !loadFailed`. Its size is an inline
     style (1.25rem / 1.9rem), and `volumeMuted` is component-local, starts `true`, and is
     neither persisted nor sent anywhere.
@@ -245,7 +250,11 @@ Back-filled from the commit history. Tagged sections are not yet written.
     and nothing else. `border-color` and `opacity` stay on the exit pair — they are hover and
     selection state, not geometry. A card's start box comes from `WaterfallLayout`'s
     `geomMemory`, never from its own state.
-  - Failed uploads are excluded from preview and from selection.
+  - Failed uploads are excluded from **preview** only. They are selectable like any other card —
+    clicking one no longer opens the Lightbox (there is nothing to look at), but multi-select,
+    long-press, marquee, `selectAll` and Ctrl+A all reach them, which is what makes the batch
+    "delete" the way out of a stuck upload. The failure cover is `bg-black/55`, matching the
+    uploading curtain's own weight: a failed card is still a card in the grid, not a hole in it.
   - **Nothing asserts any of this**, and `WaterfallLayout`'s `overlays` prop type is narrower
     than the value the store actually passes (`preview` is missing from the declared type).
 - **Lightbox.** The action sheet is a **bottom sheet**, not a dropdown — a dropdown's top-right
@@ -340,9 +349,9 @@ Back-filled from the commit history. Tagged sections are not yet written.
     still a pan. Only the touch path needs this — the mouse never enters the release state
     machine at all, pairing its own clicks in the component (below).
   - **The app pairs its own double-clicks; the native `dblclick` is never trusted.** The browser
-    pairs two *physical* clicks and knows nothing about what the first one was spent on. A mask
+    pairs two _physical_ clicks and knows nothing about what the first one was spent on. A mask
     click is spent paging, yet the click after it still got paired — and the pair was judged
-    against the layout *after* the page change, where the same point may have moved from black
+    against the layout _after_ the page change, where the same point may have moved from black
     mask onto the next photo. "Click the mask to advance, click again" therefore zoomed instead,
     most visibly in an album mixing portrait and landscape, where consecutive photos differ
     enough for the media to land under the pointer. Both modalities now keep their own pairing
@@ -446,7 +455,7 @@ Back-filled from the commit history. Tagged sections are not yet written.
 - **Poll rows carry one number: the count.** `VoteBlock.svelte` shows no percentage — at row
   size the percentage and the count read as clutter, and the fill bar already carries the
   proportion. The number is the transcode panel's counter exactly: `text-sm font-semibold
-  tabular-nums`, swapping in place inside one grid cell so the cross-fade never reflows the
+tabular-nums`, swapping in place inside one grid cell so the cross-fade never reflows the
   row. Its hop is `countHop` from `base/lib/motion.ts` (entry downward, exit upward), the
   generic form of the upload panel's own hop, so the two counters cannot drift apart.
   - The full reading is not lost, only moved: the number's `aria-label` still says
@@ -485,8 +494,37 @@ before deadline` / `no response before deadline`).
     otherwise `null`, which renders as a sweep. A total that quietly omitted an unmeasured stage
     would state a number the work does not support — this is ADR 0002 in code, not a convention.
   - The header's `{done}/{total}` pair appears only when `total > 0`.
-  - Hover expands the row list; on touch, dragging controls the panel's height. Collapsed, the
-    batch total rides the bottom edge.
+  - Hover expands the row list; on touch, the header drags the panel's height through the shared
+    `startPointerResize` (sign `-1`), like every other resize gesture. **The drag ceiling is
+    frozen at pointerdown** — `contentMaxH()` shrinks as rows finish, and recomputing it
+    mid-gesture yanked the sheet back down while the finger was still moving up (the "not
+    following" report). When the sheet rests open and a row leaves, an effect collapses it to the
+    new content height; `HEADER_H = 48` is the header's measured height (px-3.5 + text-sm), not
+    the 44 it used to be. Collapsed, the batch total rides the bottom edge.
+  - **The announcement editor takes any file.** Its input carries no `accept`, and both
+    `uploadEditorImage` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
+    leg. The picked file is uploaded as-is, so its extension survives into the returned URL. How
+    it lands in Markdown is decided by the extension — and the same predicate decides how it
+    renders, so what is inserted is what appears:
+    - `isImageArtifact` (a real image extension: webp/jpg/png/gif/avif/heic/svg…) →
+      `![name](url)`, rendered as `<img>`.
+    - a video extension → `![name](url)`, rendered as `<video>` (muted, looping, click to
+      unmute); an audio extension → `![name](url)`, rendered as `<audio controls>`.
+    - **anything else — a `.pdf`, a `.zip`, no extension at all — becomes `[name](url)`**, a
+      plain link the reader clicks to open or download. `isEmbeddableArtifact` is the one
+      predicate (image ∪ video ∪ audio extensions) and is shared by `insertMediaAt` and
+      `upgradeMarkdownMedia`, so what the editor inserts is what the page renders; the renderer
+      also turns a stray `![alt](url.pdf)` into `<a class="markdown-file" download>`, because an
+      `<img>` pointed at a PDF is a broken image, not a link. The toolbar button is **File**,
+      not Image.
+      The album's own `image/*,video/*` gate and its transcode legs are untouched.
+  - **A returning visitor renders the persisted snapshot before the network answers.** The last
+    `/sync` response is stored whole in `metaCache` (under the reserved key `snapshot`, which a
+    64-hex album hash can never collide with) and `engine.init` hands it to the store before the
+    first request; the sync then replaces it with the authoritative one. **Every surface that
+    reads the store must wire `onCachedSnapshot`** — `App.svelte` and `Admin.svelte` both do.
+    Wiring only the gallery left the admin tabs blank for a round trip, and blank forever with no
+    server; that gap is why this sentence names both call sites.
   - **Deleting a pending photo withdraws its ops; it does not delete after the fact.** A sha
     with no server row is a pending upload, so `deletePhotos` routes it to
     `withdrawPendingUpload`: the card's cancel sink (registered by the upload store through
@@ -498,12 +536,39 @@ before deadline` / `no response before deadline`).
     matches by sha and would otherwise take the tombstone with it. The tombstone covers the one
     race this cannot close locally: an upload op already claimed by an in-flight sync request
     cannot be un-sent, so if it lands the next sync deletes the row it created, and if it fails
-    the op is simply gone. Before this, deleting a pending photo touched neither the card nor
-    the oplog: the card stayed as a ghost until a reload (the optimistic card is the upload
-    store's, not the photo store's), and a delete filed while the upload was still in flight
-    appended as `[delete, upload]` — the server no-ops the delete on an unknown sha and then
-    creates the row, so the "deleted" photo landed for real. The store glue is untested;
-    `removeOpsBySha` itself is (oplog + engine suites).
+    the op is simply gone. The other half of the same race is closed in `onUploadOp`, which
+    writes nothing when no tracked task still owns the sha: a `done` notification arriving just
+    after a delete would otherwise append its upload op behind the tombstone, and the photo
+    would land. Before this, deleting a pending photo touched neither the card nor the oplog:
+    the card stayed as a ghost until a reload (the optimistic card is the upload store's, not
+    the photo store's), and a delete filed while the upload was still in flight appended as
+    `[delete, upload]` — the server no-ops the delete on an unknown sha and then creates the
+    row, so the "deleted" photo landed for real. The delete glue itself is untested
+    (`createUploadStore` needs a component context); `removeOpsBySha` is (oplog + engine
+    suites), and the deferral below is (`pendingPhotoOps.test.ts`).
+  - **A photo op must follow the upload op that creates its row.** A mark whose sha the snapshot
+    does not carry is not written to the log at all: `/sync` applies a batch in array order, so
+    it would be a no-op on an unknown sha (`resolvePhotoId` → null) and then cleared as
+    confirmed — the mark silently lost. The mark itself is the state (`pendingMarks`, persisted),
+    and `photoOpQueued` states it as ops — awaited by the upload store when the upload op lands,
+    and also called by `applySync` for a row the snapshot has just delivered. That is what makes
+    it reload-proof: a queue of ops would not have been. Before this the mark was submitted
+    immediately, the log read `[like, upload]`, and the like was lost and its op cleared. The
+    condition is the whole subtlety: the first version of this mechanism tested only "an upload
+    op is queued" — a flag set when one is written — so a mark on any photo loaded from a
+    snapshot was dropped forever, which is why it was deleted in `eb1dd41`, not redundancy. Ops
+    that write a last-value dimension are additionally superseded **in place** by
+    `engine.addOp` (ADR 0016), and like and dislike share one dimension because **the server
+    clears the opposite column in the statement that writes either** — the exclusion is a server
+    guarantee now, not a client convention, so a switch costs one op.
+  - **That ordering guard is for marks only; a delete is the opposite case.** Deleting a sha the
+    server has never heard of is a harmless no-op (`resolvePhotoId` → null), and the pending
+    photo's tombstone depends on exactly that. So `deletePhotos` submits its op straight to
+    `submit`, never through the guard — the optimistic removal has **already** taken the row out
+    of `photos` by then, and routing a delete through the "does this row still exist?" check
+    dropped every synced-photo deletion silently: the card vanished, nothing was queued, and the
+    photo came back with the next snapshot. A guard that reads like a general "unknown sha" rule
+    and is reached only by mark writers is the whole hazard.
 - **Admin layout.** The admin main area insets with `pt-[calc(var(--bar-h, 3.5rem)+16px)]` — it
   derives from the bar like every other surface beneath it. The fixed `pt-20`/`md:pt-24` form
   predates the height ramp and is gone.
@@ -711,24 +776,49 @@ Deliberately left alone: closing a sheet with **Escape** is a keyboard interacti
 Chromium treats the restored focus as `:focus-visible` and the trigger does show its bubble.
 That is the modality that earns tooltips, and the bubble tells the user where focus went.
 
+### 4.11 The progress sheet stopped following the finger
+
+**Resolved 2026-10-11.** The upload panel's touch drag clamped its height to `naturalH()`, which
+was recomputed from the live row count on every move. `panelRows` shrinks as jobs finish, so a
+row completing mid-gesture pulled the ceiling down and the sheet moved **opposite** to the finger:
+a measured drag grew the shell 24→48→72→…→149px, then dropped to 120px and 64px while the finger
+kept travelling up. The header was also declared 44px when it renders 48px (px-3.5 + text-sm), so
+every drag started with a 5px jump.
+
+The fix freezes the ceiling at pointerdown and moves the resting clamp into an effect that is
+skipped while `dragging` — a finishing row still collapses a _resting_ sheet, but never one under
+a finger. Re-measured with a stable row set: finger +288px, shell +288px, monotonic. The gesture
+also moved onto `base/lib/pointer.ts#startPointerResize`, which the other resize surfaces already
+use; the hand-rolled `pointermove`/`up`/`cancel` handlers were the second copy MEMORY.md warns
+against.
+
 ---
 
 ## 5. Executable gates
 
 The parts of this contract that are asserted by `npm test`:
 
-| Invariant                                                                  | Enforced by                             |
-| -------------------------------------------------------------------------- | --------------------------------------- |
-| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions | `web/tests/unit/designTokens.test.ts`   |
-| `motion.ts` motion fallbacks equal the `@theme` motion tokens              | `web/tests/unit/designTokens.test.ts`   |
-| `schema.sql` equals `schema-ddl.ts` byte for byte                          | `src/worker/schema-alignment.test.ts`   |
-| No `transition` in `web/src` carries a literal duration or easing curve    | `web/tests/unit/designTokens.test.ts`   |
-| `GLITCH_PALETTE` equals the matching `@theme` colours                      | `web/tests/unit/designTokens.test.ts`   |
-| The reflow flip window outlasts the reflow duration it brackets            | `web/tests/unit/motion.test.ts`         |
-| Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click           | `web/tests/unit/lightboxEngine.test.ts` |
-| The upload's silence budget ends where the response budget begins          | `web/tests/unit/uploadClient.test.ts`   |
-| The upload leg's ceiling holds independently of the image pool             | `web/tests/unit/uploadPool.test.ts`     |
-| `uploadPoolSize` stays under the image pool at its widest                  | `web/tests/unit/pipeline.test.ts`       |
+| Invariant                                                                   | Enforced by                              |
+| --------------------------------------------------------------------------- | ---------------------------------------- |
+| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions  | `web/tests/unit/designTokens.test.ts`    |
+| `motion.ts` motion fallbacks equal the `@theme` motion tokens               | `web/tests/unit/designTokens.test.ts`    |
+| `schema.sql` equals `schema-ddl.ts` byte for byte                           | `src/worker/schema-alignment.test.ts`    |
+| No `transition` in `web/src` carries a literal duration or easing curve     | `web/tests/unit/designTokens.test.ts`    |
+| `GLITCH_PALETTE` equals the matching `@theme` colours                       | `web/tests/unit/designTokens.test.ts`    |
+| The reflow flip window outlasts the reflow duration it brackets             | `web/tests/unit/motion.test.ts`          |
+| Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click            | `web/tests/unit/lightboxEngine.test.ts`  |
+| The upload's silence budget ends where the response budget begins           | `web/tests/unit/uploadClient.test.ts`    |
+| The upload leg's ceiling holds independently of the image pool              | `web/tests/unit/uploadPool.test.ts`      |
+| `uploadPoolSize` stays under the image pool at its widest                   | `web/tests/unit/pipeline.test.ts`        |
+| Which op dimensions collapse, and which never do (ADR 0016)                 | `web/tests/unit/frontend.test.ts`        |
+| The local fold clears the opposite attitude, as the server does             | `web/tests/unit/frontend.test.ts`        |
+| A queued op is superseded in place, and an in-flight one never is           | `web/tests/unit/syncEngine.test.ts`      |
+| A photo op waits for the upload op that creates its row                     | `web/tests/unit/pendingPhotoOps.test.ts` |
+| The server clears the opposite attitude when either is added                | `src/worker/routes/sync.test.ts`         |
+| The cached snapshot round-trips through `metaCache` and is replaced on sync | `web/tests/unit/oplog.test.ts`           |
+| A media URL's extension picks the Markdown element (video / audio / image)  | `web/tests/unit/markdown.test.ts`        |
+| Only a real image extension renders in place; a non-media file links        | `web/tests/unit/markdown.test.ts`        |
+| The editor uploads any file, not only images and videos                     | `web/tests/unit/editorUpload.test.ts`    |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are

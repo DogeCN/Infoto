@@ -25,6 +25,10 @@
   const engine = getEngine({
     postSyncFn: postSync,
     onSyncResponse: (response, context) => store.applySync(response, context),
+    // Paint the persisted snapshot before the first request resolves; the sync then
+    // replaces it. Without it the admin tabs are empty for one round trip, and stay
+    // empty entirely when the server cannot be reached.
+    onCachedSnapshot: (response) => store.applySync(response),
     onError: (phase, error) => {
       console.error('[sync]', phase, error);
       if (error instanceof TurnstileRequiredError) {
