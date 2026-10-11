@@ -141,6 +141,148 @@
   }
 }
 
+/* Markdown follows GitHub's own markdown styling: `github-markdown-css`, light mode.
+   Two rules are load-bearing.
+
+   **Colour.** GitHub's values are defined for a white canvas (#1f2328 on #ffffff), so they are
+   not pasted here — each is mapped onto the nearest site token, which keeps the tonal *relationships*
+   GitHub's scale has (body brightest, one muted tier for quotes/captions/markers, borders quietest)
+   without importing a second palette. The plugin only styles through `--tw-prose-*`, so binding
+   them reaches every element it renders.
+
+   **This block must stay in `@layer utilities`.** `.prose-invert` declares the same variables and
+   the plugin emits it into that layer; a declaration in `base` loses no matter what order it
+   appears in — later layers win over earlier ones regardless of source order. The overrides below
+   depend on the same thing: the plugin's own rules live in this layer too, so these must come
+   after them, which they do within one layer. `.prose` has no colour of its own once the variables
+   are bound — it declares only `color: var(--tw-prose-body)` — so no utility class can pull a
+   prose element off the palette from the outside.
+
+   **Only non-interactive elements are aligned.** Links keep the site accent, and `MarkdownView`'s
+   own file/media affordances are untouched: those are interactive, and this palette is GitHub's
+   answer for reading, not for the controls that sit on top of it. */
+@layer utilities {
+  .prose {
+    /* body, headings, bold, quotes and code all read as one bright tier */
+    --tw-prose-body: var(--color-foreground);
+    --tw-prose-headings: var(--color-foreground);
+    --tw-prose-bold: var(--color-foreground);
+    --tw-prose-quotes: var(--color-muted-foreground);
+    --tw-prose-code: var(--color-foreground);
+    --tw-prose-pre-code: var(--color-foreground);
+    /* one deliberately quieter tier: lead, captions, list markers, counters */
+    --tw-prose-lead: var(--color-muted-foreground);
+    --tw-prose-captions: var(--color-muted-foreground);
+    --tw-prose-bullets: var(--color-muted-foreground);
+    --tw-prose-counters: var(--color-muted-foreground);
+    /* the interactive exception */
+    --tw-prose-links: var(--color-primary);
+    /* rules and hairlines sit quietest */
+    --tw-prose-hr: var(--color-border);
+    --tw-prose-quote-borders: var(--color-border);
+    --tw-prose-th-borders: var(--color-border);
+    --tw-prose-td-borders: var(--color-border);
+    --tw-prose-pre-bg: var(--color-card);
+  }
+
+  /* GitHub runs every heading at weight 600 (`.markdown-body h1…h6`), so a level never reads as
+     lighter than the one above it. The plugin instead ships 800/700/600/600/400/400, which leaves
+     h5 and h6 set exactly like body text — the faintest tier on the page. */
+  .prose :where(h1, h2, h3, h4, h5, h6) {
+    font-weight: 600;
+  }
+
+  /* GitHub's sizes: 2em / 1.5em / 1.25em / 1em / .875em / .875em. h5 and h6 share a size, as
+     on GitHub; the weight above is what separates them from body text. */
+  .prose :where(h1) {
+    font-size: 2em;
+  }
+  .prose :where(h2) {
+    font-size: 1.5em;
+  }
+  .prose :where(h3) {
+    font-size: 1.25em;
+  }
+  .prose :where(h4) {
+    font-size: 1em;
+  }
+  .prose :where(h5, h6) {
+    font-size: 0.875em;
+  }
+
+  /* h1 and h2 carry a hairline under them (`.markdown-body h1 { padding-bottom: .3em }` plus a
+     bottom border), which is what gives GitHub's headings their sectioning. */
+  .prose :where(h1, h2) {
+    margin-top: 1.5rem;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  /* `padding: 0 1em` with a 0.25em left rule — GitHub's quote is an indent plus a bar, and the
+     bar is thick enough to read as a structural divider rather than a hairline. */
+  .prose :where(blockquote) {
+    padding: 0 1em;
+    border-left-width: 0.25em;
+    font-weight: 400;
+    font-style: normal;
+  }
+
+  /* 2em of indent, matching GitHub's list inset. */
+  .prose :where(ul, ol) {
+    padding-left: 2em;
+  }
+
+  /* A 0.25em-tall band with a 1px rule reads as a separator; the plugin draws a 1px line only,
+     which at this weight is easy to miss between two paragraphs. */
+  .prose :where(hr) {
+    height: 0.25em;
+    margin: 1.5rem 0;
+    border-bottom-width: 1px;
+    background-color: var(--color-border);
+  }
+
+  /* GitHub's inline code is a chip: .2em .4em padding, 6px radius, 85% size on a faint neutral
+     wash. The wash is `--color-border` at low alpha so it tints with the palette rather than
+     adding a fourth grey. */
+  .prose :where(code):not(:where(pre code)) {
+    padding: 0.2em 0.4em;
+    font-size: 85%;
+    font-weight: 400;
+    border-radius: 6px;
+    background-color: color-mix(in srgb, var(--color-border) 45%, transparent);
+  }
+
+  /* 6px 13px cells on a full 1px grid. */
+  .prose :where(table th, table td) {
+    padding: 6px 13px;
+    border-width: 1px;
+  }
+
+  /* GitHub gives no margin to a lone image either — it renders one at full column width and
+     lets the block above and below set the spacing.
+
+     The plugin instead gives every `img` `margin: 1.71429em 0` (2em scaled to `prose-sm`), which
+     is its paragraph rhythm and is meant to sit against text: it equals the 1.71429 line-height
+     exactly, so an image between two paragraphs reads as one blank line, which is the intent.
+     The plugin's own `.prose > :first-child { margin-top: 0 }` cannot absorb it, because the
+     margin lives inside the wrapping `<p>`, not on it.
+
+     So an announcement that is *only* an image has no neighbour to absorb it, and the margin
+     reads as an empty line above the picture — measured at 24px (1.71429em × 14px).
+
+     Collapse it only where the image opens or closes the block, which is what GitHub does: an
+     image that is neither first nor last child keeps the full rhythm. Measured, title to image,
+     before → after: lone image 24 → 0; image then text 24 → 0; text then image 48 → 40 (one
+     duplicate margin gone, the paragraph gap remains); two adjacent images 24 → 16 (each is both
+     first and last, so only the paragraph margin separates them); text, image, text 48 → 48,
+     untouched. */
+  .prose :where(p):first-child :where(img),
+  .prose :where(p):last-child :where(img) {
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+}
+
 @keyframes shimmer {
   0% {
     background-position: -400px 0;

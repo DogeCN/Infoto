@@ -38,7 +38,7 @@
   {#each parts as part, index (`${index}:${part.type}`)}
     {#if part.type === 'markdown'}
       {#if part.content.trim()}
-        <MarkdownView content={part.content} allowImages class="text-muted-foreground" />
+        <MarkdownView content={part.content} allowImages />
       {/if}
     {:else if section(part)}
       {@const poll = section(part)!}
@@ -55,11 +55,7 @@
         />
       </section>
     {:else}
-      <MarkdownView
-        content={`::poll:${part.locale}:${part.id}`}
-        allowImages
-        class="text-muted-foreground"
-      />
+      <MarkdownView content={`::poll:${part.locale}:${part.id}`} allowImages />
     {/if}
   {/each}
 </div>

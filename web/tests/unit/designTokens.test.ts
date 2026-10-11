@@ -148,3 +148,123 @@ test('motion fallbacks: motion.ts mirrors the app.css motion tokens', () => {
     );
   }
 });
+
+// `@tailwindcss/typography` styles Markdown through `--tw-prose-*` custom properties and ships a
+// light-surface palette (body `oklch(37.3% …)`, near-black). Without this binding every prose
+// paragraph renders as a dark slab on the blue-black background. The layer matters as much as the
+// value: `.prose-invert` declares the same variables from `@layer utilities`, and a later layer
+// wins over an earlier one regardless of source order, so a binding in `@layer base` is dropped.
+test('prose palette: Markdown colours resolve to the site tokens, from the utilities layer', () => {
+  const binding = /@layer utilities\s*\{([\s\S]*?)\n\}/.exec(appCss)?.[1];
+  assert.ok(binding, 'app.css has no @layer utilities block for the prose palette');
+  assert.ok(
+    /\.prose\s*\{/.test(binding),
+    'the prose palette must be declared in @layer utilities, or .prose-invert overrides it',
+  );
+
+  const bound = new Map<string, string>();
+  for (const m of binding
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .matchAll(/--tw-prose-([\w-]+)\s*:\s*([^;]+);/g)) {
+    bound.set(m[1]!, m[2]!.trim());
+  }
+  assert.ok(bound.size > 0, 'no --tw-prose-* variables parsed');
+
+  // Every variable must name a site token, so the palette follows the token it came from
+  // instead of drifting into a second set of literals.
+  const declared = themeTokens(appCss);
+  for (const [name, value] of bound) {
+    const token = /^var\(--color-([\w-]+)\)$/.exec(value)?.[1];
+    assert.ok(token, `--tw-prose-${name} is not a site token: ${value}`);
+    assert.ok(
+      declared.has(`color-${token}`),
+      `--tw-prose-${name} reads --color-${token}, which app.css does not declare`,
+    );
+  }
+
+  // Body text is the one readers look at most; it must not fall back to the plugin's own value.
+  assert.equal(bound.get('body'), 'var(--color-foreground)');
+  assert.equal(bound.get('headings'), 'var(--color-foreground)');
+  assert.equal(bound.get('links'), 'var(--color-primary)');
+});
+
+// GitHub runs every heading at one weight and pairs h1/h2 with a hairline; the typography plugin
+// ships 800/700/600/600/400/400, which leaves h5 and h6 set exactly like body text — the faintest
+// tier in a document. These rules pin GitHub's structure. `:where()` keeps them at zero specificity
+// so they cannot outrank an interactive rule in `MarkdownView`'s own stylesheet.
+test('prose structure: headings, quote and separators follow GitHub markdown', () => {
+  const block = /@layer utilities\s*\{([\s\S]*?)\n\}/.exec(appCss)?.[1];
+  assert.ok(block, 'app.css has no @layer utilities block for the prose palette');
+  const css = block.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // One weight for every level, so no heading reads lighter than the one above it.
+  assert.match(
+    css,
+    /\.prose\s*:where\(h1, h2, h3, h4, h5, h6\)\s*\{[^}]*font-weight:\s*600/,
+    'every heading must sit at one weight, or h5/h6 fall back to body text weight',
+  );
+
+  // GitHub's ladder: 2 / 1.5 / 1.25 / 1 / .875 em, with h5 and h6 sharing a size.
+  for (const [level, size] of [
+    ['h1', '2em'],
+    ['h2', '1.5em'],
+    ['h3', '1.25em'],
+    ['h4', '1em'],
+  ]) {
+    assert.match(
+      css,
+      new RegExp(
+        `\\.prose\\s*:where\\(${level}\\)\\s*\\{[^}]*font-size:\\s*${size.replace(/\./g, '\\.')}`,
+      ),
+      `${level} must be ${size}`,
+    );
+  }
+  assert.match(css, /\.prose\s*:where\(h5, h6\)\s*\{[^}]*font-size:\s*0\.875em/);
+
+  // The sectioning hairline under the two top levels.
+  assert.match(css, /\.prose\s*:where\(h1, h2\)\s*\{[^}]*border-bottom:\s*1px solid/);
+
+  // The quote is an indent plus a 0.25em bar, and it is not bold or italic.
+  assert.match(css, /\.prose\s*:where\(blockquote\)\s*\{[^}]*border-left-width:\s*0\.25em/);
+  assert.match(
+    css,
+    /\.prose\s*:where\(blockquote\)\s*\{[^}]*font-weight:\s*400[^}]*font-style:\s*normal/,
+    'a quote must not be bold or italic',
+  );
+
+  // Inline code is a chip, not bare text.
+  assert.match(
+    css,
+    /\.prose\s*:where\(code\):not\(:where\(pre code\)\)\s*\{[^}]*padding:\s*0\.2em 0\.4em[^}]*border-radius:\s*6px/,
+  );
+
+  // Structure must not be written as a bare literal colour.
+  for (const literal of css.match(/#[0-9a-f]{3,8}\b/gi) ?? []) {
+    assert.fail(`prose structure hardcodes ${literal}; use a site token`);
+  }
+});
+
+// The typography plugin gives every `img` inside `.prose` a `1.71429em` top and bottom margin —
+// its paragraph rhythm, equal to `prose-sm`'s line-height, so an image between two paragraphs
+// reads as one blank line. A block that is *only* an image has no neighbour to absorb it and the
+// margin shows as raw whitespace, so the margin is collapsed where the image opens or closes the
+// block. Pinned here because the value itself looks like an arbitrary plugin internal.
+test('prose rhythm: a block-opening or block-closing image carries no margin', () => {
+  const block = /@layer utilities\s*\{([\s\S]*?)\n\}/.exec(appCss)?.[1];
+  assert.ok(block, 'app.css has no @layer utilities block for the prose palette');
+  const css = block.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  assert.match(
+    css,
+    /\.prose\s*:where\(p\):first-child\s*:where\(img\)[^{]*\{[^}]*margin-top:\s*0/,
+    'an image opening the block must not carry the paragraph rhythm margin',
+  );
+  assert.match(
+    css,
+    /\.prose\s*:where\(p\):last-child\s*:where\(img\)[^{]*\{[^}]*margin-bottom:\s*0/,
+    'an image closing the block must not carry the paragraph rhythm margin',
+  );
+  // An image between paragraphs keeps the plugin's rhythm — a blanket `img { margin: 0 }`
+  // would flatten multi-image announcements too.
+  assert.doesNotMatch(css, /\.prose\s*:where\(img\)\s*\{[^}]*margin/);
+});

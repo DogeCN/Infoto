@@ -129,7 +129,7 @@
       {#if previewMode}
         <div class="min-h-[7.5rem] px-4 py-3" style="height: {taH}px">
           {#if feedbackText.trim()}
-            <MarkdownView content={feedbackText} class="text-muted-foreground" />
+            <MarkdownView content={feedbackText} />
           {:else}
             <p class="text-sm text-muted-foreground">{copy.announcements.previewEmpty}</p>
           {/if}
