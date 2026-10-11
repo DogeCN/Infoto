@@ -418,10 +418,22 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - `OverlaySidebar` takes an optional `footer` snippet, pinned below the scroll region —
     always reachable without scrolling, and never under a layout preview's transparency
     (it does not overlap the scroll area, so it needs no opacity treatment). The settings
-    sidebar uses it for the **GitHub source link**: bottom-left, the octocat mark inlined
-    as SVG (`GithubMark.svelte` — lucide ships no brand icons) at `text-muted-foreground/50`,
-    brightening to `text-foreground` on hover. Deliberately unobtrusive: no border, no
-    background, no shadow.
+    sidebar fills it with two unobtrusive items, one per edge: the **GitHub source link**
+    bottom-left — the octocat mark inlined as SVG (`GithubMark.svelte`; lucide ships no
+    brand icons) at `text-muted-foreground/50`, brightening to `text-foreground` on hover —
+    and the **build version** bottom-right. Neither carries a border, background or shadow.
+- **Version label.** `VersionLabel.svelte` sits at the footer's right edge: the latest git
+  tag at rest (`v0.1.4`), the 7-character commit hash on hover, in the timestamp's type
+  (`text-xs tabular-nums text-muted-foreground/50`). It is the **same swap** as a timestamp,
+  which is why both render through `SwapLabel.svelte` — the resting string slides out and the
+  alternate slides in, inside one grid cell so the width never jumps.
+  - Both values are **injected at build time** (`web/vite.config.ts` → `__APP_VERSION__` /
+    `__COMMIT_HASH__`, declared in `app.d.ts`). The version is the latest tag **whether or not
+    HEAD sits on it**, so a build off `main` shows the release it descends from rather than a
+    branch name; `package.json`'s version is only the fallback for a build with no git.
+  - Consequence, and the point: **a release is a tag push — there is no file to edit.** The
+    deploy workflow's checkout therefore runs with `fetch-depth: 0`, because the default
+    shallow, tag-less clone leaves `git describe` with nothing to report.
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.

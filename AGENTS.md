@@ -102,7 +102,7 @@ Uploads go to a **standalone image-host facade** deployed separately (the refere
 6. **All comments in English**: Describe functionality only; no historical/narrative comments. (Memory files under `.ai/memory/` are exempt — they are agent-facing knowledge, not code comments.)
 7. **No shadcn / bits-ui**: Component layer (`web/src/lib/components/`) is zero-shadcn / zero-bits-ui by design.
 8. **No second upload overlay**: The only overlay is `UploadPanel.svelte`; do not create additional ones.
-9. **Time display**: Always use `lib/components/TimeLabel.svelte` as the single entry point.
+9. **Time display**: Always use `lib/components/TimeLabel.svelte` as the single entry point. Any other label that swaps to a second reading on hover uses `lib/components/SwapLabel.svelte` — the piece TimeLabel is built on.
 10. **Reusable drag-sort list**: Always use `lib/components/ReorderableList.svelte` for new sortable lists.
 11. **Measure, never guess, in responsive layout**: Derive a control's state from a measured value, not a viewport breakpoint — `web/src/lib/components/topbarFit.ts` is the worked example, including the ways measuring goes wrong (hidden-copy widths, probe placement, a zero-slack fit) and the two follow-through traps: a measured height is useless unless the content inside scales with it (a taller bar with fixed-size icons just reads as padding below the bar), and whatever sits below must derive from that height rather than keep its own width formula.
 
@@ -223,6 +223,8 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 | `web/src/lib/components/topbarFit.ts`           | Top-bar density resolution (measured widths, hysteresis)                                               |
 | `web/src/lib/components/UploadPanel.svelte`     | Sole upload overlay                                                                                    |
 | `web/src/lib/components/TimeLabel.svelte`       | Sole time display component                                                                            |
+| `web/src/lib/components/SwapLabel.svelte`       | Sole hover-swap label (TimeLabel and the sidebar's VersionLabel both render through it)                |
+| `web/src/lib/components/VersionLabel.svelte`    | Build version in the sidebar footer — latest tag, commit hash on hover (build-time injected)           |
 | `web/src/lib/components/ReorderableList.svelte` | Reusable drag-sort list                                                                                |
 | `web/src/lib/components/PollReferences.svelte`  | Sole renderer for Markdown interleaved with `::poll:<lang>:<id>` poll references                       |
 | `web/src/lib/components/EditorDialog.svelte`    | Sole editor shell — scroll region, footer, overlay focus trap / scroll lock / Escape                   |

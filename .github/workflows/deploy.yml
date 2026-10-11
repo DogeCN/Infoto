@@ -56,8 +56,12 @@ jobs:
     needs: checks
     runs-on: ubuntu-latest
     steps:
+      # Tags included: the SPA's version label is the latest tag, read by `git describe` in
+      # web/vite.config.ts. The default shallow, tag-less clone would leave it with nothing.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
