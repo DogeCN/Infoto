@@ -9,16 +9,38 @@ compatibility_date = "2026-08-01"
 [assets]
 directory = "dist"
 binding = "ASSETS"
-# Cloudflare checks static assets before the Worker, and `not_found_handling` answers a request
-# that matches no asset by returning index.html. For a browser navigation it does that **without
-# invoking the Worker at all** — so a copied /l/<id36> link opened in the address bar came back as
-# the SPA shell, and the SPA (which knows only `/` and `/admin`) rendered its own 404 page. `curl`
-# without the Sec-Fetch-* headers still reached the Worker and got the image, which is why the bug
-# looked unreproducible from the terminal.
+# Cloudflare checks static assets before the Worker. A request the asset layer does not
+# serve never reaches the Worker, and the two ways it declines differ in a way that matters:
 #
-# These are the Worker-owned paths a browser navigates to. `/` and `/admin` deliberately stay with
-# the asset layer: that is what serves the SPA shell.
-run_worker_first = ["/l/*", "/robots.txt", "/admin/migrate"]
+#   - a browser navigation is answered by `not_found_handling` with index.html, *without*
+#     invoking the Worker, so a copied /l/<id36> link came back as the SPA shell and the
+#     SPA (which knows only `/` and `/admin`) rendered its own 404;
+#   - a non-GET/HEAD request gets a bare 405 with an empty body, so every API write failed
+#     while GETs kept working — /sync, /admin/announcements, /admin/polls, /admin/feedback.
+#
+# A curl without the Sec-Fetch-* headers is not a navigation and skipped the first path, and
+# wrangler dev routes everything to the Worker, so neither reproduces locally.
+#
+# `run_worker_first` therefore lists *every* path the Worker serves, not only the ones a
+# browser navigates to. Keep it in step with the route table in src/worker/app.ts and
+# src/worker/routes/admin.ts — src/worker/assets-routing.test.ts fails when a route is
+# missing here. `/` and `/admin` stay with the asset layer: that is what serves the SPA shell.
+#
+# Each collection base is listed twice, bare and with `/*`: Cloudflare does not document
+# whether `*` crosses `/`, so a sub-resource like /admin/polls/12 is only guaranteed to
+# match by having both forms present.
+run_worker_first = [
+  "/sync",
+  "/l/*",
+  "/robots.txt",
+  "/admin/migrate",
+  "/admin/announcements",
+  "/admin/announcements/*",
+  "/admin/polls",
+  "/admin/polls/*",
+  "/admin/feedback",
+  "/admin/feedback/*",
+]
 not_found_handling = "single-page-application"
 
 [[d1_databases]]
