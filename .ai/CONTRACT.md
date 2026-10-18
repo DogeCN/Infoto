@@ -1009,6 +1009,42 @@ guess that hides a measurement you could have taken.** The same `isImageFile` ga
 a MIME type or a file name, because Windows picks often arrive with an empty MIME and refusing to
 preview those would be worse than an imprecise type.
 
+### 4.14 A Worker-owned GET can hide behind the SPA fallback
+
+**Resolved 2026-10-18.** A copied `/l/<id36>` link opened in a browser showed the app's own 404
+page. The Worker was fine: the same URL fetched with `curl` returned the image. The difference was
+**navigation semantics**, not the path.
+
+Cloudflare checks static assets before the Worker, and `not_found_handling = "single-page-application"`
+answers a request that matches no asset with `index.html`. For a **browser navigation** it does
+that _without invoking the Worker at all_. So the address bar reached the asset layer, got the SPA
+shell, and `Root.svelte` — which knows only `/` and `/admin` — rendered its own 404. `/robots.txt`
+behaved the same way, and so would `/admin/migrate`.
+
+Measured on production, same URL, two clients:
+
+| request                                                               | result                                     |
+| --------------------------------------------------------------------- | ------------------------------------------ |
+| `curl /l/19`                                                          | `200 image/webp`, 1 262 596 B — the Worker |
+| `curl /l/19` + `Sec-Fetch-Dest: document`, `Sec-Fetch-Mode: navigate` | `200 text/html`, 2 966 B — the SPA shell   |
+| browser                                                               | the SPA shell, so the app's 404 page       |
+
+**Three wrong turns worth recording, because each looked conclusive:**
+
+- A `curl` without the `Sec-Fetch-*` headers **is not a browser**. It skipped the exact code path
+  under test, and returned a convincing `200 image/webp`.
+- `Accept: text/html` alone does not reproduce it either; only the navigation headers do.
+- `wrangler dev` does not reproduce it at all — its local asset emulation routes every request to
+  the Worker. A local green result says nothing about the production routing layer.
+
+`wrangler.toml` now lists the Worker-owned paths a browser navigates to in `run_worker_first`, so
+they reach the Worker first: `/l/*`, `/robots.txt`, `/admin/migrate`. `/` and `/admin` stay with
+the asset layer, which is what serves the shell. The rule for anything added later: **a new
+Worker-owned GET that a person can click is dead in production unless it is in this list** —
+`/sync` is safe only because `POST` is never handled by the asset layer. This has no automated
+gate; `npm run lint`/`test` cannot see Cloudflare's routing, so the check is the two-`curl`
+comparison above against a deployed build.
+
 ---
 
 ## 5. Executable gates
