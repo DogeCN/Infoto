@@ -487,12 +487,40 @@ tabular-nums`, swapping in place inside one grid cell so the cross-fade never re
     h1 and h2 with `padding-bottom: .3em`; the quote as `padding: 0 1em` + a `0.25em` left bar,
     weight 400, upright, **and no quote glyph**; lists indented `2em`; `hr` as a `0.25em` band
     with a 1px rule; inline code as a chip (`.2em .4em`, 6px radius, 85% size, `--color-border` at
-    45% alpha); table cells `6px 13px` on a 1px grid.
-  - **The quote carries no `open-quote` / `close-quote`.** The plugin hangs typographic quotes on
-    a quote's first and last paragraph via `::before` / `::after`. They render flush against the
-    text, so a quoted line reads as one run rather than a quote, and the bar already marks the
-    block. Overridden to `content: none`, which GitHub also does by emitting no glyphs. The
-    inline-code backtick is a different feature and **stays** — it is what marks a run as code.
+    45% alpha); tables as described below.
+  - **A table is body text in a grid, and a wide one scrolls.** The plugin's `prose-sm` variant
+    sets `.857143em` on a table — **12px against the 14px body** — so every cell read smaller than
+    the prose around it. `font-size: 100%` restores parity, which is what GitHub does by setting
+    no table size at all. The rest is GitHub's: `border-collapse: collapse` with
+    `border-spacing: 0`, cells at `6px 13px` with a 1px `--color-border` grid, `th` at weight 600,
+    a `tr` top rule, zebra rows tinted with
+    `color-mix(in srgb, var(--color-foreground) 5%, transparent)` (proportional to the surface,
+    rather than a fourth fixed grey), and `font-variant-numeric: tabular-nums`.
+    - `display: block` + `width: max-content` + `max-width: 100%` + `overflow: auto` is how a wide
+      table scrolls instead of wrapping every cell, and why a narrow table hugs its content
+      instead of stretching to the column — both GitHub's behaviour. Measured: a 10-column table
+      in a 360px column renders 360px wide with `scrollWidth > clientWidth`; a 2-column table
+      renders 122px.
+    - Margins are `1.25em`, the plugin's own paragraph margin, so a table sits in the same rhythm
+      as the text around it. The plugin asks for `2em`, which is wider than its paragraphs and
+      left the table floating.
+  - **No decorative text is injected into a rendered line.** The plugin adds glyphs through
+    `::before` / `::after` in two places, and both are **text**, so a reader who copies the line
+    carries them along:
+    - `blockquote p:first-of-type::before { content: open-quote }` and its `::after` twin. They
+      render flush against the text, so a quoted line reads as one run rather than a quote, and
+      the bar already marks the block.
+    - `code::before, code::after { content: "\`" }` — a literal backtick around **every inline
+code run**, which is why `` `Ctrl` `` rendered with visible backticks in a heading or a list
+item. Fenced code was unaffected because the plugin already resets `pre code`to`none`,
+      which is what made it look like an inline-only quirk.
+
+    Both are overridden to `content: none`, as GitHub does by emitting no glyphs. The chip marks
+    the code and the bar marks the quote; neither needs a character. This is the complete set —
+    the only other `content:` in `.prose` is the plugin's own `none` for `pre code`.
+    `designTokens.test.ts` asserts both overrides **and** that the layer injects no `content:`
+    string of its own.
+
   - **Interactive elements are excluded, deliberately.** Links keep `--color-primary`, and
     `MarkdownView`'s own file / media affordances are untouched — this palette is GitHub's answer
     for reading, not for the controls layered over it.
@@ -560,10 +588,29 @@ before deadline` / `no response before deadline`).
     - **anything else — a `.pdf`, a `.zip`, no extension at all — becomes `[name](url)`**, a
       plain link the reader clicks to open or download. `isEmbeddableArtifact` is the one
       predicate (image ∪ video ∪ audio extensions) and is shared by `insertMediaAt` and
-      `upgradeMarkdownMedia`, so what the editor inserts is what the page renders; the renderer
-      also turns a stray `![alt](url.pdf)` into `<a class="markdown-file" download>`, because an
-      `<img>` pointed at a PDF is a broken image, not a link. The toolbar button is **File**,
-      not Image.
+      `upgradeMarkdownMedia`, so what the editor inserts is what the page renders.
+    - **The HTML is parsed and upgraded inside an inert `<template>`, then attached once.**
+      markdown-it renders every `![]()` as `<img src>` because at parse time it cannot know what
+      the URL points at, and **the browser starts fetching a `src` the moment the node enters a
+      live document** — so assigning straight into the rendered element downloads the file before
+      `upgradeMarkdownMedia` can replace it, and swapping the element does not cancel a request
+      already in flight. A `<template>`'s content has no browsing context, so nothing in it
+      fetches: the upgrade finishes first, then the finished tree is attached. Measured on the
+      same six URLs before → after: a `.pdf`, a `.zip` and an extension-less URL went from
+      **downloading in full** (to render a download button) to **zero requests**, and a video and
+      an audio file went from **two requests each** (the `<img>`, then the real element) to
+      **one**.
+      - ⚠️ **A detached _document_ is not inert.** `document.implementation.createHTMLDocument()`
+        followed by `innerHTML` **does** fetch — verified, it made the request. Only
+        `<template>` (and `DOMParser`, which was also measured) suppress it. A detached document
+        merely has no browsing context of its own; it does not stop resource loading.
+      - The alternative — rewriting non-media `![]()` into `[]()` in the Markdown source — was
+        implemented and **rejected**: it prevents the fetch, but the resulting link is a plain
+        Markdown link, so it loses `class="markdown-file"` and the `download` attribute that
+        `upgradeMarkdownMedia` applies. The file must keep reading as a button.
+      - Because the upgrade happens before attachment, `upgradeMarkdownMedia` must be given the
+        template's `content` fragment, not the live element.
+    - The toolbar button is **File**, not Image.
     - **No alt text.** The file name used to be the alt, and the browser paints alt as
       broken-image text while the image decodes — it read as an ugly caption over the
       placeholder. `alt` is now empty; the name is still worth keeping as a link label, which is
@@ -581,6 +628,15 @@ before deadline` / `no response before deadline`).
       survives only for media whose dimensions arrive late or never.
     - `isImageFile` gates the preview on MIME **or** file name, because a Windows pick with an
       empty MIME must still preview.
+  - **A photo's `createdAt` is the moment its upload URL arrived, not the moment /sync ran.**
+    `serverTime` is read once per request, so a batch of uploads would otherwise share one
+    timestamp and "latest" could not order them. The SharedWorker stamps `Date.now()` when the
+    facade returns the URL, carries it in the job-status message, and the page writes it into the
+    upload op. The server keeps that value but **clamps it to its own clock**
+    (`Math.min(createdAt, serverTime)`) so a skewed or forged client cannot pin a photo into the
+    future; `uploader` stays server-authoritative. An upload payload with no `createdAt` is
+    dropped, like any other payload missing a required field. `sortPhotos('latest')` breaks
+    equal timestamps by id, so a same-millisecond pair still keeps upload order.
   - **A returning visitor renders the persisted snapshot before the network answers.** The last
     `/sync` response is stored whole in `metaCache` (under the reserved key `snapshot`, which a
     64-hex album hash can never collide with) and `engine.init` hands it to the store before the
@@ -970,12 +1026,14 @@ The parts of this contract that are asserted by `npm test`:
 | The cached snapshot round-trips through `metaCache` and is replaced on sync    | `web/tests/unit/oplog.test.ts`           |
 | A media URL's extension picks the Markdown element (video / audio / image)     | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links           | `web/tests/unit/markdown.test.ts`        |
+| Markdown parses inside a `<template>`, so no fetch precedes the media upgrade  | `web/tests/unit/markdown.test.ts`        |
 | A picked file previews locally by MIME **or** file name                        | `web/tests/unit/markdown.test.ts`        |
 | The editor uploads any file, not only images and videos                        | `web/tests/unit/editorUpload.test.ts`    |
 | The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer | `web/tests/unit/designTokens.test.ts`    |
 | Markdown structure follows GitHub: heading ladder, quote bar, code chip        | `web/tests/unit/designTokens.test.ts`    |
 | A block-opening or block-closing image carries no rhythm margin                | `web/tests/unit/designTokens.test.ts`    |
-| A blockquote carries no quote glyph                                            | `web/tests/unit/designTokens.test.ts`    |
+| No decorative text is injected into a line: quote glyphs and code backticks    | `web/tests/unit/designTokens.test.ts`    |
+| A table reads at body size, on a collapsed grid, and scrolls when wide         | `web/tests/unit/designTokens.test.ts`    |
 | The font race cancels the losers, and a failed source removes only itself      | `src/shared/fonts.test.ts`               |
 | The error page's CSP hash equals the race script it authorises                 | `src/shared/fonts.test.ts`               |
 
