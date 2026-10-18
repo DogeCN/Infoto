@@ -67,12 +67,19 @@ imports business-layer code.
 
 Web-only: `npm run e2e -w infoto-web` (Playwright, local and manual).
 
-Local development points `MEDIA_HOST_URL` at the stand-in in the gitignored `.dev.vars`
-(`http://127.0.0.1:8788`), and `npm run dev` starts `scripts/local-media-host.mjs`, which
-answers CORS exactly like a real facade. To move the stand-in's port, change
-`MEDIA_HOST_URL` in `.dev.vars` and `config.mediaPort` in the root `package.json`
-together — those two are the only places the port is written. Local secrets also live
-in `.dev.vars`.
+Local development reads `.dev.vars` — copy the tracked template once:
+
+```sh
+cp .dev.vars.example .dev.vars
+```
+
+It holds the published Cloudflare Turnstile test keys and `MEDIA_HOST_URL`, which points
+at the local stand-in (`http://127.0.0.1:8788`). `npm run dev` starts
+`scripts/local-media-host.mjs`, which answers CORS exactly like a real facade. **The port
+is written once, in `MEDIA_HOST_URL`**: the Worker loads that file, and the dev scripts
+(`dev:media`, `predev`'s port sweep, the e2e harness) read the same value through
+`scripts/dev-config.mjs`. `.dev.vars` itself is gitignored; `.dev.vars.example` is tracked
+and is what the scripts fall back to when no local copy exists yet.
 
 ### Media host facade
 
@@ -227,10 +234,18 @@ dist/              Vite 构建产物（wrangler [assets] 托管）
 
 web 子包专用：`npm run e2e -w infoto-web`（Playwright，本地手动）。
 
-本地开发把 `.dev.vars`（已被 gitignore）里的 `MEDIA_HOST_URL` 指向本地模拟宿主
-`http://127.0.0.1:8788`，`npm run dev` 会自动启动 `scripts/local-media-host.mjs`，其 CORS
-应答与真实门面完全一致（本地失败即生产失败）。要换端口，只需同时改 `.dev.vars` 里的
-`MEDIA_HOST_URL` 和根 `package.json` 的 `config.mediaPort`——端口只写在这两处。本地密钥同样放在 `.dev.vars`。
+本地开发读 `.dev.vars`，从追踪的模板复制一次即可：
+
+```sh
+cp .dev.vars.example .dev.vars
+```
+
+里面有 Cloudflare 公开的 Turnstile 测试密钥和 `MEDIA_HOST_URL`（指向本地模拟宿主
+`http://127.0.0.1:8788`）。`npm run dev` 会自动启动 `scripts/local-media-host.mjs`，其 CORS
+应答与真实门面完全一致（本地失败即生产失败）。**端口只写在 `MEDIA_HOST_URL` 一处**：Worker
+直接加载这个文件，`dev:media`、`predev` 的端口清理和 e2e 都通过 `scripts/dev-config.mjs`
+读同一个值。`.dev.vars` 本身被 gitignore，追踪的是 `.dev.vars.example`；本地还没复制时脚本
+会回落到模板。
 
 ### 图片宿主门面
 

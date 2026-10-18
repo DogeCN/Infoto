@@ -30,25 +30,33 @@
   someone remembers all three. It also meant the SSRF exception keyed off "no configuration",
   which reads as "dev" but is really "misconfigured deployment".
 - **Decision**: The local simulation is now _configured_ like any other host.
-  - `.dev.vars` (gitignored) carries `MEDIA_HOST_URL=http://127.0.0.1:8788` next to the local
-    Turnstile keys. The Worker reads it the same way production reads its repo variable, and
+  - `.dev.vars` carries `MEDIA_HOST_URL=http://127.0.0.1:8788` next to the local Turnstile
+    test keys. The Worker reads it the same way production reads its repo variable, and
     `/sync` names it in `mediaHostUrl` with **no fallback** — an unset value yields `''`.
-  - The port lives in exactly two files: `.dev.vars` (Worker + SSRF guard) and
-    `config.mediaPort` in the root `package.json` (read by `dev:media` and by
-    `web/playwright.config.ts`). `LOCAL_MEDIA_HOST_URL` was deleted from `src/`.
+  - **The port is written once**, in `MEDIA_HOST_URL`. The Worker loads `.dev.vars` through
+    wrangler; `dev:media`, `predev`'s port sweep and `web/playwright.config.ts` read the same
+    value through `scripts/dev-config.mjs`. `LOCAL_MEDIA_HOST_URL` was deleted from `src/`,
+    and the `config.mediaPort` copy that the first revision of this amendment introduced was
+    removed: it was the same drift in a second file.
+  - `.dev.vars` is gitignored and `.dev.vars.example` is tracked — wrangler's own convention
+    (`.dev.vars*` ignored, `!.dev.vars.example` kept). The values are not secrets (Cloudflare's
+    published always-pass test keys, a loopback origin), but the file is where a developer
+    would paste real keys for a local run, so the template is what gets committed. The scripts
+    fall back to the template when no local copy exists, so a fresh clone runs `npm run dev`
+    before copying anything.
   - `isAllowedMediaUrl` grants the loopback exception only when the configured facade is
     itself loopback (`isLoopbackOrigin`), compared by parsed origin. Absent config gets the
     strict rule, because "unset" is a misconfigured deployment, not local dev.
   - The SharedWorker fails a job with `media_host_unset` when no facade address has arrived,
     instead of falling back to a host nobody chose.
-- **Consequences**: Changing the dev port is a two-file edit with no code change, and a stale
-  constant can no longer disagree with the running port. The cost is that a clone must copy
-  `.dev.vars` before uploads work locally — the same as it already needed for Turnstile keys.
-  Production is unaffected: the deploy workflow already hard-fails without `MEDIA_HOST_URL`.
+- **Consequences**: Changing the dev port is a one-line edit with no code change, and a stale
+  constant can no longer disagree with the running port. Production is unaffected: the deploy
+  workflow already hard-fails without `MEDIA_HOST_URL`.
 - **Alternatives considered**:
   - _Keep the constant but read the port from it_: still two sources of truth, and the constant
     is compiled into the Worker bundle, which is exactly what red line 7 forbids for hostnames.
   - _Make the Worker default to loopback only when `NODE_ENV`/`wrangler dev`_: a runtime sniff
     that can be wrong at the edge, and it keeps the "absence means dev" ambiguity.
-  - _Put the port in `.dev.vars` only_: leaves `dev:media` and the e2e harness with their own
-    copies, which is the same drift in a different file.
+  - _Keep a second copy in `package.json` for the scripts_: tried in the first revision — the
+    port was then edited in two files, and the Worker and the stand-in could disagree. The
+    scripts read `.dev.vars` directly instead.

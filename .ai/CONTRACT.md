@@ -554,10 +554,12 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
     host would send someone's photo somewhere nobody chose. The SSRF guard's loopback
     exception is unlocked only when `MEDIA_HOST_URL` itself names a loopback origin — what
     `.dev.vars` does for `npm run dev` — never by an absent value, which is a misconfigured
-    deployment. **The local stand-in's port is written in exactly two places**: `MEDIA_HOST_URL`
-    in the gitignored `.dev.vars` and `config.mediaPort` in the root `package.json` (which
-    `dev:media` and the e2e webServer both read). `LOCAL_MEDIA_HOST_URL` as a hardcoded
-    `src/` constant was removed on 2026-10-19 for exactly this reason.
+    deployment. **The local stand-in's port is written once, in `MEDIA_HOST_URL`** in
+    `.dev.vars`: the Worker loads that file, and `dev:media`, `predev`'s port sweep and the
+    e2e webServer read the same value through `scripts/dev-config.mjs`. `.dev.vars` is
+    gitignored and `.dev.vars.example` is tracked (wrangler's own convention), so a fresh
+    clone can copy it once and the scripts fall back to it before that. `LOCAL_MEDIA_HOST_URL`
+    as a hardcoded `src/` constant was removed on 2026-10-19 for exactly this reason.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
   - Upload completion is held back by a **URL prewarm**: after the host accepts an artifact,
