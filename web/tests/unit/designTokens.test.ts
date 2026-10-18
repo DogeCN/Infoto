@@ -269,10 +269,11 @@ test('prose rhythm: a block-opening or block-closing image carries no margin', (
   assert.doesNotMatch(css, /\.prose\s*:where\(img\)\s*\{[^}]*margin/);
 });
 
-// The plugin hangs typographic quotes on a quote's first and last paragraph via `open-quote` /
-// `close-quote`. They render flush against the text, so the line reads as one run rather than a
-// quote, and the quote bar already marks the block. GitHub emits no glyphs here either.
-test('prose quote: a blockquote carries no quote glyph', () => {
+// The plugin injects decorative text through `::before` / `::after` in two places: typographic
+// quotes on a quote's first and last paragraph, and a literal backtick around every inline
+// `<code>`. Both are *text*, so a reader copying the line carries them along, and neither is
+// needed — the quote bar marks the quote and the chip marks the code. GitHub emits no glyphs.
+test('prose glyphs: no decorative text is injected into a rendered line', () => {
   const block = /@layer utilities\s*\{([\s\S]*?)\n\}/.exec(appCss)?.[1];
   assert.ok(block, 'app.css has no @layer utilities block for the prose palette');
   const css = block.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -282,9 +283,48 @@ test('prose quote: a blockquote carries no quote glyph', () => {
     /\.prose\s*:where\(blockquote p:first-of-type\)::before[^{]*,\s*\n?\s*\.prose\s*:where\(blockquote p:last-of-type\)::after\s*\{[^}]*content:\s*none/,
     'a quote must not hang open-quote / close-quote glyphs on its first and last paragraph',
   );
-  // `:where()` keeps the override at the plugin's own zero specificity, so it wins on order
+  assert.match(
+    css,
+    /\.prose\s*:where\(code\)::before[^{]*,\s*\n?\s*\.prose\s*:where\(code\)::after\s*\{[^}]*content:\s*none/,
+    'inline code must not be wrapped in literal backtick glyphs',
+  );
+  // `:where()` keeps each override at the plugin's own zero specificity, so it wins on order
   // inside the layer instead of outranking a rule elsewhere.
   assert.match(css, /:where\(blockquote p:first-of-type\)::before/);
-  // The inline-code backtick is a different feature and stays: it is what marks the run as code.
-  assert.doesNotMatch(css, /\.prose\s*:where\(code\):not\([^)]*\)\s*\{[^}]*content:/);
+  assert.match(css, /:where\(code\)::before/);
+  // Nothing in this layer may inject text of its own.
+  assert.doesNotMatch(css, /content:\s*["']/, 'the prose overrides must not add text content');
+});
+
+// The plugin's `prose-sm` variant sets `.857143em` on a table — 12px against the 14px body — so
+// every cell read smaller than the prose around it. GitHub sets no table font-size at all: a table
+// is body text in a grid. The rest of the rule set is GitHub's too: a collapsed 1px grid, a heavier
+// header row, zebra rows, and a wide table scrolling instead of squeezing its columns.
+test('prose table: body-size text, a collapsed grid and horizontal scroll', () => {
+  const block = /@layer utilities\s*\{([\s\S]*?)\n\}/.exec(appCss)?.[1];
+  assert.ok(block, 'app.css has no @layer utilities block for the prose palette');
+  const css = block.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  const table = /\.prose\s*:where\(table\)\s*\{([^}]*)\}/.exec(css)?.[1];
+  assert.ok(table, 'app.css has no .prose :where(table) rule');
+  assert.match(table, /font-size:\s*100%/, 'a table must not shrink away from the body size');
+  assert.match(table, /border-collapse:\s*collapse/);
+  assert.match(table, /border-spacing:\s*0/);
+  assert.match(table, /display:\s*block/, 'a wide table scrolls as a block, it does not wrap');
+  assert.match(table, /overflow:\s*auto/);
+  assert.match(table, /max-width:\s*100%/);
+  assert.match(table, /font-variant-numeric:\s*tabular-nums/);
+
+  assert.match(css, /\.prose\s*:where\(table th, table td\)\s*\{[^}]*padding:\s*6px 13px/);
+  assert.match(
+    css,
+    /\.prose\s*:where\(table th, table td\)\s*\{[^}]*border:\s*1px solid var\(--color-border\)/,
+  );
+  assert.match(css, /\.prose\s*:where\(table th\)\s*\{[^}]*font-weight:\s*600/);
+  assert.match(css, /\.prose\s*:where\(table tr:nth-child\(2n\)\)\s*\{[^}]*background-color:/);
+
+  // No literal colour in any table rule — the zebra tint is derived from a token.
+  for (const literal of table.match(/#[0-9a-f]{3,8}\b/gi) ?? []) {
+    assert.fail(`the table rule hardcodes ${literal}; use a site token`);
+  }
 });

@@ -254,7 +254,13 @@
 
   /* GitHub's inline code is a chip: .2em .4em padding, 6px radius, 85% size on a faint neutral
      wash. The wash is `--color-border` at low alpha so it tints with the palette rather than
-     adding a fourth grey. */
+     adding a fourth grey.
+
+     The plugin also wraps every inline `<code>` in literal backtick glyphs —
+     `code::before, code::after { content: "\`" }`. They are text, so they land in the rendered
+     line and a reader copies them along with the code; the chip already says "this is code", and
+     GitHub emits no glyphs. Fenced code is already reset to `content: none` by the plugin itself,
+     which is why only inline code showed them. */
   .prose :where(code):not(:where(pre code)) {
     padding: 0.2em 0.4em;
     font-size: 85%;
@@ -262,11 +268,50 @@
     border-radius: 6px;
     background-color: color-mix(in srgb, var(--color-border) 45%, transparent);
   }
+  .prose :where(code)::before,
+  .prose :where(code)::after {
+    content: none;
+  }
 
-  /* 6px 13px cells on a full 1px grid. */
+  /* GitHub's table: text at body size, a full 1px collapsed grid, a heavier header row, zebra
+     rows, and horizontal scrolling instead of squeezed columns.
+
+     `font-size: 100%` is the fix for "the table is too small". The plugin's `prose-sm` variant
+     sets `.857143em` on a table, which is **12px** against the 14px body, so every cell shrank
+     away from the text around it. GitHub sets no size at all: a table reads exactly like prose.
+
+     `display: block` + `width: max-content` + `overflow: auto` is how GitHub scrolls a wide table
+     — the table keeps its natural width and the block scrolls, rather than wrapping every cell.
+     It also means a narrow table hugs its content instead of stretching to the column, which is
+     GitHub's behaviour too. */
+  .prose :where(table) {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow: auto;
+    border-collapse: collapse;
+    border-spacing: 0;
+    font-size: 100%;
+    font-variant-numeric: tabular-nums;
+    /* GitHub gives a table the same gap as a paragraph; the plugin asks for 2em, which is wider
+       than its own paragraph margin and leaves the table floating. */
+    margin-top: 1.25em;
+    margin-bottom: 1.25em;
+  }
   .prose :where(table th, table td) {
     padding: 6px 13px;
-    border-width: 1px;
+    border: 1px solid var(--color-border);
+  }
+  .prose :where(table th) {
+    font-weight: 600;
+  }
+  .prose :where(table tr) {
+    border-top: 1px solid var(--color-border);
+  }
+  /* Zebra rows. Tinting with the foreground keeps the step proportional to whatever surface the
+     table sits on, rather than adding a fourth fixed grey that only works on one background. */
+  .prose :where(table tr:nth-child(2n)) {
+    background-color: color-mix(in srgb, var(--color-foreground) 5%, transparent);
   }
 
   /* GitHub gives no margin to a lone image either — it renders one at full column width and

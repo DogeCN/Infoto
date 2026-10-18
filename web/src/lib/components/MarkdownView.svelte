@@ -60,11 +60,21 @@
 
   function apply() {
     if (!el) return;
-    el.innerHTML = html;
+    // Build and upgrade inside an inert `<template>`, then attach once.
+    //
+    // A `<template>`'s content has no browsing context, so an `<img src>` inside it does not
+    // fetch — unlike a detached document (`createHTMLDocument` + `innerHTML` fetches anyway).
+    // That matters because markdown-it emits every `![]()` as `<img src>`: assigning the HTML
+    // straight into the live element starts the download before anything can replace it, which
+    // cost a video two requests (once as the `<img>`, once as the `<video>` it becomes) and made
+    // a non-media URL download in full to render a download button.
+    const scratch = document.createElement('template');
+    scratch.innerHTML = html;
     // ![alt](url) always renders as <img> — swap it for the element its extension names so a
     // video plays and a sound file gets a player.
-    upgradeMarkdownMedia(el);
-    wrapPendingMedia(el);
+    upgradeMarkdownMedia(scratch.content);
+    wrapPendingMedia(scratch.content);
+    el.replaceChildren(...Array.from(scratch.content.childNodes));
   }
   $effect(() => {
     if (!el) return;

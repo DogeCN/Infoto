@@ -1,5 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   insertImageAt,
   insertLinkAt,
@@ -135,4 +137,40 @@ test('markdown toolbar transforms: transforms Markdown selections and identifies
       '[abc](https://host/a.pdf)',
     );
   }
+});
+
+// The suite runs in node, so the DOM behaviour itself cannot be exercised here. What is pinned is
+// the one thing that silently reintroduces the bug: assigning parsed HTML straight into the live
+// element. markdown-it emits `<img src>` for every `![]()`, and a live document fetches a `src` as
+// soon as the node is inserted — so the upgrade that follows pays for the file. A `<template>`'s
+// content has no browsing context and does not fetch; a detached *document* does (measured).
+test('markdown view: parses inside a <template> so no image request precedes the upgrade', () => {
+  const source = readFileSync(
+    path.join(import.meta.dirname, '..', '..', 'src', 'lib', 'components', 'MarkdownView.svelte'),
+    'utf8',
+  );
+  const apply = /function apply\(\)[\s\S]*?\n {2}\}/.exec(source)?.[0];
+  assert.ok(apply, 'MarkdownView has no apply()');
+
+  assert.match(
+    apply,
+    /document\.createElement\('template'\)/,
+    'apply() must build in a <template>',
+  );
+  assert.match(apply, /scratch\.innerHTML = html/, 'the parsed HTML goes into the template');
+  assert.match(
+    apply,
+    /upgradeMarkdownMedia\(scratch\.content\)/,
+    'the upgrade must run on the template content, before attachment',
+  );
+  assert.match(
+    apply,
+    /el\.replaceChildren\(/,
+    'the finished tree is attached once, after the upgrade',
+  );
+  assert.doesNotMatch(
+    apply,
+    /el\.innerHTML\s*=/,
+    'assigning into the live element fetches every ![]() before it can be upgraded',
+  );
 });
