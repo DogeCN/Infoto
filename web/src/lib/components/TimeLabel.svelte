@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getLocale } from '$lib/i18n.svelte';
   import { formatRelativeTime, formatSmartAbsolute } from '$base/lib/format';
+  import { clockNow, holdClock } from '$base/lib/clock.svelte';
   import SwapLabel from './SwapLabel.svelte';
 
   interface Props {
@@ -13,14 +14,9 @@
 
   let { time, align = 'start', class: className = '' }: Props = $props();
 
-  // Refresh relative timestamps every 30 seconds.
-  let now = $state(Date.now());
-  $effect(() => {
-    void time;
-    now = Date.now();
-    const timer = setInterval(() => (now = Date.now()), 30_000);
-    return () => clearInterval(timer);
-  });
+  // Every label shares one 30-second tick; the last unmount stops it.
+  $effect(() => holdClock());
+  let now = $derived(clockNow());
 
   let relativeLabel = $derived(formatRelativeTime(time, now, getLocale()));
   let absoluteLabel = $derived(formatSmartAbsolute(time, now, getLocale()));

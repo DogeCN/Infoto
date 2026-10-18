@@ -219,7 +219,8 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 | `web/src/base/lib/motion.ts`                    | Motion-token reader for WAAPI / Svelte transitions — mirrors the `app.css` `@theme` block              |
 | `web/src/base/lib/num.ts`                       | `clamp01` / `clamp` — progress fractions, slider positions, normalised ratios                          |
 | `web/src/base/lib/pointer.ts`                   | `startPointerResize` — the one pointer-drag-to-value gesture                                           |
-| `web/src/base/lib/hover.ts`                     | `createHoverIntent` — instant enter, debounced leave for hover-revealed surfaces                       |
+| `web/src/base/lib/hover.svelte.ts`              | `createHoverIntent` — instant enter, debounced leave for hover-revealed surfaces                       |
+| `web/src/base/lib/clock.svelte.ts`              | `clockNow` / `holdClock` — the one shared 30-second tick behind every relative-time label              |
 | `web/src/base/lib/clipboard.ts`                 | `copyToClipboard` — success is a boolean so callers keep their own copy labels                         |
 | `web/src/lib/components/topbarFit.ts`           | Top-bar density resolution (measured widths, hysteresis)                                               |
 | `web/src/lib/components/UploadPanel.svelte`     | Sole upload overlay                                                                                    |
