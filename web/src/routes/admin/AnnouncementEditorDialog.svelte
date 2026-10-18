@@ -61,14 +61,19 @@
   $effect(() => {
     if (uploadTask) currentJobId = uploadTask.jobId;
   });
-  // The object URL outlives every dialog unmount, or the next open paints a revoked src.
-  $effect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  });
+
+  /** Drop the local preview and release its blob URL. Clearing the state alone leaves the
+   *  object URL alive until the document unloads, and a teardown-only cleanup would only
+   *  release the URL current at unmount — every finished upload would leak one. */
+  function clearPreview(): void {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    previewSize = null;
+  }
+
   onDestroy(() => {
     destroyed = true;
+    clearPreview();
     finishPicker?.();
     if (currentJobId) onCancelUpload?.();
   });
@@ -113,9 +118,9 @@
     // image at its real size from the first frame. Probing and creating the object URL
     // are both cheap and independent, so neither gates the other.
     if (!isImageFile(file)) {
-      previewUrl = null;
-      previewSize = null;
+      clearPreview();
     } else {
+      clearPreview();
       previewUrl = URL.createObjectURL(file);
       void probeSourceSize(file).then((size) => {
         if (destroyed || !size) return;
@@ -132,9 +137,8 @@
     } finally {
       uploadBusy = false;
       // The hosted URL is now in the markdown, so the local stand-in has done its job.
-      // Leaving it would double-render the same image; the $effect above reclaims it.
-      previewUrl = null;
-      previewSize = null;
+      // Leaving it would double-render the same image; clearPreview releases the blob URL.
+      clearPreview();
     }
   }
 
