@@ -21,12 +21,9 @@ export interface UploadResultErr {
 export type UploadResult = UploadResultOk | UploadResultErr;
 
 export interface UploadCallIo {
-  /** Injected transport (tests); when absent the XHR path is used. */
-  fetchFn?: typeof fetch;
   /** Facade base URL from the /sync response. */
   mediaHostUrl?: string;
-  /** Idle (body) deadline override, and the single budget for the progress-blind fetch
-   *  transport (tests). */
+  /** Idle (body) deadline override (tests). */
   timeoutMs?: number;
   /** Response deadline override — the window after the body is fully sent (tests). */
   responseTimeoutMs?: number;
@@ -110,38 +107,12 @@ function buildForm(blob: Blob, fileName?: string): FormData {
   return fd;
 }
 
-/** Upload one multipart file with observable XHR progress or an injected fetch transport. */
+/** Upload one multipart file with observable XHR progress. */
 export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<UploadResult> {
   if (io.signal?.aborted) return { ok: false, error: 'aborted', detail: 'cancelled' };
   const endpoint = uploadEndpoint(io.mediaHostUrl);
   const timeoutMs = io.timeoutMs ?? UPLOAD_IDLE_TIMEOUT_MS;
   const responseTimeoutMs = io.responseTimeoutMs ?? UPLOAD_RESPONSE_TIMEOUT_MS;
-
-  if (io.fetchFn) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    const forward = () => ctrl.abort();
-    io.signal?.addEventListener('abort', forward, { once: true });
-    try {
-      const res = await io.fetchFn(endpoint, {
-        method: 'POST',
-        body: buildForm(blob, io.fileName),
-        signal: ctrl.signal,
-        // The facade is a separate origin and must never see this site's session cookie.
-        credentials: 'omit',
-      });
-      return parseMediaHostResponse(await res.text(), res.status);
-    } catch (e) {
-      // abort (watchdog or an external cancel) and network failures all count as one
-      // failed attempt; the pipeline discards the result of a cancelled job anyway
-      if (io.signal?.aborted) return { ok: false, error: 'aborted', detail: 'cancelled' };
-      const aborted = ctrl.signal.aborted;
-      return { ok: false, error: aborted ? 'timeout' : 'network_error', detail: String(e) };
-    } finally {
-      clearTimeout(t);
-      io.signal?.removeEventListener('abort', forward);
-    }
-  }
 
   return new Promise<UploadResult>((resolve) => {
     let xhr: XMLHttpRequest;

@@ -244,16 +244,20 @@ test('postUpload: settles network, setup, cancellation, and late events exactly 
     assert.equal(already.sentBody, null);
   }
 
-  // Does not start fetch for an already-cancelled upload.
+  // Does not open a request for an already-cancelled upload.
   {
     const controller = new AbortController();
     controller.abort();
-    const fetchFn = vi.fn();
+    const factory = vi.fn(() => new FakeXhr() as unknown as XMLHttpRequest);
     assert.deepEqual(
-      await postUpload(blob, { signal: controller.signal, fetchFn, mediaHostUrl: MEDIA_HOST }),
+      await postUpload(blob, {
+        signal: controller.signal,
+        xhrFactory: factory,
+        mediaHostUrl: MEDIA_HOST,
+      }),
       { ok: false, error: 'aborted', detail: 'cancelled' },
     );
-    assert.equal(fetchFn.mock.calls.length, 0);
+    assert.equal(factory.mock.calls.length, 0);
   }
 
   // Settles setup failures as upload errors.
@@ -293,7 +297,7 @@ test('postUpload: settles network, setup, cancellation, and late events exactly 
 });
 
 // The facade is a separate origin; leaking this site's session cookie to it would hand a
-// stranger's upload our identity. Both transports must stay credential-free.
+// stranger's upload our identity.
 test('postUpload: targets the facade without sending credentials', async () => {
   const xhr = new FakeXhr();
   const request = postUpload(blob, {
@@ -304,13 +308,4 @@ test('postUpload: targets the facade without sending credentials', async () => {
   assert.equal(xhr.withCredentials, false);
   xhr.finish(200, JSON.stringify({ data: 'https://facade.test/m/abc.webp' }));
   assert.deepEqual(await request, { ok: true, url: 'https://facade.test/m/abc.webp' });
-
-  const fetchFn = vi
-    .fn()
-    .mockResolvedValue(
-      new Response(JSON.stringify({ data: 'https://facade.test/m/x.webp' }), { status: 200 }),
-    );
-  await postUpload(blob, { mediaHostUrl: MEDIA_HOST, fetchFn });
-  assert.equal(fetchFn.mock.calls[0]?.[0], `${MEDIA_HOST}/upload`);
-  assert.equal((fetchFn.mock.calls[0]?.[1] as RequestInit).credentials, 'omit');
 });
