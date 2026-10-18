@@ -22,7 +22,7 @@ import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '.
 import { verifyTurnstile } from '../turnstile.ts';
 import { isLocaleCode } from '../../shared/copy.ts';
 import { isRecord, safeJsonParse } from '../../shared/json.ts';
-import { LOCAL_MEDIA_HOST_URL, isAllowedMediaUrl } from './media.ts';
+import { isAllowedMediaUrl } from './media.ts';
 
 /** Text fields an anonymous op may carry. */
 const MAX_TEXT_LENGTH = 20_000;
@@ -422,8 +422,10 @@ export function syncHandler(env: AppEnv) {
       serverTime,
       selfId: user.id,
       // Uploads go straight from the browser to the facade; this server only stores the
-      // URL it hands back.
-      mediaHostUrl: env.mediaHostUrl ?? LOCAL_MEDIA_HOST_URL,
+      // URL it hands back. `MEDIA_HOST_URL` is the only source — a deployment always has
+      // it (the deploy workflow exits 1 without it) and dev gets it from `.dev.vars`, so
+      // there is no default to fall back to and no second place to keep in sync.
+      mediaHostUrl: env.mediaHostUrl ?? '',
       ...snap,
     });
     res.headers.set('Set-Cookie', sessionCookie(user.uuid, c.req.raw));

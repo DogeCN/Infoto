@@ -1,7 +1,6 @@
 // Single-attempt upload transport with an idle-progress deadline and caller-controlled retry.
 
 import type { MediaHostUploadResponse } from '$shared/types';
-import { LOCAL_MEDIA_HOST_URL } from '$shared/media';
 import { clamp01 } from '$base/lib/num';
 import { UPLOAD_IDLE_TIMEOUT_MS, UPLOAD_RESPONSE_TIMEOUT_MS } from '$base/upload/pipeline';
 
@@ -21,8 +20,10 @@ export interface UploadResultErr {
 export type UploadResult = UploadResultOk | UploadResultErr;
 
 export interface UploadCallIo {
-  /** Facade base URL from the /sync response. */
-  mediaHostUrl?: string;
+  /** Facade base URL from the /sync response. Required: the server names the facade and
+   *  there is no default, so a missing one is a configuration error, not a reason to
+   *  guess a host. */
+  mediaHostUrl: string;
   /** Idle (body) deadline override (tests). */
   timeoutMs?: number;
   /** Response deadline override — the window after the body is fully sent (tests). */
@@ -38,9 +39,9 @@ export interface UploadCallIo {
   xhrFactory?: () => XMLHttpRequest;
 }
 
-/** Facade endpoint. Falls back to the local simulation when /sync has not answered yet. */
-function uploadEndpoint(mediaHostUrl: string | undefined): string {
-  return `${mediaHostUrl ?? LOCAL_MEDIA_HOST_URL}/upload`;
+/** Facade endpoint. The base URL comes from /sync; nothing here knows where the host is. */
+function uploadEndpoint(mediaHostUrl: string): string {
+  return `${mediaHostUrl}/upload`;
 }
 
 function parseMediaHostResponse(text: string, status: number): UploadResult {
@@ -108,7 +109,7 @@ function buildForm(blob: Blob, fileName?: string): FormData {
 }
 
 /** Upload one multipart file with observable XHR progress. */
-export async function postUpload(blob: Blob, io: UploadCallIo = {}): Promise<UploadResult> {
+export async function postUpload(blob: Blob, io: UploadCallIo): Promise<UploadResult> {
   if (io.signal?.aborted) return { ok: false, error: 'aborted', detail: 'cancelled' };
   const endpoint = uploadEndpoint(io.mediaHostUrl);
   const timeoutMs = io.timeoutMs ?? UPLOAD_IDLE_TIMEOUT_MS;

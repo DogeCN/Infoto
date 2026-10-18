@@ -24,8 +24,16 @@ export function extOfType(type: number): 'webp' | 'webm' {
   return type === 0 ? 'webp' : 'webm';
 }
 
-/** Local simulated image host (scripts/local-media-host.mjs), used by `npm run dev`.
- *  A deployment must set MEDIA_HOST_URL to the standalone facade (ADR 0009); the deploy
- *  workflow refuses to run without it, so this default is never the production
- *  configuration. The Worker and the browser client both fall back to it. */
-export const LOCAL_MEDIA_HOST_URL = 'http://127.0.0.1:8788';
+/** Loopback origins a dev-only media host may serve on: `http://127.0.0.1` / `[::1]`,
+ *  any port. Used to recognise the local simulation (`scripts/local-media-host.mjs`)
+ *  without hardcoding its port, which lives in `.dev.vars` as `MEDIA_HOST_URL`. */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== 'http:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === '127.0.0.1' || host === '[::1]' || host === 'localhost';
+  } catch {
+    return false;
+  }
+}

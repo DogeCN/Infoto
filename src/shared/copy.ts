@@ -93,6 +93,7 @@ export const enUS = {
       tooLarge: 'File too large',
       httpFailed: 'Upload failed (HTTP {status})',
       failed: 'Upload failed',
+      noMediaHost: 'No upload host is configured',
     },
   },
 
@@ -452,6 +453,7 @@ const zhCN: Copy = {
       tooLarge: '文件过大',
       httpFailed: '上传失败（HTTP {status}）',
       failed: '上传失败',
+      noMediaHost: '尚未配置上传地址',
     },
   },
 

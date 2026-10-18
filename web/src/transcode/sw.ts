@@ -380,6 +380,13 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
     failJob(rec, 'oversize');
     return;
   }
+  // The facade address arrives with /sync before any job can run. Without it there is no
+  // host to upload to, and guessing one would send a user's photo to a place nobody
+  // configured — so the job fails with the reason instead.
+  if (!mediaHostUrl) {
+    failJob(rec, 'media_host_unset');
+    return;
+  }
   const abort = new AbortController();
   rec.uploadAbort = abort;
   if (rec.cancelled) {
@@ -395,7 +402,7 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   try {
     if (!rec.cancelled) {
       r = await postUpload(blob, {
-        mediaHostUrl,
+        mediaHostUrl: mediaHostUrl!,
         fileName,
         signal: abort.signal,
         onProgress: (fraction) => notify(rec, { fraction }),

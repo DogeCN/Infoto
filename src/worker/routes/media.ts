@@ -3,11 +3,9 @@
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';
-import { fromId36, LOCAL_MEDIA_HOST_URL } from '../../shared/media.ts';
+import { fromId36, isLoopbackOrigin } from '../../shared/media.ts';
 import { MEDIA_TYPE } from '../../shared/types.ts';
 import { notFoundPage, serverErrorPage } from '../errors.ts';
-
-export { LOCAL_MEDIA_HOST_URL };
 
 const MIME_BY_TYPE: Record<number, string> = {
   [MEDIA_TYPE.IMAGE]: 'image/webp',
@@ -58,13 +56,12 @@ export function isStorableMediaUrl(url: string): boolean {
 /**
  * Storage/read rule for a media URL.
  *
- * `isStorableMediaUrl` is the rule and is not negotiable. The simulated host serves
- * plain HTTP on loopback, which that rule rejects by design, so the local simulation
- * needs one narrow exception — granted only when MEDIA_HOST_URL is unset, i.e. the
- * worker runs as `npm run dev` with no facade configured. A deployed worker always
- * has MEDIA_HOST_URL (the deploy workflow exits1 without it), so a missing value
- * means a misconfigured production worker, and it gets the strict rule rather than
- * a silent downgrade to the permissive local one.
+ * `isStorableMediaUrl` is the rule and is not negotiable. The local simulation
+ * (`scripts/local-media-host.mjs`) serves plain HTTP on loopback, which that rule rejects
+ * by design, so it needs one narrow exception — granted only when the **configured**
+ * facade is itself the local simulation, i.e. `MEDIA_HOST_URL` in `.dev.vars` names a
+ * loopback origin. A deployed worker's facade is a real HTTPS host (the deploy workflow
+ * exits 1 without one), so it never matches and always gets the strict rule.
  *
  * Both the write path (`/sync` upload ops) and the read proxy (`/l/:id36`) must use this,
  * or a locally uploaded photo is stored and then refused, or silently dropped on arrival.
@@ -73,9 +70,11 @@ export function isStorableMediaUrl(url: string): boolean {
  */
 export function isAllowedMediaUrl(env: AppEnv, url: string): boolean {
   if (isStorableMediaUrl(url)) return true;
-  if (env.mediaHostUrl !== undefined) return false;
+  // Only a loopback-configured facade unlocks the exception; absent config is a
+  // misconfigured deployment and gets no exemption.
+  if (!env.mediaHostUrl || !isLoopbackOrigin(env.mediaHostUrl)) return false;
   try {
-    return new URL(url).origin === LOCAL_MEDIA_HOST_URL;
+    return new URL(url).origin === new URL(env.mediaHostUrl).origin;
   } catch {
     return false;
   }
