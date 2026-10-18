@@ -590,31 +590,35 @@ class AppState {
   setMarkMany(shas: string[], kind: ops.MarkKind, add: boolean): void {
     if (this.selfId < 0) return;
     const unique = [...new Set(shas)];
-    const real = unique.filter((sha) => this.photos.some((p) => p.sha256 === sha));
-    const pending = unique.filter((sha) => !real.includes(sha));
-    if (real.length > 0) {
-      const ids = real
-        .map((sha) => this.photos.find((p) => p.sha256 === sha)?.id)
-        .filter((id): id is number => id !== undefined);
+    // One index per call: a sha lookup inside the loop was O(selection × album).
+    const bySha = new Map(this.photos.map((photo) => [photo.sha256, photo]));
+    const ids: number[] = [];
+    for (const sha of unique) {
+      const photo = bySha.get(sha);
+      if (photo) ids.push(photo.id);
+      else this.setPendingMark(sha, kind, add);
+    }
+    if (ids.length > 0) {
       this.photos = ops.applyMarkMany(this.photos, ids, kind, this.selfId, add);
     }
-    for (const sha of pending) this.setPendingMark(sha, kind, add);
     for (const sha of unique) this.submitMarkOp(sha, { type: ops.markOpType(kind, add) });
   }
 
   /** Optimistic root delete for multi-selection (sha-addressed, pending cards included). */
   deletePhotos(shas: string[]): void {
     if (this.selfId !== 0) return;
-    const known = new Set(this.photos.map((p) => p.sha256));
-    const ids = shas
-      .filter((sha) => known.has(sha))
-      .map((sha) => this.photos.find((p) => p.sha256 === sha)!.id);
+    const bySha = new Map(this.photos.map((photo) => [photo.sha256, photo]));
+    const ids: number[] = [];
+    for (const sha of shas) {
+      const photo = bySha.get(sha);
+      if (photo) ids.push(photo.id);
+    }
     if (ids.length > 0) this.removePhotos(ids);
     for (const sha of shas) {
       // Submitted directly, never through the mark guard: the optimistic removal above has
       // already taken the row out of `photos`, and a delete of an unknown sha is a server
       // no-op anyway — which is what makes the pending tombstone work.
-      if (known.has(sha)) void this.submit({ type: 'delete', targetSha: sha });
+      if (bySha.has(sha)) void this.submit({ type: 'delete', targetSha: sha });
       else void this.withdrawPendingUpload(sha);
     }
   }
