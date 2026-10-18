@@ -67,9 +67,12 @@ imports business-layer code.
 
 Web-only: `npm run e2e -w infoto-web` (Playwright, local and manual).
 
-Local development needs no media host: with `MEDIA_HOST_URL` unset, `/sync` reports
-`http://127.0.0.1:8788` and `npm run dev` starts `scripts/local-media-host.mjs`, which
-answers CORS exactly like a real facade. Local secrets live in the gitignored `.dev.vars`.
+Local development points `MEDIA_HOST_URL` at the stand-in in the gitignored `.dev.vars`
+(`http://127.0.0.1:8788`), and `npm run dev` starts `scripts/local-media-host.mjs`, which
+answers CORS exactly like a real facade. To move the stand-in's port, change
+`MEDIA_HOST_URL` in `.dev.vars` and `config.mediaPort` in the root `package.json`
+together — those two are the only places the port is written. Local secrets also live
+in `.dev.vars`.
 
 ### Media host facade
 
@@ -129,9 +132,11 @@ Rejected:
 | `0.0.0.0/8`, `100.64/10` (CGNAT), `198.18/15`, `192.0.0/24`, `224/4` | Special-use ranges.                                        |
 | `::1`, `fc00::/7`, `fe80::/10`, IPv4-mapped IPv6                     | Non-global-unicast IPv6.                                   |
 
-One dev-only exception: while `MEDIA_HOST_URL` is unset or points at
-`http://127.0.0.1:8788`, Infoto additionally accepts that exact origin — matched by parsed
-origin, never by string prefix. A deployed facade never gets the exception.
+One dev-only exception: while `MEDIA_HOST_URL` points at a loopback origin (what `.dev.vars`
+sets for local development), Infoto additionally accepts that exact origin — matched by parsed
+origin, never by string prefix. A deployed facade is a real HTTPS host and never gets the
+exception, and an unset `MEDIA_HOST_URL` gets none either: that is a misconfigured deployment,
+not local dev.
 
 **CORS.** The upload is cross-origin: answer `OPTIONS` with `204` and
 `Access-Control-Allow-Origin` (echo a specific origin, or `*` — the request carries no
@@ -222,9 +227,10 @@ dist/              Vite 构建产物（wrangler [assets] 托管）
 
 web 子包专用：`npm run e2e -w infoto-web`（Playwright，本地手动）。
 
-本地开发不需要图片宿主：`MEDIA_HOST_URL` 未设置时 `/sync` 回报 `http://127.0.0.1:8788`，
-`npm run dev` 会自动启动 `scripts/local-media-host.mjs`，其 CORS 应答与真实门面完全一致
-（本地失败即生产失败）。本地密钥放 gitignore 掉的 `.dev.vars`。
+本地开发把 `.dev.vars`（已被 gitignore）里的 `MEDIA_HOST_URL` 指向本地模拟宿主
+`http://127.0.0.1:8788`，`npm run dev` 会自动启动 `scripts/local-media-host.mjs`，其 CORS
+应答与真实门面完全一致（本地失败即生产失败）。要换端口，只需同时改 `.dev.vars` 里的
+`MEDIA_HOST_URL` 和根 `package.json` 的 `config.mediaPort`——端口只写在这两处。本地密钥同样放在 `.dev.vars`。
 
 ### 图片宿主门面
 
@@ -279,8 +285,9 @@ Infoto 只读 `data` 字段，原样写入 `photos.url`。任何失败返回非 
 | `0.0.0.0/8`、`100.64/10`（CGNAT）、`198.18/15`、`192.0.0/24`、`224/4` | 特殊用途段                             |
 | `::1`、`fc00::/7`、`fe80::/10`、IPv4 映射 IPv6                        | 非全球单播 IPv6                        |
 
-唯一的开发期例外：`MEDIA_HOST_URL` 未设置或指向 `http://127.0.0.1:8788` 时，Infoto 额外接受
-该确切 origin——按解析后的 origin 匹配，绝不按字符串前缀。已部署的门面不享受该例外。
+唯一的开发期例外：`MEDIA_HOST_URL` 指向 loopback origin（即 `.dev.vars` 为本地开发所设）时，
+Infoto 额外接受该确切 origin——按解析后的 origin 匹配，绝不按字符串前缀。已部署的门面是真实
+HTTPS 主机，永不享受该例外；`MEDIA_HOST_URL` 未设置同样没有例外，那属于配置错误的部署，不是本地开发。
 
 **CORS**。上传是跨域请求：`OPTIONS` 预检答 `204`，并在预检和正式响应上都带
 `Access-Control-Allow-Origin`（回显具体 origin，或 `*`——请求不带凭据）、

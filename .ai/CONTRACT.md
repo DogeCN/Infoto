@@ -547,6 +547,17 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
     ladder and shared weight, the quote bar, the code chip, and that no structural rule hardcodes
     a hex. Each guard was verified against the regression it exists for.
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
+  - **The facade address is configuration, never a constant.** `/sync` names the host in
+    `mediaHostUrl`; the Worker reads `MEDIA_HOST_URL` and the page forwards it to the
+    SharedWorker. There is no default host in either runtime: an unset value produces an
+    empty `mediaHostUrl` and the SW fails the job with `media_host_unset`, because guessing a
+    host would send someone's photo somewhere nobody chose. The SSRF guard's loopback
+    exception is unlocked only when `MEDIA_HOST_URL` itself names a loopback origin — what
+    `.dev.vars` does for `npm run dev` — never by an absent value, which is a misconfigured
+    deployment. **The local stand-in's port is written in exactly two places**: `MEDIA_HOST_URL`
+    in the gitignored `.dev.vars` and `config.mediaPort` in the root `package.json` (which
+    `dev:media` and the e2e webServer both read). `LOCAL_MEDIA_HOST_URL` as a hardcoded
+    `src/` constant was removed on 2026-10-19 for exactly this reason.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
   - Upload completion is held back by a **URL prewarm**: after the host accepts an artifact,
@@ -1012,41 +1023,55 @@ guess that hides a measurement you could have taken.** The same `isImageFile` ga
 a MIME type or a file name, because Windows picks often arrive with an empty MIME and refusing to
 preview those would be worse than an imprecise type.
 
-### 4.14 A Worker-owned GET can hide behind the SPA fallback
+### 4.15 A Worker-owned route can hide behind the asset layer
 
 **Resolved 2026-10-18.** A copied `/l/<id36>` link opened in a browser showed the app's own 404
-page. The Worker was fine: the same URL fetched with `curl` returned the image. The difference was
-**navigation semantics**, not the path.
+page. The Worker was fine: the same URL fetched with `curl` returned the image. A second episode,
+found the next day, broke every API write in production with a bare `405` while all GETs kept
+working. Same layer, same cause, opposite symptom.
 
-Cloudflare checks static assets before the Worker, and `not_found_handling = "single-page-application"`
-answers a request that matches no asset with `index.html`. For a **browser navigation** it does
-that _without invoking the Worker at all_. So the address bar reached the asset layer, got the SPA
-shell, and `Root.svelte` — which knows only `/` and `/admin` — rendered its own 404. `/robots.txt`
-behaved the same way, and so would `/admin/migrate`.
+Cloudflare checks static assets before the Worker, and a request the asset layer does not serve
+never reaches it. **It declines two different ways, and the second one only bites on writes:**
 
-Measured on production, same URL, two clients:
+| request                                        | asset layer's answer                                      | reaches the Worker? |
+| ---------------------------------------------- | --------------------------------------------------------- | ------------------- |
+| browser **navigation** to a path with no asset | `index.html` via `not_found_handling`, Worker not invoked | no                  |
+| **any non-GET/HEAD** to a path with no asset   | `405`, `Content-Length: 0`                                | no                  |
+| path listed in `run_worker_first`              | —                                                         | yes                 |
 
-| request                                                               | result                                     |
-| --------------------------------------------------------------------- | ------------------------------------------ |
-| `curl /l/19`                                                          | `200 image/webp`, 1 262 596 B — the Worker |
-| `curl /l/19` + `Sec-Fetch-Dest: document`, `Sec-Fetch-Mode: navigate` | `200 text/html`, 2 966 B — the SPA shell   |
-| browser                                                               | the SPA shell, so the app's 404 page       |
+The first episode only registered the navigations, and the reasoning written down at the time —
+"`POST /sync` is safe only because the asset layer never handles POST" — was **flatly wrong**.
+Measured on production, every write path was `405` with an empty body while the GETs that _were_
+listed worked fine:
+
+| path                                   | before fix              | after fix  |
+| -------------------------------------- | ----------------------- | ---------- |
+| `POST /sync`                           | `405`, 0 B              | `200`      |
+| `POST /admin/announcements`            | `405`, 0 B              | `403` JSON |
+| `POST /admin/polls`, `/admin/feedback` | `405`, 0 B              | `403` JSON |
+| `POST /admin/migrate`                  | `403` JSON (was listed) | unchanged  |
+| `GET /l/19`                            | `200 image/webp`        | unchanged  |
+
+**The rule is "every path the Worker serves", not "every path a person navigates to".** A method a
+browser never sends is still a method the site sends — `fetch` and `XMLHttpRequest` issue POSTs that
+never appear in an address bar.
 
 **Three wrong turns worth recording, because each looked conclusive:**
 
 - A `curl` without the `Sec-Fetch-*` headers **is not a browser**. It skipped the exact code path
   under test, and returned a convincing `200 image/webp`.
-- `Accept: text/html` alone does not reproduce it either; only the navigation headers do.
-- `wrangler dev` does not reproduce it at all — its local asset emulation routes every request to
+- `Accept: text/html` alone does not reproduce the navigation case either; only the navigation
+  headers do. And a 405 has no body at all, so there is nothing to read.
+- `wrangler dev` does not reproduce either one — its local asset emulation routes every request to
   the Worker. A local green result says nothing about the production routing layer.
 
-`wrangler.toml` now lists the Worker-owned paths a browser navigates to in `run_worker_first`, so
-they reach the Worker first: `/l/*`, `/robots.txt`, `/admin/migrate`. `/` and `/admin` stay with
-the asset layer, which is what serves the shell. The rule for anything added later: **a new
-Worker-owned GET that a person can click is dead in production unless it is in this list** —
-`/sync` is safe only because `POST` is never handled by the asset layer. This has no automated
-gate; `npm run lint`/`test` cannot see Cloudflare's routing, so the check is the two-`curl`
-comparison above against a deployed build.
+`run_worker_first` in `wrangler.toml` lists every Worker-owned path; each collection base appears
+both bare and with `/*`, because Cloudflare does not document whether `*` crosses `/`, and
+`/admin/polls/12` is a segment deeper than `/admin/polls`. `/` and `/admin` stay with the asset
+layer — that is what serves the SPA shell. **This is now gated**: `src/worker/assets-routing.test.ts`
+asserts the list against `createApp()`'s own route table, so adding a route without listing it fails
+`npm test`. The two-`curl` comparison above is still the only check that the _production_ layer
+agrees with the list.
 
 ---
 
@@ -1059,6 +1084,7 @@ The parts of this contract that are asserted by `npm test`:
 | §1.1 table equals the `@theme` block in `web/src/app.css`, both directions           | `web/tests/unit/designTokens.test.ts`    |
 | `motion.ts` motion fallbacks equal the `@theme` motion tokens                        | `web/tests/unit/designTokens.test.ts`    |
 | `schema.sql` equals `schema-ddl.ts` byte for byte                                    | `src/worker/schema-alignment.test.ts`    |
+| Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)        | `src/worker/assets-routing.test.ts`      |
 | No `transition` in `web/src` carries a literal duration or easing curve              | `web/tests/unit/designTokens.test.ts`    |
 | `GLITCH_PALETTE` equals the matching `@theme` colours                                | `web/tests/unit/designTokens.test.ts`    |
 | The reflow flip window outlasts the reflow duration it brackets                      | `web/tests/unit/motion.test.ts`          |
