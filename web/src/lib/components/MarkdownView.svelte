@@ -48,7 +48,12 @@
               : 0;
         if (w > 0 && h > 0) holder.style.aspectRatio = `${w} / ${h}`;
       };
-      if (media instanceof HTMLImageElement && media.complete) {
+      // `complete` alone is not "loaded": an image parsed into a `<template>` has never started
+      // a load, and Chromium reports `complete === true` with `naturalWidth === 0` for it. The
+      // shortcut would then run `done()` with no dimensions, leave the holder on its 16:10
+      // placeholder, and letterbox every image. Requiring a real intrinsic size keeps the
+      // shortcut for a cached image and falls through to the listeners for a template one.
+      if (media instanceof HTMLImageElement && media.complete && media.naturalWidth > 0) {
         done();
         continue;
       }

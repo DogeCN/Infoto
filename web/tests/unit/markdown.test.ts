@@ -174,3 +174,24 @@ test('markdown view: parses inside a <template> so no image request precedes the
     'assigning into the live element fetches every ![]() before it can be upgraded',
   );
 });
+
+// A `<template>` image has never started a load, and Chromium reports `complete === true` with
+// `naturalWidth === 0` for it. A `complete`-only shortcut therefore runs the "measure the media"
+// step with no dimensions, leaving the holder on its 16:10 placeholder — every image letterboxed,
+// none reaching the rounded corners. The intrinsic size has to be part of the test.
+test('markdown view: the media shortcut requires a real intrinsic size', () => {
+  const source = readFileSync(
+    path.join(import.meta.dirname, '..', '..', 'src', 'lib', 'components', 'MarkdownView.svelte'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /media\.complete\s*&&\s*media\.naturalWidth\s*>\s*0/,
+    'the complete shortcut must also require naturalWidth > 0, or a template image stays at 16:10',
+  );
+  assert.doesNotMatch(
+    source,
+    /media\.complete\s*\)\s*\{\s*done\(\)/,
+    'a complete-but-unmeasured image must fall through to the load listeners',
+  );
+});

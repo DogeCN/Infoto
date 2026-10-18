@@ -604,6 +604,15 @@ before deadline` / `no response before deadline`).
         followed by `innerHTML` **does** fetch — verified, it made the request. Only
         `<template>` (and `DOMParser`, which was also measured) suppress it. A detached document
         merely has no browsing context of its own; it does not stop resource loading.
+      - ⚠️ **`img.complete` is `true` inside a `<template>`, with `naturalWidth === 0`.** The
+        image has never started a load, and Chromium reports the "nothing pending" state as
+        complete. The `complete` shortcut in `wrapPendingMedia` therefore ran its measure step
+        with no dimensions, the `w > 0 && h > 0` guard skipped, and the holder stayed on its
+        16:10 placeholder — every image letterboxed inside a box of the wrong shape, with the
+        rounded corners sitting on empty space instead of on the picture. The shortcut now
+        requires `media.naturalWidth > 0`; a cached image still takes it, a template image falls
+        through to the load listeners. Measured after: an 800×600 image fills a 360px column at
+        360×270, a 600×900 one at 360×540, both with the holder radius.
       - The alternative — rewriting non-media `![]()` into `[]()` in the Markdown source — was
         implemented and **rejected**: it prevents the fetch, but the resulting link is a plain
         Markdown link, so it loses `class="markdown-file"` and the `download` attribute that
@@ -1027,6 +1036,7 @@ The parts of this contract that are asserted by `npm test`:
 | A media URL's extension picks the Markdown element (video / audio / image)     | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links           | `web/tests/unit/markdown.test.ts`        |
 | Markdown parses inside a `<template>`, so no fetch precedes the media upgrade  | `web/tests/unit/markdown.test.ts`        |
+| The media shortcut requires an intrinsic size, not just `complete`             | `web/tests/unit/markdown.test.ts`        |
 | A picked file previews locally by MIME **or** file name                        | `web/tests/unit/markdown.test.ts`        |
 | The editor uploads any file, not only images and videos                        | `web/tests/unit/editorUpload.test.ts`    |
 | The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer | `web/tests/unit/designTokens.test.ts`    |
