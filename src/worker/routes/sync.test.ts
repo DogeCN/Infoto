@@ -580,9 +580,15 @@ test('the image host is decoupled: no /upload route, facade URL served by /sync'
   });
   assert.equal(withCookie.status, 404);
 
-  // Unset MEDIA_HOST_URL falls back to the local simulation so dev uploads stay local.
+  // /sync names the configured facade and nothing else: an unset MEDIA_HOST_URL is a
+  // misconfiguration, reported as an empty string rather than guessed at.
   const local = await postOps(app, cookie, []);
-  assert.equal(((await local.json()) as SyncResponse).mediaHostUrl, 'http://127.0.0.1:8788');
+  assert.equal(((await local.json()) as SyncResponse).mediaHostUrl, '');
+
+  const { app: dev } = makeApp({ mediaHostUrl: 'http://127.0.0.1:8788' });
+  const devCookie = cookieFrom(await syncNew(dev));
+  const devRes = await postOps(dev, devCookie, []);
+  assert.equal(((await devRes.json()) as SyncResponse).mediaHostUrl, 'http://127.0.0.1:8788');
 
   const { app: deployed } = makeApp({ mediaHostUrl: 'https://facade.example' });
   const deployedCookie = cookieFrom(await syncNew(deployed));
@@ -600,8 +606,9 @@ test('upload ops accept the local simulation URL the read proxy can then serve',
     payload: { sha256: sha, url, width: 1, height: 1, size: 1, type: 0, createdAt: UPLOADED_AT },
   });
 
-  // Unset MEDIA_HOST_URL: the loopback URL is accepted and stored.
-  const local = makeApp();
+  // MEDIA_HOST_URL pointing at the local simulation (what `.dev.vars` does): the loopback
+  // URL is accepted and stored.
+  const local = makeApp({ mediaHostUrl: 'http://127.0.0.1:8788' });
   const localCookie = cookieFrom(await syncNew(local.app));
   let snap = (await (
     await postOps(local.app, localCookie, [uploadOp('a'.repeat(64), localUrl)])
@@ -628,6 +635,14 @@ test('upload ops accept the local simulation URL the read proxy can then serve',
   const prodCookie = cookieFrom(await syncNew(prod.app));
   snap = (await (
     await postOps(prod.app, prodCookie, [uploadOp('b'.repeat(64), localUrl)])
+  ).json()) as SyncResponse;
+  assert.equal(snap.photos.length, 0);
+
+  // An unset facade is a misconfiguration, not local dev: no exception, nothing stored.
+  const unset = makeApp();
+  const unsetCookie = cookieFrom(await syncNew(unset.app));
+  snap = (await (
+    await postOps(unset.app, unsetCookie, [uploadOp('d'.repeat(64), localUrl)])
   ).json()) as SyncResponse;
   assert.equal(snap.photos.length, 0);
 

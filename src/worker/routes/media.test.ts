@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { makeApp } from '../../testing/app.ts';
-import { isStorableMediaUrl, LOCAL_MEDIA_HOST_URL } from './media.ts';
+import { isStorableMediaUrl } from './media.ts';
 
 test('validates media origins, redirect targets, and response isolation', async () => {
   // Media URLs reject local literals, credentials, and trailing-dot local hosts.
@@ -62,12 +62,12 @@ test('validates media origins, redirect targets, and response isolation', async 
       globalThis.fetch = original;
     }
   }
-  // The local simulated host is plain-HTTP loopback, which the SSRF guard rejects. That
-  // exception is granted only when no facade is configured, i.e. `npm run dev`; the
-  // deploy workflow exits without MEDIA_HOST_URL, so an unset value in production is a
-  // misconfiguration and must not silently widen the rule.
+  // The local simulated host is plain-HTTP loopback, which the SSRF guard rejects. The
+  // exception is unlocked by configuring the facade *as* the local simulation — what
+  // `.dev.vars` does for `npm run dev` — so changing the stand-in's port is a config
+  // edit, not a code edit.
   {
-    const { db, app: local } = makeApp();
+    const { db, app: local } = makeApp({ mediaHostUrl: 'http://127.0.0.1:8788' });
     db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
       VALUES ('t', 'http://127.0.0.1:8788/a.webp', 0, 1, 1, 1, 1, 0)`);
     const original = globalThis.fetch;
@@ -84,6 +84,25 @@ test('validates media origins, redirect targets, and response isolation', async 
     }
   }
 
+  // The port is config, so a different one works without a code change.
+  {
+    const { db, app: otherPort } = makeApp({ mediaHostUrl: 'http://127.0.0.1:9999' });
+    db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+      VALUES ('t', 'http://127.0.0.1:9999/a.webp', 0, 1, 1, 1, 1, 0)`);
+    const original = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = async (input) => {
+      requested.push(String(input));
+      return new Response('bytes', { headers: { 'Content-Type': 'image/webp' } });
+    };
+    try {
+      assert.equal((await otherPort.request('http://localhost/l/1')).status, 200);
+      assert.deepEqual(requested, ['http://127.0.0.1:9999/a.webp']);
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
   // With a real host configured the same loopback URL is refused again.
   {
     const { db, app: prod } = makeApp({ mediaHostUrl: 'https://tc.example' });
@@ -92,22 +111,31 @@ test('validates media origins, redirect targets, and response isolation', async 
     assert.equal((await prod.request('http://localhost/l/1')).status, 404);
   }
 
-  // Naming the local simulation explicitly is still a configured host, so the strict
-  // rule applies. Only the *absence* of configuration means local dev; pointing at the
-  // loopback address is a choice a deployment can make, and it gets no exemption.
+  // An absent facade is a misconfigured deployment, not a local dev: the strict rule
+  // applies. Only naming the loopback simulation unlocks the exception.
   {
-    const { db, app: explicitLoopback } = makeApp({ mediaHostUrl: LOCAL_MEDIA_HOST_URL });
+    const { db, app: unset } = makeApp();
     db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
       VALUES ('t', 'http://127.0.0.1:8788/a.webp', 0, 1, 1, 1, 1, 0)`);
-    assert.equal((await explicitLoopback.request('http://localhost/l/1')).status, 404);
+    assert.equal((await unset.request('http://localhost/l/1')).status, 404);
   }
 
-  // A loopback URL sharing the prefix but not the origin stays refused.
+  // A loopback URL sharing the prefix but not the origin stays refused, even with the
+  // local simulation configured.
   {
-    const { db, app: prefix } = makeApp();
+    const { db, app: prefix } = makeApp({ mediaHostUrl: 'http://127.0.0.1:8788' });
     db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
       VALUES ('t', 'http://127.0.0.1:8788.evil.example/a.webp', 0, 1, 1, 1, 1, 0)`);
     assert.equal((await prefix.request('http://localhost/l/1')).status, 404);
+  }
+
+  // A loopback URL on a different port than the configured simulation is a different
+  // origin, and stays refused.
+  {
+    const { db, app: otherPort } = makeApp({ mediaHostUrl: 'http://127.0.0.1:8788' });
+    db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+      VALUES ('t', 'http://127.0.0.1:9999/a.webp', 0, 1, 1, 1, 1, 0)`);
+    assert.equal((await otherPort.request('http://localhost/l/1')).status, 404);
   }
 });
 

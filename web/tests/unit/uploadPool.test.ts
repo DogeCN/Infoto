@@ -72,6 +72,9 @@ test('upload pool: the upload leg runs at its own ceiling, not the transcode poo
   const port = fakePort();
   assert.equal(typeof onconnect, 'function');
   onconnect!({ ports: [port] } as unknown as MessageEvent);
+  // The facade address arrives before any job; without it a job fails rather than guessing
+  // a host (see `runUpload`'s media_host_unset guard).
+  port.onmessage!({ data: { t: 'mediaHost', url: 'https://facade.test' } });
 
   // Editor uploads take no transcode leg, so they isolate the upload gate from the image pool.
   const addEditor = (jobId: string): void => {

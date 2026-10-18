@@ -89,6 +89,9 @@ test('album upload resume: a failed attempt drops its pending record so a later 
   const port = fakePort();
   assert.equal(typeof onconnect, 'function');
   onconnect!({ ports: [port] } as unknown as MessageEvent);
+  // The facade address arrives before any job; without it a job fails rather than guessing
+  // a host (see `runUpload`'s media_host_unset guard).
+  port.onmessage!({ data: { t: 'mediaHost', url: 'https://facade.test' } });
   port.onmessage!({
     data: {
       t: 'addJob',
