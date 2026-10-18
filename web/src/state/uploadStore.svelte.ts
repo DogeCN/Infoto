@@ -8,6 +8,7 @@ import { getLocale } from '$lib/i18n.svelte';
 import { translateTaskError } from '$base/upload/pipeline';
 import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from '../transcode/pipeline';
 import { readArtifact } from '../transcode/opfs';
+import { pendingPhoto, samePendingPhoto } from '../core/pending';
 import type { SyncEngine } from '../core/engine';
 import type { createAppStore } from './appStore.svelte';
 import { setMediaHostSink, setPendingUploadCancelSink } from './appStore.svelte';
@@ -223,38 +224,23 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       const marks = store.pendingMarksFor(sha);
       const url = t.url ?? previewUrls.get(t.jobId) ?? '';
       const createdAt = tempCreatedAt.get(t.jobId) ?? Date.now();
+      const fields = {
+        id,
+        sha256: sha,
+        url,
+        uploader: store.selfId,
+        width: meta.width,
+        height: meta.height,
+        size: meta.size,
+        type: meta.type,
+        createdAt,
+        marks,
+      };
       const cached = photoCache.get(t.jobId);
-      if (
-        cached &&
-        cached.id === id &&
-        cached.sha256 === sha &&
-        cached.url === url &&
-        cached.uploader === store.selfId &&
-        cached.width === meta.width &&
-        cached.height === meta.height &&
-        cached.size === meta.size &&
-        cached.type === meta.type &&
-        cached.createdAt === createdAt &&
-        cached.likes === marks.likes &&
-        cached.dislikes === marks.dislikes &&
-        cached.reports === marks.reports
-      ) {
+      if (cached && samePendingPhoto(cached, fields)) {
         out.push(cached);
       } else {
-        const photo: Photo = {
-          id,
-          sha256: sha,
-          url,
-          uploader: store.selfId,
-          width: meta.width,
-          height: meta.height,
-          size: meta.size,
-          createdAt,
-          type: meta.type,
-          likes: marks.likes,
-          dislikes: marks.dislikes,
-          reports: marks.reports,
-        };
+        const photo = pendingPhoto(fields);
         photoCache.set(t.jobId, photo);
         out.push(photo);
       }
