@@ -19,7 +19,7 @@ export type MotionPhase = 'enter' | 'exit' | 'spring' | 'reflow';
 type MotionProperty = `--duration-${MotionPhase}` | `--ease-${MotionPhase}`;
 
 /**
- * Fallbacks mirror the `@theme` block in `app.css` and the table in `.ai/CONTRACT.md`;
+ * Fallbacks mirror the `@theme` block in `app.css` and the table in `.agents/CONTRACT.md`;
  * all three are asserted equal by `designTokens.test.ts`. Divergence here is not a
  * cosmetic problem: the fallback is what unit tests and any DOM-less render animate at,
  * so a silent split means the tested timings are not the shipped ones.

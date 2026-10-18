@@ -1,5 +1,5 @@
 // Guards the one place a design decision is written twice: the token table in
-// `.ai/CONTRACT.md` and the `@theme` block it is supposed to describe. A literal copy
+// `.agents/CONTRACT.md` and the `@theme` block it is supposed to describe. A literal copy
 // does not follow the token it came from, and a spec nobody diffs against is a spec that
 // silently stops being true — which is how this project's predecessor went stale.
 
@@ -13,7 +13,7 @@ import { FALLBACK_EASE, FALLBACK_MS, type MotionPhase } from '../../src/base/lib
 const read = (...parts: string[]): string =>
   readFileSync(path.join(import.meta.dirname, ...parts), 'utf8');
 
-const contract = read('..', '..', '..', '.ai', 'CONTRACT.md');
+const contract = read('..', '..', '..', '.agents', 'CONTRACT.md');
 const webSrc = path.join(import.meta.dirname, '..', '..', 'src');
 const appCss = read('..', '..', 'src', 'app.css');
 

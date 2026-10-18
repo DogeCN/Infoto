@@ -1,12 +1,12 @@
 # Infoto Design & Component Contract
 
 The single source of truth for how this site is supposed to look and behave. It replaces
-`.ai/00-contracts.md`, deleted 2026-09-25 while already out of date (see §4.1).
+`.agents/00-contracts.md`, deleted 2026-09-25 while already out of date (see §4.1).
 
 **Scope rule — this file holds only what no test can enforce.** An invariant with a real
 assertion behind it lives in code and is listed in §5. Engineering rules, red lines and
-layer boundaries stay in `AGENTS.md`. Decision history stays in `.ai/adr/` (read-only
-history). Pitfalls stay in `.ai/memory/`.
+layer boundaries stay in `AGENTS.md`. Decision history stays in `.agents/adr/` (read-only
+history). Pitfalls stay in `.agents/memory/`.
 
 ## How to use this file
 

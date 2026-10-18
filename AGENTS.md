@@ -1,6 +1,6 @@
 # AGENTS.md — Infoto Project Conventions
 
-> This file is the **single entry point** for all AI agents (Claude Code, Cursor, Copilot, Trae, CodeBuddy, OpenCode, etc.). It defines the project's hard rules, architecture, and agent workflow. Memory/knowledge lives in `.ai/` (`memory/` + `adr/`).
+> This file is the **single entry point** for all AI agents (Claude Code, Cursor, Copilot, Trae, CodeBuddy, OpenCode, etc.). It defines the project's hard rules, architecture, and agent workflow. Memory/knowledge lives in `.agents/` (`memory/` + `adr/`).
 
 ---
 
@@ -12,16 +12,16 @@ Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Sv
 
 ## 2. Hard Red Lines (violating these = rework)
 
-> Full details in `.ai/memory/MEMORY.md` — this section is the quick-reference summary.
+> Full details in `.agents/memory/MEMORY.md` — this section is the quick-reference summary.
 
 1. **No compatibility fallbacks** — reset the table, never add `DEFAULT`/legacy tiebreaks.
 2. **No invented percentages** — indeterminate (shimmer) when no real measurement exists.
 3. **`schema.sql` / `schema-ddl.ts` byte-identical** — regenerate via `npm run gen-schema`, never hand-edit.
 4. **Run `npm run lint` + `npm run ts-check` + `npm test` before finishing every task** (full green required).
 5. **Layer dependency direction is strict** — `routes → components → state/core → base`; `base/` never imports business-layer code.
-6. **Routine work does not touch `.ai/`** — memory is written only per §10 conditions.
+6. **Routine work does not touch `.agents/`** — memory is written only per §10 conditions.
 7. **The image host is never compiled into this Worker** — it lives behind an external media-host facade deployed separately (removed from this repo's history in v0.1.2; contract in README §Media host facade, ADR 0009) and is reached only through `MEDIA_HOST_URL`. No `/upload` route, no `TC_SECRET` here, and never a hardcoded upstream hostname in `src/`.
-8. **No unrecorded visual or behavioural change** — a change to tokens, layout, motion or component behaviour lands in `.ai/CONTRACT.md` in the same commit as the code, and a change nobody asked for does not land at all (a "locator hint", a debug tint, a temporary probe workflow). A spec goes stale the moment the code it describes moves, not when the code is finished; deleting a spec because it is "basically implemented" is how this project's last one rotted.
+8. **No unrecorded visual or behavioural change** — a change to tokens, layout, motion or component behaviour lands in `.agents/CONTRACT.md` in the same commit as the code, and a change nobody asked for does not land at all (a "locator hint", a debug tint, a temporary probe workflow). A spec goes stale the moment the code it describes moves, not when the code is finished; deleting a spec because it is "basically implemented" is how this project's last one rotted.
 
 ---
 
@@ -100,7 +100,7 @@ Uploads go to a **standalone image-host facade** deployed separately (the refere
 3. **Vitest pinned to 2.1.x**: Root and web unified; 5.x has known SSR/node:sqlite compatibility issues.
 4. **`node:sqlite` must be loaded through `createRequire`**: Vite's SSR transform strips the `node:` prefix from a static import, breaking the module under vitest. See `src/testing/localDb.ts` and `scripts/lib/apply-local-schema.mjs` — never `import { DatabaseSync } from 'node:sqlite'` directly.
 5. **e2e not in CI**: Needs browser + local stack; run locally and manually. CI only runs lint/type/unit tests.
-6. **All comments in English**: Describe functionality only; no historical/narrative comments. (Memory files under `.ai/memory/` are exempt — they are agent-facing knowledge, not code comments.)
+6. **All comments in English**: Describe functionality only; no historical/narrative comments. (Memory files under `.agents/memory/` are exempt — they are agent-facing knowledge, not code comments.)
 7. **No shadcn / bits-ui**: Component layer (`web/src/lib/components/`) is zero-shadcn / zero-bits-ui by design.
 8. **No second upload overlay**: The only overlay is `UploadPanel.svelte`; do not create additional ones.
 9. **Time display**: Always use `lib/components/TimeLabel.svelte` as the single entry point. Any other label that swaps to a second reading on hover uses `lib/components/SwapLabel.svelte` — the piece TimeLabel is built on.
@@ -127,10 +127,10 @@ Uploads go to a **standalone image-host facade** deployed separately (the refere
 
 ### Knowledge Directory
 
-All agent knowledge lives under `.ai/` and is **tracked in git** — it is project knowledge, not scratch. `memory/` and `adr/` are **siblings**: the split is by mutability, not by hierarchy, and neither contains the other.
+All agent knowledge lives under `.agents/` and is **tracked in git** — it is project knowledge, not scratch. `memory/` and `adr/` are **siblings**: the split is by mutability, not by hierarchy, and neither contains the other.
 
 ```
-.ai/
+.agents/
   CONTRACT.md        ← Single source of truth for design & component behaviour
   memory/            ← Evolving knowledge (overwritten as conventions change)
     MEMORY.md          Long-term: still-active conventions, pitfalls, decisions
@@ -143,18 +143,18 @@ All agent knowledge lives under `.ai/` and is **tracked in git** — it is proje
 **`CONTRACT.md` holds only what no test can enforce** — the token table, the flat visual
 discipline, per-component behaviour, and the ⚠️ register of mistakes that were made and
 corrected. Anything with a real assertion behind it lives in code and is listed in its §5.
-It replaces `.ai/00-contracts.md`, which was deleted on 2026-09-25 while already out of date
+It replaces `.agents/00-contracts.md`, which was deleted on 2026-09-25 while already out of date
 with the palette it described; §4.1 of the contract records that failure. **It is a living
 document, not a phase artefact** — a spec is stale the moment the code it describes moves,
 not when the code is finished. Its token table is asserted equal to `web/src/app.css` by
 `web/tests/unit/designTokens.test.ts`, so editing one side alone fails `npm test` — as does a
 `transition` in `web/src` that carries a literal duration or easing curve instead of a token.
 
-Tool-private directories (`.codebuddy/`, `.trae/`, `.workbuddy/`) are gitignored and are **not** knowledge — never _store_ agent knowledge in them. Tools write their own logs and documents there regardless, so anything that appears must be **merged into `.ai/` in the same session** or it stays invisible to every other agent and dies with the machine. Merging is not copying over: the same date may already hold different content written by another session, so compare headings and append. Leave the source directories in place — they are each tool's live state, not scratch.
+Tool-private directories (`.codebuddy/`, `.trae/`, `.workbuddy/`) are gitignored and are **not** knowledge — never _store_ agent knowledge in them. Tools write their own logs and documents there regardless, so anything that appears must be **merged into `.agents/` in the same session** or it stays invisible to every other agent and dies with the machine. Merging is not copying over: the same date may already hold different content written by another session, so compare headings and append. Leave the source directories in place — they are each tool's live state, not scratch.
 
 ### Memory Update Rules
 
-Applies to `.ai/memory/`; the ADR format below is covered by its own section.
+Applies to `.agents/memory/`; the ADR format below is covered by its own section.
 
 - **Record only what is still effective** (conventions, pitfalls, decisions with lasting impact).
 - **Do not record**: transient task progress, debugging steps, anything already in code/comments.
@@ -163,7 +163,7 @@ Applies to `.ai/memory/`; the ADR format below is covered by its own section.
 
 ### ADR (Architecture Decision Record) Format
 
-When a significant architectural decision is made, create `.ai/adr/NNNN-title.md`:
+When a significant architectural decision is made, create `.agents/adr/NNNN-title.md`:
 
 ```markdown
 # NNNN: [Decision Title]
@@ -185,8 +185,8 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 ## 11. Agent Workflow
 
 1. **Read this file first** — it is the project's constitution.
-2. **Check `.ai/memory/MEMORY.md`** for active conventions and pitfalls before starting work.
-3. **Check `.ai/CONTRACT.md` before any UI change.** It is the single source of truth for how
+2. **Check `.agents/memory/MEMORY.md`** for active conventions and pitfalls before starting work.
+3. **Check `.agents/CONTRACT.md` before any UI change.** It is the single source of truth for how
    the site is supposed to look and behave. A visual decision absent from it is not
    authorized — add it there first, in the same commit as the code. Read its §4 (the ⚠️
    register) before "simplifying" anything that looks over-built; most of it is there
@@ -203,7 +203,7 @@ When a significant architectural decision is made, create `.ai/adr/NNNN-title.md
 
 | File                                            | Purpose                                                                                                |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `.ai/CONTRACT.md`                               | Design & component behaviour contract — the single source of truth for appearance                      |
+| `.agents/CONTRACT.md`                           | Design & component behaviour contract — the single source of truth for appearance                      |
 | `schema.sql`                                    | D1 DDL — source of truth; regenerate `schema-ddl.ts` from it (red line 3)                              |
 | `src/shared/copy.ts`                            | i18n copy tables (en-US / zh-CN), BCP-47 exact-match keys                                              |
 | `src/shared/json.ts`                            | `isRecord` / `safeJsonParse` — the one shape guard and lenient parser for both runtimes                |

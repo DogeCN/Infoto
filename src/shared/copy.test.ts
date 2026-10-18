@@ -36,7 +36,7 @@ const SOURCE_EXTENSIONS = new Set([
   '.yml',
 ]);
 const IGNORED_DIRECTORIES = new Set([
-  '.ai',
+  '.agents',
   '.arena',
   '.cache',
   '.git',

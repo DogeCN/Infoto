@@ -93,7 +93,7 @@ VideoEncoder ──chunk──► WritableStream<StreamTargetChunk> ──┬─
 ## 文档
 
 - 新增 ADR（`0014`）：产物 IO 的 owner 从 SharedWorker 扩展到页面侧的 video worker；视频结果消息不再携带 Blob；`hashing` 相位在视频路径上消失。说明这是用"编码期间存在半成品"换取"内存恒定 + 相位单调"的权衡，以及为什么不用 `AppendOnlyStreamTarget`。
-- `.ai/memory/MEMORY.md` 的转码小节补上"产物写入必须在终止 worker 前干净 abort"这条坑。
+- `.agents/memory/MEMORY.md` 的转码小节补上"产物写入必须在终止 worker 前干净 abort"这条坑。
 
 ## 不做什么
 

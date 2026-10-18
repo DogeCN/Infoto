@@ -17,7 +17,7 @@
 3. **`schema.sql` / `schema-ddl.ts` byte-identical**: `npm run gen-schema` regenerates the latter; enforced by `src/worker/schema-alignment.test.ts`. **Edit `schema.sql` and regenerate, never hand-edit the generated file.** (Promoted to a red line 2026-09-27 — it was only a parenthetical in the key-files table, which is too weak for an invariant with a test behind it.)
 4. **Run `npm run lint` + `npm run ts-check` + `npm test` before finishing every task** (full green required).
 5. **Layer dependency direction is strict**: `routes → components → state/core → base`; `base/` must never import business-layer code.
-6. **Routine work does not touch `.ai/memory/`**: written only on a stated rule, a finalised decision, or a discovered pitfall.
+6. **Routine work does not touch `.agents/memory/`**: written only on a stated rule, a finalised decision, or a discovered pitfall.
 
 ---
 
@@ -352,8 +352,8 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 
 - **Sole documentation is `AGENTS.md`** (architecture layers + red lines); everything else is code/comments.
 - **A comment states what the code does and the constraint it must respect — never what changed or was asked for.** Restated as a hard rule 2026-10-12. Past tense aimed at the code ("this used to…", "the old constant…", "before this was…") and requirement narration ("per the user's decision", "fixes the bug where…") both belong in this file, not in the source: a comment has to survive the next edit unchanged, and one describing a past state goes stale the moment the state changes. What earns a comment is the constraint a reader cannot infer — why the clamp must run after the write, why the value is measured rather than guessed, why two surfaces share an owner. State it in the present tense as a rule ("the ceiling is frozen for the gesture, because a live ceiling pulls the sheet down mid-drag") and it stays true after the code moves.
-- **`.ai/` is the only tracked home for agent-facing knowledge.** `memory/` (daily logs + `MEMORY.md`), `adr/` (permanent decisions), `CONTRACT.md` (observable behaviour), `documents/` (design records too large or too working-state for an ADR).
-- ⚠️ **`.workbuddy/` and `.trae/` are gitignored**, so anything left there is invisible to every other agent and dies with the machine. Both tools keep writing their own logs and documents there; **the content has to be merged into `.ai/` in the same session** or it is lost. This already cost one round: three WorkBuddy daily logs and one Trae transcode design record sat untracked until 2026-10-04.
+- **`.agents/` is the only tracked home for agent-facing knowledge.** `memory/` (daily logs + `MEMORY.md`), `adr/` (permanent decisions), `CONTRACT.md` (observable behaviour), `documents/` (design records too large or too working-state for an ADR).
+- ⚠️ **`.workbuddy/` and `.trae/` are gitignored**, so anything left there is invisible to every other agent and dies with the machine. Both tools keep writing their own logs and documents there; **the content has to be merged into `.agents/` in the same session** or it is lost. This already cost one round: three WorkBuddy daily logs and one Trae transcode design record sat untracked until 2026-10-04.
   - Merging is **not** copying over — the same date can hold genuinely different content written by a different session (it did, across 10-02/10-03/10-04). Compare headings first, then append.
   - Do **not** delete the source directories: they are each tool's live state, not scratch.
 - `schema.sql` / `schema-ddl.ts` must be byte-identical (enforced by `schema-alignment` test). **Now red line 3** — it was only a parenthetical in the key-files table, which is too weak for an invariant with a test behind it.
