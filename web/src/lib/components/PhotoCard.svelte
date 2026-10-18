@@ -4,7 +4,7 @@
   import { copy } from '$lib/i18n.svelte';
   import { fmt, plural } from '$shared/copy';
   import { reflowFlipWindowMs } from '$base/lib/motion';
-  import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
   import type { GeomStamp } from '$base/lib/layout';
   import {
     ThumbsUp,
@@ -288,35 +288,26 @@
              its dismiss control would cover the checkbox and swallow the tap. Retry stays —
              it is in the middle of the card, nowhere near the corner. -->
         {#if !multiMode}
-          <Tooltip text={copy.photoCard.dismiss} side="bottom">
-            <button
-              type="button"
-              class="icon-button icon-button--danger absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
-              aria-label={copy.photoCard.dismiss}
-              onclick={(e) => {
-                e.stopPropagation();
-                onDismissUpload?.();
-              }}
-            >
-              <X class="size-4" />
-            </button>
-          </Tooltip>
+          <TooltipIconButton
+            text={copy.photoCard.dismiss}
+            side="bottom"
+            danger
+            class="absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
+            onclick={() => onDismissUpload?.()}
+          >
+            <X class="size-4" />
+          </TooltipIconButton>
         {/if}
         <!-- Retry is the primary action on a failed card: a 56px target with a 28px
              glyph, so it is comfortable on touch and clearly the way out. -->
-        <Tooltip text={copy.photoCard.retry} side="bottom">
-          <button
-            type="button"
-            class="icon-button size-14 rounded-full text-primary/70 hover:bg-primary/10 hover:text-primary"
-            aria-label={copy.photoCard.retry}
-            onclick={(e) => {
-              e.stopPropagation();
-              onRetryUpload?.();
-            }}
-          >
-            <RotateCcw class="size-7" />
-          </button>
-        </Tooltip>
+        <TooltipIconButton
+          text={copy.photoCard.retry}
+          side="bottom"
+          class="size-14 rounded-full text-primary/70 hover:bg-primary/10 hover:text-primary"
+          onclick={() => onRetryUpload?.()}
+        >
+          <RotateCcw class="size-7" />
+        </TooltipIconButton>
       </div>
     {:else}
       <!-- Reveal media with upload progress while keeping a cancellation veil until server completion. -->
@@ -327,19 +318,15 @@
       <!-- Multi-select owns the top-right corner: its checkbox lives there, so the cancel
            control would sit on top of it and swallow the tap. It returns with the mode. -->
       {#if !multiMode}
-        <Tooltip text={copy.photoCard.dismiss} side="bottom">
-          <button
-            type="button"
-            class="absolute top-2 right-2 z-30 flex size-8 items-center justify-center rounded-full text-destructive/70 transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:text-destructive"
-            aria-label={copy.photoCard.dismiss}
-            onclick={(e) => {
-              e.stopPropagation();
-              onDismissUpload?.();
-            }}
-          >
-            <X class="size-4" />
-          </button>
-        </Tooltip>
+        <TooltipIconButton
+          text={copy.photoCard.dismiss}
+          side="bottom"
+          danger
+          class="absolute top-2 right-2 z-30 size-8 rounded-full hover:text-destructive"
+          onclick={() => onDismissUpload?.()}
+        >
+          <X class="size-4" />
+        </TooltipIconButton>
       {/if}
     {/if}
   {/if}
