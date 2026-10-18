@@ -6,7 +6,7 @@
   import type { Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { humanSize } from '$base/lib/format';
-  import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
 
   interface Props {
     selected: Set<number>;
@@ -48,9 +48,6 @@
         (p.likes.includes(selfId) || p.dislikes.includes(selfId) || p.reports.includes(selfId)),
     ),
   );
-
-  const btn =
-    'inline-flex items-center justify-center rounded-full transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-white/10';
 </script>
 
 <div
@@ -61,23 +58,19 @@
 >
   <!-- Select all / clear selection + selected count -->
   <div class="flex items-center gap-1.5">
-    <Tooltip
+    <TooltipIconButton
       text={allSelected ? copy.multiSelect.deselectAll : copy.multiSelect.selectAll}
       side="top"
+      active={allSelected}
+      class="size-10 {allSelected ? 'text-primary' : 'text-muted-foreground'}"
+      onclick={allSelected ? onDeselectAll : onSelectAll}
     >
-      <button
-        type="button"
-        class="{btn} size-10 {allSelected ? 'text-primary' : 'text-muted-foreground'}"
-        onclick={allSelected ? onDeselectAll : onSelectAll}
-        aria-label={allSelected ? copy.multiSelect.deselectAll : copy.multiSelect.selectAll}
-      >
-        {#if allSelected}
-          <CheckSquare class="size-5" />
-        {:else}
-          <Square class="size-5" />
-        {/if}
-      </button>
-    </Tooltip>
+      {#if allSelected}
+        <CheckSquare class="size-5" />
+      {:else}
+        <Square class="size-5" />
+      {/if}
+    </TooltipIconButton>
     {#if count > 0}
       <span class="min-w-5 text-center text-sm font-medium tabular-nums text-foreground">
         {count}
@@ -87,46 +80,41 @@
 
   <!-- Download (with total size) / unmark / delete (root user) -->
   <div class="flex items-center gap-1">
-    <Tooltip text={copy.multiSelect.download} side="top">
-      <button
-        type="button"
-        class="{btn} h-10 text-success hover:bg-success/10 {count > 0 ? 'gap-1 px-2.5' : 'size-10'}"
-        onclick={onDownload}
-        disabled={count === 0}
-        aria-label={copy.multiSelect.download}
-      >
-        <Download class="size-5" />
-        {#if count > 0}
-          <span class="text-xs tabular-nums text-muted-foreground">{humanSize(totalSize)}</span>
-        {/if}
-      </button>
-    </Tooltip>
-
     <!-- Download and delete require a selection; unmark requires an existing user mark. -->
-    <Tooltip text={copy.multiSelect.unmark} side="top">
-      <button
-        type="button"
-        class="{btn} size-10 text-warning hover:bg-warning/10"
-        onclick={onUnmark}
-        disabled={!hasAnyMark}
-        aria-label={copy.multiSelect.unmark}
-      >
-        <Undo2 class="size-5" />
-      </button>
-    </Tooltip>
+    <TooltipIconButton
+      text={copy.multiSelect.download}
+      side="top"
+      disabled={count === 0}
+      class="h-10 text-success {count > 0 ? 'gap-1 px-2.5' : 'size-10'}"
+      onclick={onDownload}
+    >
+      <Download class="size-5" />
+      {#if count > 0}
+        <span class="text-xs tabular-nums text-muted-foreground">{humanSize(totalSize)}</span>
+      {/if}
+    </TooltipIconButton>
+
+    <TooltipIconButton
+      text={copy.multiSelect.unmark}
+      side="top"
+      disabled={!hasAnyMark}
+      class="size-10 text-warning"
+      onclick={onUnmark}
+    >
+      <Undo2 class="size-5" />
+    </TooltipIconButton>
 
     {#if selfId === 0}
-      <Tooltip text={copy.multiSelect.delete} side="top">
-        <button
-          type="button"
-          class="{btn} size-10 text-destructive hover:bg-destructive/10"
-          onclick={onDelete}
-          disabled={count === 0}
-          aria-label={copy.multiSelect.delete}
-        >
-          <Trash2 class="size-5" />
-        </button>
-      </Tooltip>
+      <TooltipIconButton
+        text={copy.multiSelect.delete}
+        side="top"
+        danger
+        disabled={count === 0}
+        class="size-10 text-destructive"
+        onclick={onDelete}
+      >
+        <Trash2 class="size-5" />
+      </TooltipIconButton>
     {/if}
   </div>
 </div>
