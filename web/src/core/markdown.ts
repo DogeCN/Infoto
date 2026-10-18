@@ -185,6 +185,12 @@ const IMAGE_EXTENSIONS = new Set([
   'jxl',
 ]);
 
+/** Lowercase extension of a path or file name, or '' when it has none. */
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
+}
+
 /** Lowercase path extension of a media URL, or '' when it has none. Query and hash never
  *  carry the extension, and the base makes relative/protocol-relative URLs resolvable. */
 function mediaExtension(url: string | null | undefined): string {
@@ -195,8 +201,7 @@ function mediaExtension(url: string | null | undefined): string {
   } catch {
     return '';
   }
-  const dot = path.lastIndexOf('.');
-  return dot < 0 ? '' : path.slice(dot + 1).toLowerCase();
+  return fileExtension(path);
 }
 
 /**
@@ -223,9 +228,7 @@ export function isEmbeddableArtifact(url: string | null | undefined): boolean {
  *  that way, and refusing to preview them would be worse than the MIME being wrong. */
 export function isImageFile(file: { type?: string; name?: string }): boolean {
   if ((file.type || '').toLowerCase().startsWith('image/')) return true;
-  const name = file.name || '';
-  const dot = name.lastIndexOf('.');
-  return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+  return IMAGE_EXTENSIONS.has(fileExtension(file.name || ''));
 }
 
 const HTML_ENTITIES: Record<string, string> = {
