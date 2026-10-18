@@ -162,8 +162,14 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
       const height = count(p.height);
       const size = count(p.size);
       const type = mediaType(p.type);
+      // The client reports when the facade returned the URL. It is the only source of a
+      // per-photo timestamp: `serverTime` is read once for the whole request, so a batch of
+      // uploads would otherwise share one millisecond and "latest" could not order them.
+      // Bounded by the server clock so a skewed or forged value cannot pin a photo into the
+      // future; `uploader` stays server-authoritative.
+      const createdAt = count(p.createdAt);
       if (!sha256 || !url || width === null || height === null || size === null) return;
-      if (type === null) return;
+      if (type === null || createdAt === null || createdAt === 0) return;
       // Keep upload URL validation consistent with the read proxy.
       if (!isAllowedMediaUrl(env, url)) return;
       if (await env.db.prepare('SELECT id FROM photos WHERE sha256 = ?').bind(sha256).first())
@@ -173,7 +179,7 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
           `INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .bind(sha256, url, user.id, width, height, size, serverTime, type)
+        .bind(sha256, url, user.id, width, height, size, Math.min(createdAt, serverTime), type)
         .run();
       return;
     }

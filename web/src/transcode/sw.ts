@@ -63,6 +63,8 @@ interface JobRec {
   sha256?: string;
   meta?: JobMeta;
   url?: string;
+  /** When the facade returned `url` (ms epoch) — the upload's real completion time. */
+  createdAt?: number;
   error?: string;
   /** The upload op has been written to the op-log by some page. */
   opWritten: boolean;
@@ -151,6 +153,7 @@ function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
     fileName: rec.fileName,
     phase: rec.phase,
     url: rec.url,
+    createdAt: rec.createdAt,
     error: rec.error,
     meta: rec.meta,
     sha256: rec.sha256,
@@ -407,6 +410,10 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   if (!r || rec.cancelled) return;
   if (r.ok) {
     rec.url = r.url;
+    // The photo's own timestamp: the instant the host accepted it. `serverTime` is read
+    // once per /sync request, so a batch of uploads would otherwise share one millisecond
+    // and "latest" could not order them.
+    rec.createdAt = Date.now();
     // Prewarm the host URL before the page learns it. The optimistic card swaps its
     // src from the OPFS object URL to this URL the moment the notification lands,
     // and an un-warmed src renders as a skeleton until the fetch finishes. Fetched

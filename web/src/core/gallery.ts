@@ -27,9 +27,14 @@ export function sortPhotos(
   const ascending = directions[key] ?? false;
 
   if (key === 'latest') {
-    return result.sort((a, b) =>
-      ascending ? a.createdAt - b.createdAt : b.createdAt - a.createdAt,
-    );
+    // Equal timestamps are still possible (two uploads in one millisecond, or a server-side
+    // clamp), and a stable sort alone would leave "latest" dependent on snapshot order. Id is
+    // insertion order, so it is the honest tiebreak: a later row is the later upload.
+    return result.sort((a, b) => {
+      const byTime = ascending ? a.createdAt - b.createdAt : b.createdAt - a.createdAt;
+      if (byTime !== 0) return byTime;
+      return ascending ? a.id - b.id : b.id - a.id;
+    });
   }
 
   if (key === 'hottest') {

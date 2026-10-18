@@ -135,6 +135,7 @@ test('classifies uploads, translates errors, and builds independent operations',
       height: 20,
       size: 123,
       type: 0 as const,
+      createdAt: 1_700_000_000_000,
     };
     const op = buildUploadOp(payload);
     assert.equal(op.type, 'upload');

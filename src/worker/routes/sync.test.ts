@@ -5,6 +5,9 @@ import { cookieFrom, makeApp, postOps, stubSiteverify, sync, syncNew } from '../
 
 const setSiteverify = stubSiteverify();
 
+/** When the facade returned the URL. Every upload op must carry one. */
+const UPLOADED_AT = 1_700_000_000_000;
+
 test('no token → 401 turnstile_required; secret-less deployments fail closed (no allow branch)', async () => {
   const { app } = makeApp();
   const res = await sync(app, { ops: [] });
@@ -75,10 +78,13 @@ test('bad turnstile token → turnstile_failed', async () => {
   }
 });
 
-test('upload, sha collision silent, missing fields silent, created_at/uploader ignored', async () => {
+test('upload keeps the client createdAt, ignores uploader, and stays silent on collisions', async () => {
   const { app } = makeApp();
   const first = await syncNew(app);
   const cookie = cookieFrom(first);
+  // When the facade returned the URL. It is the only per-photo timestamp available: the
+  // server reads its clock once per request, so a batch would otherwise share one value.
+  const uploadedAt = Date.now() - 60_000;
   const payload = {
     sha256: 'abc',
     url: 'https://host/x.webp',
@@ -86,7 +92,7 @@ test('upload, sha collision silent, missing fields silent, created_at/uploader i
     height: 20,
     size: 123,
     type: 0,
-    created_at: 1,
+    createdAt: uploadedAt,
     uploader: 99,
   };
   const res = await sync(
@@ -103,10 +109,57 @@ test('upload, sha collision silent, missing fields silent, created_at/uploader i
   const json = (await res.json()) as SyncResponse;
   assert.equal(json.photos.length, 1);
   assert.equal(json.photos[0]!.sha256, 'abc');
+  // uploader remains server-authoritative
   assert.equal(json.photos[0]!.uploader, 0);
-  assert.notEqual(json.photos[0]!.createdAt, 1);
-  assert.equal(typeof json.photos[0]!.createdAt, 'number');
+  // createdAt is the upload's own moment, not the sync's
+  assert.equal(json.photos[0]!.createdAt, uploadedAt);
   assert.equal(json.photos[0]!.id, 1);
+});
+
+test('upload clamps a future createdAt to the server clock and drops one that is absent', async () => {
+  const { app } = makeApp();
+  const cookie = cookieFrom(await syncNew(app));
+  const before = Date.now();
+  const res = await sync(
+    app,
+    {
+      ops: [
+        {
+          type: 'upload',
+          payload: {
+            sha256: 'future',
+            url: 'https://host/f.webp',
+            width: 1,
+            height: 1,
+            size: 1,
+            type: 0,
+            createdAt: Date.now() + 86_400_000,
+          },
+        },
+        {
+          // No createdAt: an upload with no time of its own is dropped, like any other
+          // payload missing a required field.
+          type: 'upload',
+          payload: {
+            sha256: 'undated',
+            url: 'https://host/u.webp',
+            width: 1,
+            height: 1,
+            size: 1,
+            type: 0,
+          },
+        },
+      ],
+    },
+    cookie,
+  );
+  const json = (await res.json()) as SyncResponse;
+  assert.deepEqual(
+    json.photos.map((p) => p.sha256),
+    ['future'],
+  );
+  assert.ok(json.photos[0]!.createdAt >= before);
+  assert.ok(json.photos[0]!.createdAt <= Date.now());
 });
 
 test('unknown op is discarded; a hash-addressed like from the same batch applies', async () => {
@@ -118,7 +171,15 @@ test('unknown op is discarded; a hash-addressed like from the same batch applies
       ops: [
         {
           type: 'upload',
-          payload: { sha256: 'h', url: 'https://h', width: 1, height: 1, size: 1, type: 0 },
+          payload: {
+            sha256: 'h',
+            url: 'https://h',
+            width: 1,
+            height: 1,
+            size: 1,
+            type: 0,
+            createdAt: UPLOADED_AT,
+          },
         },
         { type: 'unupload' as unknown as 'like', targetSha: 'h' },
         // Photo ops address the photo by its sha256 — the stable unique index. A numeric
@@ -142,7 +203,15 @@ test('photo ops are addressed by sha256; a wrong id target is inert', async () =
       ops: [
         {
           type: 'upload',
-          payload: { sha256: 'zz', url: 'https://z', width: 2, height: 2, size: 2, type: 0 },
+          payload: {
+            sha256: 'zz',
+            url: 'https://z',
+            width: 2,
+            height: 2,
+            size: 2,
+            type: 0,
+            createdAt: UPLOADED_AT,
+          },
         },
         // The numeric id is only the external /l/{id36} link index: a photo op must not
         // resolve through it, so this is inert even though the row's id happens to be 1.
@@ -169,7 +238,15 @@ test('a mark queued while the photo was still uploading applies once the row exi
       ops: [
         {
           type: 'upload',
-          payload: { sha256: 'q', url: 'https://q', width: 1, height: 1, size: 1, type: 0 },
+          payload: {
+            sha256: 'q',
+            url: 'https://q',
+            width: 1,
+            height: 1,
+            size: 1,
+            type: 0,
+            createdAt: UPLOADED_AT,
+          },
         },
         { type: 'report', targetSha: 'q' },
         { type: 'delete', targetSha: 'q' },
@@ -208,7 +285,15 @@ test('non-root announcement create → 403; like in same batch works; feedback h
       ops: [
         {
           type: 'upload',
-          payload: { sha256: 'p', url: 'https://p', width: 1, height: 1, size: 1, type: 0 },
+          payload: {
+            sha256: 'p',
+            url: 'https://p',
+            width: 1,
+            height: 1,
+            size: 1,
+            type: 0,
+            createdAt: UPLOADED_AT,
+          },
         },
       ],
     },
@@ -351,7 +436,15 @@ test('a repeated mark is idempotent in both directions', async () => {
     ops: [
       {
         type: 'upload',
-        payload: { sha256: 'm', url: 'https://m', width: 1, height: 1, size: 1, type: 0 },
+        payload: {
+          sha256: 'm',
+          url: 'https://m',
+          width: 1,
+          height: 1,
+          size: 1,
+          type: 0,
+          createdAt: UPLOADED_AT,
+        },
       },
     ],
   });
@@ -400,7 +493,15 @@ test('a stored media URL must be a public https address', async () => {
         ops: [
           {
             type: 'upload',
-            payload: { sha256: url, url, width: 1, height: 1, size: 1, type: 0 },
+            payload: {
+              sha256: url,
+              url,
+              width: 1,
+              height: 1,
+              size: 1,
+              type: 0,
+              createdAt: UPLOADED_AT,
+            },
           },
         ],
       },
@@ -422,6 +523,7 @@ test('a stored media URL must be a public https address', async () => {
             height: 1,
             size: 1,
             type: 0,
+            createdAt: UPLOADED_AT,
           },
         },
       ],
@@ -453,6 +555,7 @@ test('negative and fractional media metadata is rejected', async () => {
               height,
               size,
               type: 0,
+              createdAt: UPLOADED_AT,
             },
           },
         ],
@@ -494,7 +597,7 @@ test('upload ops accept the local simulation URL the read proxy can then serve',
   const uploadOp = (sha: string, url: string) => ({
     type: 'upload' as const,
     target: null,
-    payload: { sha256: sha, url, width: 1, height: 1, size: 1, type: 0 },
+    payload: { sha256: sha, url, width: 1, height: 1, size: 1, type: 0, createdAt: UPLOADED_AT },
   });
 
   // Unset MEDIA_HOST_URL: the loopback URL is accepted and stored.
@@ -566,7 +669,15 @@ test('the server owns the like/dislike exclusion, so one op states a switch', as
     ops: [
       {
         type: 'upload',
-        payload: { sha256: 's', url: 'https://s', width: 1, height: 1, size: 1, type: 0 },
+        payload: {
+          sha256: 's',
+          url: 'https://s',
+          width: 1,
+          height: 1,
+          size: 1,
+          type: 0,
+          createdAt: UPLOADED_AT,
+        },
       },
     ],
   });

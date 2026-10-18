@@ -50,6 +50,25 @@ test('gallery ordering: sorts chronologically and by net reactions without mutat
   );
 });
 
+test('gallery ordering: equal timestamps fall back to id, so a batch keeps upload order', () => {
+  // A batch of uploads can share a millisecond. "Latest" must still be deterministic and
+  // match insertion order rather than whatever order the snapshot happened to carry.
+  const batch = [photo(1, 500), photo(2, 500), photo(3, 500)];
+
+  assert.deepEqual(
+    sortPhotos(batch, 'latest').map((item) => item.id),
+    [3, 2, 1],
+  );
+  assert.deepEqual(
+    sortPhotos([...batch].reverse(), 'latest').map((item) => item.id),
+    [3, 2, 1],
+  );
+  assert.deepEqual(
+    sortPhotos(batch, 'latest', { latest: true }).map((item) => item.id),
+    [1, 2, 3],
+  );
+});
+
 test('gallery ordering: preserves a shuffled order and appends photos missing from that order', () => {
   const photos = [photo(1, 10), photo(2, 20), photo(3, 30), photo(4, 40)];
 

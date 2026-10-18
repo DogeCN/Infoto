@@ -159,6 +159,9 @@ export interface JobStatusMessage {
   meta?: JobMeta;
   /** Artifact sha256 when done / duplicate (for the op payload and dedupe registry). */
   sha256?: string;
+  /** When the facade returned the URL (ms epoch). Carried so the upload op records the
+   *  moment the photo actually landed, not the moment a later /sync request ran. */
+  createdAt?: number;
 }
 
 /** Token grant: the page creates/reuses its per-page video worker on this. */

@@ -20,7 +20,15 @@ async function rootCookie(app: TestApp): Promise<string> {
     ops: [
       {
         type: 'upload',
-        payload: { sha256: 'aa', url: 'https://h/a.webp', width: 1, height: 1, size: 2, type: 0 },
+        payload: {
+          sha256: 'aa',
+          url: 'https://h/a.webp',
+          width: 1,
+          height: 1,
+          size: 2,
+          type: 0,
+          createdAt: 1_700_000_000_000,
+        },
       },
     ],
   });

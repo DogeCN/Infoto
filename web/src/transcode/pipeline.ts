@@ -348,14 +348,16 @@ export class UploadPipeline {
     this.emit(this.snapshotFrom(m));
     if (shouldWriteAlbumUploadOp(m.purpose, m.phase, m.url, m.meta, alreadyWritten)) {
       this.pendingAlbumOps.add(m.jobId);
-      void this.writeUploadOp(m.jobId, m.sha256 ?? '', m.url!, m.meta!).catch((error) => {
-        this.pendingAlbumOps.delete(m.jobId);
-        this.emit({
-          ...this.snapshotFrom(m),
-          phase: 'failed',
-          error: error instanceof Error ? error.message : 'oplog_write_failed',
-        });
-      });
+      void this.writeUploadOp(m.jobId, m.sha256 ?? '', m.url!, m.meta!, m.createdAt).catch(
+        (error) => {
+          this.pendingAlbumOps.delete(m.jobId);
+          this.emit({
+            ...this.snapshotFrom(m),
+            phase: 'failed',
+            error: error instanceof Error ? error.message : 'oplog_write_failed',
+          });
+        },
+      );
     } else if (m.phase === 'failed') {
       this.log(
         `job ${m.jobId} failed: ${m.error ?? 'unknown'} (artifact kept in OPFS, manual retry available)`,
@@ -370,8 +372,11 @@ export class UploadPipeline {
     sha256: string,
     url: string,
     meta: JobMeta,
+    createdAt: number | undefined,
   ): Promise<void> {
-    // payload has no created_at / uploader — both are server-authoritative
+    // `uploader` stays server-authoritative. `createdAt` is the instant the host returned the
+    // URL, reported by this client and bounded by the server clock — the server's own clock is
+    // read once per /sync request, which would collapse a whole batch onto one timestamp.
     const payload: UploadPayload = {
       sha256,
       url,
@@ -379,6 +384,7 @@ export class UploadPipeline {
       height: meta.height,
       size: meta.size,
       type: meta.type,
+      createdAt: createdAt ?? Date.now(),
     };
     const op: Op = buildUploadOp(payload);
     if (this.io.onUploadOp) {

@@ -118,6 +118,10 @@ export interface UploadPayload {
   height: number;
   size: number;
   type: MediaType;
+  /** When the upload URL was obtained (ms epoch), reported by the uploading client and
+   *  bounded by the server clock. Without it every photo in one /sync batch shares a single
+   *  timestamp, because `serverTime` is read once per request — and "latest" cannot order them. */
+  createdAt: number;
 }
 
 /** Payload for `fb_create`; locale is captured when the user submits the suggestion. */
