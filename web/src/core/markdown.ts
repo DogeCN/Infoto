@@ -279,7 +279,7 @@ export const markdownImageRule: MarkdownImageRule = (tokens, index, options, env
  * Insert one hosted file into Markdown: an image, a video or a sound file as `![name](url)`
  * so it renders in place, and anything else as `[name](url)` — a link the reader clicks to
  * open or download. The editor takes any file, so a PDF or a zip has to land somewhere
- * sensible, and `upgradeMarkdownMedia` classifies by extension too: the three extension sets
+ * sensible, and `markdownImageRule` classifies by extension too: the three extension sets
  * are the single source, so what is inserted here is what renders there.
  */
 export function insertMediaAt(

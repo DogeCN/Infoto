@@ -575,7 +575,9 @@ before deadline` / `no response before deadline`).
     mid-gesture yanked the sheet back down while the finger was still moving up (the "not
     following" report). When the sheet rests open and a row leaves, an effect collapses it to the
     new content height; `HEADER_H = 48` is the header's measured height (px-3.5 + text-sm), not
-    the 44 it used to be. Collapsed, the batch total rides the bottom edge.
+    the 44 it used to be. The ceiling and the scroll container's `max-height` both come from one
+    measured `visualViewport.height` (42%): a second `svh` cap in CSS disagreed with the JS
+    ceiling whenever a mobile URL bar moved. Collapsed, the batch total rides the bottom edge.
   - **The announcement editor takes any file.** Its input carries no `accept`, and both
     `uploadEditorFile` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
     leg. The picked file is uploaded as-is, so its extension survives into the returned URL. How
@@ -1061,6 +1063,7 @@ The parts of this contract that are asserted by `npm test`:
 | A photo op waits for the upload op that creates its row                              | `web/tests/unit/pendingPhotoOps.test.ts` |
 | The server clears the opposite attitude when either is added                         | `src/worker/routes/sync.test.ts`         |
 | The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`           |
+| A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/pendingPhoto.test.ts`    |
 | A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`        |
 | The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`        |
