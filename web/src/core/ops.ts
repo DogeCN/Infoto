@@ -34,29 +34,24 @@ export interface MarkOpSpec {
   add: boolean;
 }
 
-/**
- * Every mark op in one table. The fold (`reapplyQueued`), the log's supersede rule
- * (`coalesceKey`) and the store's op construction all read this mapping, so a new op kind
- * cannot be wired into one of them and forgotten in another.
- */
-export const MARK_OPS: Record<string, MarkOpSpec> = {
-  like: { kind: 'like', add: true },
-  unlike: { kind: 'like', add: false },
-  dislike: { kind: 'dislike', add: true },
-  undislike: { kind: 'dislike', add: false },
-  report: { kind: 'report', add: true },
-  unreport: { kind: 'report', add: false },
-};
+const MARK_KINDS: MarkKind[] = ['like', 'dislike', 'report'];
 
-const MARK_OP_TYPE: Record<MarkKind, { add: Op['type']; remove: Op['type'] }> = {
-  like: { add: 'like', remove: 'unlike' },
-  dislike: { add: 'dislike', remove: 'undislike' },
-  report: { add: 'report', remove: 'unreport' },
-};
+/**
+ * Every mark op in one table, derived from the kind and the `un` prefix rather than written out
+ * six times. The fold (`reapplyQueued`), the log's supersede rule (`coalesceKey`) and the store's
+ * op construction all read this mapping, so a new kind cannot be wired into one of them and
+ * forgotten in another.
+ */
+export const MARK_OPS: Record<string, MarkOpSpec> = Object.fromEntries(
+  MARK_KINDS.flatMap((kind) => [
+    [kind, { kind, add: true }],
+    [`un${kind}`, { kind, add: false }],
+  ]),
+);
 
 /** Op type for adding / removing a mark. */
 export function markOpType(kind: MarkKind, add: boolean): Op['type'] {
-  return MARK_OP_TYPE[kind][add ? 'add' : 'remove'];
+  return add ? kind : (`un${kind}` as Op['type']);
 }
 
 /** The mark an op applies, or undefined for every other op kind. */

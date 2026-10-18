@@ -7,6 +7,7 @@ import {
 } from '../shared/copy.ts';
 import { ERROR_FONT_QUERY, fontHeadBlock, fontPageCsp } from '../shared/fonts.ts';
 import { GLITCH_CSS, GLITCH_PALETTE } from '../shared/glitch.ts';
+import { escapeHtml } from '../shared/html.ts';
 
 // Error pages: the shared glitch glyph on a dark ground. The glyph's colours, layer stack
 // and keyframes come from `shared/glitch.ts` — the same definition the SPA's `GlitchText`
@@ -14,12 +15,6 @@ import { GLITCH_CSS, GLITCH_PALETTE } from '../shared/glitch.ts';
 //
 // What stays SPA-only: the scramble-on-mount, the random idle burst and the hover trigger.
 // All three need JavaScript, and this page must ship without a `<script>` at all.
-
-const escapeHtml = (value: string): string =>
-  value.replace(
-    /[&<>"']/g,
-    (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
-  );
 
 /** Resolve each request's locale from Accept-Language, defaulting to English. */
 function localeFor(request: Request | undefined): { code: LocaleCode; copy: Copy } {

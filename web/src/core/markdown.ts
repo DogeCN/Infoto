@@ -1,4 +1,5 @@
 import { isLocaleCode, type LocaleCode } from '$shared/copy';
+import { escapeHtml } from '$shared/html';
 import type { RendererRule } from 'markdown-it';
 
 export interface TextSelection {
@@ -229,19 +230,6 @@ export function isEmbeddableArtifact(url: string | null | undefined): boolean {
 export function isImageFile(file: { type?: string; name?: string }): boolean {
   if ((file.type || '').toLowerCase().startsWith('image/')) return true;
   return IMAGE_EXTENSIONS.has(fileExtension(file.name || ''));
-}
-
-const HTML_ENTITIES: Record<string, string> = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-};
-
-/** Escape a value for use in element text or a double-quoted attribute. */
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => HTML_ENTITIES[char]!);
 }
 
 /**
