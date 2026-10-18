@@ -187,6 +187,15 @@ Back-filled from the commit history. Tagged sections are not yet written.
   renders in OS chrome, never appears on touch, and carries none of the `aria-describedby`
   wiring. There are two `title` attributes left in the app and neither is a tooltip — the
   `OverlaySidebar` `title` prop, which names the dialog.
+  - **`TooltipIconButton` is the one icon-button trigger, and it always applies `icon-button`.**
+    It carries the shared base (rounded, muted text, primary hover tint, 0.96 press scale), so a
+    call site supplies only what differs in `class` — size, rounding, colour tail. Its own
+    escapes are `popoverTarget` (a button that opens a popover instead of an `onclick`),
+    `bindElement` (a caller that anchors something to it, like `ReactionPicker`) and
+    `autofocus` (the overlay focus trap's `[data-autofocus]`). ⚠️ Hand-writing
+    `Tooltip + button` where `icon-button` would fit reintroduces a second button treatment that
+    the design tokens do not describe; `Tooltip` alone stays for a trigger that is not an icon
+    button (a link, a resize handle, a labelled pill).
   - The wrapper is `display: contents`, so it is never a containing block (an absolutely
     positioned trigger keeps its own positioning) and never changes a measured width: the
     top-bar probes measure their group **containers**, whose widths sum the same children.
