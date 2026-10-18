@@ -11,8 +11,17 @@
 // supervisor is gone, holding a socket nothing will ever release.
 
 import { execFileSync } from 'node:child_process';
+import { mediaHostPort } from './dev-config.mjs';
 
-const PORTS = [8787, 8788, 5173, 5174];
+const PORTS = [
+  8787,
+  // The media host's port is configuration, not a constant here: it must match the port
+  // `local-media-host.mjs` binds, or a leftover stand-in survives `predev` and the next
+  // `dev` run dies on EADDRINUSE.
+  mediaHostPort(),
+  5173,
+  5174,
+];
 /** Rounds of kill-then-recheck; a respawning supervisor needs several. */
 const ROUNDS = 6;
 

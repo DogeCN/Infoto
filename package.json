@@ -15,7 +15,7 @@
     "predev": "node scripts/free-dev-ports.mjs",
     "dev": "concurrently -n api,web,media -c cyan,magenta,yellow \"npm run db:local && npm run dev:worker\" \"npm run wait:worker && npm run dev -w infoto-web\" \"npm run dev:media\"",
     "dev:worker": "node --use-system-ca node_modules/wrangler/bin/wrangler.js dev --port 8787",
-    "dev:media": "node scripts/local-media-host.mjs --port $npm_package_config_mediaPort",
+    "dev:media": "node scripts/local-media-host.mjs",
     "wait:worker": "node scripts/wait-for-worker.mjs",
     "build": "npm run build -w infoto-web",
     "db:local": "node scripts/db-local.mjs",
@@ -28,9 +28,6 @@
     "lint:fix": "eslint . --fix && prettier --write .",
     "format": "prettier --write .",
     "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json && npm run ts-check -w infoto-web"
-  },
-  "config": {
-    "mediaPort": "8788"
   },
   "dependencies": {
     "hono": "^4.13.5"

@@ -15,6 +15,10 @@
     "useDefineForClassFields": true,
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
+    // `playwright.config.ts` reads MEDIA_HOST_URL through the repo-root `scripts/dev-config.mjs`,
+    // so the dev scripts and the Worker cannot disagree about the local media host's port.
+    // JSDoc types on that file are what the import resolves to.
+    "allowJs": true,
     "noEmit": true,
     "paths": {
       "$shared/*": ["../src/shared/*"],

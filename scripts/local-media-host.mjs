@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 // Local image-host simulation: accepts multipart uploads, stores them on disk,
-// and serves them back over HTTP. Used by the Worker's /upload proxy in dev.
+// and serves them back over HTTP. Stands in for the image-host facade during `npm run dev`.
+//
+// The port comes from MEDIA_HOST_URL in `.dev.vars` — the same file the Worker reads, so
+// the two cannot disagree. `--port` overrides it for a one-off run on another port.
 // Usage: node scripts/local-media-host.mjs [--port 8788] [--dir .local-media]
 
 import { createServer } from 'node:http';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { mediaHostPort } from './dev-config.mjs';
 
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
 const dirIdx = args.indexOf('--dir');
-const PORT = portIdx !== -1 ? Number(args[portIdx + 1]) : 8788;
+
+const PORT = portIdx !== -1 ? Number(args[portIdx + 1]) : mediaHostPort();
 const MEDIA_DIR = path.resolve(dirIdx !== -1 ? args[dirIdx + 1] : '.local-media');
 
 mkdirSync(MEDIA_DIR, { recursive: true });

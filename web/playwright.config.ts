@@ -1,10 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
-
-/** The repo-root `config.mediaPort` — the local media-host stand-in's port. */
-const { config } = JSON.parse(
-  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-) as { config: { mediaPort: string } };
+import { mediaHostPort } from '../scripts/dev-config.mjs';
 
 // Browser regressions use Vite and the local Worker; UI tests mock album responses.
 // Run serially because integration tests share local D1.
@@ -47,7 +42,7 @@ export default defineConfig({
       // Pipeline integration tests upload through the local facade stand-in.
       command: 'npm run dev:media',
       cwd: '..',
-      port: Number(config.mediaPort),
+      port: mediaHostPort(),
       reuseExistingServer: true,
       timeout: 30_000,
     },
