@@ -23,6 +23,8 @@
     popoverTarget?: string;
     /** Receives the button element, for callers that anchor something to it. */
     bindElement?: (el: HTMLButtonElement) => void;
+    /** Overlay focus trap focuses this control on open (see `base/lib/overlay.ts`). */
+    autofocus?: boolean;
     side?: 'top' | 'bottom' | 'left' | 'right';
     /** Extra button classes (padding, size, colour tail). */
     class?: string;
@@ -39,6 +41,7 @@
     ariaPressed,
     popoverTarget,
     bindElement,
+    autofocus = false,
     side = 'top',
     class: className = '',
     children,
@@ -55,6 +58,7 @@
   <button
     type="button"
     use:mount
+    data-autofocus={autofocus ? '' : undefined}
     class={cn('icon-button', danger && 'icon-button--danger', active && 'text-primary', className)}
     aria-label={ariaLabel ?? text}
     aria-pressed={ariaPressed}

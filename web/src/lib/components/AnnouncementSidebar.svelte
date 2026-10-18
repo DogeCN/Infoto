@@ -6,6 +6,7 @@
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
   import PollReferences from './PollReferences.svelte';
   import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
   import MarkdownView from './MarkdownView.svelte';
   import ReactionBar from './ReactionBar.svelte';
 
@@ -160,25 +161,18 @@
         </button>
       </Tooltip>
 
-      <Tooltip
+      <TooltipIconButton
         text={previewMode ? copy.announcements.editToggle : copy.announcements.previewToggle}
         side="bottom"
+        class="absolute right-8 top-2 size-7"
+        onclick={() => (previewMode = !previewMode)}
       >
-        <button
-          type="button"
-          class="icon-button absolute right-8 top-2 size-7"
-          aria-label={previewMode
-            ? copy.announcements.editToggle
-            : copy.announcements.previewToggle}
-          onclick={() => (previewMode = !previewMode)}
-        >
-          {#if previewMode}
-            <Pencil class="size-4" />
-          {:else}
-            <Eye class="size-4" />
-          {/if}
-        </button>
-      </Tooltip>
+        {#if previewMode}
+          <Pencil class="size-4" />
+        {:else}
+          <Eye class="size-4" />
+        {/if}
+      </TooltipIconButton>
 
       {#if feedbackText.trim()}
         <button

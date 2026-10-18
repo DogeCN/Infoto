@@ -5,6 +5,7 @@
   import { startPointerResize } from '$base/lib/pointer';
   import { copy } from '$lib/i18n.svelte';
   import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
   import { X } from '@lucide/svelte';
 
   let {
@@ -165,16 +166,15 @@
       {/if}
       <h2 class="text-lg font-semibold tracking-tight">{title}</h2>
     </div>
-    <Tooltip text={copy.sidebar.close} side="bottom">
-      <button
-        class="icon-button rounded-lg p-1.5 hover:scale-105 active:scale-95"
-        onclick={close}
-        aria-label={copy.sidebar.close}
-        data-autofocus
-      >
-        <X class="size-5" />
-      </button>
-    </Tooltip>
+    <TooltipIconButton
+      text={copy.sidebar.close}
+      side="bottom"
+      autofocus
+      class="rounded-lg p-1.5 hover:scale-105 active:scale-95"
+      onclick={close}
+    >
+      <X class="size-5" />
+    </TooltipIconButton>
   </div>
 
   <!-- Independent scroll area; child panels provide bottom spacing for sticky controls.
