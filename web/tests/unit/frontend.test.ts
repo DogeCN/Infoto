@@ -65,6 +65,11 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
   assert.equal(ops.markOpType('like', false), 'unlike');
   assert.equal(ops.markOpType('dislike', true), 'dislike');
   assert.equal(ops.markOpType('report', false), 'unreport');
+  // The fold and the supersede rule both read this table; the reverse mapping must agree.
+  for (const [type, spec] of Object.entries(ops.MARK_OPS)) {
+    assert.deepEqual(ops.markOpSpec(type as Op['type']), spec);
+    assert.equal(ops.markOpType(spec.kind, spec.add), type);
+  }
 
   // Attitude is one choice: adding a like clears the dislike and vice versa, mirroring the
   // statement the server runs. A report is separate and survives either.
@@ -158,10 +163,6 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
   assert.deepEqual(
     feedback.map((f) => f.sort),
     [-2, -1],
-  );
-  assert.deepEqual(
-    ops.applyFbDelete(feedback, -1).map((f) => f.id),
-    [-2],
   );
 });
 

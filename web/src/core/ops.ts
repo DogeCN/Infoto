@@ -28,11 +28,40 @@ export const MARK_FIELD: Record<MarkKind, 'likes' | 'dislikes' | 'reports'> = {
   report: 'reports',
 };
 
+export interface MarkOpSpec {
+  kind: MarkKind;
+  /** Adding the mark (true) or removing it (false). */
+  add: boolean;
+}
+
+/**
+ * Every mark op in one table. The fold (`reapplyQueued`), the log's supersede rule
+ * (`coalesceKey`) and the store's op construction all read this mapping, so a new op kind
+ * cannot be wired into one of them and forgotten in another.
+ */
+export const MARK_OPS: Record<string, MarkOpSpec> = {
+  like: { kind: 'like', add: true },
+  unlike: { kind: 'like', add: false },
+  dislike: { kind: 'dislike', add: true },
+  undislike: { kind: 'dislike', add: false },
+  report: { kind: 'report', add: true },
+  unreport: { kind: 'report', add: false },
+};
+
+const MARK_OP_TYPE: Record<MarkKind, { add: Op['type']; remove: Op['type'] }> = {
+  like: { add: 'like', remove: 'unlike' },
+  dislike: { add: 'dislike', remove: 'undislike' },
+  report: { add: 'report', remove: 'unreport' },
+};
+
 /** Op type for adding / removing a mark. */
 export function markOpType(kind: MarkKind, add: boolean): Op['type'] {
-  if (kind === 'like') return add ? 'like' : 'unlike';
-  if (kind === 'dislike') return add ? 'dislike' : 'undislike';
-  return add ? 'report' : 'unreport';
+  return MARK_OP_TYPE[kind][add ? 'add' : 'remove'];
+}
+
+/** The mark an op applies, or undefined for every other op kind. */
+export function markOpSpec(type: Op['type']): MarkOpSpec | undefined {
+  return MARK_OPS[type];
 }
 
 /** The mark a photo's opposite writes: a like and a dislike are one choice, never both. */
@@ -81,22 +110,27 @@ export function applyMarkToSet(
  * upload), terminal, or append-only.
  */
 export function coalesceKey(op: Op): string | null {
-  switch (op.type) {
-    case 'like':
-    case 'unlike':
-    case 'dislike':
-    case 'undislike':
-      return op.targetSha ? `attitude:${op.targetSha}` : null;
-    case 'report':
-    case 'unreport':
-      return op.targetSha ? `report:${op.targetSha}` : null;
-    case 'vote':
-      return op.target != null ? `vote:${op.target}` : null;
-    case 'react':
-      return op.target != null ? `react:${op.target}` : null;
-    default:
-      return null;
+  const mark = markOpSpec(op.type);
+  if (mark) {
+    return op.targetSha
+      ? `${mark.kind === 'report' ? 'report' : 'attitude'}:${op.targetSha}`
+      : null;
   }
+  if (op.type === 'vote') return op.target != null ? `vote:${op.target}` : null;
+  if (op.type === 'react') return op.target != null ? `react:${op.target}` : null;
+  return null;
+}
+
+/** Optimistically apply a mark to one photo or a selection. */
+function applyMarks(
+  photos: Photo[],
+  ids: Iterable<number>,
+  kind: MarkKind,
+  userId: number,
+  add: boolean,
+): Photo[] {
+  const set = ids instanceof Set ? ids : new Set(ids);
+  return photos.map((p) => (set.has(p.id) ? { ...p, ...applyMarkToSet(p, kind, userId, add) } : p));
 }
 
 /** Optimistically apply a mark to one photo. */
@@ -107,9 +141,7 @@ export function applyMark(
   userId: number,
   add: boolean,
 ): Photo[] {
-  return photos.map((p) =>
-    p.id === photoId ? { ...p, ...applyMarkToSet(p, kind, userId, add) } : p,
-  );
+  return applyMarks(photos, [photoId], kind, userId, add);
 }
 
 /** Optimistically apply a mark to many photos (multi-select). */
@@ -120,8 +152,7 @@ export function applyMarkMany(
   userId: number,
   add: boolean,
 ): Photo[] {
-  const set = new Set(ids);
-  return photos.map((p) => (set.has(p.id) ? { ...p, ...applyMarkToSet(p, kind, userId, add) } : p));
+  return applyMarks(photos, ids, kind, userId, add);
 }
 
 /** Optimistically remove photos (root delete). */
@@ -148,27 +179,18 @@ export function reapplyQueued(
   let a = announcements;
   let pollRows = polls;
   for (const op of queued) {
-    const photo = resolveOpPhoto(p, op);
+    const mark = markOpSpec(op.type);
+    if (mark) {
+      const photo = resolveOpPhoto(p, op);
+      if (photo) p = applyMark(p, photo.id, mark.kind, selfId, mark.add);
+      continue;
+    }
     switch (op.type) {
-      case 'like':
-      case 'unlike':
-      case 'dislike':
-      case 'undislike':
-      case 'report':
-      case 'unreport': {
-        if (!photo) break;
-        const kind: MarkKind =
-          op.type === 'like' || op.type === 'unlike'
-            ? 'like'
-            : op.type === 'dislike' || op.type === 'undislike'
-              ? 'dislike'
-              : 'report';
-        p = applyMark(p, photo.id, kind, selfId, !op.type.startsWith('un'));
-        break;
-      }
-      case 'delete':
+      case 'delete': {
+        const photo = resolveOpPhoto(p, op);
         if (photo) p = applyDelete(p, [photo.id]);
         break;
+      }
       case 'vote':
         if (op.target != null)
           pollRows = applyVote(
@@ -358,8 +380,4 @@ export function applyFbCreate(
   // Same rule as the server's INSERT: one below the current minimum → newest on top.
   const minSort = list.reduce((min, item) => Math.min(min, item.sort), 0);
   return [{ id: tempId, userId, contentMd, createdAt: now, locale, sort: minSort - 1 }, ...list];
-}
-
-export function applyFbDelete(list: Feedback[], id: number): Feedback[] {
-  return list.filter((f) => f.id !== id);
 }

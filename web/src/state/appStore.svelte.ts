@@ -49,8 +49,14 @@ interface AdminToasts {
   updateFailed: string;
   deleteFailed: string;
   reorderFailed: string;
-  deleteRollback: string;
-  reorderRollback: string;
+  /** Feedback's delete/reorder write no rollback line; the hint alone is its description. */
+  deleteRollback?: string;
+  reorderRollback?: string;
+}
+
+/** One toast description for a failed admin write: the rollback note, then the failure hint. */
+function failDescription(rollback: string | undefined, error: unknown, timeoutId: string): string {
+  return [rollback, adminFailHint(error, timeoutId)].filter(Boolean).join(' · ');
 }
 
 /**
@@ -79,6 +85,11 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
       setRows: (locale: LocaleCode, rows: T[]) => void;
       timeoutId: string;
       toasts: AdminToasts;
+      /** Whether a reorder may name a temporary id. Announcements and polls can — a create
+       *  may still be in flight — and the submit waits for the real id. Feedback rows on
+       *  /admin always carry real ids; an optimistic `fb_create` has no id mapping, so a
+       *  negative id is dropped from the request instead of parking the reorder forever. */
+      resolvesTempIds?: boolean;
     },
   ) {}
 
@@ -157,7 +168,11 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
         this.config.setRows(locale, next);
       }
       toast.error(this.config.toasts.deleteFailed, {
-        description: `${this.config.toasts.deleteRollback} · ${adminFailHint(error, this.config.timeoutId)}`,
+        description: failDescription(
+          this.config.toasts.deleteRollback,
+          error,
+          this.config.timeoutId,
+        ),
       });
     }
   }
@@ -167,6 +182,15 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
     const previousIds = this.config.rows(locale).map((row) => row.id);
     this.config.setRows(locale, ops.applyReorder(this.config.rows(locale), orderedIds));
     const resolved = this.resolveIds(orderedIds);
+    if (this.config.resolvesTempIds === false) {
+      void this.submitReorder(
+        resolved.filter((id) => id > 0),
+        previousIds,
+        locale,
+        call,
+      );
+      return;
+    }
     if (resolved.every((id) => id > 0)) {
       void this.submitReorder(resolved, previousIds, locale, call);
       return;
@@ -203,7 +227,11 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
       console.error('[admin] reorder failed', error);
       this.config.setRows(locale, ops.applyReorder(this.config.rows(locale), previousIds));
       toast.error(this.config.toasts.reorderFailed, {
-        description: `${this.config.toasts.reorderRollback} · ${adminFailHint(error, this.config.timeoutId)}`,
+        description: failDescription(
+          this.config.toasts.reorderRollback,
+          error,
+          this.config.timeoutId,
+        ),
       });
     }
   }
@@ -336,6 +364,22 @@ class AppState {
       reorderFailed: copy.admin.poll.reorderFailed,
       deleteRollback: copy.admin.poll.deleteRollback,
       reorderRollback: copy.admin.poll.reorderRollback,
+    },
+  });
+
+  private feedbackRows = new AdminCollection<Feedback>({
+    rows: (locale) => localeSlice(this.allFeedback, locale),
+    setRows: (locale, rows) => {
+      this.allFeedback = replaceLocale(this.allFeedback, locale, rows);
+    },
+    timeoutId: FB_TIMEOUT,
+    resolvesTempIds: false,
+    toasts: {
+      // Feedback has no optimistic create/update; only remove and reorder read these.
+      createFailed: copy.admin.feedback.deleteFailed,
+      updateFailed: copy.admin.feedback.deleteFailed,
+      deleteFailed: copy.admin.feedback.deleteFailed,
+      reorderFailed: copy.admin.feedback.reorderFailed,
     },
   });
 
@@ -669,52 +713,14 @@ class AppState {
   }
 
   fbDelete(id: number): void {
-    const locale = this.contentLocale;
-    const rows = localeSlice(this.allFeedback, locale);
-    const index = rows.findIndex((f) => f.id === id);
-    const previous = index >= 0 ? rows[index] : undefined;
-    this.allFeedback = replaceLocale(this.allFeedback, locale, ops.applyFbDelete(rows, id));
-    void (async () => {
-      try {
-        await deleteFeedback(id);
-      } catch (error) {
-        console.error('[fb] delete failed', error);
-        // Restore only the deleted row, preserving unrelated snapshot changes.
-        const current = localeSlice(this.allFeedback, locale);
-        if (previous && !current.some((f) => f.id === id)) {
-          const next = [...current];
-          next.splice(Math.min(index, next.length), 0, previous);
-          this.allFeedback = replaceLocale(this.allFeedback, locale, next);
-        }
-        toast.error(copy.admin.feedback.deleteFailed, {
-          description: adminFailHint(error, FB_TIMEOUT),
-        });
-      }
-    })();
+    void this.feedbackRows.remove(id, this.contentLocale, () => deleteFeedback(id));
   }
 
-  /** Manual (root-only) display order. Rows seen on /admin always carry real ids. */
+  /** Manual (root-only) display order. Rows seen on /admin always carry real ids, so the
+   *  collection drops a temporary id from the request instead of waiting for one. */
   fbReorder(orderedIds: number[]): void {
     const locale = this.contentLocale;
-    const rows = localeSlice(this.allFeedback, locale);
-    const previousIds = rows.map((item) => item.id);
-    this.allFeedback = replaceLocale(this.allFeedback, locale, ops.applyReorder(rows, orderedIds));
-    const persisted = orderedIds.filter((id) => id > 0);
-    void (async () => {
-      try {
-        await reorderFeedback(persisted, locale);
-      } catch (error) {
-        console.error('[fb] reorder failed', error);
-        this.allFeedback = replaceLocale(
-          this.allFeedback,
-          locale,
-          ops.applyReorder(localeSlice(this.allFeedback, locale), previousIds),
-        );
-        toast.error(copy.admin.feedback.reorderFailed, {
-          description: adminFailHint(error, FB_TIMEOUT),
-        });
-      }
-    })();
+    this.feedbackRows.reorder(locale, orderedIds, (ids) => reorderFeedback(ids, locale));
   }
 
   /** Clear local state after SQL import and wait for a full snapshot. */
