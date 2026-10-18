@@ -9,7 +9,7 @@
   import { countHop, motionMs } from '$base/lib/motion';
   import { createHoverIntent } from '$base/lib/hover.svelte';
   import { startPointerResize } from '$base/lib/pointer';
-  import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
 
   interface Props {
     /** Already filtered by the caller: this panel is stage-agnostic. */
@@ -294,16 +294,16 @@
                       ></div>
                     {/if}
                   </div>
-                  <Tooltip text={copy.uploadPanel.remove} side="top">
-                    <button
-                      type="button"
-                      class="icon-button icon-button--danger size-4 shrink-0 rounded-full hover:text-destructive"
-                      aria-label={fmt(copy.uploadPanel.removeFile, { fileName: task.fileName })}
-                      onclick={() => onRemove(task.jobId)}
-                    >
-                      <X class="size-3" />
-                    </button>
-                  </Tooltip>
+                  <TooltipIconButton
+                    text={copy.uploadPanel.remove}
+                    ariaLabel={fmt(copy.uploadPanel.removeFile, { fileName: task.fileName })}
+                    side="top"
+                    danger
+                    class="size-4 shrink-0 rounded-full hover:text-destructive"
+                    onclick={() => onRemove(task.jobId)}
+                  >
+                    <X class="size-3" />
+                  </TooltipIconButton>
                 </div>
               </div>
             {/each}
