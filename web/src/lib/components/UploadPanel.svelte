@@ -100,6 +100,26 @@
   const HEADER_H = 48;
   /** Row pitch: py-1.5 (12px) + text-xs line-height (16px) = 28px. */
   const ROW_H = 28;
+  /** Share of the visible viewport the sheet may occupy. */
+  const SHEET_MAX_FRACTION = 0.42;
+  /** Visible viewport height. `visualViewport` excludes a mobile URL bar, so the drag ceiling
+   *  and the scroll container's max-height are one measured value rather than `innerHeight`
+   *  in JS and `svh` in CSS. */
+  let viewportH = $state(
+    typeof window === 'undefined' ? 0 : (window.visualViewport?.height ?? window.innerHeight),
+  );
+  $effect(() => {
+    const viewport = window.visualViewport;
+    const sync = () => (viewportH = viewport?.height ?? window.innerHeight);
+    sync();
+    viewport?.addEventListener('resize', sync);
+    window.addEventListener('resize', sync);
+    return () => {
+      viewport?.removeEventListener('resize', sync);
+      window.removeEventListener('resize', sync);
+    };
+  });
+  const sheetMaxH = $derived(Math.max(HEADER_H, Math.round(viewportH * SHEET_MAX_FRACTION)));
   let dragging = $state(false);
   let sheetH = $state(HEADER_H);
   /** Drag ceiling captured at pointerdown. */
@@ -108,10 +128,7 @@
 
   /** Fully-open height for the current row count, capped to the viewport. */
   function contentMaxH(): number {
-    return Math.max(
-      HEADER_H,
-      Math.min(HEADER_H + tasks.length * ROW_H + 8, window.innerHeight * 0.42),
-    );
+    return Math.max(HEADER_H, Math.min(HEADER_H + tasks.length * ROW_H + 8, sheetMaxH));
   }
 
   // A row leaving while the sheet rests open collapses it to the new content height, so the
@@ -247,7 +264,8 @@
         <div
           class="min-h-0 overscroll-contain overflow-y-auto {canHover
             ? 'max-h-[min(40vh,17.5rem)]'
-            : 'h-full max-h-[calc(42svh-48px)]'}"
+            : 'h-full'}"
+          style={!canHover ? `max-height: ${Math.max(0, sheetMaxH - HEADER_H)}px;` : ''}
         >
           <div class="space-y-0.5 px-2 pb-2">
             {#each tasks as task (task.jobId)}
