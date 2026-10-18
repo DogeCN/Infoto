@@ -114,14 +114,18 @@
     onChange?.(next);
   }
 
-  async function pickImage(): Promise<void> {
-    if (!onPickImage || imageUploading) return;
+  /**
+   * Run one editor upload from whichever path started it — a fresh pick or a retry. The caret
+   * is captured before the transfer, the returned URL is inserted at it, and the error/uploading
+   * state is owned in one place so the two paths cannot drift.
+   */
+  async function runUpload(start: () => Promise<string | null>): Promise<void> {
     imageError = '';
     failedJobId = null;
     imageUploading = true;
     pendingImageCaret = selection().start;
     try {
-      const url = await onPickImage();
+      const url = await start();
       if (url) {
         const caret = pendingImageCaret ?? selection().start;
         // Media renders in place; anything else becomes a link to the hosted file.
@@ -132,7 +136,7 @@
     } catch (error) {
       // A deliberate cancel is not a failure: no error line, no message under the editor.
       if (isCancelled(error)) return;
-      console.error('[editor] image upload failed', error);
+      console.error('[editor] upload failed', error);
       // The pipeline already translates engine error codes into localized copy.
       imageError =
         error instanceof Error && error.message ? error.message : copy.editor.imageUploadFailed;
@@ -140,6 +144,12 @@
       imageUploading = false;
       pendingImageCaret = null;
     }
+  }
+
+  async function pickImage(): Promise<void> {
+    const pick = onPickImage;
+    if (!pick || imageUploading) return;
+    await runUpload(pick);
   }
 
   const TOOLS: Array<{
@@ -219,30 +229,10 @@
           <button
             type="button"
             class="text-xs font-medium text-primary underline-offset-2 hover:underline"
-            onclick={async () => {
+            onclick={() => {
               const id = failedJobId;
               if (!id || !onRetryUpload) return;
-              imageError = '';
-              failedJobId = null;
-              imageUploading = true;
-              pendingImageCaret = selection().start;
-              try {
-                const url = await onRetryUpload(id);
-                if (url) {
-                  const caret = pendingImageCaret ?? selection().start;
-                  applyTransform(insertMediaAt(value, caret, url));
-                }
-              } catch (error) {
-                if (isCancelled(error)) return;
-                console.error('[editor] image upload retry failed', error);
-                imageError =
-                  error instanceof Error && error.message
-                    ? error.message
-                    : copy.editor.imageUploadFailed;
-              } finally {
-                imageUploading = false;
-                pendingImageCaret = null;
-              }
+              void runUpload(() => onRetryUpload(id));
             }}>{copy.editor.retry}</button
           >
         {/if}
