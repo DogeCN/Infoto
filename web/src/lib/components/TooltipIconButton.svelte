@@ -19,6 +19,10 @@
     danger?: boolean;
     /** Toggle buttons publish their state, rather than relying on a native `title`. */
     ariaPressed?: boolean;
+    /** ID of the popover this button opens, instead of an `onclick` handler. */
+    popoverTarget?: string;
+    /** Receives the button element, for callers that anchor something to it. */
+    bindElement?: (el: HTMLButtonElement) => void;
     side?: 'top' | 'bottom' | 'left' | 'right';
     /** Extra button classes (padding, size, colour tail). */
     class?: string;
@@ -33,18 +37,28 @@
     active = false,
     danger = false,
     ariaPressed,
+    popoverTarget,
+    bindElement,
     side = 'top',
     class: className = '',
     children,
   }: Props = $props();
+
+  /** The button element, for the caller and for the tooltip's own trigger lookup. */
+  function mount(node: HTMLButtonElement) {
+    bindElement?.(node);
+    return { destroy: () => {} };
+  }
 </script>
 
 <Tooltip {text} {side}>
   <button
     type="button"
+    use:mount
     class={cn('icon-button', danger && 'icon-button--danger', active && 'text-primary', className)}
     aria-label={ariaLabel ?? text}
     aria-pressed={ariaPressed}
+    popovertarget={popoverTarget}
     {disabled}
     {onclick}
   >

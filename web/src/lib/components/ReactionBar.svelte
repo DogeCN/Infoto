@@ -8,7 +8,7 @@
   import { reactionCounts } from '../../core/reactions';
   import type { Announcement } from '$shared/types';
   import ReactionPicker from './ReactionPicker.svelte';
-  import Tooltip from './Tooltip.svelte';
+  import TooltipIconButton from './TooltipIconButton.svelte';
 
   interface Props {
     announcement: Announcement;
@@ -47,17 +47,14 @@
     </button>
   {/each}
 
-  <Tooltip text={copy.reactions.add}>
-    <button
-      aria-label={copy.reactions.add}
-      type="button"
-      class="icon-button size-7 rounded-full hover:bg-muted hover:text-foreground"
-      bind:this={pickerAnchor}
-      popovertarget={pickerId}
-    >
-      <SmilePlus class="size-4" />
-    </button>
-  </Tooltip>
+  <TooltipIconButton
+    text={copy.reactions.add}
+    popoverTarget={pickerId}
+    bindElement={(el) => (pickerAnchor = el)}
+    class="size-7 rounded-full hover:bg-muted hover:text-foreground"
+  >
+    <SmilePlus class="size-4" />
+  </TooltipIconButton>
 
   <ReactionPicker id={pickerId} anchor={pickerAnchor} onPick={(emoji) => toggle(emoji, false)} />
 </div>
