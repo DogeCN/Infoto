@@ -304,7 +304,7 @@
           draft={annRestoreDraft}
           polls={store.polls}
           selfId={store.selfId}
-          onPickImage={(file) => pipeline.uploadEditorImage(file)}
+          onPickFile={(file) => pipeline.uploadEditorFile(file)}
           onSave={saveAnnouncement}
           onCancel={closeAnnouncementEditor}
           uploadTask={editorUploadTask}

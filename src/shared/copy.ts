@@ -252,7 +252,7 @@ export const enUS = {
   },
 
   editor: {
-    imageUploadFailed: 'Image upload failed. Retry',
+    fileUploadFailed: 'File upload failed. Retry',
     uploading: 'Uploading',
     retry: 'Retry',
     previewAria: 'Live preview',
@@ -611,7 +611,7 @@ const zhCN: Copy = {
   },
 
   editor: {
-    imageUploadFailed: '图片上传失败，请重试',
+    fileUploadFailed: '文件上传失败，请重试',
     uploading: '上传中',
     retry: '重试',
     previewAria: '实时预览',

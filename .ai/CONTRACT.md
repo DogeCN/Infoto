@@ -577,7 +577,7 @@ before deadline` / `no response before deadline`).
     new content height; `HEADER_H = 48` is the header's measured height (px-3.5 + text-sm), not
     the 44 it used to be. Collapsed, the batch total rides the bottom edge.
   - **The announcement editor takes any file.** Its input carries no `accept`, and both
-    `uploadEditorImage` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
+    `uploadEditorFile` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
     leg. The picked file is uploaded as-is, so its extension survives into the returned URL. How
     it lands in Markdown is decided by the extension — and the same predicate decides how it
     renders, so what is inserted is what appears:

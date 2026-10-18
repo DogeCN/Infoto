@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Markdown editor with a toolbar and a split live preview. Images go through
+  // Markdown editor with a toolbar and a split live preview. Picked files go through
   // the shared upload pipeline; the returned URL is inserted at the remembered
   // caret so edits made while an upload is in flight do not move it.
   import { Bold, Italic, Strikethrough, Quote, Code, List, Link, FileUp } from '@lucide/svelte';
@@ -22,8 +22,8 @@
   interface Props {
     value: string;
     placeholder?: string;
-    /** Pick and upload an image; returns the hosted URL (via /upload proxy). */
-    onPickImage?: () => Promise<string | null>;
+    /** Pick and upload a file; returns the hosted URL (via /upload proxy). */
+    onPickFile?: () => Promise<string | null>;
     onChange?: (v: string) => void;
     /** Current language's poll registry powers embedded live previews. */
     polls?: Poll[];
@@ -42,7 +42,7 @@
   let {
     value = $bindable(''),
     placeholder = '',
-    onPickImage,
+    onPickFile,
     onChange,
     polls = [],
     selfId = -1,
@@ -61,8 +61,8 @@
   );
 
   let textareaEl: HTMLTextAreaElement | undefined = $state(undefined);
-  let imageUploading = $state(false);
-  let imageError = $state('');
+  let fileUploading = $state(false);
+  let fileError = $state('');
   let pendingImageCaret: number | null = null;
   // Captured from the failed snapshot so the retry button can call pipeline.retry(jobId).
   let failedJobId = $state<string | null>(null);
@@ -120,9 +120,9 @@
    * state is owned in one place so the two paths cannot drift.
    */
   async function runUpload(start: () => Promise<string | null>): Promise<void> {
-    imageError = '';
+    fileError = '';
     failedJobId = null;
-    imageUploading = true;
+    fileUploading = true;
     pendingImageCaret = selection().start;
     try {
       const url = await start();
@@ -138,17 +138,17 @@
       if (isCancelled(error)) return;
       console.error('[editor] upload failed', error);
       // The pipeline already translates engine error codes into localized copy.
-      imageError =
-        error instanceof Error && error.message ? error.message : copy.editor.imageUploadFailed;
+      fileError =
+        error instanceof Error && error.message ? error.message : copy.editor.fileUploadFailed;
     } finally {
-      imageUploading = false;
+      fileUploading = false;
       pendingImageCaret = null;
     }
   }
 
-  async function pickImage(): Promise<void> {
-    const pick = onPickImage;
-    if (!pick || imageUploading) return;
+  async function pickFile(): Promise<void> {
+    const pick = onPickFile;
+    if (!pick || fileUploading) return;
     await runUpload(pick);
   }
 
@@ -156,7 +156,7 @@
     icon: typeof Bold;
     title: string;
     run: () => void;
-    image?: boolean;
+    uploads?: boolean;
   }> = [
     {
       icon: Bold,
@@ -184,8 +184,8 @@
     {
       icon: FileUp,
       title: copy.editor.tools.file,
-      run: () => void pickImage(),
-      image: true,
+      run: () => void pickFile(),
+      uploads: true,
     },
   ];
 </script>
@@ -195,13 +195,13 @@
     <div class="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/60 p-1">
       {#each TOOLS as tool (tool.title)}
         <Tooltip
-          text={imageUploading && tool.image ? copy.editor.uploading : tool.title}
+          text={fileUploading && tool.uploads ? copy.editor.uploading : tool.title}
           side="bottom"
         >
           <button
             type="button"
             aria-label={tool.title}
-            disabled={imageUploading && tool.image}
+            disabled={fileUploading && tool.uploads}
             class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] hover:bg-muted hover:text-foreground"
             onclick={tool.run}
           >
@@ -222,9 +222,9 @@
         'ring-offset-background placeholder:text-muted-foreground',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
       )}></textarea>
-    {#if !imageUploading && imageError}
+    {#if !fileUploading && fileError}
       <div class="flex items-center gap-2" aria-live="polite">
-        <p class="text-xs text-destructive">{imageError}</p>
+        <p class="text-xs text-destructive">{fileError}</p>
         {#if failedJobId && onRetryUpload}
           <button
             type="button"

@@ -161,7 +161,7 @@ export class UploadPipeline {
   }
 
   /**
-   * Editor-image progress (purpose='editor'): the same SharedWorker pipeline as album uploads (transcode → hash → upload), but the result stays on the owning page's listener.
+   * Editor upload progress (purpose='editor'): the same SharedWorker pipeline as album uploads (transcode → hash → upload), but the result stays on the owning page's listener.
    */
   onEditorTask(l: (t: PipelineTaskSnapshot) => void): () => void {
     this.editorListeners.add(l);
@@ -403,7 +403,7 @@ export class UploadPipeline {
     this.log(`job ${jobId} URL written to op-log, awaiting sync`);
   }
 
-  uploadEditorImage(file: File): Promise<string> {
+  uploadEditorFile(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
       // The editor takes any file and uploads it as-is: no transcode leg, and no MIME gate —
       // the Markdown renderer decides by extension how to display whatever comes back.

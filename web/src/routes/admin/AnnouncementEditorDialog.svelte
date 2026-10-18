@@ -18,14 +18,14 @@
     draft?: { title: string; contentMd: string } | null;
     polls?: Poll[];
     selfId?: number;
-    onPickImage: (file: File) => Promise<string>;
+    onPickFile: (file: File) => Promise<string>;
     onSave: (title: string, contentMd: string) => void;
     onCancel: () => void;
-    /** Live snapshot of the in-flight editor image upload. */
+    /** Live snapshot of the in-flight editor upload. */
     uploadTask?: UploadRow | null;
-    /** Abort the in-flight editor image upload (the editor stays open). */
+    /** Abort the in-flight editor upload (the editor stays open). */
     onCancelUpload?: () => void;
-    /** Retry a failed editor image upload; returns the hosted URL. */
+    /** Retry a failed editor upload; returns the hosted URL. */
     onRetryUpload?: (jobId: string) => Promise<string>;
   }
 
@@ -34,7 +34,7 @@
     draft = null,
     polls = [],
     selfId = -1,
-    onPickImage,
+    onPickFile,
     onSave,
     onCancel,
     uploadTask = null,
@@ -44,7 +44,7 @@
   let title = $state(untrack(() => draft?.title ?? announcement?.title ?? ''));
   let contentMd = $state(untrack(() => draft?.contentMd ?? announcement?.contentMd ?? ''));
   let titleInput: HTMLInputElement | undefined = $state(undefined);
-  let imageInput: HTMLInputElement | undefined = $state(undefined);
+  let fileInput: HTMLInputElement | undefined = $state(undefined);
   let uploadBusy = $state(false);
   /** Object URL for the picked file, so the live preview can show the real image (and its
    *  real box) while the upload is still running. The editor leg uploads the picked file
@@ -84,8 +84,8 @@
     return { title, contentMd };
   }
 
-  async function pickImage() {
-    const input = imageInput;
+  async function pickFile() {
+    const input = fileInput;
     if (!input) return null;
     await new Promise<void>((resolve) => {
       let settled = false;
@@ -128,11 +128,11 @@
       });
     }
     try {
-      return await onPickImage(file);
+      return await onPickFile(file);
     } catch (error) {
       // A cancel is not a failure: the editor handles AbortError silently.
       const cancelled = error instanceof DOMException && error.name === 'AbortError';
-      if (!cancelled) console.error('[admin] editor image upload failed', error);
+      if (!cancelled) console.error('[admin] editor upload failed', error);
       throw error;
     } finally {
       uploadBusy = false;
@@ -159,7 +159,7 @@
   }
 </script>
 
-<input bind:this={imageInput} type="file" class="hidden" />
+<input bind:this={fileInput} type="file" class="hidden" />
 
 <EditorDialog
   label={copy.admin.editor.titlePlaceholder}
@@ -185,7 +185,7 @@
       <div class="min-h-0 flex-1">
         <MarkdownEditor
           bind:value={contentMd}
-          onPickImage={pickImage}
+          onPickFile={pickFile}
           {polls}
           {selfId}
           {uploadTask}

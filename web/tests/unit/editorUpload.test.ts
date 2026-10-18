@@ -56,7 +56,7 @@ test('editor upload progress: surfaces the upload leg and ignores another page',
   const { pipeline, port } = setup();
   const rows: PipelineTaskSnapshot[] = [];
   pipeline.onEditorTask((t) => rows.push(t));
-  const promise = pipeline.uploadEditorImage(png());
+  const promise = pipeline.uploadEditorFile(png());
   assert.equal(rows[0].phase, 'queued');
   assert.equal(rows[0].fileName, 'shot.png');
   assert.equal(rows[0].purpose, 'editor');
@@ -88,7 +88,7 @@ test('editor upload progress: surfaces the upload leg and ignores another page',
 
 test('editor upload progress: words failures as uploads, aborts on cancel, and retries', async () => {
   const failed = setup();
-  const first = failed.pipeline.uploadEditorImage(png());
+  const first = failed.pipeline.uploadEditorFile(png());
   const failedId = jobIdOf(failed.port);
   status(failed.port, {
     t: 'jobStatus',
@@ -100,7 +100,7 @@ test('editor upload progress: words failures as uploads, aborts on cancel, and r
   await assert.rejects(first, /Upload timed out/);
 
   const cancelled = setup();
-  const pending = cancelled.pipeline.uploadEditorImage(png());
+  const pending = cancelled.pipeline.uploadEditorFile(png());
   const cancelId = jobIdOf(cancelled.port);
   cancelled.pipeline.cancel(cancelId);
   const cancelRequest = cancelled.port.sent.at(-1);
@@ -113,7 +113,7 @@ test('editor upload progress: words failures as uploads, aborts on cancel, and r
   });
 
   const retried = setup();
-  const attempt = retried.pipeline.uploadEditorImage(png());
+  const attempt = retried.pipeline.uploadEditorFile(png());
   const retryId = jobIdOf(retried.port);
   status(retried.port, {
     t: 'jobStatus',
@@ -141,7 +141,7 @@ test('editor upload: takes any file, not only images and videos', async () => {
   const { pipeline, port } = setup();
   const rows: PipelineTaskSnapshot[] = [];
   pipeline.onEditorTask((t) => rows.push(t));
-  const promise = pipeline.uploadEditorImage(
+  const promise = pipeline.uploadEditorFile(
     new File([new Uint8Array([1])], 'notes.pdf', { type: 'application/pdf' }),
   );
   assert.equal(rows[0]?.phase, 'queued');
