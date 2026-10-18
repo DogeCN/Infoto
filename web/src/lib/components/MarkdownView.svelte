@@ -3,12 +3,16 @@
   import { onDestroy } from 'svelte';
   import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
-  import { upgradeMarkdownMedia } from '../../core/markdown';
+  import { markdownImageRule } from '../../core/markdown';
 
   // Two independent renderers: the default one blocks images (public sidebar
   // must not render arbitrary external image hosts); the trusted one allows them.
   const mdSafe = new MarkdownIt({ html: false, linkify: true, breaks: true }).disable(['image']);
   const mdFull = new MarkdownIt({ html: false, linkify: true, breaks: true });
+  // The trusted renderer emits the final media element itself: the extension decides whether
+  // `![alt](url)` becomes an image, a video, an audio player or a download link. Nothing has to
+  // be replaced after parsing, so the browser never fetches a placeholder `<img>` first.
+  mdFull.renderer.rules.image = markdownImageRule;
 
   let {
     content,
@@ -21,65 +25,59 @@
   let el: HTMLDivElement | undefined = $state(undefined);
   let html = $derived(DOMPurify.sanitize(renderer.render(content)));
 
-  /** Reserve media space with a shared shimmer until loading succeeds or fails. */
-  function wrapPendingMedia(root: ParentNode): void {
-    for (const media of Array.from(root.querySelectorAll('img, video'))) {
-      if (media.closest('.md-media')) continue;
-      const holder = document.createElement('span');
-      holder.className = 'md-media skeleton';
-      media.replaceWith(holder);
-      holder.appendChild(media);
-      // Once the intrinsic size is known, the box hugs the content instead of the 16:10
-      // guess: object-fit then has no letterbox, so the card radius lands on the actual
-      // image corners rather than on empty bars.
-      const done = () => {
-        holder.classList.remove('skeleton');
-        const w =
-          media instanceof HTMLImageElement
-            ? media.naturalWidth
-            : media instanceof HTMLVideoElement
-              ? media.videoWidth
-              : 0;
-        const h =
-          media instanceof HTMLImageElement
-            ? media.naturalHeight
-            : media instanceof HTMLVideoElement
-              ? media.videoHeight
-              : 0;
-        if (w > 0 && h > 0) holder.style.aspectRatio = `${w} / ${h}`;
-      };
-      // `complete` alone is not "loaded": an image parsed into a `<template>` has never started
-      // a load, and Chromium reports `complete === true` with `naturalWidth === 0` for it. The
-      // shortcut would then run `done()` with no dimensions, leave the holder on its 16:10
-      // placeholder, and letterbox every image. Requiring a real intrinsic size keeps the
-      // shortcut for a cached image and falls through to the listeners for a template one.
-      if (media instanceof HTMLImageElement && media.complete && media.naturalWidth > 0) {
-        done();
-        continue;
+  /** Drop the shimmer and reserve the media's real ratio once its intrinsic size is known. */
+  function settleMedia(media: HTMLImageElement | HTMLVideoElement): void {
+    const holder = media.closest('.md-media');
+    if (!(holder instanceof HTMLElement)) return;
+    holder.classList.remove('skeleton');
+    const width = media instanceof HTMLImageElement ? media.naturalWidth : media.videoWidth;
+    const height = media instanceof HTMLImageElement ? media.naturalHeight : media.videoHeight;
+    // `complete` alone is not enough: it can be true with naturalWidth 0. A real intrinsic
+    // size is what keeps the holder from staying on its 16:10 placeholder.
+    if (width > 0 && height > 0) holder.style.aspectRatio = `${width} / ${height}`;
+  }
+
+  /** One delegated listener set covers every media element, including the ones a content
+   *  change inserts after mount. */
+  function mediaLifecycle(node: HTMLElement) {
+    const onEvent = (event: Event) => {
+      const target = event.target;
+      if (target instanceof HTMLImageElement || target instanceof HTMLVideoElement) {
+        settleMedia(target);
       }
-      media.addEventListener('load', done, { once: true });
-      media.addEventListener('loadeddata', done, { once: true });
-      media.addEventListener('error', done, { once: true });
-    }
+    };
+    const events = ['load', 'loadedmetadata', 'error'] as const;
+    for (const name of events) node.addEventListener(name, onEvent, true);
+    return {
+      destroy: () => {
+        for (const name of events) node.removeEventListener(name, onEvent, true);
+      },
+    };
+  }
+
+  /** Video autoplays muted; a click toggles the sound. Delegated for the same reason. */
+  function mediaClick(node: HTMLElement) {
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      const video = target instanceof Element ? target.closest('video.markdown-video') : null;
+      if (!(video instanceof HTMLVideoElement)) return;
+      video.muted = !video.muted;
+      // Unmuting a playing element can pause it in some browsers.
+      void video.play().catch(() => undefined);
+    };
+    node.addEventListener('click', onClick);
+    return { destroy: () => node.removeEventListener('click', onClick) };
   }
 
   function apply() {
     if (!el) return;
-    // Build and upgrade inside an inert `<template>`, then attach once.
-    //
-    // A `<template>`'s content has no browsing context, so an `<img src>` inside it does not
-    // fetch — unlike a detached document (`createHTMLDocument` + `innerHTML` fetches anyway).
-    // That matters because markdown-it emits every `![]()` as `<img src>`: assigning the HTML
-    // straight into the live element starts the download before anything can replace it, which
-    // cost a video two requests (once as the `<img>`, once as the `<video>` it becomes) and made
-    // a non-media URL download in full to render a download button.
-    const scratch = document.createElement('template');
-    scratch.innerHTML = html;
-    // ![alt](url) always renders as <img> — swap it for the element its extension names so a
-    // video plays and a sound file gets a player.
-    upgradeMarkdownMedia(scratch.content);
-    wrapPendingMedia(scratch.content);
-    el.replaceChildren(...Array.from(scratch.content.childNodes));
+    // The renderer already produced the final elements and DOMPurify sanitized them, so a
+    // direct assignment starts exactly one request per media file — never one per `<img>`.
+    el.innerHTML = html;
+    // A cached image can report complete before its load event is dispatched.
+    for (const img of el.querySelectorAll<HTMLImageElement>('.md-media img')) {
+      if (img.complete && img.naturalWidth > 0) settleMedia(img);
+    }
   }
   $effect(() => {
     if (!el) return;
@@ -95,6 +93,8 @@
   bind:this={el}
   class="prose prose-invert prose-sm max-w-none break-words {className}"
   role="presentation"
+  use:mediaLifecycle
+  use:mediaClick
 ></div>
 
 <style>

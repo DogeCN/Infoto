@@ -1,7 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
+import MarkdownIt from 'markdown-it';
 import {
   insertImageAt,
   insertLinkAt,
@@ -10,9 +9,10 @@ import {
   isEmbeddableArtifact,
   isImageFile,
   mapOffsetThroughEdit,
+  markdownImageRule,
+  markdownMediaKind,
   prefixSelectedLines,
   wrapSelection,
-  markdownMediaKind,
 } from '../../src/core/markdown';
 
 test('markdown toolbar transforms: transforms Markdown selections and identifies animated artifacts', () => {
@@ -139,59 +139,40 @@ test('markdown toolbar transforms: transforms Markdown selections and identifies
   }
 });
 
-// The suite runs in node, so the DOM behaviour itself cannot be exercised here. What is pinned is
-// the one thing that silently reintroduces the bug: assigning parsed HTML straight into the live
-// element. markdown-it emits `<img src>` for every `![]()`, and a live document fetches a `src` as
-// soon as the node is inserted — so the upgrade that follows pays for the file. A `<template>`'s
-// content has no browsing context and does not fetch; a detached *document* does (measured).
-test('markdown view: parses inside a <template> so no image request precedes the upgrade', () => {
-  const source = readFileSync(
-    path.join(import.meta.dirname, '..', '..', 'src', 'lib', 'components', 'MarkdownView.svelte'),
-    'utf8',
-  );
-  const apply = /function apply\(\)[\s\S]*?\n {2}\}/.exec(source)?.[0];
-  assert.ok(apply, 'MarkdownView has no apply()');
+// The renderer emits the final element, so the document never sees a placeholder `<img>` that
+// would fetch the file before it could be replaced. This is a pure string assertion: the same
+// rule the component installs is run against real Markdown.
+test('markdown media: the renderer emits the final element, not an image to upgrade', () => {
+  const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+  md.renderer.rules.image = markdownImageRule;
 
-  assert.match(
-    apply,
-    /document\.createElement\('template'\)/,
-    'apply() must build in a <template>',
-  );
-  assert.match(apply, /scratch\.innerHTML = html/, 'the parsed HTML goes into the template');
-  assert.match(
-    apply,
-    /upgradeMarkdownMedia\(scratch\.content\)/,
-    'the upgrade must run on the template content, before attachment',
-  );
-  assert.match(
-    apply,
-    /el\.replaceChildren\(/,
-    'the finished tree is attached once, after the upgrade',
-  );
-  assert.doesNotMatch(
-    apply,
-    /el\.innerHTML\s*=/,
-    'assigning into the live element fetches every ![]() before it can be upgraded',
-  );
-});
+  const video = md.render('![clip](https://host/clip.mp4)');
+  assert.match(video, /<video src="https:\/\/host\/clip\.mp4"[^>]*autoplay[^>]*muted/);
+  assert.match(video, /aria-label="clip"/);
+  assert.doesNotMatch(video, /<img/);
 
-// A `<template>` image has never started a load, and Chromium reports `complete === true` with
-// `naturalWidth === 0` for it. A `complete`-only shortcut therefore runs the "measure the media"
-// step with no dimensions, leaving the holder on its 16:10 placeholder — every image letterboxed,
-// none reaching the rounded corners. The intrinsic size has to be part of the test.
-test('markdown view: the media shortcut requires a real intrinsic size', () => {
-  const source = readFileSync(
-    path.join(import.meta.dirname, '..', '..', 'src', 'lib', 'components', 'MarkdownView.svelte'),
-    'utf8',
-  );
+  const audio = md.render('![song](https://host/song.mp3)');
   assert.match(
-    source,
-    /media\.complete\s*&&\s*media\.naturalWidth\s*>\s*0/,
-    'the complete shortcut must also require naturalWidth > 0, or a template image stays at 16:10',
+    audio,
+    /<audio src="https:\/\/host\/song\.mp3" class="markdown-audio" controls aria-label="song"><\/audio>/,
   );
-  assert.doesNotMatch(
-    source,
-    /media\.complete\s*\)\s*\{\s*done\(\)/,
-    'a complete-but-unmeasured image must fall through to the load listeners',
+  assert.doesNotMatch(audio, /md-media/);
+
+  const image = md.render('![shot](https://host/a.webp)');
+  assert.match(
+    image,
+    /<span class="md-media skeleton"><img src="https:\/\/host\/a\.webp" alt="shot"><\/span>/,
   );
+
+  const file = md.render('![notes](https://host/notes.pdf)');
+  assert.match(file, /<a class="markdown-file" href="https:\/\/host\/notes\.pdf" download/);
+  assert.match(file, />notes<\/a>/);
+  assert.doesNotMatch(file, /<img/);
+
+  // No alt: the link label falls back to the URL; the image keeps an empty alt.
+  assert.match(md.render('![](https://host/f.bin)'), />https:\/\/host\/f\.bin<\/a>/);
+  assert.match(md.render('![](https://host/a.png)'), /alt=""/);
+
+  // Alt text is escaped, not injected as markup.
+  assert.match(md.render('![a"b](https://host/a.png)'), /alt="a&quot;b"/);
 });

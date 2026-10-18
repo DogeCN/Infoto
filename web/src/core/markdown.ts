@@ -1,4 +1,5 @@
 import { isLocaleCode, type LocaleCode } from '$shared/copy';
+import type { RendererRule } from 'markdown-it';
 
 export interface TextSelection {
   start: number;
@@ -227,56 +228,52 @@ export function isImageFile(file: { type?: string; name?: string }): boolean {
   return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
-function makeMarkdownVideo(src: string): HTMLVideoElement {
-  const video = document.createElement('video');
-  video.src = src;
-  video.autoplay = true;
-  video.loop = true;
-  // Muted autoplay is the only autoplay browsers allow — matches the GIF
-  // semantics most announcements want. Click unmutes real video.
-  video.muted = true;
-  video.playsInline = true;
-  video.className = 'markdown-video';
-  video.addEventListener('click', () => {
-    video.muted = !video.muted;
-    // Unmuting a playing element can pause it in some browsers.
-    void video.play().catch(() => undefined);
-  });
-  return video;
+const HTML_ENTITIES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+/** Escape a value for use in element text or a double-quoted attribute. */
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => HTML_ENTITIES[char]!);
 }
 
-function makeMarkdownAudio(src: string): HTMLAudioElement {
-  const audio = document.createElement('audio');
-  audio.src = src;
-  audio.controls = true;
-  audio.className = 'markdown-audio';
-  return audio;
-}
-
-/** Replace sanitized `![alt](url)` images with the element their extension names: a `<video>`
- *  for a video file, an `<audio>` for a sound file, and a plain `<a download>` link for a file
- *  Markdown has no element for (a PDF, a zip). Real images stay `<img>`. */
-export function upgradeMarkdownMedia(root: ParentNode): void {
-  for (const img of Array.from(root.querySelectorAll('img'))) {
-    const src = img.getAttribute('src') ?? '';
-    const alt = img.getAttribute('alt') ?? '';
-    if (!isEmbeddableArtifact(src)) {
-      const link = document.createElement('a');
-      link.href = src;
-      link.className = 'markdown-file';
-      link.setAttribute('download', '');
-      link.rel = 'noopener noreferrer';
-      link.textContent = alt || src;
-      img.replaceWith(link);
-      continue;
-    }
-    const kind = markdownMediaKind(src);
-    if (kind === 'image') continue;
-    const media = kind === 'video' ? makeMarkdownVideo(src) : makeMarkdownAudio(src);
-    if (alt) media.setAttribute('aria-label', alt);
-    img.replaceWith(media);
+/**
+ * The element a hosted file becomes in rendered Markdown: media in place, anything else as a
+ * download link. Written as HTML because it is the markdown-it renderer's output — the final
+ * element exists before the document sees it, so no placeholder `<img>` ever fetches the file.
+ */
+export function markdownMediaHtml(src: string, alt: string): string {
+  if (!isEmbeddableArtifact(src)) {
+    return `<a class="markdown-file" href="${escapeHtml(src)}" download rel="noopener noreferrer">${escapeHtml(alt || src)}</a>`;
   }
+  const kind = markdownMediaKind(src);
+  const label = alt ? ` aria-label="${escapeHtml(alt)}"` : '';
+  if (kind === 'video') {
+    // Muted autoplay is the only autoplay browsers allow; a click unmutes in MarkdownView.
+    return `<span class="md-media skeleton"><video src="${escapeHtml(src)}" class="markdown-video" autoplay loop muted playsinline${label}></video></span>`;
+  }
+  if (kind === 'audio') {
+    // No aspect-ratio holder: a player is a full-width bar, not a picture.
+    return `<audio src="${escapeHtml(src)}" class="markdown-audio" controls${label}></audio>`;
+  }
+  return `<span class="md-media skeleton"><img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}"></span>`;
 }
+
+/** markdown-it's `image` rule: `![alt](url)` becomes the element its extension names. */
+export type MarkdownImageRule = RendererRule;
+
+export const markdownImageRule: MarkdownImageRule = (tokens, index, options, env, self) => {
+  const token = tokens[index];
+  if (!token) return '';
+  const rawSrc = token.attrGet('src');
+  const src = typeof rawSrc === 'string' ? rawSrc : '';
+  const alt = self.renderInlineAsText(token.children ?? [], options, env);
+  return markdownMediaHtml(src, alt);
+};
 
 /**
  * Insert one hosted file into Markdown: an image, a video or a sound file as `![name](url)`

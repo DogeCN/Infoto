@@ -588,37 +588,29 @@ before deadline` / `no response before deadline`).
     - **anything else — a `.pdf`, a `.zip`, no extension at all — becomes `[name](url)`**, a
       plain link the reader clicks to open or download. `isEmbeddableArtifact` is the one
       predicate (image ∪ video ∪ audio extensions) and is shared by `insertMediaAt` and
-      `upgradeMarkdownMedia`, so what the editor inserts is what the page renders.
-    - **The HTML is parsed and upgraded inside an inert `<template>`, then attached once.**
-      markdown-it renders every `![]()` as `<img src>` because at parse time it cannot know what
-      the URL points at, and **the browser starts fetching a `src` the moment the node enters a
-      live document** — so assigning straight into the rendered element downloads the file before
-      `upgradeMarkdownMedia` can replace it, and swapping the element does not cancel a request
-      already in flight. A `<template>`'s content has no browsing context, so nothing in it
-      fetches: the upgrade finishes first, then the finished tree is attached. Measured on the
-      same six URLs before → after: a `.pdf`, a `.zip` and an extension-less URL went from
-      **downloading in full** (to render a download button) to **zero requests**, and a video and
-      an audio file went from **two requests each** (the `<img>`, then the real element) to
-      **one**.
-      - ⚠️ **A detached _document_ is not inert.** `document.implementation.createHTMLDocument()`
-        followed by `innerHTML` **does** fetch — verified, it made the request. Only
-        `<template>` (and `DOMParser`, which was also measured) suppress it. A detached document
-        merely has no browsing context of its own; it does not stop resource loading.
-      - ⚠️ **`img.complete` is `true` inside a `<template>`, with `naturalWidth === 0`.** The
-        image has never started a load, and Chromium reports the "nothing pending" state as
-        complete. The `complete` shortcut in `wrapPendingMedia` therefore ran its measure step
-        with no dimensions, the `w > 0 && h > 0` guard skipped, and the holder stayed on its
-        16:10 placeholder — every image letterboxed inside a box of the wrong shape, with the
-        rounded corners sitting on empty space instead of on the picture. The shortcut now
-        requires `media.naturalWidth > 0`; a cached image still takes it, a template image falls
-        through to the load listeners. Measured after: an 800×600 image fills a 360px column at
-        360×270, a 600×900 one at 360×540, both with the holder radius.
-      - The alternative — rewriting non-media `![]()` into `[]()` in the Markdown source — was
-        implemented and **rejected**: it prevents the fetch, but the resulting link is a plain
-        Markdown link, so it loses `class="markdown-file"` and the `download` attribute that
-        `upgradeMarkdownMedia` applies. The file must keep reading as a button.
-      - Because the upgrade happens before attachment, `upgradeMarkdownMedia` must be given the
-        template's `content` fragment, not the live element.
+      `markdownImageRule`, so what the editor inserts is what the page renders.
+    - **The renderer emits the final element; nothing is upgraded after parsing.** The trusted
+      renderer (`mdFull`) replaces markdown-it's `image` rule with `markdownImageRule`
+      (`core/markdown.ts`), so `![alt](url)` is born as `<img>`, `<video>`, `<audio>` or
+      `<a class="markdown-file" download>` according to the same extension predicate. The browser
+      therefore never sees a placeholder `<img>` and never downloads a `.pdf` in full to render a
+      download button; a video is one request, not two.
+      - `MarkdownView` assigns the sanitized result directly. The old `<template>` stage existed
+        only to prevent that placeholder fetch; with the final element already in the string it
+        has no job left and is gone.
+      - ⚠️ **Do not reintroduce a post-parse element swap.** It looks equivalent, but every
+        `![]()` would become an `<img src>` in the live document first, and replacing the node
+        does not cancel the request it started.
+      - The shimmer/aspect-ratio holder is part of the renderer's image/video markup
+        (`<span class="md-media skeleton">`); one delegated `load` / `loadedmetadata` listener on
+        the container removes the shimmer and writes the real ratio. It still requires a real
+        intrinsic size (`naturalWidth > 0`), so a cached image settles instead of leaving the
+        holder on its 16:10 placeholder.
+      - `mdSafe` keeps images disabled for public content: the rule is installed on `mdFull`
+        only.
+    - Video is muted for autoplay (`autoplay loop muted playsinline`) — the only autoplay browsers
+      allow — and one delegated click listener on the container toggles the sound. Audio is a
+      full-width `<audio controls>` with no aspect-ratio holder: a player is a bar, not a picture.
     - The toolbar button is **File**, not Image.
     - **No alt text.** The file name used to be the alt, and the browser paints alt as
       broken-image text while the image decodes — it read as an ugly caption over the
@@ -1051,37 +1043,36 @@ comparison above against a deployed build.
 
 The parts of this contract that are asserted by `npm test`:
 
-| Invariant                                                                      | Enforced by                              |
-| ------------------------------------------------------------------------------ | ---------------------------------------- |
-| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions     | `web/tests/unit/designTokens.test.ts`    |
-| `motion.ts` motion fallbacks equal the `@theme` motion tokens                  | `web/tests/unit/designTokens.test.ts`    |
-| `schema.sql` equals `schema-ddl.ts` byte for byte                              | `src/worker/schema-alignment.test.ts`    |
-| No `transition` in `web/src` carries a literal duration or easing curve        | `web/tests/unit/designTokens.test.ts`    |
-| `GLITCH_PALETTE` equals the matching `@theme` colours                          | `web/tests/unit/designTokens.test.ts`    |
-| The reflow flip window outlasts the reflow duration it brackets                | `web/tests/unit/motion.test.ts`          |
-| Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click               | `web/tests/unit/lightboxEngine.test.ts`  |
-| The upload's silence budget ends where the response budget begins              | `web/tests/unit/uploadClient.test.ts`    |
-| The upload leg's ceiling holds independently of the image pool                 | `web/tests/unit/uploadPool.test.ts`      |
-| `uploadPoolSize` stays under the image pool at its widest                      | `web/tests/unit/pipeline.test.ts`        |
-| Which op dimensions collapse, and which never do (ADR 0016)                    | `web/tests/unit/frontend.test.ts`        |
-| The local fold clears the opposite attitude, as the server does                | `web/tests/unit/frontend.test.ts`        |
-| A queued op is superseded in place, and an in-flight one never is              | `web/tests/unit/syncEngine.test.ts`      |
-| A photo op waits for the upload op that creates its row                        | `web/tests/unit/pendingPhotoOps.test.ts` |
-| The server clears the opposite attitude when either is added                   | `src/worker/routes/sync.test.ts`         |
-| The cached snapshot round-trips through `metaCache` and is replaced on sync    | `web/tests/unit/oplog.test.ts`           |
-| A media URL's extension picks the Markdown element (video / audio / image)     | `web/tests/unit/markdown.test.ts`        |
-| Only a real image extension renders in place; a non-media file links           | `web/tests/unit/markdown.test.ts`        |
-| Markdown parses inside a `<template>`, so no fetch precedes the media upgrade  | `web/tests/unit/markdown.test.ts`        |
-| The media shortcut requires an intrinsic size, not just `complete`             | `web/tests/unit/markdown.test.ts`        |
-| A picked file previews locally by MIME **or** file name                        | `web/tests/unit/markdown.test.ts`        |
-| The editor uploads any file, not only images and videos                        | `web/tests/unit/editorUpload.test.ts`    |
-| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer | `web/tests/unit/designTokens.test.ts`    |
-| Markdown structure follows GitHub: heading ladder, quote bar, code chip        | `web/tests/unit/designTokens.test.ts`    |
-| A block-opening or block-closing image carries no rhythm margin                | `web/tests/unit/designTokens.test.ts`    |
-| No decorative text is injected into a line: quote glyphs and code backticks    | `web/tests/unit/designTokens.test.ts`    |
-| A table reads at body size, on a collapsed grid, and scrolls when wide         | `web/tests/unit/designTokens.test.ts`    |
-| The font race cancels the losers, and a failed source removes only itself      | `src/shared/fonts.test.ts`               |
-| The error page's CSP hash equals the race script it authorises                 | `src/shared/fonts.test.ts`               |
+| Invariant                                                                            | Enforced by                              |
+| ------------------------------------------------------------------------------------ | ---------------------------------------- |
+| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions           | `web/tests/unit/designTokens.test.ts`    |
+| `motion.ts` motion fallbacks equal the `@theme` motion tokens                        | `web/tests/unit/designTokens.test.ts`    |
+| `schema.sql` equals `schema-ddl.ts` byte for byte                                    | `src/worker/schema-alignment.test.ts`    |
+| No `transition` in `web/src` carries a literal duration or easing curve              | `web/tests/unit/designTokens.test.ts`    |
+| `GLITCH_PALETTE` equals the matching `@theme` colours                                | `web/tests/unit/designTokens.test.ts`    |
+| The reflow flip window outlasts the reflow duration it brackets                      | `web/tests/unit/motion.test.ts`          |
+| Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click                     | `web/tests/unit/lightboxEngine.test.ts`  |
+| The upload's silence budget ends where the response budget begins                    | `web/tests/unit/uploadClient.test.ts`    |
+| The upload leg's ceiling holds independently of the image pool                       | `web/tests/unit/uploadPool.test.ts`      |
+| `uploadPoolSize` stays under the image pool at its widest                            | `web/tests/unit/pipeline.test.ts`        |
+| Which op dimensions collapse, and which never do (ADR 0016)                          | `web/tests/unit/frontend.test.ts`        |
+| The local fold clears the opposite attitude, as the server does                      | `web/tests/unit/frontend.test.ts`        |
+| A queued op is superseded in place, and an in-flight one never is                    | `web/tests/unit/syncEngine.test.ts`      |
+| A photo op waits for the upload op that creates its row                              | `web/tests/unit/pendingPhotoOps.test.ts` |
+| The server clears the opposite attitude when either is added                         | `src/worker/routes/sync.test.ts`         |
+| The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`           |
+| A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`        |
+| Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`        |
+| The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`        |
+| A picked file previews locally by MIME **or** file name                              | `web/tests/unit/markdown.test.ts`        |
+| The editor uploads any file, not only images and videos                              | `web/tests/unit/editorUpload.test.ts`    |
+| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer       | `web/tests/unit/designTokens.test.ts`    |
+| Markdown structure follows GitHub: heading ladder, quote bar, code chip              | `web/tests/unit/designTokens.test.ts`    |
+| A block-opening or block-closing image carries no rhythm margin                      | `web/tests/unit/designTokens.test.ts`    |
+| No decorative text is injected into a line: quote glyphs and code backticks          | `web/tests/unit/designTokens.test.ts`    |
+| A table reads at body size, on a collapsed grid, and scrolls when wide               | `web/tests/unit/designTokens.test.ts`    |
+| The font race cancels the losers, and a failed source removes only itself            | `src/shared/fonts.test.ts`               |
+| The error page's CSP hash equals the race script it authorises                       | `src/shared/fonts.test.ts`               |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are
