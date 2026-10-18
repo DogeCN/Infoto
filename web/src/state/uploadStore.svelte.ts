@@ -151,11 +151,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   const tempIdByJob = new Map<string, number>();
   const jobByTempId = new Map<number, string>();
   const photoCache = new Map<string, Photo>();
-  const EMPTY_MARKS: { likes: number[]; dislikes: number[]; reports: number[] } = {
-    likes: [],
-    dislikes: [],
-    reports: [],
-  };
   // Guard against double-toasting the same failure within one session (e.g. a
   // redundant status echo). Replay across a page reload re-toasts intentionally:
   // a lingering failed upload deserves a fresh reminder.
@@ -225,7 +220,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
         type: 0 as const,
       };
       const sha = t.sha256 ?? '';
-      const marks = sha ? store.pendingMarksFor(sha) : EMPTY_MARKS;
+      const marks = store.pendingMarksFor(sha);
       const url = t.url ?? previewUrls.get(t.jobId) ?? '';
       const createdAt = tempCreatedAt.get(t.jobId) ?? Date.now();
       const cached = photoCache.get(t.jobId);

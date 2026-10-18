@@ -41,6 +41,11 @@ const OPPOSITE_KIND: Partial<Record<MarkKind, MarkKind>> = { like: 'dislike', di
 /** The three mark columns of one photo. */
 export type MarkSet = { likes: number[]; dislikes: number[]; reports: number[] };
 
+/** The all-empty mark columns, shared by every caller that has no marks yet. The pending-card
+ *  projection compares mark sets by reference, so a fresh `{ likes: [], … }` per lookup would
+ *  make every recompute look like a change. Never mutate the returned object. */
+export const EMPTY_MARKS: MarkSet = { likes: [], dislikes: [], reports: [] };
+
 /**
  * Apply one mark to a photo's mark columns, mirroring the server: adding a like or a dislike
  * also clears the other column, because the two are one choice. The server enforces that in

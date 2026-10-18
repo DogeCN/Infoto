@@ -227,17 +227,11 @@ function readCachedSelfId(): number {
   return -1;
 }
 
-function readCachedPendingMarks(): Map<
-  string,
-  { likes: number[]; dislikes: number[]; reports: number[] }
-> {
+function readCachedPendingMarks(): Map<string, ops.MarkSet> {
   try {
     const raw = localStorage.getItem(PENDING_MARKS_KEY);
     if (raw !== null) {
-      const parsed = JSON.parse(raw) as [
-        string,
-        { likes: number[]; dislikes: number[]; reports: number[] },
-      ][];
+      const parsed = JSON.parse(raw) as [string, ops.MarkSet][];
       return new Map(parsed);
     }
   } catch {
@@ -246,9 +240,7 @@ function readCachedPendingMarks(): Map<
   return new Map();
 }
 
-function writePendingMarks(
-  marks: Map<string, { likes: number[]; dislikes: number[]; reports: number[] }>,
-): void {
+function writePendingMarks(marks: Map<string, ops.MarkSet>): void {
   try {
     localStorage.setItem(PENDING_MARKS_KEY, JSON.stringify([...marks.entries()]));
   } catch {
@@ -349,10 +341,7 @@ class AppState {
 
   /** Optimistic marks on photos whose row does not exist server-side yet, keyed by sha256
    *  (the same address photo ops use). Merged into the pending cards so they highlight. */
-  pendingMarks =
-    $state<Map<string, { likes: number[]; dislikes: number[]; reports: number[] }>>(
-      readCachedPendingMarks(),
-    );
+  pendingMarks = $state<Map<string, ops.MarkSet>>(readCachedPendingMarks());
 
   private engine: SyncEngine | null = null;
 
@@ -515,14 +504,15 @@ class AppState {
     this.photos = ops.applyDelete(this.photos, ids);
   }
 
-  /** Marks of a pending card, merged into its render model. */
-  pendingMarksFor(sha256: string): { likes: number[]; dislikes: number[]; reports: number[] } {
-    return this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
+  /** Marks of a pending card, merged into its render model. Returns the shared empty set when
+   *  the card has none, so the projection's reference comparison stays meaningful. */
+  pendingMarksFor(sha256: string): ops.MarkSet {
+    return this.pendingMarks.get(sha256) ?? ops.EMPTY_MARKS;
   }
 
   /** Apply one mark to a pending card and replace the map entry. */
   private setPendingMark(sha256: string, kind: ops.MarkKind, add: boolean): void {
-    const cur = this.pendingMarks.get(sha256) ?? { likes: [], dislikes: [], reports: [] };
+    const cur = this.pendingMarks.get(sha256) ?? ops.EMPTY_MARKS;
     const marks = new Map(this.pendingMarks);
     marks.set(sha256, ops.applyMarkToSet(cur, kind, this.selfId, add));
     this.pendingMarks = marks;
