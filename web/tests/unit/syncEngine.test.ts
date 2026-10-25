@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import type { Op, SyncRequest, SyncResponse } from '$shared/types';
 import type { SyncCallResult, SyncClientIo } from '../../src/core/api/syncClient';
-import { clearOps, openOplogDb, readOps } from '../../src/core/oplog';
+import { appendOp, clearOps, openOplogDb, readOps } from '../../src/core/oplog';
 import {
   type EngineIo,
   KEEPALIVE_BODY_LIMIT,
@@ -683,4 +683,34 @@ test('addOp supersedes a queued op on the same dimension, and never an in-flight
     (await readOps(db)).map((entry) => entry.op.type),
     ['unlike'],
   );
+});
+
+// `queuedOps` is how the page renders what an earlier session left unsent — it must be a plain
+// read of the durable log, never a request: the sync trigger list is closed (ADR 0008), and a
+// reload that peeked at the log must not become a fourth trigger.
+test('SyncEngine log: queuedOps reads every op in submission order and sends nothing', async () => {
+  await appendOp(db, op(1));
+  const postSyncFn = vi.fn(() => Promise.resolve(result(snapshot())));
+  const e = new SyncEngine({ db, postSyncFn });
+
+  assert.deepEqual(await e.queuedOps(), [op(1)]);
+  assert.equal(postSyncFn.mock.calls.length, 0, 'reading the log is not a sync attempt');
+
+  await appendOp(db, op(2));
+  assert.deepEqual(await e.queuedOps(), [op(1), op(2)]);
+});
+
+test('SyncEngine log: a confirmed batch leaves queuedOps empty', async () => {
+  await appendOp(db, op(1));
+  const e = new SyncEngine({ db, postSyncFn: () => Promise.resolve(result(snapshot())) });
+
+  await e.sync();
+  assert.deepEqual(await e.queuedOps(), []);
+});
+
+test('SyncEngine log: queuedOps rejects when the log cannot be read, so a caller keeps its last list', async () => {
+  const e = new SyncEngine({ db });
+  await e.queuedOps();
+  db.close();
+  await assert.rejects(() => e.queuedOps());
 });

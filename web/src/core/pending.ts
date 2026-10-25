@@ -1,6 +1,6 @@
 // Optimistic pending-card projection — pure, so the upload store only wires it to state.
 
-import type { Photo } from '$shared/types';
+import { MEDIA_TYPE, type Op, type Photo, type UploadPayload } from '$shared/types';
 import type { MarkSet } from './ops';
 
 /** How far the hosted copy of a pending card's media has got in this page. */
@@ -58,6 +58,99 @@ export function pendingMediaUrl(
 ): string {
   if (hosted && readiness === 'pending' && local) return local;
   return hosted || local;
+}
+
+/** The fields one unconfirmed `upload` op states — everything a card renders, minus what the
+ *  store owns (`id`, `uploader`, `marks`). */
+export interface QueuedUploadFields {
+  sha256: string;
+  url: string;
+  width: number;
+  height: number;
+  size: number;
+  type: Photo['type'];
+  createdAt: number;
+}
+
+/** A whole number within the server's accepted range for media metadata. */
+const mediaInt = (v: unknown, min: number): number | null =>
+  typeof v === 'number' && Number.isSafeInteger(v) && v >= min ? v : null;
+
+/**
+ * The card an unconfirmed `upload` op describes, or null when the op is not a complete one.
+ *
+ * An upload op is written only once the facade has returned the photo's URL, so it is the whole
+ * record of a photo that is hosted and paid for but not yet in the album — which is exactly what
+ * a reload otherwise loses, because the card showing it lived in the upload store's memory and
+ * the SharedWorker drops its resume record the moment the upload succeeds.
+ *
+ * The acceptance rules mirror the server's, so an op the server would drop never renders a card
+ * that could not go away. `isAllowedMediaUrl` is the one rule it cannot mirror: it needs the
+ * Worker's environment, and a bad URL is caught by the card's own load failure instead.
+ */
+export function queuedUploadFromOp(op: Op): QueuedUploadFields | null {
+  if (op.type !== 'upload') return null;
+  const payload = (op.payload ?? {}) as Partial<UploadPayload>;
+  const { sha256, url, type, createdAt } = payload;
+  if (typeof sha256 !== 'string' || !sha256 || typeof url !== 'string' || !url) return null;
+  const width = mediaInt(payload.width, 1);
+  const height = mediaInt(payload.height, 1);
+  const size = mediaInt(payload.size, 0);
+  if (width === null || height === null || size === null) return null;
+  if (type !== MEDIA_TYPE.IMAGE && type !== MEDIA_TYPE.ANIMATED && type !== MEDIA_TYPE.VIDEO)
+    return null;
+  const created = mediaInt(createdAt, 1);
+  if (created === null) return null;
+  return { sha256, url, width, height, size, type, createdAt: created };
+}
+
+/**
+ * The cards the op log states, in submission order — the cards a page load must show before any
+ * sync trigger runs.
+ *
+ * `landed` is the album's own hashes and `live` the hashes of cards an in-memory job already
+ * owns, so this projection can never double-draw a photo: the moment a snapshot carries a sha,
+ * or a job owns it, the op-derived card is gone. The first op wins for a repeated sha — the same
+ * file picked twice uploads twice and logs two ops for one photo.
+ */
+export function queuedUploadCards(
+  ops: readonly Op[],
+  seen: { landed: ReadonlySet<string>; live: ReadonlySet<string> },
+): QueuedUploadFields[] {
+  const out: QueuedUploadFields[] = [];
+  const drawn = new Set<string>();
+  for (const op of ops) {
+    const fields = queuedUploadFromOp(op);
+    if (!fields || drawn.has(fields.sha256)) continue;
+    if (seen.landed.has(fields.sha256) || seen.live.has(fields.sha256)) continue;
+    drawn.add(fields.sha256);
+    out.push(fields);
+  }
+  return out;
+}
+
+/** Whether two projections are the same cards, field for field. A re-read that changed nothing
+ *  must not hand the layout a new array, or a failed sync would re-key the whole grid. */
+export function sameQueuedUploads(
+  a: readonly QueuedUploadFields[],
+  b: readonly QueuedUploadFields[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.sha256 !== y.sha256 ||
+      x.url !== y.url ||
+      x.width !== y.width ||
+      x.height !== y.height ||
+      x.size !== y.size ||
+      x.type !== y.type ||
+      x.createdAt !== y.createdAt
+    )
+      return false;
+  }
+  return true;
 }
 
 export interface PendingPhotoFields {

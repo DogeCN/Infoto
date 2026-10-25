@@ -1,11 +1,15 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import type { Op } from '$shared/types';
 import { EMPTY_MARKS } from '../../src/core/ops';
 import {
   pendingMediaUrl,
   pendingPhoto,
+  queuedUploadCards,
+  queuedUploadFromOp,
   rendersCard,
   samePendingPhoto,
+  sameQueuedUploads,
   type PendingPhotoFields,
 } from '../../src/core/pending';
 
@@ -88,4 +92,85 @@ test('pending card: a transcode failure renders no card, an upload failure does'
   for (const phase of ['queued', 'lease-wait', 'transcoding', 'hashing', 'duplicate']) {
     assert.equal(rendersCard({ phase }), false, phase);
   }
+});
+
+/** An `upload` op as the SharedWorker writes one, with a field overridden or removed. */
+const uploadOp = (over: Record<string, unknown> = {}): Op => ({
+  type: 'upload',
+  target: null,
+  payload: {
+    sha256: 'sha-a',
+    url: 'https://host/a.webp',
+    width: 800,
+    height: 600,
+    size: 100,
+    type: 0,
+    createdAt: 1_000,
+    ...over,
+  },
+});
+
+// An upload op is written only after the facade returned the URL, so it is the whole record of
+// a hosted photo that is not in the album yet — the only thing left after a reload drops the
+// card. A payload the server would refuse must not project a card either, or it could never go
+// away.
+test('queued upload: the op is a card only when its payload is complete', () => {
+  assert.deepEqual(queuedUploadFromOp(uploadOp()), {
+    sha256: 'sha-a',
+    url: 'https://host/a.webp',
+    width: 800,
+    height: 600,
+    size: 100,
+    type: 0,
+    createdAt: 1_000,
+  });
+
+  // Other op kinds contribute nothing.
+  assert.equal(queuedUploadFromOp({ type: 'like', targetSha: 'sha-a' }), null);
+
+  for (const bad of [
+    { sha256: '' },
+    { sha256: undefined },
+    { url: '' },
+    { width: undefined },
+    { width: -1 },
+    { width: 1.5 },
+    { height: 0 },
+    { size: -1 },
+    { type: 3 },
+    { type: undefined },
+    { createdAt: 0 },
+    { createdAt: undefined },
+  ]) {
+    assert.equal(queuedUploadFromOp(uploadOp(bad)), null, JSON.stringify(bad));
+  }
+});
+
+test('queued upload: the log projects cards in order, without a landed or live duplicate', () => {
+  const a = uploadOp({ sha256: 'a', url: 'https://host/a.webp' });
+  const b = uploadOp({ sha256: 'b', url: 'https://host/b.webp' });
+  const none = new Set<string>();
+
+  const shas = (ops: Op[], landed = none, live = none): string[] =>
+    queuedUploadCards(ops, { landed, live }).map((fields) => fields.sha256);
+
+  // Submission order, and a mark op between two uploads contributes nothing.
+  assert.deepEqual(shas([a, { type: 'like', targetSha: 'a' }, b]), ['a', 'b']);
+  // A sha the snapshot carries renders as the real photo, not as its op's card.
+  assert.deepEqual(shas([a, b], new Set(['a'])), ['b']);
+  // A live job owns its own card; the projection must not draw a second one.
+  assert.deepEqual(shas([a, b], none, new Set(['b'])), ['a']);
+  // Picking the same file twice uploads twice and logs two ops for one photo: one card.
+  assert.deepEqual(shas([a, uploadOp({ sha256: 'a' })]), ['a']);
+  // The card carries the hosted URL and the upload instant the op recorded.
+  assert.equal(queuedUploadCards([a], { landed: none, live: none })[0]!.url, 'https://host/a.webp');
+});
+
+test('queued upload: an unchanged projection keeps its identity', () => {
+  const [one] = queuedUploadCards([uploadOp()], { landed: new Set(), live: new Set() });
+  const [same] = queuedUploadCards([uploadOp()], { landed: new Set(), live: new Set() });
+  assert.equal(sameQueuedUploads([one!], [same!]), true);
+  assert.equal(sameQueuedUploads([one!], [one!, one!]), false);
+  assert.equal(sameQueuedUploads([one!], [{ ...one!, url: 'https://host/b.webp' }]), false);
+  assert.equal(sameQueuedUploads([one!], [{ ...one!, createdAt: 2_000 }]), false);
 });

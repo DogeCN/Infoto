@@ -11,10 +11,13 @@ import { readArtifact } from '../transcode/opfs';
 import {
   pendingMediaUrl,
   pendingPhoto,
+  queuedUploadCards,
   rendersCard,
   type UploadOverlay,
   samePendingPhoto,
+  sameQueuedUploads,
   type HostedReadiness,
+  type QueuedUploadFields,
 } from '../core/pending';
 import type { SyncEngine } from '../core/engine';
 import type { createAppStore } from './appStore.svelte';
@@ -235,6 +238,56 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   // Stable optimistic timestamps preserve sort order across progress updates.
   const tempCreatedAt = new Map<string, number>(readTempCreatedAt());
 
+  // ---- Cards the op log still states ----
+  // An upload that finished has no resume record left (the SharedWorker deletes it at
+  // `done`) and no live job, so after a reload the only durable trace of the photo is its
+  // `upload` op — which carries the hosted URL, the dimensions and the upload instant. The
+  // card is projected from that, so a page load shows the photos the log is still holding
+  // instead of an empty grid the user cannot act on.
+  /** The projection, in op submission order. */
+  let queuedUploads = $state<QueuedUploadFields[]>([]);
+  /** Temp ids for the op-derived cards, from the same counter as the live ones, so the two
+   *  card sets can never collide in one selection. */
+  const tempIdBySha = new Map<string, number>();
+  /** Shas the user deleted this session. `removeOpsBySha` matches `targetSha` and an upload op
+   *  carries none, so the op outlives the withdrawal until a sync confirms it; without this a
+   *  re-read would put the card back in the meantime. */
+  const withdrawnShas = new Set<string>();
+  /** `photoCache` key for an op-derived card, distinct from every jobId. */
+  const queuedKey = (sha: string): string => `op:${sha}`;
+
+  /**
+   * Re-project the cards the op log states. Called at page open and after a sync attempt
+   * finishes — a read of the log, never a sync trigger of its own (ADR 0008).
+   */
+  async function refreshQueuedUploads(): Promise<void> {
+    if (destroyed) return;
+    let ops: Op[];
+    try {
+      ops = await engine.queuedOps();
+    } catch {
+      // An unreadable log leaves the cards on screen alone rather than emptying the grid.
+      return;
+    }
+    const landed = new Set(store.photos.map((photo) => photo.sha256));
+    const live = new Set<string>();
+    for (const task of uploadTasks.values()) if (task.sha256) live.add(task.sha256);
+    const next = queuedUploadCards(ops, { landed, live }).filter(
+      (fields) => !withdrawnShas.has(fields.sha256),
+    );
+    for (const fields of next) {
+      if (!tempIdBySha.has(fields.sha256)) tempIdBySha.set(fields.sha256, nextTempId--);
+    }
+    const keep = new Set(next.map((fields) => fields.sha256));
+    for (const sha of [...tempIdBySha.keys()]) {
+      if (keep.has(sha)) continue;
+      tempIdBySha.delete(sha);
+      photoCache.delete(queuedKey(sha));
+    }
+    // A re-read that changed nothing must not hand the layout a new array.
+    if (!sameQueuedUploads(queuedUploads, next)) queuedUploads = next;
+  }
+
   const pendingPhotos = $derived.by(() => {
     const out: Photo[] = [];
     // Sync-landed shas hide optimistic done/duplicate cards in the same render
@@ -278,6 +331,37 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       } else {
         const photo = pendingPhoto(fields);
         photoCache.set(t.jobId, photo);
+        out.push(photo);
+      }
+    }
+    // Unconfirmed uploads from the op log: the same card a `done` job leaves behind, still
+    // awaiting the sync that turns it into a row. The guard mirrors the live `done` path, so
+    // the moment the snapshot carries this sha the real photo takes the card's place.
+    for (const q of queuedUploads) {
+      if (landedShas.has(q.sha256)) continue;
+      const id = tempIdBySha.get(q.sha256);
+      if (id === undefined) continue;
+      const fields = {
+        id,
+        sha256: q.sha256,
+        url: q.url,
+        uploader: store.selfId,
+        width: q.width,
+        height: q.height,
+        size: q.size,
+        type: q.type,
+        // The upload instant the op carries, not "now": it is what orders the grid and it
+        // survives the reload, unlike the live cards' session-scoped stamp.
+        createdAt: q.createdAt,
+        marks: store.pendingMarksFor(q.sha256),
+      };
+      const key = queuedKey(q.sha256);
+      const cached = photoCache.get(key);
+      if (cached && samePendingPhoto(cached, fields)) {
+        out.push(cached);
+      } else {
+        const photo = pendingPhoto(fields);
+        photoCache.set(key, photo);
         out.push(photo);
       }
     }
@@ -353,6 +437,14 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       pipeline.cancel(t.jobId);
       dropTask(t.jobId);
     }
+    // A card projected from the op log has no job to cancel. It goes now, and its sha is
+    // remembered so the next read of the log cannot bring it back before the tombstone lands.
+    if (!tempIdBySha.has(sha)) return;
+    withdrawnShas.add(sha);
+    tempIdBySha.delete(sha);
+    photoCache.delete(queuedKey(sha));
+    queuedUploads = queuedUploads.filter((fields) => fields.sha256 !== sha);
+    store.forgetPendingPhoto(sha);
   }
 
   // Task sink lives in its own effect so its unsubscribe is honoured on teardown.
@@ -433,8 +525,20 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     pipeline.addFiles(files);
   }
 
+  // The cards a previous page left queued, read once at page open, and re-read when a sync
+  // attempt finishes — that is the only other moment the set can change, since the confirmed
+  // keys are what a sync deletes. A newly appended op always has a live card of its own, so an
+  // append is deliberately not read back. Neither call is a sync trigger (ADR 0008).
+  void refreshQueuedUploads();
+  let wasSyncing = engine.state.syncing;
+  const unsubscribeQueued = engine.onState((state) => {
+    if (wasSyncing && !state.syncing) void refreshQueuedUploads();
+    wasSyncing = state.syncing;
+  });
+
   onDestroy(() => {
     destroyed = true;
+    unsubscribeQueued();
     pipeline.stop();
     for (const url of previewUrls.values()) URL.revokeObjectURL(url);
     previewUrls.clear();

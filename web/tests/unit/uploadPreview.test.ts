@@ -45,3 +45,17 @@ test('upload preview: the picked file never seeds it', () => {
     'addFiles seeds a preview from the picked file; a card only exists after stage 1, and a GIF cannot render from its own bytes',
   );
 });
+
+// The op-log path cannot be unit-tested end to end (the store pulls in the SharedWorker bundle),
+// so its wiring is asserted here: the cards a reload shows are read from the durable log through
+// the engine and projected by the one pure rule, and the read is never a sync trigger.
+test('upload preview: op-log cards are projected from the log, not from a job', () => {
+  const refresh = bodyOf(/async function refreshQueuedUploads\(/);
+  assert.ok(refresh.includes('engine.queuedOps('), 'the projection does not read the op log');
+  assert.ok(refresh.includes('queuedUploadCards('), 'the projection skips the one pure rule');
+  assert.equal(
+    refresh.includes('previewUrls'),
+    false,
+    'an op-derived card must not claim an OPFS preview: the artifact is pruned at 30 jobs and the op carries the hosted URL',
+  );
+});

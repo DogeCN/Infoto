@@ -170,6 +170,19 @@ export class SyncEngine {
     return removed;
   }
 
+  /**
+   * Every operation still unconfirmed, in submission order — the durable state a page load
+   * renders from before any sync trigger runs.
+   *
+   * This is a read of the op log, never a trigger: nothing here sends, retries or schedules
+   * anything (ADR 0008 keeps the trigger list closed). An op an in-flight request is already
+   * carrying is still unconfirmed, so it is included — it has not been removed from the log yet.
+   */
+  async queuedOps(): Promise<Op[]> {
+    if (!this.db) this.db = await openOplogDb();
+    return (await readOps(this.db)).map((entry) => entry.op);
+  }
+
   private pagehideUrl(): string {
     return `${window.location.origin}/sync`;
   }
