@@ -162,7 +162,9 @@ async function transcodeGif(
   }
   try {
     const track = decoder.tracks.selectedTrack;
-    const frameCount = (decoder as unknown as { frameCount: number }).frameCount;
+    // `frameCount` lives on the track, not on the decoder. Reading it off the decoder yielded
+    // undefined, which made the loop below a no-op while still finalising a header-only WebM.
+    const frameCount = track?.frameCount ?? 0;
     if (!track || frameCount === 0) throw new Error('gif_decode_failed');
     const probe = await decoder.decode({ frameIndex: 0 });
     const width = probe.image.displayWidth || header?.width || 0;
@@ -178,6 +180,7 @@ async function transcodeGif(
     const source = new VideoSampleSource({ codec, quality });
     output.addVideoTrack(source);
     await output.start();
+    let written = 0;
     for (let i = 0; i < frameCount; i++) {
       const { image } = await decoder.decode({ frameIndex: i });
       const durationUs = Math.max(image.duration ?? 100_000, 1000);
@@ -188,8 +191,12 @@ async function transcodeGif(
       await source.add(sample);
       sample.close();
       image.close();
+      written += 1;
       progress(jobId, (i + 1) / frameCount);
     }
+    // A container with no samples still finalises (188 bytes of WebM header), so an empty
+    // artifact is only visible at the frame level rather than by byte count.
+    if (written === 0) throw new Error('empty_output');
     await output.finalize();
     return { width, height, hasAudio: false };
   } finally {
@@ -207,8 +214,8 @@ async function runJob(msg: VideoJobMessage): Promise<VideoWorkerResult> {
         ? await transcodeGif(msg.jobId, msg.file, sink)
         : await transcodeVideo(msg.jobId, msg.file, sink);
     const { sha256, bytes } = await sink.current.finish();
-    // With streaming writes there is no buffer to inspect: an encoder that produced nothing
-    // leaves a zero-byte artifact behind.
+    // Streaming writes leave no buffer to inspect, and a header-only container is not empty by
+    // byte count — so this catches a truncated write, not an encoder that emitted no samples.
     if (bytes === 0) {
       await removeArtifact(msg.jobId, 'webm');
       throw new Error('empty_output');
