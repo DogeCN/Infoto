@@ -1217,6 +1217,8 @@ The parts of this contract that are asserted by `npm test`:
 | A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/pendingPhoto.test.ts`    |
 | A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/pendingPhoto.test.ts`    |
 | A card's local preview comes from OPFS, never from the picked file (§3)              | `web/tests/unit/uploadPreview.test.ts`   |
+| A GIF frame duration is read through the one owner, never re-derived in the worker   | `web/tests/unit/gifFrameTiming.test.ts`  |
+| A GIF's frame timestamps accumulate, and a zero duration is a missing one            | `web/tests/unit/pipeline.test.ts`        |
 | A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`        |
 | The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`        |
@@ -1237,12 +1239,14 @@ is how a property changes instantaneously while sharing a transition list.
 
 Known gaps, in the order they should be closed:
 
-1. **§3 has no assertions at all**, and §3 now names which parts have none. The two with the
-   most behaviour and the least coverage are `base/lib/overlay.ts` (focus trap, Escape
-   ownership, scroll-lock depth) and `pillMeasure.ts` (the delta that drives the pill's shape).
-   `lightboxEngine.ts` is now covered, but nothing asserts that the component calls it correctly
-   — an engine can be exhaustively tested and still be wired to the wrong event.
-   `web/tests/e2e/ui.spec.ts` covers some overlay and Lightbox behaviour but is excluded from CI.
+1. **Most of §3 still has no assertions.** The rules that do are listed in the table above (the
+   failure-kind split, the OPFS preview source, the card's Photo identity, the media URL's
+   element, the glitch palette). The two with the most behaviour and the least coverage are
+   `base/lib/overlay.ts` (focus trap, Escape ownership, scroll-lock depth) and `pillMeasure.ts`
+   (the delta that drives the pill's shape). `lightboxEngine.ts` is now covered, but nothing
+   asserts that the component calls it correctly — an engine can be exhaustively tested and still
+   be wired to the wrong event. `web/tests/e2e/ui.spec.ts` covers some overlay and Lightbox
+   behaviour but is excluded from CI.
 2. **No screenshot baseline exists anywhere.** Appearance is the one thing with zero
    regression net, and it is the only category this contract cannot express as an assertion.
 3. `pillMeasure.ts` has no unit coverage; `topbarFit.ts` has four cases including one for

@@ -1,4 +1,4 @@
-# 0019: Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll
+# 0022: Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll
 
 - **Date**: 2026-10-25
 - **Status**: Accepted (supersedes 0018)

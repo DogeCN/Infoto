@@ -53,7 +53,8 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0015](0015-one-dimension-per-refactor-commit.md)          | One Dimension Per Refactor Commit, and a New Abstraction Is Specified Before It Is Used | Accepted                   |
 | [0016](0016-op-log-supersedes-last-value-writes.md)        | The Op Log Supersedes Writes That Only Have a Last Value                                | Accepted                   |
 | [0017](0017-web-fonts-race-two-google-endpoints.md)        | Web Fonts Race Google's China Endpoint Against the Global Host                          | Accepted                   |
-| [0018](0018-poll-edits-keep-votes.md)                      | Editing a Poll Keeps Its Votes Unless the Question Changed                              | Superseded by 0019         |
-| [0019](0019-poll-editor-overwrite-votes.md)                | Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll             | Accepted                   |
+| [0018](0018-poll-edits-keep-votes.md)                      | Editing a Poll Keeps Its Votes Unless the Question Changed                              | Superseded by 0022         |
+| [0019](0019-markdown-media-rendered-by-parser.md)          | Markdown Media Is Rendered by the Parser, Not Upgraded After Parsing                    | Accepted                   |
 | [0020](0020-auto-default-band-from-measured-cross.md)      | Auto Default Band Derived From the Measured Canvas                                      | Accepted                   |
 | [0021](0021-workers-ai-admin-translation.md)               | Workers AI Drafts Admin Translations                                                    | Accepted                   |
+| [0022](0022-poll-editor-overwrite-votes.md)                | Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll             | Accepted                   |
