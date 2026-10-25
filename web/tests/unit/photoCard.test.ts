@@ -52,3 +52,22 @@ test('photo card: no overlay control lets its click reach the card', () => {
     'an overlay control calls its action without stopPropagation()',
   );
 });
+
+test('photo card: a failed job leaves the skeleton instead of parking on it', () => {
+  // The guard used to be `if (overlay?.preview) return`, which treated every local preview as
+  // transient. A job that has already failed is not waiting for anything: the card kept its
+  // skeleton and its opacity-0 media, so it read as "still loading" forever. The guard now
+  // asks whether the job is still running.
+  const handler = /function handleMediaError\(\): void\s*\{([\s\S]*?)\n {2}\}/.exec(card);
+  assert.ok(handler, 'handleMediaError is missing');
+  const body = handler[1]!.replace(/\s+/g, ' ');
+  assert.ok(
+    body.includes('if (overlay?.preview && !overlay.failed) return;'),
+    'the preview guard does not exempt an already-failed job',
+  );
+  assert.equal(
+    /if \(overlay\?\.preview\) return;/.test(card),
+    false,
+    'the guard still returns on any preview, parking a failed card on the skeleton',
+  );
+});

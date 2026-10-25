@@ -203,9 +203,15 @@
   // response. It says "this file cannot be shown", which is the only thing the card knows.
   const failStatus = '404';
 
-  /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
+  /**
+   * A media element that cannot load its source. A local preview is a stand-in for bytes the
+   * browser may still be able to decode, so a transient failure keeps the skeleton rather than
+   * claiming the file is broken. It is only transient while the job is still running: a job that
+   * has already failed has nothing left to wait for, and leaving it on the skeleton makes the
+   * card read as "still loading" forever. A hosted URL is never retried, so it fails immediately.
+   */
   function handleMediaError(): void {
-    if (overlay?.preview) return;
+    if (overlay?.preview && !overlay.failed) return;
     loadFailed = true;
   }
 
