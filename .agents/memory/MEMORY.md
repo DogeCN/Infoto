@@ -198,6 +198,12 @@ Each of these exists because the logic had two hand-written copies that had alre
 - **Test the worst-case resource, never a small one.** A 0.3MB video validates nothing about a 25MB one; the small-file run is what hid the original bug for two rounds.
 - **When the decision is wrong, suspect the input — and the harness.** Twice the Lightbox work stalled on a test that "could not open the lightbox": the waterfall positions cards absolutely and many sit at **negative x** (a column left of the viewport) with a real `boundingBox()`; `page.mouse.click` at an off-screen point **silently hits nothing**. Also, `.will-change-transform` is **not unique** to the Lightbox (masonry cards use it too) — assert on `.lb-meta`. And a per-frame `skeleton? true` count is meaningless if the sampling window spans the switch _away_; restrict to the target's contiguous run.
 - **Optimisation needs a ROI check first.** A ~50-line preload for a 0.5s saving, when the preload itself costs 0.43s, is negative value. Write down the arithmetic before writing the code.
+- ⚠️ **A commit can be green locally and still not compile** (2026-10-26). `a04e9d0` (about the
+  media trailing slash) swept `src/worker/app.ts` — which imports `Translator` from
+  `shared/types.ts` — into the commit while `types.ts` and the new `translate.ts` sat untracked
+  in the working tree. The gate passed because those files were on disk; HEAD could not
+  type-check. After staging, read `git status` for untracked modules the diff already
+  references — a local green run is evidence about the working tree, not about the commit.
 
 ---
 
