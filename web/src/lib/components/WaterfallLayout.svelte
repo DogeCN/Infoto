@@ -33,6 +33,13 @@
     band?: number;
     gap?: number;
     bufferScreens?: number;
+    /** Live height of a fixed bottom overlay (the upload panel), measured by that overlay.
+     *  Reserved as extra scroll length below the last row. */
+    bottomInset?: number;
+    /** The overlay's closed footprint. Horizontal layouts cannot extend their scroll axis,
+     *  so they reserve exactly this in the cross size instead — no extra slack; it is stable
+     *  across the drawer animation, unlike `bottomInset`, which would reflow every frame. */
+    restBottomInset?: number;
     selfId?: number;
     multiMode?: boolean;
     onMultiModeChange?: (v: boolean) => void;
@@ -61,6 +68,8 @@
     band = 260,
     gap = 12,
     bufferScreens = 2,
+    bottomInset = 0,
+    restBottomInset = 0,
     selfId = -1,
     multiMode = $bindable(false),
     onMultiModeChange,
@@ -97,6 +106,11 @@
   let zoom = $state(1);
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 2;
+
+  /** Extra breathing room below the last row, on top of an overlay's clearance. Two gaps
+   *  scaled with zoom, never below 16px: the whitespace follows the user's spacing setting
+   *  instead of introducing a fixed design value the slider cannot reach. */
+  const bottomSlack = $derived(Math.max(16, Math.round(gap * zoom * 2)));
 
   function applyZoom(factor: number): void {
     zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, factor));
@@ -219,14 +233,21 @@
       return;
     }
     // Column count comes from the persisted pixel band and the measured cross size.
-    const cross = (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX);
+    // Horizontal mode has no second scroll axis, so the overlay's closed footprint is taken
+    // out of the cross size instead. No breathing room here: the row already ends at the
+    // panel's top edge, and an open drawer is allowed to overlap it.
+    const reservedBottom = d === 'h' ? restBottomInset : 0;
+    const cross =
+      (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX + reservedBottom);
     const b = Math.max(1, Math.round(band * zoom));
     let itemsKey = layoutKeyCache.get(allPhotos);
     if (!itemsKey) {
       itemsKey = items.map((i) => `${i.id}:${i.w}:${i.h}`).join(',');
       layoutKeyCache.set(allPhotos, itemsKey);
     }
-    const key = `${w}|${d}|${s}|${b}|${g}|${itemsKey}`;
+    // `viewportH` joins the key only in horizontal mode, where it is the cross size; in
+    // vertical mode a mobile URL bar changing the container height must not reflow the grid.
+    const key = `${w}|${d === 'h' ? viewportH : 0}|${d}|${s}|${b}|${g}|${reservedBottom}|${itemsKey}`;
     if (key === layoutKey) return;
     layoutKey = key;
     // Cancel the pending debounce timer.
@@ -240,7 +261,8 @@
       const opts = {
         dir: d,
         strategy: s,
-        // Static cross-axis whitespace in horizontal mode: top padTop (for the floating top bar) + bottom padX
+        // Static cross-axis whitespace in horizontal mode: top padTop (for the floating
+        // top bar) + bottom padX + the reserved overlay footprint.
         cross,
         band: b,
         gap: g,
@@ -570,6 +592,14 @@
         {/if}
       {/each}
     </div>
+    <!-- Bottom clearance for a fixed overlay in a vertical layout: the scrollable area grows
+         by the overlay's live height plus breathing room, so the last row can be scrolled
+         above it instead of resting behind it. Horizontal layouts cannot grow their scroll
+         axis, so they reserve the same overlay footprint inside the cross size instead (see
+         `reservedBottom` in the layout effect) — leaving the last column above the panel. -->
+    {#if dir === 'v' && bottomInset > 0}
+      <div aria-hidden="true" style="height: {bottomInset + bottomSlack}px"></div>
+    {/if}
   </div>
 
   <!-- Marquee overlay -->

@@ -72,13 +72,20 @@
   let layoutPreview = $state<LayoutPreviewControl>(null);
   let multiMode = $state(false);
 
-  /** Measured upload-panel geometry, zero-height while collapsed or hidden. A stable callback
-   *  preserves the panel's observer subscription; the edge and height come from the panel's
-   *  own ResizeObserver, so clearance follows the panel rather than a viewport breakpoint. */
+  /** Measured upload-panel geometry. A stable callback preserves the panel's observer
+   *  subscription; the edge and heights come from the panel's own ResizeObserver, so
+   *  clearance follows the panel rather than a viewport breakpoint. `restHeight` is the
+   *  closed footprint used by horizontal layouts, which cannot extend their scroll axis. */
   let uploadPanelHeight = $state(0);
+  let uploadPanelRestHeight = $state(0);
   let uploadPanelAtLeftEdge = $state(false);
-  const handleUploadPanelGeometry = (geometry: { height: number; atLeftEdge: boolean }) => {
+  const handleUploadPanelGeometry = (geometry: {
+    height: number;
+    restHeight: number;
+    atLeftEdge: boolean;
+  }) => {
     uploadPanelHeight = geometry.height;
+    uploadPanelRestHeight = geometry.restHeight;
     uploadPanelAtLeftEdge = geometry.atLeftEdge;
   };
 
@@ -410,6 +417,8 @@
           strategy={layout.strategy}
           band={layout.band}
           gap={layout.gap}
+          bottomInset={uploadPanelAtLeftEdge ? uploadPanelHeight : 0}
+          restBottomInset={uploadPanelAtLeftEdge ? uploadPanelRestHeight : 0}
           bind:multiMode
           onMultiModeChange={handleMultiModeChange}
           onLike={handleLike}

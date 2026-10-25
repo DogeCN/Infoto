@@ -1,30 +1,33 @@
 <script lang="ts">
-  // Album progress panel with measured progress or an indeterminate sweep. Pointer hover expands the list; touch dragging controls its height.
-  import { onDestroy, untrack } from 'svelte';
+  // Album progress panel with measured progress or an indeterminate sweep. A corner card
+  // expands on hover; a full-width panel is a drawer toggled by its own header.
+  import { onDestroy } from 'svelte';
   import { fly } from 'svelte/transition';
-  import { Clapperboard, X } from '@lucide/svelte';
+  import { ChevronDown, ChevronUp, Clapperboard, X } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
   import { batchProgress, indeterminateRow, type UploadRow } from '../../transcode/pipeline';
   import { countHop, motionMs } from '$base/lib/motion';
   import { createHoverIntent } from '$base/lib/hover.svelte';
-  import { startPointerResize } from '$base/lib/pointer';
+  import { canHover, prefersReducedMotion } from '$base/lib/device.svelte';
   import TooltipIconButton from './TooltipIconButton.svelte';
 
   interface Props {
     /** Already filtered by the caller: this panel is stage-agnostic. */
     tasks: UploadRow[];
-    /** Batch counter for the header ({done}/{total}). */
+    /** Remaining files for the header (`total − done`). */
     progress: { done: number; total: number };
     /** Remove one file's job (any phase). */
     onRemove: (jobId: string) => void;
     /** Multi-select owns the bottom of the screen: its bar is a full-width bottom bar on
      *  a layer above this panel, so the panel slides away while it is up. */
     hidden?: boolean;
-    /** Report measured panel geometry for toast clearance; a hidden or collapsed panel
-     *  reports zero height. `atLeftEdge` marks a panel flush with the viewport's left edge,
-     *  where it sits under the bottom-left toast column. */
-    onGeometry?: (geometry: { height: number; atLeftEdge: boolean }) => void;
+    /** Report measured panel geometry for toast clearance and gallery clearance. `height`
+     *  is the live shell height (0 while hidden); `restHeight` is its footprint with the
+     *  drawer closed, which is the stable value a layout can reserve without reflowing
+     *  during the drawer animation; `atLeftEdge` marks a panel flush with the viewport's
+     *  left edge, where it sits under the bottom-left toast column. */
+    onGeometry?: (geometry: { height: number; restHeight: number; atLeftEdge: boolean }) => void;
   }
 
   let { tasks, progress, onRemove, hidden = false, onGeometry }: Props = $props();
@@ -48,22 +51,42 @@
   });
 
   let shellEl = $state<HTMLElement | undefined>(undefined);
+  /** The drawer's expanding region, measured only to subtract it from the shell height. */
+  let bodyEl = $state<HTMLElement | undefined>(undefined);
 
-  /** A panel within this many pixels of the viewport's left edge overlaps the bottom-left
-   *  toast column; the right-aligned desktop panel does not. */
+  /** A panel within this many pixels of the viewport's left edge is the full-width mobile
+   *  presentation (it also overlaps the bottom-left toast column); the right-aligned desktop
+   *  panel is not. Measured from the shell, not assumed from a breakpoint or the input device. */
   const LEFT_EDGE_MAX = 8;
+  let compact = $state(false);
+
+  /** Closed header height, measured from the shell as `shell height − body height`. The two
+   *  grow and shrink together, so the difference is the header in every state, including
+   *  mid-animation. `HEADER_FALLBACK_H` only covers the render before the first measurement:
+   *  py-3.5 (28px) + the `text-sm` counter's line box (20px). The label alone is `text-xs`
+   *  (44px), which is why a hardcoded constant was four pixels wrong whenever the counter
+   *  was hidden. */
+  const HEADER_FALLBACK_H = 48;
+  let headerH = $state(HEADER_FALLBACK_H);
 
   // Observe rendered geometry and visibility to update toast clearance.
   $effect(() => {
     if (!shellEl) {
-      onGeometry?.({ height: 0, atLeftEdge: false });
+      compact = false;
+      onGeometry?.({ height: 0, restHeight: 0, atLeftEdge: false });
       return;
     }
     const report = () => {
       const rect = shellEl!.getBoundingClientRect();
+      const shellH = shellEl!.offsetHeight;
+      const bodyRenderedH = bodyEl?.offsetHeight ?? 0;
+      const restH = Math.max(0, shellH - bodyRenderedH);
+      compact = rect.left < LEFT_EDGE_MAX;
+      headerH = restH;
       onGeometry?.({
-        height: hidden ? 0 : shellEl!.offsetHeight,
-        atLeftEdge: rect.left < LEFT_EDGE_MAX,
+        height: hidden ? 0 : shellH,
+        restHeight: hidden ? 0 : restH,
+        atLeftEdge: compact,
       });
     };
     report();
@@ -72,37 +95,31 @@
     return () => ro.disconnect();
   });
 
-  // ---- pointer devices: hover, debounced ---------------------------------
-  let canHover = $state(false);
+  // ---- expansion mode ----------------------------------------------------
   const intent = createHoverIntent();
 
-  // A touch device reports hover: none — it gets the drag instead. Kept reactive: a
-  // tablet can gain or lose a mouse mid-session.
-  $effect(() => {
-    const mq = window.matchMedia('(hover: hover)');
-    const sync = () => {
-      canHover = mq.matches;
-    };
-    sync();
-    mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
-  });
+  // Hover capability is not the signal that decides the presentation: a narrow desktop
+  // window renders this panel as the full-width bottom sheet while its pointer can still
+  // hover. The drawer therefore also follows the panel's measured full-width form, so the
+  // chevron is never missing from a mobile-looking panel. Both signals are shared:
+  // `canHover` comes from `base/lib/device.svelte.ts`, `compact` from the shell's own rect.
+  const drawer = $derived(!canHover() || compact);
 
   // Entering waits for nothing, so an intentional hover feels immediate. A keyboard or
   // click pins the panel open instead, because there is no pointer to hover with.
   let pinned = $state(false);
-  let expanded = $derived(pinned || (canHover && intent.hovered));
   onDestroy(intent.destroy);
 
-  // Touch dragging adjusts the bottom-anchored panel height.
-  /** Header height: px-4 py-3.5 (28px) + the header's text-sm line box (20px). Measured, not
-   *  guessed — an under-measured constant jumps the sheet on every drag start. */
-  const HEADER_H = 48;
+  // The drawer is the mode without hover to expand with: a single tap on the header's
+  // chevron opens or closes it, and no drag gesture competes with the list inside.
+  let open = $state(false);
+  let expanded = $derived(drawer ? open : pinned || intent.hovered);
+
   /** Row pitch: py-1.5 (12px) + text-xs line-height (16px) = 28px. */
   const ROW_H = 28;
   /** Share of the visible viewport the sheet may occupy. */
   const SHEET_MAX_FRACTION = 0.42;
-  /** Visible viewport height. `visualViewport` excludes a mobile URL bar, so the drag ceiling
+  /** Visible viewport height. `visualViewport` excludes a mobile URL bar, so the open ceiling
    *  and the scroll container's max-height are one measured value rather than `innerHeight`
    *  in JS and `svh` in CSS. */
   let viewportH = $state(
@@ -119,65 +136,25 @@
       window.removeEventListener('resize', sync);
     };
   });
-  const sheetMaxH = $derived(Math.max(HEADER_H, Math.round(viewportH * SHEET_MAX_FRACTION)));
-  let dragging = $state(false);
-  let sheetH = $state(HEADER_H);
-  /** Drag ceiling captured at pointerdown. */
-  let dragCeilingH = HEADER_H;
-  let stopResize: (() => void) | undefined;
+  const sheetMaxH = $derived(Math.max(headerH, Math.round(viewportH * SHEET_MAX_FRACTION)));
+  /** Bottom padding of the list body (`pb-2`), so the last row is not flush with the edge. */
+  const LIST_PAD_B = 8;
+  /** Fully-open height for the current row count, capped to the viewport. Rows finish while
+   *  the drawer is open, so this follows the shrinking list instead of leaving empty space. */
+  const openH = $derived(
+    Math.max(headerH, Math.min(headerH + tasks.length * ROW_H + LIST_PAD_B, sheetMaxH)),
+  );
+  const bodyH = $derived(Math.max(0, openH - headerH));
 
-  /** Fully-open height for the current row count, capped to the viewport. */
-  function contentMaxH(): number {
-    return Math.max(HEADER_H, Math.min(HEADER_H + tasks.length * ROW_H + 8, sheetMaxH));
-  }
-
-  // A row leaving while the sheet rests open collapses it to the new content height, so the
-  // panel never floats over empty space. Skipped mid-drag: recomputing the ceiling there
-  // pulled the sheet back down while the finger was still moving up.
-  $effect(() => {
-    const max = contentMaxH();
-    const current = untrack(() => sheetH);
-    if (!dragging && current > max) sheetH = max;
-  });
-
-  function onHeaderPointerDown(e: PointerEvent): void {
-    if (canHover) return;
-    stopResize?.();
-    // Freeze the ceiling for the whole gesture: `tasks` shrinks as jobs finish, and a live
-    // ceiling yanked the sheet down under a finger that was still moving up.
-    dragCeilingH = contentMaxH();
-    const rendered = shellEl?.getBoundingClientRect().height ?? HEADER_H;
-    sheetH = Math.max(HEADER_H, Math.min(dragCeilingH, rendered));
-    dragging = true;
-    stopResize = startPointerResize({
-      event: e,
-      axis: 'y',
-      sign: -1,
-      start: sheetH,
-      clamp: (value) => Math.max(HEADER_H, Math.min(dragCeilingH, value)),
-      onMove: (value) => (sheetH = value),
-      onStop: () => {
-        dragging = false;
-        stopResize = undefined;
-      },
-    });
-  }
-
-  onDestroy(() => stopResize?.());
-
-  /** Collapse a departing row's slot instead of letting the list snap shut. */
+  // Collapse a departing row's slot instead of letting the list snap shut.
   function collapse(node: HTMLElement): { duration: number; css: (t: number) => string } {
     void node;
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reduced = prefersReducedMotion();
     return {
       duration: reduced ? 0 : motionMs('enter'),
       css: (t: number) => `grid-template-rows: ${t}fr; opacity: ${t}`,
     };
   }
-
-  /** Collapsed: pointer devices when nothing is hovered or pinned, touch devices when the
-   *  sheet is back down at its header height. */
-  const collapsed = $derived(canHover ? !expanded : sheetH <= HEADER_H);
 
   /** Batch total across the rows, or null while any row's stage cannot measure itself —
    *  the bar then sweeps instead of naming a number the work does not support. */
@@ -208,23 +185,16 @@
       bind:this={shellEl}
       class="relative overflow-hidden rounded-t-2xl border border-b-0 border-border bg-card/95 pb-[env(safe-area-inset-bottom)] shadow-lg shadow-black/30 backdrop-blur-xl md:rounded-xl md:border-b md:pb-0"
     >
-      <!-- No expand button: pointer devices hover, touch devices drag this header. -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="flex items-center gap-2.5 px-4 py-3.5 select-none {canHover
-          ? 'cursor-pointer'
-          : 'cursor-grab touch-none'}"
-        role="button"
-        tabindex="0"
-        aria-expanded={canHover ? expanded : sheetH > HEADER_H}
+      <!-- Hover devices expand on hover and click to pin; the drawer mode taps the chevron
+           to open or close. The header is the single toggle in both. -->
+      <button
+        type="button"
+        class="flex w-full items-center gap-2.5 px-4 py-3.5 text-left select-none"
+        aria-expanded={expanded}
         aria-label={title}
-        onpointerdown={onHeaderPointerDown}
-        onkeydown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            if (canHover) pinned = !pinned;
-            else sheetH = sheetH > HEADER_H ? HEADER_H : contentMaxH();
-          }
+        onclick={() => {
+          if (drawer) open = !open;
+          else pinned = !pinned;
         }}
       >
         <Clapperboard class="size-4 shrink-0 text-muted-foreground" />
@@ -248,24 +218,31 @@
             {/key}
           </span>
         {/if}
-      </div>
+        {#if drawer}
+          {#if expanded}
+            <ChevronDown class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {:else}
+            <ChevronUp class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {/if}
+        {/if}
+      </button>
 
-      <!-- Animate expansion with grid rows; pointer dragging sets height directly. -->
+      <!-- Animate expansion with grid rows on hover devices; the drawer animates its
+           measured height between the header and the capped content height. -->
       <div
-        inert={canHover ? !expanded : sheetH <= HEADER_H}
-        class="overflow-hidden {canHover
-          ? 'grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)] ' +
-            (expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')
-          : dragging
-            ? ''
-            : 'transition-[height] duration-[var(--duration-enter)] ease-[var(--ease-enter)]'}"
-        style={!canHover ? `height: ${Math.max(0, sheetH - HEADER_H)}px` : ''}
+        bind:this={bodyEl}
+        inert={!expanded}
+        class="overflow-hidden {drawer
+          ? 'transition-[height] duration-[var(--duration-enter)] ease-[var(--ease-enter)]'
+          : 'grid transition-[grid-template-rows] duration-[var(--duration-enter)] ease-[var(--ease-enter)] ' +
+            (expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}"
+        style={drawer ? `height: ${expanded ? bodyH : 0}px` : ''}
       >
         <div
-          class="min-h-0 overscroll-contain overflow-y-auto {canHover
-            ? 'max-h-[min(40vh,17.5rem)]'
-            : 'h-full'}"
-          style={!canHover ? `max-height: ${Math.max(0, sheetMaxH - HEADER_H)}px;` : ''}
+          class="min-h-0 overscroll-contain overflow-y-auto {drawer
+            ? 'h-full'
+            : 'max-h-[min(40vh,17.5rem)]'}"
+          style={drawer ? `max-height: ${bodyH}px;` : ''}
         >
           <div class="space-y-0.5 px-2 pb-2">
             {#each tasks as task (task.jobId)}
@@ -314,7 +291,7 @@
       <!-- Batch total along the panel's bottom edge, shown while collapsed: with the rows
            out of sight, a live bar is what separates a hover collapse (the batch is still
            running) from a finished one (the panel unmounts entirely). -->
-      {#if collapsed && tasks.length > 0}
+      {#if !expanded && tasks.length > 0}
         <div
           class="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-muted-foreground/20"
           role="progressbar"

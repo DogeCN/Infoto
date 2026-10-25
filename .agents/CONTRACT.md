@@ -609,25 +609,47 @@ before deadline` / `no response before deadline`).
   - `batchProgress` returns the mean of the measured rows **only if every row measures itself**;
     otherwise `null`, which renders as a sweep. A total that quietly omitted an unmeasured stage
     would state a number the work does not support — this is ADR 0002 in code, not a convention.
-  - The header's `{done}/{total}` pair appears only when `total > 0`.
-  - **Hover devices hover to expand; touch devices get a tap-toggled drawer.** The header is one
-    `<button>` in both cases: on a pointer device a click pins it open, on touch it opens or
-    closes on a single tap and carries a chevron at its right edge (up = closed, down = open).
-    There is no drag gesture any more; the height moves between `HEADER_H` and the capped
-    content height, so a row leaving while the drawer is open shrinks it without stranding empty
-    space. `HEADER_H = 48` is the header's measured height (px-3.5 + text-sm), not the 44 it used
-    to be. The open height and the scroll container's `max-height` both come from one measured
+  - The header shows the **remaining count** (`total − done`) only when `total > 0`. The
+    `{done}/{total}` pair was tried and read as clutter at header size (user call).
+  - **The drawer follows the panel's presentation, not the input device.** The panel is a
+    full-width bottom sheet below `md` and an 18rem corner card above it; the component measures
+    that form itself (`rect.left < LEFT_EDGE_MAX`) instead of assuming a breakpoint. A
+    full-width panel is always a tap-toggled drawer with a chevron at the right edge (up =
+    closed, down = open), even in a narrow desktop window whose pointer can still hover — that
+    mismatch is how the chevron went missing from a mobile-looking panel. The corner card keeps
+    hover-to-expand plus click-to-pin. The header is one `<button>` in both modes, and there is
+    no drag gesture any more; the drawer height moves between the header's height and the capped
+    content height, so a row leaving while it is open shrinks it without stranding empty space.
+    The header height is **measured** (`shell − body` from the panel's own ResizeObserver, the
+    same difference `restHeight` reports), never a constant: `py-3.5` plus the `text-sm` counter
+    makes it 48px, while the `text-xs` label alone makes it 44px, and a hardcoded value was
+    wrong whenever the counter was hidden. The open height and the scroll container's `max-height` both come from one measured
     `visualViewport.height` (42%): a second `svh` cap in CSS disagreed with the JS ceiling
     whenever a mobile URL bar moved. Collapsed, the batch total rides the bottom edge.
-  - **The waterfall reserves the panel's measured height at its own bottom.** `UploadPanel`
-    already reports its shell height through `onGeometry`; when the panel is flush with the
-    viewport's left edge (the mobile, full-width presentation) `App` passes that height to
-    `WaterfallLayout` as `bottomInset`, and the scroll container renders it as a spacer after the
-    canvas. Without it the collapsed header was the last thing scroll could reach — the final
-    row sat behind it, and opening the drawer covered more. The spacer follows the live drawer
-    height, so the bottom row can also be scrolled clear of an open drawer. This is a measured
-    value, never a breakpoint or a guessed header height; on the desktop panel (bottom-right,
-    18rem wide) the inset is zero because it does not overlap the gallery's bottom edge.
+  - **The waterfall reserves the panel's measured footprint at its own bottom, differently per
+    scroll axis.** `UploadPanel` reports two heights through `onGeometry`: `height` (live shell,
+    follows the drawer) and `restHeight` (shell minus the expanding body, constant while the
+    drawer animates). When the panel is flush with the viewport's left edge (the mobile,
+    full-width presentation) `App` passes both to `WaterfallLayout`.
+    - **Vertical (`dir='v'`)** renders a spacer after the canvas of `height + bottomSlack`, so
+      the last row scrolls clear of the panel and keeps breathing room. Both strategies
+      (`sequential`, `shortest`) use that one spacer; `shortest` simply leaves its shallower
+      columns ending higher. The spacer follows the live drawer, so an open drawer can also be
+      scrolled past.
+    - **Horizontal (`dir='h'`)** cannot append scroll length: the canvas's height _is_ the
+      viewport cross size and touch pans only horizontally (`touch-pan-x`). It subtracts
+      **only `restHeight`** from the layout's cross size, so every column ends exactly at the
+      resting panel's top edge. `restHeight` rather than the live `height` is deliberate — the
+      live value would reflow every column on each frame of the drawer animation. There is no
+      `bottomSlack` in this axis (user call): extra breathing room would push the grid too far
+      up for a horizontal scroll. An _open_ drawer simply overlays the bottom of a horizontal
+      grid; that occlusion is
+      deliberately not handled, while a vertical grid can be scrolled past it.
+    - `bottomSlack` is two zoomed layout gaps with a 16px floor, applied **only to the
+      vertical spacer**, so the breathing room follows the user's gap slider instead of a
+      second magic number. Both heights are measured from the panel's own shell — never a
+      breakpoint or a guessed header height; on the desktop panel (bottom-right, 18rem wide)
+      both are zero because it does not span the gallery's bottom edge.
   - **The announcement editor takes any file.** Its input carries no `accept`, and both
     `uploadEditorFile` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
     leg. The picked file is uploaded as-is, so its extension survives into the returned URL. How
