@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import type { Announcement, LocaleCode, Poll } from '$shared/types';
+  import type { Announcement, LocaleCode, Poll, Vote } from '$shared/types';
   import { Megaphone, MessageSquare, ChartNoAxesColumn } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
   import { Toaster, toast } from 'svelte-sonner';
@@ -60,7 +60,7 @@
   // tab, but its live draft is captured and re-seeded on return (page memory only —
   // gone on reload, never written to storage).
   type AnnouncementDraft = { title: string; contentMd: string };
-  type PollDraft = { options: string[]; allowMultiple: boolean };
+  type PollDraft = { options: string[]; votes: Vote[]; allowMultiple: boolean };
   let annEditor: { getDraft: () => AnnouncementDraft } | undefined = $state();
   let pollEditor: { getDraft: () => PollDraft } | undefined = $state();
   let parkedAnnouncement: { editing: Announcement | null; draft: AnnouncementDraft } | null = null;
@@ -185,8 +185,8 @@
     editingPoll = null;
   }
 
-  function savePoll(options: string[], allowMultiple: boolean): void {
-    if (editingPoll) store.pollUpdate(editingPoll.id, options, allowMultiple);
+  function savePoll(options: string[], allowMultiple: boolean, votes: Vote[]): void {
+    if (editingPoll) store.pollUpdate(editingPoll.id, options, allowMultiple, votes);
     else store.pollCreate(options, allowMultiple);
     closePollEditor();
   }
@@ -210,7 +210,11 @@
     } else if (activeTab === 'polls' && pollEditorOpen) {
       parkedPoll = {
         editing: editingPoll,
-        draft: pollEditor?.getDraft() ?? { options: ['', ''], allowMultiple: false },
+        draft: pollEditor?.getDraft() ?? {
+          options: ['', ''],
+          votes: [],
+          allowMultiple: false,
+        },
       };
       closePollEditor();
     }
@@ -323,6 +327,7 @@
           bind:this={pollEditor}
           poll={editingPoll}
           draft={pollRestoreDraft}
+          selfId={store.selfId}
           onSave={savePoll}
           onCancel={closePollEditor}
         />

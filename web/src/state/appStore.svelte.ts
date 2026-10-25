@@ -10,6 +10,7 @@ import type {
   Photo,
   Poll,
   SyncResponse,
+  Vote,
 } from '$shared/types';
 import { activeLocale, copy } from '$shared/copy';
 import type { EngineState, SyncEngine, SyncSnapshotContext } from '../core/engine';
@@ -672,13 +673,13 @@ class AppState {
     );
   }
 
-  pollUpdate(id: number, options: string[], allowMultiple: boolean): void {
+  pollUpdate(id: number, options: string[], allowMultiple: boolean, votes: Vote[]): void {
     const locale = this.contentLocale;
     void this.pollRows.update(
       id,
       locale,
-      (rows) => ops.applyPollUpdate(rows, id, options, allowMultiple, Date.now()),
-      () => updatePoll(id, options, allowMultiple, locale),
+      (rows) => ops.applyPollUpdate(rows, id, options, allowMultiple, votes, Date.now()),
+      () => updatePoll(id, options, allowMultiple, votes, locale),
     );
   }
 

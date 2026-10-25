@@ -10,6 +10,7 @@ import type {
   Photo,
   Poll,
   ReactPayload,
+  Vote,
   VotePayload,
 } from '$shared/types';
 
@@ -276,33 +277,22 @@ export function applyPollCreate(
 }
 
 /**
- * Apply a poll edit, keeping the votes unless the edit asks a different question.
+ * Overwrite a poll's definition and its full vote set in one optimistic step.
  *
- * A vote addresses its option by index, and the editor keeps the options in order, so a same
- * length list means the same indices — editing an option's text keeps everyone's vote. Adding or
- * removing an option, or switching the choice mode, invalidates the indices or changes what the
- * question means, and clears them. Client and server must agree exactly: a row the optimistic
- * update kept and the server dropped shows a count the next snapshot contradicts.
+ * The admin editor sends the votes already addressed by their new option indices — a
+ * reorder moves each option and its votes together — so there is no index remapping here.
  */
 export function applyPollUpdate(
   polls: Poll[],
   id: number,
   options: string[],
   allowMultiple: boolean,
+  votes: Vote[],
   now: number,
 ): Poll[] {
-  return polls.map((poll) => {
-    if (poll.id !== id) return poll;
-    const definitionChanged =
-      allowMultiple !== poll.allowMultiple || options.length !== poll.options.length;
-    return {
-      ...poll,
-      options,
-      allowMultiple,
-      updatedAt: now,
-      votes: definitionChanged ? [] : poll.votes,
-    };
-  });
+  return polls.map((poll) =>
+    poll.id === id ? { ...poll, options, allowMultiple, votes, updatedAt: now } : poll,
+  );
 }
 
 /** Order submitted IDs first, preserve omitted rows, and renumber sort values consecutively. */

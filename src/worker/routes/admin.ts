@@ -6,6 +6,7 @@ import {
   type Announcement,
   type LocaleCode,
   type Poll,
+  type Vote,
 } from '../../shared/types.ts';
 import { isLocaleCode } from '../../shared/copy.ts';
 import type { AppEnv } from '../app.ts';
@@ -24,20 +25,48 @@ function readAnnouncementDraft(
   });
 }
 
+/** The full desired vote set for an overwrite; null when the shape is invalid. */
+function parseVotes(raw: unknown): Vote[] | null {
+  if (!Array.isArray(raw)) return null;
+  const votes: Vote[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') return null;
+    const { userId, option } = entry as { userId?: unknown; option?: unknown };
+    if (
+      typeof userId !== 'number' ||
+      !Number.isInteger(userId) ||
+      userId < 0 ||
+      typeof option !== 'number' ||
+      !Number.isInteger(option) ||
+      option < 0
+    )
+      return null;
+    const key = `${userId}:${option}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    votes.push({ userId, option });
+  }
+  return votes;
+}
+
 function readPollDraft(c: Context): Promise<{
   options: string[];
   allowMultiple: boolean;
   locale: LocaleCode;
+  /** Present on an overwrite: the complete vote set to store. */
+  votes: Vote[] | null;
 } | null> {
   return readJson<{
     options?: unknown;
     allowMultiple?: unknown;
     locale?: unknown;
+    votes?: unknown;
   }>(c).then((body) => {
     const options = Array.isArray(body?.options)
       ? body.options
-          .filter((option): option is string => typeof option === 'string')
-          .map((option) => option.trim())
+        .filter((option): option is string => typeof option === 'string')
+        .map((option) => option.trim())
       : [];
     const raw = body?.locale;
     const locale = isLocaleCode(raw) ? raw : null;
@@ -49,7 +78,9 @@ function readPollDraft(c: Context): Promise<{
       !locale
     )
       return null;
-    return { options, allowMultiple: body.allowMultiple, locale };
+    const votes = body?.votes === undefined ? null : parseVotes(body.votes);
+    if (body?.votes !== undefined && !votes) return null;
+    return { options, allowMultiple: body.allowMultiple, locale, votes };
   });
 }
 
@@ -157,28 +188,23 @@ function pollsApp(env: AppEnv): Hono {
     const id = idParam(c);
     if (id === null) return badRequest(c);
     const draft = await readPollDraft(c);
-    if (!draft) return badRequest(c);
+    if (!draft || !draft.votes) return badRequest(c);
     const existing = await env.db
-      .prepare('SELECT options, allow_multiple FROM polls WHERE id = ?')
+      .prepare('SELECT id FROM polls WHERE id = ?')
       .bind(id)
-      .first<{ options: string; allow_multiple: number }>();
-    if (!existing) return c.json({ ok: false, error: 'not_found' }, 404);
+      .first<number>('id');
+    if (existing === null) return c.json({ ok: false, error: 'not_found' }, 404);
 
-    let previousCount = 0;
-    try {
-      const previousOptions: unknown = JSON.parse(existing.options);
-      if (Array.isArray(previousOptions)) previousCount = previousOptions.length;
-    } catch {
-      previousCount = 0;
+    // The admin supplies the whole poll: every vote already addresses an option in the new
+    // list, so this is a straight overwrite. The only invariants checked are that the indices
+    // exist and that a single-choice poll has at most one vote per user.
+    const voters = new Set<number>();
+    for (const vote of draft.votes) {
+      if (vote.option >= draft.options.length) return badRequest(c);
+      if (!draft.allowMultiple && voters.has(vote.userId)) return badRequest(c);
+      voters.add(vote.userId);
     }
-    // A vote addresses its option by index and the editor keeps the options in order, so a same
-    // length list means the same indices: changing an option's text keeps everyone's vote. Adding
-    // or removing options, or switching the choice mode, asks a different question, so the votes
-    // do not carry over. The client's fold applies the same two conditions.
-    const definitionChanged =
-      existing.allow_multiple !== Number(draft.allowMultiple) ||
-      previousCount !== draft.options.length;
-    const statements = [
+    await env.db.batch([
       {
         sql: 'UPDATE polls SET options = ?, allow_multiple = ?, locale = ?, updated_at = ? WHERE id = ?',
         binds: [
@@ -189,11 +215,12 @@ function pollsApp(env: AppEnv): Hono {
           id,
         ],
       },
-    ];
-    if (definitionChanged)
-      statements.push({ sql: 'DELETE FROM votes WHERE poll_id = ?', binds: [id] });
-    const [result] = await env.db.batch(statements);
-    if (!result || result.changes === 0) return c.json({ ok: false, error: 'not_found' }, 404);
+      { sql: 'DELETE FROM votes WHERE poll_id = ?', binds: [id] },
+      ...draft.votes.map((vote) => ({
+        sql: 'INSERT INTO votes (poll_id, user_id, option) VALUES (?, ?, ?)',
+        binds: [id, vote.userId, vote.option],
+      })),
+    ]);
     return c.json({ ok: true });
   });
 

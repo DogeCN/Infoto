@@ -149,7 +149,7 @@ test('the snapshot carries announcements and feedback from every locale', async 
   ]);
 });
 
-test('poll CRUD keeps votes across an edit that changes neither the option count nor the choice mode', async () => {
+test('poll overwrite stores the supplied option order and vote set verbatim', async () => {
   const { app } = makeApp();
   const { root, guest } = await twoIdentities(app);
   const created = await pollCreate(app, root, ['A', 'B', 'C'], true);
@@ -159,39 +159,108 @@ test('poll CRUD keeps votes across an edit that changes neither the option count
   assert.equal(poll.allowMultiple, true);
 
   await postOps(app, guest, [{ type: 'vote', target: poll.id, payload: { options: [0, 2] } }]);
-  const originalVotes = [
+  assert.deepEqual((await snap(app, root)).polls[0]!.votes, [
     { userId: 1, option: 0 },
     { userId: 1, option: 2 },
-  ];
-  assert.deepEqual((await snap(app, root)).polls[0]!.votes, originalVotes);
+  ]);
 
   assert.equal((await pollCreate(app, root, ['only one'])).status, 400);
 
-  const put = (body: { options: string[]; allowMultiple: boolean }) =>
-    pollRequest(app, 'PUT', `/${poll.id}`, root, { ...body, locale: 'en-US' });
+  const put = (options: string[], allowMultiple: boolean, votes: unknown) =>
+    pollRequest(app, 'PUT', `/${poll.id}`, root, {
+      options,
+      allowMultiple,
+      votes,
+      locale: 'en-US',
+    });
 
-  // Rewriting an option's text keeps every vote: the count and the mode are unchanged, and the
-  // editor keeps the options in order, so the indices still address the same choices.
-  assert.equal((await put({ options: ['A!', 'B', 'C'], allowMultiple: true })).status, 200);
-  assert.deepEqual((await snap(app, root)).polls[0]!.votes, originalVotes);
+  // The admin sends the whole poll: a reorder arrives with its votes already addressed by the
+  // new order, and the worker stores exactly that.
+  assert.equal(
+    (
+      await put(['C', 'A', 'B'], true, [
+        { userId: 1, option: 0 },
+        { userId: 1, option: 1 },
+      ])
+    ).status,
+    200,
+  );
+  const current = (await snap(app, root)).polls[0]!;
+  assert.deepEqual(current.options, ['C', 'A', 'B']);
+  assert.deepEqual(current.votes, [
+    { userId: 1, option: 0 },
+    { userId: 1, option: 1 },
+  ]);
 
-  // Switching the choice mode asks a different question, so the votes do not carry over.
-  assert.equal((await put({ options: ['A!', 'B', 'C'], allowMultiple: false })).status, 200);
+  // Editing text, adding an option, or removing an option keeps whatever vote set is sent.
+  assert.equal(
+    (
+      await put(['C!', 'A', 'B', 'D'], true, [
+        { userId: 1, option: 0 },
+        { userId: 1, option: 1 },
+      ])
+    ).status,
+    200,
+  );
+  assert.deepEqual((await snap(app, root)).polls[0]!.votes, [
+    { userId: 1, option: 0 },
+    { userId: 1, option: 1 },
+  ]);
+
+  assert.equal((await put(['C!', 'B', 'D'], true, [{ userId: 1, option: 0 }])).status, 200);
+  assert.deepEqual((await snap(app, root)).polls[0]!.votes, [{ userId: 1, option: 0 }]);
+
+  // Switching the choice mode overwrites rather than clearing: the caller supplies the
+  // one-vote-per-user set a single-choice poll requires.
+  assert.equal((await put(['C!', 'B', 'D'], false, [{ userId: 1, option: 0 }])).status, 200);
+  assert.deepEqual((await snap(app, root)).polls[0]!.votes, [{ userId: 1, option: 0 }]);
+
+  // Clearing is the same overwrite with an empty set.
+  assert.equal((await put(['C!', 'B', 'D'], false, [])).status, 200);
   assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
 
-  // So does changing how many options there are, in either direction.
-  await postOps(app, guest, [{ type: 'vote', target: poll.id, payload: { options: [1] } }]);
-  assert.deepEqual((await snap(app, root)).polls[0]!.votes, [{ userId: 1, option: 1 }]);
-  assert.equal((await put({ options: ['A!', 'B'], allowMultiple: false })).status, 200);
-  assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
-
-  await postOps(app, guest, [{ type: 'vote', target: poll.id, payload: { options: [0] } }]);
-  assert.equal((await put({ options: ['A!', 'B', 'C'], allowMultiple: false })).status, 200);
-  assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
-
-  // A single-choice poll still refuses more than one selection.
-  await postOps(app, guest, [{ type: 'vote', target: poll.id, payload: { options: [0, 1] } }]);
-  assert.deepEqual((await snap(app, root)).polls[0]!.votes, []);
+  // The overwrite is trusted but not shape-free: votes must name existing options, must not
+  // repeat a pair, and a single-choice poll cannot hold two votes from one user.
+  assert.equal((await put(['A', 'B'], true, [{ userId: 1, option: 2 }])).status, 400);
+  assert.equal(
+    (
+      await put(['A', 'B'], true, [
+        { userId: 1, option: 0 },
+        { userId: 1, option: 0 },
+      ])
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await put(['A', 'B'], false, [
+        { userId: 1, option: 0 },
+        { userId: 1, option: 1 },
+      ])
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await pollRequest(app, 'PUT', `/${poll.id}`, root, {
+        options: ['A', 'B'],
+        allowMultiple: true,
+        locale: 'en-US',
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await pollRequest(app, 'PUT', '/999', root, {
+        options: ['A', 'B'],
+        allowMultiple: true,
+        votes: [],
+        locale: 'en-US',
+      })
+    ).status,
+    404,
+  );
 });
 
 test('announcement deletion clears reactions without removing independent poll votes', async () => {

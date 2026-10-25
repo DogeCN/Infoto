@@ -1,7 +1,7 @@
 # 0018: Editing a Poll Keeps Its Votes Unless the Question Changed
 
 - **Date**: 2026-10-12
-- **Status**: Accepted (supersedes the vote-clearing clause of 0010, restated in 0013)
+- **Status**: Superseded by 0019
 - **Context**: ADR 0010 decided that "changing the options, selection mode, or locale clears the
   poll's existing votes so stored option indices cannot become stale or cross locale boundaries",
   and 0013 restated it as "any change to the option set or the choice mode clears the poll's

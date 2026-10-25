@@ -106,22 +106,30 @@ test('frontend ops and filters: applies marks, independent polls, and announceme
   polls = ops.applyVote(polls, 1, 4, []);
   assert.deepEqual(polls[0]!.votes, []);
   polls = ops.applyVote(polls, 1, 4, [0, 2]);
-  // Same option count and same mode: rewriting the text keeps the votes.
-  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B', 'C'], true, 2_000);
+  // The overwrite stores exactly the option list and vote set the editor supplies; a reorder
+  // is sent with its votes already addressed by the new order.
+  polls = ops.applyPollUpdate(
+    polls,
+    1,
+    ['C', 'A!', 'B'],
+    true,
+    [
+      { userId: 4, option: 0 },
+      { userId: 4, option: 1 },
+    ],
+    2_000,
+  );
+  assert.deepEqual(polls[0]!.options, ['C', 'A!', 'B']);
   assert.deepEqual(polls[0]!.votes, [
     { userId: 4, option: 0 },
-    { userId: 4, option: 2 },
+    { userId: 4, option: 1 },
   ]);
-  // Switching the choice mode clears them.
-  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B', 'C'], false, 3_000);
+  assert.equal(polls[0]!.updatedAt, 2_000);
+  // Clearing is the same overwrite with an empty vote set.
+  polls = ops.applyPollUpdate(polls, 1, ['C', 'A!', 'B'], false, [], 3_000);
   assert.deepEqual(polls[0]!.votes, []);
-  // So does changing the option count, in either direction.
-  polls = ops.applyVote(polls, 1, 4, [1]);
-  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B'], false, 4_000);
-  assert.deepEqual(polls[0]!.votes, []);
-  polls = ops.applyVote(polls, 1, 4, [0]);
-  polls = ops.applyPollUpdate(polls, 1, ['A!', 'B', 'C', 'D'], false, 5_000);
-  assert.deepEqual(polls[0]!.votes, []);
+  assert.equal(polls[0]!.allowMultiple, false);
+  assert.equal(polls[0]!.updatedAt, 3_000);
 
   let announcements = [ann({ id: 1 })];
   announcements = ops.applyReact(announcements, 1, 4, '👍');

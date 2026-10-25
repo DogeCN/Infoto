@@ -51,3 +51,4 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0013](0013-all-locale-sync-and-poll-references.md)        | All-Locale Sync Snapshots and Language-Addressed Poll References                        | Accepted                   |
 | [0014](0014-transcode-output-streams-to-opfs.md)           | Transcode Output Streams Straight to OPFS, and a Hidden Page Keeps Its Lease            | Accepted                   |
 | [0015](0015-one-dimension-per-refactor-commit.md)          | One Dimension Per Refactor Commit, and a New Abstraction Is Specified Before It Is Used | Accepted                   |
+| [0019](0019-poll-editor-overwrite-votes.md)                | Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll             | Accepted                   |

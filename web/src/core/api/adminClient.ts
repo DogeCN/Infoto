@@ -4,7 +4,7 @@
  * Reading it from the UI here instead would be a second source of truth: the store keys its
  * optimistic rows on `contentLocale`, so a write could land in a different language list.
  */
-import type { Announcement, LocaleCode, Poll } from '$shared/types';
+import type { Announcement, LocaleCode, Poll, Vote } from '$shared/types';
 import { copy, fmt, type Copy } from '$shared/copy';
 import { requestJson, type RequestIo } from './request';
 
@@ -156,10 +156,18 @@ export async function updatePoll(
   id: number,
   options: string[],
   allowMultiple: boolean,
+  votes: Vote[],
   locale: LocaleCode,
   io: AdminApiIo = {},
 ): Promise<void> {
-  await adminWrite('poll', 'update', 'PUT', `/${id}`, { options, allowMultiple, locale }, io);
+  await adminWrite(
+    'poll',
+    'update',
+    'PUT',
+    `/${id}`,
+    { options, allowMultiple, votes, locale },
+    io,
+  );
 }
 
 export async function deletePoll(id: number, io: AdminApiIo = {}): Promise<void> {

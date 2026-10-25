@@ -10,9 +10,11 @@
     icon: Component;
     state?: TriState;
     onCycle?: () => void;
+    /** Size/shape overrides for a call site that must match a neighbouring control. */
+    class?: string;
   }
 
-  let { label, icon: Icon, state = 'off', onCycle }: Props = $props();
+  let { label, icon: Icon, state = 'off', onCycle, class: className = '' }: Props = $props();
 
   const STATE_CLASS: Record<TriState, string> = {
     off: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
@@ -28,6 +30,7 @@
     class={cn(
       'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-all duration-[var(--duration-exit)] ease-[var(--ease-exit)] active:scale-95',
       STATE_CLASS[state],
+      className,
     )}
     aria-pressed={state !== 'off'}
     onclick={onCycle}
