@@ -1,4 +1,4 @@
-import { clamp01 } from './num.ts';
+import { clamp, clamp01 } from './num.ts';
 
 export type RangeScale = 'linear' | 'logarithmic';
 
@@ -9,7 +9,7 @@ export function normalizeRangeValue(
   scale: RangeScale = 'linear',
 ): number {
   if (max <= min) return 0;
-  const clamped = Math.min(max, Math.max(min, value));
+  const clamped = clamp(value, min, max);
   if (scale === 'linear') return clamp01((clamped - min) / (max - min));
 
   const domainStart = Math.log1p(Math.max(0, min));
@@ -32,7 +32,7 @@ export function mapRangeValue(
 
   const domainStart = Math.log1p(Math.max(0, min));
   const value = Math.expm1(domainStart + t * (Math.log1p(Math.max(0, max)) - domainStart));
-  return Math.round(Math.min(max, Math.max(min, value)));
+  return Math.round(clamp(value, min, max));
 }
 
 export const THUMB = 18;
@@ -63,7 +63,7 @@ export function pointerPosition(clientX: number, rect: { left: number; width: nu
 export function stepValue(position: number, min: number, max: number, step: number): number {
   const offset = clamp01(position) * Math.max(0, max - min);
   const value = min + (step > 0 ? Math.round(offset / step) * step : offset);
-  return Math.min(max, Math.max(min, Number(value.toFixed(6))));
+  return clamp(Number(value.toFixed(6)), min, max);
 }
 
 /** PageUp/PageDown travel as a fraction of the track, independent of the value scale. */

@@ -2,11 +2,12 @@
  * Lightbox gesture/transform engine — pure, DOM-free math.
  *
  * The `<Lightbox>` component owns the event wiring and DOM writes; this module
- * owns the geometry. Keeping it pure makes the gesture fixes (pinch anchor,
- * rect-based pan clamp, viewport-overflow gate, rotation snap, double-tap and
- * swipe classification) unit-testable instead of buried in a 1200-line Svelte
- * file.
+ * owns the geometry. Keeping it pure makes the gesture behaviour (pinch anchor,
+ * rotation pivot, fit recentring, pan gate, rotation snap, double-tap and swipe
+ * classification) unit-testable instead of buried in a 1200-line Svelte file.
  */
+
+import { clamp } from './num.ts';
 
 /**
  * Zoom bounds. The lower bound is **below 1 on purpose**: pinching apart and Ctrl+wheel-up
@@ -16,7 +17,7 @@
  *
  * Note what "zoomed in" means everywhere below: `scale > REST_SCALE + REST_EPSILON`, never
  * `scale > MIN_SCALE`. A 0.8 image is smaller than the stage, so it must centre and refuse to
- * pan — the same resting behaviour scale 1 gets.
+ * pan — unless it is rotated, which stays pannable — the same resting behaviour scale 1 gets.
  */
 export const MIN_SCALE = 0.5;
 export const MAX_SCALE = 5;
@@ -26,7 +27,8 @@ const REST_SCALE = 1;
 /** Slack for the resting comparison, so a pinch settling at 1.0000001 still rests. */
 const REST_EPSILON = 0.01;
 
-/** True when the media is at (or below) fit scale: centred, and not pannable. */
+/** True when the media is at (or below) fit scale. The fit view is centred, but only
+ *  while it is also unrotated — see `settlePan` and `isPannable`. */
 export function isAtRest(scale: number): boolean {
   return scale <= REST_SCALE + REST_EPSILON;
 }
@@ -38,17 +40,6 @@ export interface Rect {
   height: number;
   right: number;
   bottom: number;
-}
-
-/**
- * An element's own box: `width`/`height` **excluding any transform**. Rendered
- * rects are not usable for the pan clamp because they reflect whatever the
- * transform currently interpolates to — measuring mid-transition reads the frame
- * the gesture came *from*, see `clampPan`.
- */
-export interface Box {
-  width: number;
-  height: number;
 }
 
 export interface ZoomState {
@@ -68,16 +59,20 @@ export interface PinchStart {
   r: number;
 }
 
-/** Geometry captured when a desktop Ctrl+drag (zoom + rotate) begins. The pivot is a
- *  fixed centre — the card centre, which sits at the stage centre at rest — so the gesture
- *  scales and rotates the image about that point. `dist0`/`angle0` are the pointer's distance
- *  from and angle around that centre at the moment the gesture starts. */
+/** Geometry captured when a desktop Ctrl+drag (zoom + rotate) begins. The pivot is the
+ *  media's own centre, wherever it currently sits: `dist0`/`angle0` are the pointer's
+ *  distance from and angle around that centre at the moment the gesture starts, and the
+ *  pan in force (`x`/`y`) is carried through unchanged, so starting the gesture on a
+ *  panned image never recentres it. */
 export interface CtrlZoomStart {
   scale0: number;
   dist0: number;
   angle0: number;
   /** Rotation in force when the gesture began. Used as the base the angle delta adds to. */
   r: number;
+  /** Pan in force when the gesture began; it survives the whole gesture untouched. */
+  x: number;
+  y: number;
 }
 
 export interface Tap {
@@ -89,7 +84,7 @@ export interface Tap {
 export type SwipeDir = 'left' | 'right' | 'up' | 'down';
 
 export function clampScale(s: number): number {
-  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+  return clamp(s, MIN_SCALE, MAX_SCALE);
 }
 
 /** A rotation that is not axis-aligned (0/180/360°) keeps the image pannable. */
@@ -113,75 +108,37 @@ export function snapRotation(rot: number): number {
 }
 
 /**
- * Pan clamp using the *actual* rendered wrap size, not the stage dimensions.
- *
- * The allowed offset on an axis is half the overflow: a wrap larger than the
- * stage may move until an edge meets the stage edge, and a wrap still smaller
- * than the stage (a small photo at 5x, or object-fit letterboxing) is pinned to
- * the centre. Pinning to the centre — rather than trying to satisfy "no gap on
- * the left AND no gap on the right" — is what keeps a sub-viewport media box
- * from being slammed into a corner, because the two edge conditions can never
- * both hold when the media is the smaller of the two.
+ * Panning is gated on the media being **zoomed or rotated** (`isPannable`), not on
+ * the rendered box having already overflowed the stage: with an unbounded drag, moving
+ * a small image that is merely zoomed past fit is still meaningful, and the drag must
+ * stop being "limited" the moment the photo is zoomed.
  */
-/**
- * The axis-aligned bounds a `width × height` box occupies once rotated about its
- * own centre. Rotating a rectangle swaps its contribution per axis: at 90° the
- * width comes entirely from what was the height.
- */
-export function rotatedBounds(width: number, height: number, rot: number): Box {
-  const rad = (rot * Math.PI) / 180;
-  const c = Math.abs(Math.cos(rad));
-  const s = Math.abs(Math.sin(rad));
-  return { width: width * c + height * s, height: width * s + height * c };
+export function isPannable(scale: number, rot: number): boolean {
+  return !isAtRest(scale) || isRotated(rot);
 }
 
 /**
- * Pan clamp from the wrap's **layout box**, scaled and rotated into the bounds it
- * will settle at — never from its rendered rect.
+ * Return the transform to where the gesture should leave it.
  *
- * The rendered rect is unusable here. When a zoom is animated the transform has
- * just been written but not yet interpolated, so `getBoundingClientRect` returns
- * the *starting* box: for a double-tap that is the un-zoomed media, still smaller
- * than the stage, so every bound collapses to 0 and the offset `zoomToPoint` had
- * just computed to anchor the zoom on your finger is clamped straight back out —
- * the photo zoomed from the middle however off-centre you tapped. Reading the
- * layout box instead sidesteps the transition entirely: `offsetWidth` ignores
- * transforms, so it already describes where the box lands.
+ * Panning is deliberately **unbounded**: the media may be dragged anywhere, including
+ * partly or wholly off the stage, and that offset survives every zoom and rotation. A
+ * boundary is felt as a stuck drag the moment a rotated image's bounding box barely
+ * overflows (or a zoomed one has no overflow left on an axis), which is exactly the
+ * complaint this replaced. The one forced position is the fit view: an image at or below
+ * fit scale **and** axis-aligned is centred, because that is the whole-photo state every
+ * reset path expects to return to.
  */
-export function clampPan(state: ZoomState, stage: Box, box: Box): ZoomState {
-  // Only force-centre when the media is at fit *and* unrotated. A rotated image
-  // (even at fit scale) can have a bounding box that overflows the stage on an
-  // axis, so it must stay pannable; forcing the offset to zero would freeze the
-  // drag after a pure rotation.
+export function settlePan(state: ZoomState): ZoomState {
   if (isAtRest(state.scale) && !isRotated(state.rot)) {
     return { ...state, zoomX: 0, zoomY: 0 };
   }
-  const bounds = rotatedBounds(box.width * state.scale, box.height * state.scale, state.rot);
-  const maxX = Math.max(0, (bounds.width - stage.width) / 2);
-  const maxY = Math.max(0, (bounds.height - stage.height) / 2);
-  return {
-    ...state,
-    zoomX: clampAxis(state.zoomX, maxX),
-    zoomY: clampAxis(state.zoomY, maxY),
-  };
-}
-
-/** Bound an offset to ±max, normalising the -0 that `Math.max(-0, v)` yields. */
-function clampAxis(v: number, max: number): number {
-  const bounded = Math.min(max, Math.max(-max, v));
-  return bounded === 0 ? 0 : bounded;
-}
-
-/** True only when the rendered media actually overflows the viewport on an axis. */
-export function isZoomedBeyondViewport(stage: Rect, wrap: Rect): boolean {
-  return wrap.width > stage.width + 1 || wrap.height > stage.height + 1;
+  return state;
 }
 
 /**
  * Zoom to `ns` anchored at the stage-relative point (sx, sy). When rotated, the
- * anchor is pinned to the centre so the scale+translate math stays valid.
- * Returns the provisional state without empirical clamping — the caller writes
- * the transform, reads the new wrap rect, then passes it to `clampPan`.
+ * anchor is pinned to the centre. Returns the state the transform should be written
+ * with; the caller only has to apply `settlePan` for the fit-view case.
  */
 export function zoomToPoint(
   state: ZoomState,
@@ -201,7 +158,8 @@ export function zoomToPoint(
   const zoomX = ax - Sx - (s * (ax - Sx - x)) / scale;
   const zoomY = ay - Sy - (s * (ay - Sy - y)) / scale;
   const next = { scale: s, zoomX, zoomY, rot: state.rot };
-  return isAtRest(s) ? { ...next, zoomX: 0, zoomY: 0 } : next;
+  // The fit view is centred — unless it is rotated, which stays pannable at fit scale.
+  return isAtRest(s) && !isRotated(state.rot) ? { ...next, zoomX: 0, zoomY: 0 } : next;
 }
 
 /**
@@ -234,11 +192,12 @@ export function pinchTransform(
 }
 
 /**
- * Desktop Ctrl+drag: the fixed card centre is the pivot. The pointer's distance from that
- * centre drives scale (ratio to the start distance); the pointer's angle around it drives
- * rotation (delta from the start angle). Because the pivot is the centre, the translate stays
- * zero — the image scales and spins about the stage centre, never drifting. Returns provisional
- * state (caller clamps empirically, though with zero offset there is nothing to clamp).
+ * Desktop Ctrl+drag: the media's own centre is the pivot. The pointer's distance from that
+ * centre drives scale (ratio to the start distance); its angle around it drives rotation
+ * (delta from the start angle). The pivot travels with the media, so the pan captured at
+ * the start is handed through untouched — the image scales and spins where it already sits,
+ * including when the gesture starts on a zoomed, panned photo. Nothing is clamped: the
+ * caller writes the state as-is.
  */
 export function ctrlZoomTransform(
   start: CtrlZoomStart,
@@ -250,7 +209,7 @@ export function ctrlZoomTransform(
   const ns = clampScale(start.scale0 * ratio);
   const angle = (Math.atan2(pointer.y - center.y, pointer.x - center.x) * 180) / Math.PI;
   const rot = start.r + normAngle(angle - start.angle0);
-  return { scale: ns, zoomX: 0, zoomY: 0, rot };
+  return { scale: ns, zoomX: start.x, zoomY: start.y, rot };
 }
 
 /** Classify a touch/mouse tap: a quick second tap near the first is a double. */

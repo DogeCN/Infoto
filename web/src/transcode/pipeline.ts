@@ -78,7 +78,8 @@ export interface PipelineIo {
   onEvent?: (line: string) => void;
   /**
    * Album upload op exit: the sink persists the op with the photo record in one transaction.
-   * Optional only for harnesses — the fallback writes both halves directly to the same stores.
+   * The page's upload store is the only production sink; a pipeline without one cannot write an
+   * album op, so the job fails instead of reporting one.
    */
   onUploadOp?: (op: Op, artifact: { key: string; ext: 'webp' | 'webm' }) => void | Promise<void>;
   /** A job left the SharedWorker (cancelJob) — the page must drop its row/card. */
@@ -391,7 +392,11 @@ export class UploadPipeline {
     // the record keeps; nothing else keys on it.
     const artifact = { key: jobId, ext: extOfType(meta.type) } as const;
     // The sink is the only writer: it persists the op with the photo record in one transaction.
-    await this.io.onUploadOp?.(op, artifact);
+    // Without one nothing can be written, so the job fails rather than telling the SharedWorker
+    // an op exists — it prunes a job it believes was written, and the photo would have no trace.
+    const sink = this.io.onUploadOp;
+    if (!sink) throw new Error('oplog_unavailable');
+    await sink(op, artifact);
     try {
       this.sw?.port.postMessage({ t: 'opWritten', jobId });
     } catch {

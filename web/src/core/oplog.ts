@@ -7,7 +7,7 @@
 // confirmed record still carries before it deletes it, so the retirement cannot swallow them.
 
 import type { MediaType, Op, SyncResponse } from '$shared/types';
-import type { MarkSet } from './ops';
+import { MARK_FIELD, type MarkKind, type MarkSet } from './ops';
 
 const DB_NAME = 'infoto';
 /** 3 replaced the jobId-keyed resume store with the per-photo records below. */
@@ -20,12 +20,6 @@ const PHOTO_STORE = 'photos';
 const SNAPSHOT_KEY = 'snapshot';
 /** Store the previous version used for resumable uploads; 3 absorbed it into `photos`. */
 const LEGACY_RESUME_STORE = 'pendingUploads';
-/** The ops a pending photo's marks are stated as, with the field each one reads. */
-const MARK_OPS = [
-  ['like', 'likes'],
-  ['dislike', 'dislikes'],
-  ['report', 'reports'],
-] as const;
 
 /**
  * Everything the client durably knows about one photo that is not yet in the album, keyed by
@@ -276,10 +270,6 @@ export function updatePhotoRecord(
   });
 }
 
-export function deletePhotoRecord(db: IDBDatabase, sha256: string): Promise<void> {
-  return deletePhotoRecords(db, [sha256]);
-}
-
 /**
  * Delete a record only while the job that wrote it still owns its artifact.
  *
@@ -298,16 +288,6 @@ export function deletePhotoRecordIfOwned(
     got.onsuccess = () => {
       if (got.result?.artifact?.key === jobId) store.delete(sha256);
     };
-    return () => undefined;
-  });
-}
-
-/** Drop the records of photos the server has confirmed. */
-export function deletePhotoRecords(db: IDBDatabase, shas: readonly string[]): Promise<void> {
-  if (shas.length === 0) return Promise.resolve();
-  return run(db, PHOTO_STORE, 'readwrite', (tx) => {
-    const store = tx.objectStore(PHOTO_STORE);
-    for (const sha of shas) store.delete(sha);
     return () => undefined;
   });
 }
@@ -336,8 +316,11 @@ export function retirePhotos(
         const record = got.result;
         records.delete(sha);
         if (!record?.marks) return;
-        for (const [type, field] of MARK_OPS) {
-          if (record.marks[field].includes(selfId)) log.add({ type, targetSha: sha });
+        // The kind → column mapping is `ops.ts`'s, so a mark kind added there is stated here too.
+        for (const kind of Object.keys(MARK_FIELD) as MarkKind[]) {
+          if (record.marks[MARK_FIELD[kind]].includes(selfId)) {
+            log.add({ type: kind, targetSha: sha });
+          }
         }
       };
     }

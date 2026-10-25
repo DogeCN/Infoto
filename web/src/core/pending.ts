@@ -17,8 +17,6 @@ export type HostedReadiness = 'pending' | 'ready' | 'failed';
 export interface UploadOverlay {
   fraction?: number;
   failed?: boolean;
-  /** Localised summary of the failure, shown on the cover. */
-  error?: string;
   preview?: boolean;
 }
 

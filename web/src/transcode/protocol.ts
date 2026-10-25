@@ -199,35 +199,50 @@ export const LEASE_TIMEOUT_MS = 15_000;
 
 // ---- runtime guards (protocol unit tests) ---------------------------------------
 
-const PAGE_TYPES = new Set([
-  'addJob',
-  'cancelJob',
-  'retryJob',
-  'leaseHeartbeat',
-  'leaseRelease',
-  'leaseVisibility',
-  'videoProgress',
-  'videoResult',
-  'videoFailed',
-  'opWritten',
-  'editorResultAck',
-  'poolHint',
-  'mediaHost',
-]);
-const SW_TYPES = new Set(['jobStatus', 'leaseGranted', 'leaseRevoked', 'jobRemoved']);
+/**
+ * The page → SW message types, as a keyed table: the key set *is* the union, so a message type
+ * added to `PageToSwMessage` without a key here fails `tsc` instead of failing at runtime.
+ */
+const PAGE_TYPES: Record<PageToSwMessage['t'], true> = {
+  addJob: true,
+  cancelJob: true,
+  retryJob: true,
+  leaseHeartbeat: true,
+  leaseRelease: true,
+  leaseVisibility: true,
+  videoProgress: true,
+  videoResult: true,
+  videoFailed: true,
+  opWritten: true,
+  editorResultAck: true,
+  poolHint: true,
+  mediaHost: true,
+};
+/** SW → page message types; the same keyed-table exhaustiveness applies. */
+const SW_TYPES: Record<SwToPageMessage['t'], true> = {
+  jobStatus: true,
+  leaseGranted: true,
+  leaseRevoked: true,
+  jobRemoved: true,
+};
 const JOB_PURPOSES = new Set<JobPurpose>(['album', 'editor']);
+
+/** Whether `type` names one of `types`' own keys — an inherited property is not a message type. */
+function isMessageType(types: Record<string, true>, type: string | undefined): boolean {
+  return type !== undefined && (types as Record<string, true | undefined>)[type] === true;
+}
 
 export function isPageToSw(m: unknown): m is PageToSwMessage {
   if (typeof m !== 'object' || m === null) return false;
   const message = m as { t?: string; purpose?: string };
-  if (!PAGE_TYPES.has(message.t ?? '')) return false;
+  if (!isMessageType(PAGE_TYPES, message.t)) return false;
   return message.t !== 'addJob' || JOB_PURPOSES.has(message.purpose as JobPurpose);
 }
 
 export function isSwToPage(m: unknown): m is SwToPageMessage {
   if (typeof m !== 'object' || m === null) return false;
   const message = m as { t?: string; purpose?: string };
-  if (!SW_TYPES.has(message.t ?? '')) return false;
+  if (!isMessageType(SW_TYPES, message.t)) return false;
   return message.t !== 'jobStatus' || JOB_PURPOSES.has(message.purpose as JobPurpose);
 }
 

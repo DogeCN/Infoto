@@ -113,6 +113,9 @@ export const countHop = {
   easing: motionEaseFn('exit'),
 };
 
+/** The exit hop mirrors the entry hop: the outgoing number leaves against the incoming one. */
+export const countHopOut = { ...countHop, y: -countHop.y };
+
 /**
  * How long after a layout commit a card may still remount and glide from the box it last
  * rendered at, rather than appearing at the new one.

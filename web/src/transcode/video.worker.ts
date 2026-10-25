@@ -189,9 +189,10 @@ async function transcodeGif(
     let timestampS = 0;
     for (let i = 0; i < frameCount; i++) {
       const { image } = await decoder.decode({ frameIndex: i });
-      // Frames are decoded one at a time, so the timings accumulate as they are read rather
-      // than being computed up front by `frameTimings`; `frameDurationS` is the shared owner
-      // of the per-frame conversion, so both paths agree on a zero or missing duration.
+      // Frames are decoded one at a time, so each timestamp is the sum of the durations before
+      // it, never `index * duration`: a real GIF's durations differ, and multiplying the index
+      // by the current frame's duration walks backwards whenever a short frame follows a long
+      // one, which the encoder rejects as a non-monotonic GOP.
       const seconds = frameDurationS(image.duration);
       const sample = new VideoSample(image, {
         timestamp: timestampS,

@@ -1,8 +1,7 @@
 import { copy, fmt } from '$shared/copy';
 import { isRecord, safeJsonParse } from '$shared/json';
+import { MAX_IMPORT_BYTES } from '$shared/types';
 import { clamp01 } from '$base/lib/num';
-
-export const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 
 export type MigrateImportFailureKind = 'validation' | 'network' | 'http' | 'server' | 'malformed';
 

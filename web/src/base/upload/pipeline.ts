@@ -4,6 +4,7 @@
 
 import type { Op, UploadPayload } from '$shared/types';
 import { copy, fmt, type Copy } from '$shared/copy';
+import { clamp } from '$base/lib/num';
 
 // ---- constants -------------------------------------------------------------
 
@@ -50,14 +51,9 @@ export function routeByMime(mime: string): RouteDecision | null {
   return null;
 }
 
-/** Artifact extension implied by the kind. */
-export function artifactExt(kind: MediaKind): 'webp' | 'webm' {
-  return kind === 'image' ? 'webp' : 'webm';
-}
-
 // ---- concurrency pools --------------------------------------------------------
 
-/** Image pool: `clamp(2, 6, floor(hardwareConcurrency × 0.75))`; missing/invalid
+/** Image pool: `floor(hardwareConcurrency × 0.75)` held inside 2–6; missing/invalid
  *  hardwareConcurrency falls back to 4; a reported downlink under 2 Mbps caps the
  *  pool at 2 (network is the bottleneck, not CPU). */
 export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: number): number {
@@ -67,7 +63,7 @@ export function imagePoolSize(hardwareConcurrency?: number, downlinkMbps?: numbe
     hardwareConcurrency > 0
       ? hardwareConcurrency
       : 4;
-  let cap = Math.min(6, Math.max(2, Math.floor(cores * 0.75)));
+  let cap = clamp(Math.floor(cores * 0.75), 2, 6);
   if (typeof downlinkMbps === 'number' && Number.isFinite(downlinkMbps) && downlinkMbps < 2) {
     cap = Math.min(cap, 2);
   }
@@ -141,37 +137,12 @@ export const GIF_FRAME_FALLBACK_US = 100_000;
  *
  * `||` rather than `??` because a reported `0` is a missing duration, not a valid one: the last
  * frame of a looping GIF reports 0, and `??` keeps it, which lands that frame on the same
- * timestamp as its predecessor — the non-monotonic GOP `frameTimings` exists to prevent. `NaN`
- * is falsy too, so a decoder that reports it also takes the fallback instead of propagating
- * `NaN` into the encoder's config.
+ * timestamp as its predecessor — a non-monotonic GOP the encoder rejects. `NaN` is falsy too,
+ * so a decoder that reports it also takes the fallback instead of propagating `NaN` into the
+ * encoder's config.
  */
 export function frameDurationS(durationUs: number | null | undefined): number {
   return Math.max(durationUs || GIF_FRAME_FALLBACK_US, 1000) / 1e6;
-}
-
-/**
- * Frame timestamps and durations for one animated source, in seconds, from the per-frame
- * durations a decoder reports (microseconds).
- *
- * Timestamps accumulate rather than being computed as `index * duration`: frame durations
- * differ in a real GIF, so multiplying the index by the *current* frame's duration walks
- * backwards whenever a short frame follows a long one — frame 2 landing before frame 1 — which
- * the video encoder rejects as a non-monotonic GOP.
- */
-export function frameTimings(durationsUs: readonly number[]): {
-  timestamps: number[];
-  durations: number[];
-} {
-  const timestamps: number[] = [];
-  const durations: number[] = [];
-  let t = 0;
-  for (const raw of durationsUs) {
-    const seconds = frameDurationS(raw);
-    timestamps.push(t);
-    durations.push(seconds);
-    t += seconds;
-  }
-  return { timestamps, durations };
 }
 
 // ---- error summary translation (fully localized) ----------------------------

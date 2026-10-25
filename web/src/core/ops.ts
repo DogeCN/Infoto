@@ -238,6 +238,12 @@ export function applyReact(
   });
 }
 
+/** Sort index for a row appended after every existing row. Insertion at the top is the opposite
+ *  rule (`applyFbCreate`), which mirrors the server's `MIN(sort) - 1`. */
+function nextSort(rows: readonly { sort: number }[]): number {
+  return rows.reduce((max, row) => Math.max(max, row.sort), -1) + 1;
+}
+
 /** Append an optimistically-created announcement (negative temp id). */
 export function applyAnnCreate(
   anns: Announcement[],
@@ -247,7 +253,7 @@ export function applyAnnCreate(
   locale: LocaleCode,
   now: number,
 ): Announcement[] {
-  const sort = anns.reduce((m, a) => Math.max(m, a.sort), -1) + 1;
+  const sort = nextSort(anns);
   return [...anns, { id: tempId, title, contentMd, locale, sort, updatedAt: now, reactions: [] }];
 }
 
@@ -269,7 +275,7 @@ export function applyPollCreate(
   locale: LocaleCode,
   now: number,
 ): Poll[] {
-  const sort = polls.reduce((max, poll) => Math.max(max, poll.sort), -1) + 1;
+  const sort = nextSort(polls);
   return [
     ...polls,
     { id: tempId, options, allowMultiple, locale, sort, updatedAt: now, votes: [] },

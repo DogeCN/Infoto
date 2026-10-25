@@ -1,5 +1,6 @@
 import { isLocaleCode, type LocaleCode } from '$shared/copy';
 import { escapeHtml } from '$shared/html';
+import { POLL_REFERENCE } from '$shared/poll';
 import type { RendererRule } from 'markdown-it';
 
 export interface TextSelection {
@@ -302,7 +303,7 @@ export function splitPollReferences(contentMd: string): MarkdownPollPart[] {
     textLines.length = 0;
   };
   for (const line of contentMd.split(/\r?\n/)) {
-    const match = line.match(/^\s*::poll:([A-Za-z][A-Za-z0-9-]*):(\d+)\s*$/);
+    const match = line.match(POLL_REFERENCE);
     const rawLocale = match ? match[1] : undefined;
     const id = match ? Number(match[2]) : NaN;
     if (match && rawLocale && isLocaleCode(rawLocale) && Number.isSafeInteger(id)) {

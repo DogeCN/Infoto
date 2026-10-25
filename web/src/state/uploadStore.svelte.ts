@@ -372,15 +372,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
         // Once the host URL exists the curtain shows the real thing, not the local preview.
         if (t.meta) m.set(id, { fraction: t.fraction ?? 0, preview: !t.url });
       } else if (t.phase === 'failed') {
-        // Failed jobs retain a retry overlay with a localized error summary.
-        m.set(id, {
-          failed: true,
-          preview: !t.url,
-          error: translateTaskError(t.error, {
-            oversize: t.error === 'oversize',
-            uploadLeg: !!t.sha256,
-          }),
-        });
+        // Failed jobs retain a retry overlay; the failure reason reaches the user through the
+        // toast emitted for the same task, so the cover itself carries no text.
+        m.set(id, { failed: true, preview: !t.url });
       }
       // done → no mask (curtain fully open, awaiting /sync correction)
     }

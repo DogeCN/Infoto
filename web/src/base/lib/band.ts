@@ -3,6 +3,8 @@
 // explicit user choice; the untouched default follows the canvas instead (see
 // `autoBand`) so a narrow screen does not open at one oversized column.
 
+import { clamp } from './num.ts';
+
 export const MIN_BAND = 100;
 export const MAX_BAND = 800;
 export const DEFAULT_BAND = 260;
@@ -18,5 +20,5 @@ export const DEFAULT_BAND = 260;
  * auto band monotonic as the window is resized.
  */
 export function autoBand(cross: number, gap: number): number {
-  return Math.round(Math.min(DEFAULT_BAND, Math.max(MIN_BAND, (cross - gap) / 2)));
+  return Math.round(clamp((cross - gap) / 2, MIN_BAND, DEFAULT_BAND));
 }

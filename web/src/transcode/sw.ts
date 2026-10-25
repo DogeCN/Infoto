@@ -1,9 +1,9 @@
 // SharedWorker scheduler for image transcoding, leased video workers, direct editor uploads, and heartbeat cleanup.
 
 import type { MediaType } from '$shared/types';
+import { extOfType } from '$shared/media';
 import { clamp01 } from '$base/lib/num';
 import {
-  artifactExt,
   imagePoolSize,
   isOversize,
   routeByMime,
@@ -232,9 +232,11 @@ function photoRecord(rec: JobRec, status: PhotoRecord['status']): PhotoRecord | 
   };
 }
 
-/** Measured byte progress. Missing totals and completed stages report no fraction; phase changes signal completion. */
+/** Measured byte progress. Missing totals and completed stages report no fraction; the phase
+ *  change signals completion, because a fraction of 1 here would leave the row full before the
+ *  next leg starts at 0. */
 function notifyBytes(rec: JobRec, total: number, written: number): void {
-  if (rec.cancelled || rec.phase !== 'hashing' || total <= 0) return;
+  if (rec.cancelled || rec.phase !== 'hashing' || total <= 0 || written >= total) return;
   notify(rec, { fraction: clamp01(written / total) });
 }
 
@@ -417,7 +419,7 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   if (source) {
     blob = source;
   } else {
-    const ext = artifactExt(rec.meta!.type === 0 ? 'image' : 'webm');
+    const ext = extOfType(rec.meta!.type);
     fileName = `m.${ext}`;
     notify(rec, { fraction: undefined });
     if (rec.cancelled) return;
@@ -562,6 +564,9 @@ function onRetry(jobId: string): void {
 
 setInterval(() => {
   const now = Date.now();
+  // A lease released below frees a video slot. The pool is pumped once, after the loop: a pump
+  // grants leases, and granting inside the loop mutates `leases` while it is being iterated.
+  let slotFreed = false;
   for (const [leaseId, lease] of leases) {
     const pid = owners.get(lease.jobId);
     const seen = pid === undefined ? 0 : (portLastSeen.get(pid) ?? 0);
@@ -578,6 +583,7 @@ setInterval(() => {
       const ext = jobArtifactExt(rec);
       forgetJob(rec.jobId);
       void removeArtifact(rec.jobId, ext);
+      slotFreed = true;
       continue;
     }
     rec.leaseId = undefined;
@@ -592,8 +598,9 @@ setInterval(() => {
       // The port may have been swept already; the page re-registers on its next message.
     }
     notify(rec);
-    pumpVideoLeases();
+    slotFreed = true;
   }
+  if (slotFreed) pumpVideoLeases();
 }, 2_000);
 
 /** Release source blobs and expired terminal-job records during periodic housekeeping. */
@@ -815,14 +822,18 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
         // ownerPort() already re-registered a swept port, so this posts to a live port.
         owner?.postMessage({ t: 'leaseRevoked', leaseId, jobId: m.jobId });
       }
-      // Cancel is the one path that may drop the artifact: the job will never be
-      // retried, so nothing else will ever read it again. The record goes with it, or the next
-      // page load would rebuild the card from a photo the user deleted.
-      if (rec.artifact) void removeArtifact(m.jobId, rec.artifact.ext);
+      // Cancel is the one path that may drop the artifact: the job will never be retried, so
+      // nothing else will ever read it again. The extension comes from the engine, because
+      // `rec.artifact` stays unset until stage 1 returns — keying on it leaves the file behind
+      // whenever the cancel lands during the encode or during the hashing write.
+      void removeArtifact(m.jobId, jobArtifactExt(rec));
       if (db && rec.sha256) {
         void deletePhotoRecordIfOwned(db, rec.sha256, rec.jobId).catch(() => undefined);
       }
       broadcast({ t: 'jobRemoved', jobId: m.jobId });
+      // The freed slot is re-granted in this same task: a queued video must not wait for an
+      // unrelated message to start.
+      pumpVideoLeases();
       return;
     }
     case 'retryJob':

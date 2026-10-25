@@ -82,7 +82,6 @@ export class SyncEngine {
   private listeners = new Set<(s: EngineState) => void>();
   private syncing = false;
   private pending = 0;
-  private attempt = 0;
   private activeSync: Promise<SyncAttemptResult> | null = null;
   private inFlightKeys = new Set<IDBValidKey>();
   private pagehideInstalled = false;
@@ -332,7 +331,6 @@ export class SyncEngine {
   }
 
   private beginSync(): Promise<SyncAttemptResult> {
-    this.attempt += 1;
     const promise = this.runSync();
     this.activeSync = promise;
     const clear = () => {
