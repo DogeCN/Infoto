@@ -131,6 +131,37 @@ export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: num
   return { width, height };
 }
 
+// ---- GIF frame timing ------------------------------------------------------------
+
+/** Fallback for a frame whose duration is missing or zero, in microseconds (10 fps). */
+export const GIF_FRAME_FALLBACK_US = 100_000;
+
+/**
+ * Frame timestamps and durations for one animated source, in seconds, from the per-frame
+ * durations a decoder reports (microseconds).
+ *
+ * Timestamps accumulate rather than being computed as `index * duration`: frame durations
+ * differ in a real GIF, so multiplying the index by the *current* frame's duration walks
+ * backwards whenever a short frame follows a long one — frame 2 landing before frame 1 — which
+ * the video encoder rejects as a non-monotonic GOP. A missing duration and a reported zero are
+ * both replaced by the fallback, because a zero-length frame is not a duration.
+ */
+export function frameTimings(durationsUs: readonly number[]): {
+  timestamps: number[];
+  durations: number[];
+} {
+  const timestamps: number[] = [];
+  const durations: number[] = [];
+  let t = 0;
+  for (const raw of durationsUs) {
+    const seconds = Math.max(raw || GIF_FRAME_FALLBACK_US, 1000) / 1e6;
+    timestamps.push(t);
+    durations.push(seconds);
+    t += seconds;
+  }
+  return { timestamps, durations };
+}
+
 // ---- error summary translation (fully localized) ----------------------------
 
 export interface TaskErrorContext {

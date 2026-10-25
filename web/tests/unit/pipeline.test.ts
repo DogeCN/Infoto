@@ -4,6 +4,7 @@ import { batchProgress, indeterminateRow, type UploadRow } from '../../src/trans
 import {
   artifactExt,
   buildUploadOp,
+  frameTimings,
   imagePoolSize,
   isOversize,
   MAX_UPLOAD_BYTES,
@@ -174,4 +175,28 @@ test('batch progress: totals only a fully measured batch, never an implied numbe
   assert.equal(indeterminateRow(row('transcoding')), true);
   assert.equal(indeterminateRow(row('transcoding', 0.4)), false);
   assert.equal(indeterminateRow(row('hashing', 0.1)), false);
+});
+
+test('GIF frame timings: accumulate, so no frame lands before its predecessor', () => {
+  const { timestamps, durations } = frameTimings([100_000, 500_000, 100_000, 500_000]);
+  // The formula this replaced (`index * duration`) walked backwards here: frame 2 would have
+  // landed at 0.20s, before frame 1 at 0.50s.
+  assert.deepEqual(timestamps, [0, 0.1, 0.6, 0.7]);
+  assert.deepEqual(durations, [0.1, 0.5, 0.1, 0.5]);
+  for (let i = 1; i < timestamps.length; i++) {
+    assert.ok(timestamps[i] > timestamps[i - 1], `frame ${i} does not advance`);
+  }
+});
+
+test('GIF frame timings: a zero or missing duration falls back instead of collapsing', () => {
+  // A looping GIF's last frame reports 0; `Math.max(0, 1000)` alone would keep it at zero and
+  // give two frames the same timestamp.
+  const { timestamps, durations } = frameTimings([100_000, 0, null as unknown as number]);
+  assert.deepEqual(durations, [0.1, 0.1, 0.1]);
+  assert.deepEqual(timestamps, [0, 0.1, 0.2]);
+});
+
+test('GIF frame timings: uniform frames match the index multiplication it replaces', () => {
+  const { timestamps } = frameTimings([200_000, 200_000, 200_000]);
+  assert.deepEqual(timestamps, [0, 0.2, 0.4]);
 });

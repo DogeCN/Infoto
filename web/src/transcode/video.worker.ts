@@ -18,7 +18,12 @@ import {
   BlobSource,
   getFirstEncodableVideoCodec,
 } from 'mediabunny';
-import { OPUS_BITRATE, VP9_QUANTIZER, parseGifLsdSize } from '$base/upload/pipeline';
+import {
+  GIF_FRAME_FALLBACK_US,
+  OPUS_BITRATE,
+  VP9_QUANTIZER,
+  parseGifLsdSize,
+} from '$base/upload/pipeline';
 import { openArtifactSink, removeArtifact, type ArtifactSink } from './opfs';
 
 interface VideoJobMessage {
@@ -181,16 +186,18 @@ async function transcodeGif(
     output.addVideoTrack(source);
     await output.start();
     let written = 0;
+    let timestampS = 0;
     for (let i = 0; i < frameCount; i++) {
       const { image } = await decoder.decode({ frameIndex: i });
-      const durationUs = Math.max(image.duration ?? 100_000, 1000);
+      const durationUs = Math.max(image.duration ?? GIF_FRAME_FALLBACK_US, 1000);
       const sample = new VideoSample(image, {
-        timestamp: i * (durationUs / 1e6),
+        timestamp: timestampS,
         duration: durationUs / 1e6,
       });
       await source.add(sample);
       sample.close();
       image.close();
+      timestampS += durationUs / 1e6;
       written += 1;
       progress(jobId, (i + 1) / frameCount);
     }
