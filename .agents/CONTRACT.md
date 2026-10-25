@@ -569,11 +569,23 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
     as a hardcoded `src/` constant was removed on 2026-10-19 for exactly this reason.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
-  - Upload completion is held back by a **URL prewarm**: after the host accepts an artifact,
-    the SharedWorker fetches the returned URL (no-cors, capped at `PREWARM_BUDGET_MS = 2s`)
-    before reporting `done`. The optimistic card therefore swaps its src from the OPFS
-    object URL to the host URL over a warm cache instead of flashing a skeleton at the
-    handoff. A slow host delays the completion state but never hangs it.
+  - **The local preview holds until the hosted copy is paintable.** The card's first preview is
+    an object URL of the **picked file**, created at enqueue (`seedSourcePreview`) — not the OPFS
+    artifact, whose read is asynchronous and, on a fast link, lands after the job is already
+    `done`, leaving nothing to show during the handoff. When `done` arrives the card keeps that
+    local preview until the page has fetched the hosted URL with the element that will paint it
+    (`ensureHostedReady`: an `Image` for images, a `video` stopped at its first frame), then
+    swaps. `pendingMediaUrl` is the one rule: `pending` → local, `ready`/`failed` → hosted.
+    ⚠️ Swapping `src` first is what produced the "long loading animation" report: it replaced an
+    already-painted image with bytes the document had not fetched, and the skeleton is derived
+    from `loadedUrl !== photo.url`.
+  - **No prewarm in the SharedWorker.** It used to fetch the returned URL (no-cors, 2 s cap)
+    before reporting `done`, on the theory that the card would then swap over a warm cache.
+    A worker's fetch does not populate the renderer's cache, so it bought a second download of
+    every artifact plus up to two seconds of delay before `done`. Measured with a 900 ms delay
+    on the hosted response: without the page-side gate the card's **first** paint was the
+    unloaded hosted image (a skeleton for the whole 900 ms); with it, the local preview stayed
+    up for ~52 frames and the swap landed already complete (0 blank frames, 0 hosted-before-painted).
   - **The card's curtain tops out at `CURTAIN_MAX_OPEN = 0.9`**, so an upload at 100% still
     keeps a 10% veil across the top edge; only the `done` phase removes it. That veil is why a
     stalled tail reads as "stuck at the last bit" rather than as a finished upload.
@@ -598,15 +610,24 @@ before deadline` / `no response before deadline`).
     otherwise `null`, which renders as a sweep. A total that quietly omitted an unmeasured stage
     would state a number the work does not support — this is ADR 0002 in code, not a convention.
   - The header's `{done}/{total}` pair appears only when `total > 0`.
-  - Hover expands the row list; on touch, the header drags the panel's height through the shared
-    `startPointerResize` (sign `-1`), like every other resize gesture. **The drag ceiling is
-    frozen at pointerdown** — `contentMaxH()` shrinks as rows finish, and recomputing it
-    mid-gesture yanked the sheet back down while the finger was still moving up (the "not
-    following" report). When the sheet rests open and a row leaves, an effect collapses it to the
-    new content height; `HEADER_H = 48` is the header's measured height (px-3.5 + text-sm), not
-    the 44 it used to be. The ceiling and the scroll container's `max-height` both come from one
-    measured `visualViewport.height` (42%): a second `svh` cap in CSS disagreed with the JS
-    ceiling whenever a mobile URL bar moved. Collapsed, the batch total rides the bottom edge.
+  - **Hover devices hover to expand; touch devices get a tap-toggled drawer.** The header is one
+    `<button>` in both cases: on a pointer device a click pins it open, on touch it opens or
+    closes on a single tap and carries a chevron at its right edge (up = closed, down = open).
+    There is no drag gesture any more; the height moves between `HEADER_H` and the capped
+    content height, so a row leaving while the drawer is open shrinks it without stranding empty
+    space. `HEADER_H = 48` is the header's measured height (px-3.5 + text-sm), not the 44 it used
+    to be. The open height and the scroll container's `max-height` both come from one measured
+    `visualViewport.height` (42%): a second `svh` cap in CSS disagreed with the JS ceiling
+    whenever a mobile URL bar moved. Collapsed, the batch total rides the bottom edge.
+  - **The waterfall reserves the panel's measured height at its own bottom.** `UploadPanel`
+    already reports its shell height through `onGeometry`; when the panel is flush with the
+    viewport's left edge (the mobile, full-width presentation) `App` passes that height to
+    `WaterfallLayout` as `bottomInset`, and the scroll container renders it as a spacer after the
+    canvas. Without it the collapsed header was the last thing scroll could reach — the final
+    row sat behind it, and opening the drawer covered more. The spacer follows the live drawer
+    height, so the bottom row can also be scrolled clear of an open drawer. This is a measured
+    value, never a breakpoint or a guessed header height; on the desktop panel (bottom-right,
+    18rem wide) the inset is zero because it does not overlap the gallery's bottom edge.
   - **The announcement editor takes any file.** Its input carries no `accept`, and both
     `uploadEditorFile` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
     leg. The picked file is uploaded as-is, so its extension survives into the returned URL. How
@@ -929,7 +950,13 @@ That is the modality that earns tooltips, and the bubble tells the user where fo
 
 ### 4.11 The progress sheet stopped following the finger
 
-**Resolved 2026-10-11.** The upload panel's touch drag clamped its height to `naturalH()`, which
+**Resolved 2026-10-11; the gesture itself was retired on 2026-10-25.** The touch sheet is now a
+tap-toggled drawer (see the upload-overlay entry), so there is no live gesture left for the
+frozen-ceiling rule below to constrain. The entry is kept because the underlying trap — a
+ceiling recomputed from a shrinking row set while a pointer moves — applies to any future
+resize surface.
+
+The upload panel's touch drag clamped its height to `naturalH()`, which
 was recomputed from the live row count on every move. `panelRows` shrinks as jobs finish, so a
 row completing mid-gesture pulled the ceiling down and the sheet moved **opposite** to the finger:
 a measured drag grew the shell 24→48→72→…→149px, then dropped to 120px and 64px while the finger
@@ -1093,6 +1120,7 @@ The parts of this contract that are asserted by `npm test`:
 | §1.1 table equals the `@theme` block in `web/src/app.css`, both directions           | `web/tests/unit/designTokens.test.ts`    |
 | `motion.ts` motion fallbacks equal the `@theme` motion tokens                        | `web/tests/unit/designTokens.test.ts`    |
 | `schema.sql` equals `schema-ddl.ts` byte for byte                                    | `src/worker/schema-alignment.test.ts`    |
+| Layer direction: no import points above its own layer (AGENTS.md red line 5)         | `web/tests/unit/layering.test.ts`        |
 | Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)        | `src/worker/assets-routing.test.ts`      |
 | No `transition` in `web/src` carries a literal duration or easing curve              | `web/tests/unit/designTokens.test.ts`    |
 | `GLITCH_PALETTE` equals the matching `@theme` colours                                | `web/tests/unit/designTokens.test.ts`    |
@@ -1108,6 +1136,7 @@ The parts of this contract that are asserted by `npm test`:
 | The server clears the opposite attitude when either is added                         | `src/worker/routes/sync.test.ts`         |
 | The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`           |
 | A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/pendingPhoto.test.ts`    |
+| A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/pendingPhoto.test.ts`    |
 | A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`        |
 | The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`        |
