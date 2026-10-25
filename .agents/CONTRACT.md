@@ -640,10 +640,13 @@ hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
     which does not exist; it is drawn through `pendingPhotos` behind the same landed-sha guard as
     a `done` card, so a snapshot carrying the sha replaces it without a double frame; it is
     deduped against the live tasks' shas, so a job still on screen never gets a second card; and
-    deleting it uses the ordinary pending-photo path (withdraw, then tombstone) plus one
-    session-scoped suppression — an `upload` op carries no `targetSha`, so `removeOpsBySha`
-    cannot withdraw it and a re-read would put the card back until a sync clears it. A delete in
-    another tab becomes visible here only at the next read.
+    deleting it goes through the ordinary pending-photo path (withdraw, then tombstone), after
+    which the queued tombstone itself withdraws the card — the log's own last word per sha, so
+    the card stays gone across a reload. That tombstone is the only durable record: an `upload` op
+    carries no `targetSha`, so `removeOpsBySha` cannot withdraw it. A session-scoped set covers
+    the moment before the tombstone lands; a later upload of the same sha is the user putting the
+    file back and revives the card. A delete in another tab becomes visible here only at the next
+    read.
   - **No prewarm in the SharedWorker.** It used to fetch the returned URL (no-cors, 2 s cap)
     before reporting `done`, on the theory that the card would then swap over a warm cache.
     A worker's fetch does not populate the renderer's cache, so it bought a second download of

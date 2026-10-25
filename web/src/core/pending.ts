@@ -120,20 +120,35 @@ export function queuedUploadFromOp(op: Op): QueuedUploadFields | null {
  *
  * `landed` is the album's own hashes and `live` the hashes of cards an in-memory job already
  * owns, so this projection can never double-draw a photo: the moment a snapshot carries a sha,
- * or a job owns it, the op-derived card is gone. The first op wins for a repeated sha — the same
- * file picked twice uploads twice and logs two ops for one photo.
+ * or a job owns it, the op-derived card is gone.
+ *
+ * Per sha the log's own last word decides, which is what keeps the card honest about deletion: an
+ * `upload` op draws it, and a later `delete` for the same sha withdraws it. That tombstone is the
+ * only durable record that the photo is gone — the withdrawal cannot remove the upload op
+ * (`removeOpsBySha` matches `targetSha`, and an upload op carries none) — so without it, deleting
+ * a card and reloading before the next sync brought the photo back. A later upload for the same
+ * sha is the user putting the file back: it revives the card, and the newest op describes it.
  */
 export function queuedUploadCards(
   ops: readonly Op[],
   seen: { landed: ReadonlySet<string>; live: ReadonlySet<string> },
 ): QueuedUploadFields[] {
-  const out: QueuedUploadFields[] = [];
-  const drawn = new Set<string>();
+  const cards = new Map<string, QueuedUploadFields>();
   for (const op of ops) {
+    if (op.type === 'delete') {
+      if (op.targetSha) cards.delete(op.targetSha);
+      continue;
+    }
     const fields = queuedUploadFromOp(op);
-    if (!fields || drawn.has(fields.sha256)) continue;
-    if (seen.landed.has(fields.sha256) || seen.live.has(fields.sha256)) continue;
-    drawn.add(fields.sha256);
+    if (!fields) continue;
+    // Re-setting moves the sha to the end, so a re-upload keeps the log's order rather than the
+    // position of the op it superseded.
+    cards.delete(fields.sha256);
+    cards.set(fields.sha256, fields);
+  }
+  const out: QueuedUploadFields[] = [];
+  for (const [sha, fields] of cards) {
+    if (seen.landed.has(sha) || seen.live.has(sha)) continue;
     out.push(fields);
   }
   return out;

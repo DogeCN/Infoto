@@ -28,9 +28,12 @@
     shimmer band that a third state would have drawn is the kind of unrequested visual addition
     §4.5 exists to stop, and parking the curtain at its 90% ceiling would state progress that
     does not exist.
-  - Deleting one is the ordinary pending-photo path (withdraw, then tombstone), plus a
-    session-scoped suppression set: an `upload` op carries no `targetSha`, so `removeOpsBySha`
-    cannot withdraw it and a naive re-read would put the card back until a sync clears it.
+  - Deleting one is the ordinary pending-photo path (withdraw, then tombstone). The projection
+    then honours that tombstone — per sha, the log's last word decides — because an `upload` op
+    carries no `targetSha` and `removeOpsBySha` therefore cannot withdraw it. A session-scoped
+    set covers only the moment before the tombstone is appended; without the tombstone rule, a
+    reload in between brought the card back while its hosted bytes were already gone from the
+    card's point of view.
 - **Consequences**:
   - A reload now shows the photos the log is still holding, and they can be deleted
     individually or in a selection — which is the only way out of a batch that cannot sync.

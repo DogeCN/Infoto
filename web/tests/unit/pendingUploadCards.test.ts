@@ -133,3 +133,27 @@ test('queued upload cards: a landed or live sha never draws a second card', asyn
     ['b'],
   );
 });
+
+// The withdrawal of a pending photo cannot remove its upload op (`removeOpsBySha` matches
+// `targetSha` and an upload op carries none), so the tombstone it files is the only durable
+// record that the photo is gone. Without honouring it, deleting a card and reloading before the
+// next sync brought the photo back — the card, the hosted bytes and the op disagreeing.
+test('queued upload cards: a deleted photo stays deleted across a reload', async () => {
+  await appendOp(db, buildUploadOp(payload('a')));
+  await appendOp(db, { type: 'delete', targetSha: 'a' });
+  const engine = new SyncEngine({ db });
+  assert.deepEqual(await cards(engine), [], 'the queued tombstone withdraws the card');
+});
+
+test('queued upload cards: re-picking a deleted file draws its new card', async () => {
+  await appendOp(db, buildUploadOp(payload('a')));
+  await appendOp(db, { type: 'delete', targetSha: 'a' });
+  await appendOp(db, buildUploadOp({ ...payload('a'), url: 'https://host/a-again.webp' }));
+  const engine = new SyncEngine({ db });
+  const projected = await cards(engine);
+  assert.deepEqual(
+    projected.map((fields) => fields.sha256),
+    ['a'],
+  );
+  assert.equal(projected[0]!.url, 'https://host/a-again.webp', 'the newest upload describes it');
+});
