@@ -41,3 +41,14 @@ test('photo card: the failure glyph is sized for the card it sits in', () => {
   assert.match(branch, /cqmin/);
   assert.match(branch, /\[container-type:size\]/);
 });
+
+test('photo card: no overlay control lets its click reach the card', () => {
+  // The card root is the click target that opens the Lightbox, so a control that bubbles does
+  // both things at once. Retry used to open the Lightbox on media that never existed, and
+  // dismiss removed the card the handler had just resolved. This pattern is the bug.
+  assert.equal(
+    /onclick=\{\(\) => on(?:Retry|Dismiss)Upload\?\.\(\)\}/.test(card),
+    false,
+    'an overlay control calls its action without stopPropagation()',
+  );
+});

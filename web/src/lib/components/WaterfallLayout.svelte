@@ -332,7 +332,11 @@
    *  cards take, and refusing to select the one card that needs it most is not a courtesy. */
   const isFailedUpload = (id: number) => overlays.get(id)?.failed === true;
 
-  function handlePhotoClick(photo: Photo) {
+  function handlePhotoClick(photo: Photo | undefined) {
+    // A laid-out box can outlive its photo: the boxes are recomputed on a debounce while
+    // `photoMap` follows the store, so a click can still arrive for a card an overlay action
+    // just removed. There is nothing to open then.
+    if (!photo) return;
     if (multiMode) {
       toggleSelect(photo.id);
       return;

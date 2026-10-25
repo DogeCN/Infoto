@@ -11,7 +11,9 @@
     text: string;
     /** Overrides the aria-label when the spoken name differs from the tooltip. */
     ariaLabel?: string;
-    onclick?: () => void;
+    /** The click handler, receiving the event so a control inside a clickable surface can
+     *  stop it there (a card's Retry must not also open the card). */
+    onclick?: (event: MouseEvent) => void;
     disabled?: boolean;
     /** The bar's lit-icon treatment. */
     active?: boolean;

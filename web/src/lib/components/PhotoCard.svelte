@@ -197,13 +197,13 @@
     cancelLongPress();
   });
 
-  /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
   // A card whose media will not load reads as "404" — the same glyph the not-found page uses.
   // The number is a label, not a measured status: media is fetched cross-origin, where an
   // <img>/<video> error event carries no HTTP status and fetch() can only return an opaque
   // response. It says "this file cannot be shown", which is the only thing the card knows.
   const failStatus = '404';
 
+  /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
   function handleMediaError(): void {
     if (overlay?.preview) return;
     loadFailed = true;
@@ -303,7 +303,10 @@
             side="bottom"
             danger
             class="absolute top-2 right-2 size-8 rounded-full hover:text-destructive"
-            onclick={() => onDismissUpload?.()}
+            onclick={(event) => {
+              event.stopPropagation();
+              onDismissUpload?.();
+            }}
           >
             <X class="size-4" />
           </TooltipIconButton>
@@ -314,7 +317,10 @@
           text={copy.photoCard.retry}
           side="bottom"
           class="size-14 rounded-full text-primary/70 hover:bg-primary/10 hover:text-primary"
-          onclick={() => onRetryUpload?.()}
+          onclick={(event) => {
+            event.stopPropagation();
+            onRetryUpload?.();
+          }}
         >
           <RotateCcw class="size-7" />
         </TooltipIconButton>
@@ -333,7 +339,10 @@
           side="bottom"
           danger
           class="absolute top-2 right-2 z-30 size-8 rounded-full hover:text-destructive"
-          onclick={() => onDismissUpload?.()}
+          onclick={(event) => {
+            event.stopPropagation();
+            onDismissUpload?.();
+          }}
         >
           <X class="size-4" />
         </TooltipIconButton>

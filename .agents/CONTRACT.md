@@ -235,7 +235,11 @@ Back-filled from the commit history. Tagged sections are not yet written.
     dismiss control top-right; `{ failed: true }` covers with `bg-black/75`, a centred retry and
     a danger dismiss. **The veil can never fully clear while an overlay exists**
     (`CURTAIN_MAX_OPEN = 0.9`) — a fully transparent curtain would read as no progress at all.
-    Every overlay control calls `stopPropagation()`, so it can never reach the card's own click.
+    Every overlay control calls `stopPropagation()`, so it can never reach the card's own click
+    — dismiss would otherwise remove the card and then open it, and retry would open the
+    Lightbox on media that does not exist. The card's click handler also refuses an
+    `undefined` photo: the laid-out boxes are debounced and can outlive the photo that an
+    overlay action just removed.
   - The selection checkbox is a non-interactive `<div>` — selection is driven by clicking the
     card root. It sits above the media and below the curtain.
   - **Multi-select hides both dismiss controls, and only them.** The uploading cancel and the
