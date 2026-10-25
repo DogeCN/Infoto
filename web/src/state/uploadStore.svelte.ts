@@ -98,12 +98,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
    *  is a `<video>`. */
   const previewUrls = new SvelteMap<string, string>();
 
-  /** Publish a job's local preview once; a second call for the same job is a no-op. */
-  function setPreview(jobId: string, source: Blob): void {
-    if (previewUrls.has(jobId)) return;
-    previewUrls.set(jobId, URL.createObjectURL(source));
-  }
-
   /**
    * Hosted copies already fetched into *this page*, per job. The upload's completion swaps the
    * card from the OPFS object URL to the hosted URL, and until the hosted bytes are here that
@@ -146,15 +140,19 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     video.src = url;
   }
 
-  /** Object URL for the OPFS artifact, for a job whose picked file is no longer at hand. */
+  /** Jobs whose artifact is being read right now; the guard that keeps it to one read. */
   const previewReads = new Set<string>();
+  /** Read a job's OPFS artifact into its card preview (the only preview source). */
   async function ensureArtifactPreview(jobId: string, type: number): Promise<void> {
     if (previewUrls.has(jobId) || previewReads.has(jobId)) return;
     previewReads.add(jobId);
     try {
       const blob = await readArtifact(jobId, extOfType(type));
-      // Discard preview reads for completed, cancelled, or destroyed jobs.
-      if (!destroyed && blob && uploadTasks.has(jobId)) setPreview(jobId, blob);
+      // Discard previews for completed, cancelled, or destroyed jobs. `previewReads` holds this
+      // job for the whole read, so no concurrent call can have published one in the meantime.
+      if (!destroyed && blob && uploadTasks.has(jobId)) {
+        previewUrls.set(jobId, URL.createObjectURL(blob));
+      }
     } catch {
       /* an unreadable artifact just leaves the skeleton */
     } finally {

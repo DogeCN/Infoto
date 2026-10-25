@@ -34,13 +34,13 @@ function bodyOf(header: RegExp): string {
 test('upload preview: the artifact is the only source', () => {
   const ensure = bodyOf(/async function ensureArtifactPreview\(/);
   assert.ok(ensure.includes('readArtifact('), 'the preview does not read the OPFS artifact');
-  assert.ok(ensure.includes('setPreview('), 'the artifact read does not publish a preview');
+  assert.ok(ensure.includes('previewUrls.set('), 'the artifact read publishes no preview');
 });
 
 test('upload preview: the picked file never seeds it', () => {
   const added = bodyOf(/function addFiles\(/);
   assert.equal(
-    added.includes('setPreview('),
+    added.includes('createObjectURL'),
     false,
     'addFiles seeds a preview from the picked file; a card only exists after stage 1, and a GIF cannot render from its own bytes',
   );
