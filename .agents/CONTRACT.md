@@ -575,7 +575,7 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
   - **The local preview holds until the hosted copy is paintable.** The card's first preview is
-    an object URL of the **picked file**, created at enqueue (`seedSourcePreview`) — not the OPFS
+    an object URL of the **picked file**, created at enqueue (`setPreview`) — not the OPFS
     artifact, whose read is asynchronous and, on a fast link, lands after the job is already
     `done`, leaving nothing to show during the handoff. When `done` arrives the card keeps that
     local preview until the page has fetched the hosted URL with the element that will paint it

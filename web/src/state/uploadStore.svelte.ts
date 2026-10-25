@@ -92,8 +92,16 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     Array.from(uploadTasks.values()).filter((t) => PANEL_STAGES.has(t.phase)),
   );
 
-  /** Object URLs for transcoded OPFS previews, released when jobs leave or the store is destroyed. */
+  /** The card's local preview: one object URL per job, owned by this store and released with
+   *  the job. Seeded from the picked file at enqueue, or — for a job restored without one —
+   *  from the OPFS artifact once it is readable. */
   const previewUrls = new SvelteMap<string, string>();
+
+  /** Take a job's preview from the first source that has one; later sources are no-ops. */
+  function setPreview(jobId: string, source: Blob): void {
+    if (previewUrls.has(jobId)) return;
+    previewUrls.set(jobId, URL.createObjectURL(source));
+  }
 
   /**
    * Hosted copies already fetched into *this page*, per job. The upload's completion swaps the
@@ -137,7 +145,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     video.src = url;
   }
 
-  /** Object URL for the OPFS artifact, once per job (no-op while the read is in flight). */
+  /** Object URL for the OPFS artifact, for a job whose picked file is no longer at hand. */
   const previewReads = new Set<string>();
   async function ensureArtifactPreview(jobId: string, type: number): Promise<void> {
     if (previewUrls.has(jobId) || previewReads.has(jobId)) return;
@@ -145,9 +153,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     try {
       const blob = await readArtifact(jobId, extOfType(type));
       // Discard preview reads for completed, cancelled, or destroyed jobs.
-      if (!destroyed && blob && uploadTasks.has(jobId) && !previewUrls.has(jobId)) {
-        previewUrls.set(jobId, URL.createObjectURL(blob));
-      }
+      if (!destroyed && blob && uploadTasks.has(jobId)) setPreview(jobId, blob);
     } catch {
       /* an unreadable artifact just leaves the skeleton */
     } finally {
@@ -433,17 +439,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     }),
   );
 
-  /**
-   * The picked file as the card's first preview. Its object URL exists synchronously, before
-   * any transcode, so the card has something painted the moment it appears. The OPFS artifact
-   * preview is read asynchronously and, on a fast connection, arrives after the job is already
-   * `done` — leaving nothing to hold on screen during the swap to the hosted URL.
-   */
-  function seedSourcePreview(jobId: string, file: File): void {
-    if (previewUrls.has(jobId)) return;
-    previewUrls.set(jobId, URL.createObjectURL(file));
-  }
-
   function addFiles(files: FileList | File[]): void {
     // A pick while nothing is in flight starts a fresh batch — the counter describes one
     // batch, not the session.
@@ -459,7 +454,10 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       toastedDuplicates.clear();
     }
     pipeline.addFiles(files, (jobId, file) => {
-      seedSourcePreview(jobId, file);
+      // The picked file is the card's first preview: its object URL exists before any
+      // transcode, so something is painted the moment the card appears. The OPFS artifact is
+      // only a fallback — read asynchronously, it can land after the job is already `done`.
+      setPreview(jobId, file);
       queueSizeProbe(jobId, file);
     });
   }
