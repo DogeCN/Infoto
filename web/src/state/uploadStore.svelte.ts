@@ -101,8 +101,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   const rendersCard = (t: PipelineTaskSnapshot): boolean => pendingRendersCard(t);
 
   /** The card's local preview: one object URL per job, owned by this store and released with
-   *  the job. Seeded from the picked file at enqueue, or — for a job restored without one —
-   *  from the OPFS artifact once it is readable. */
+   *  the job. Read from the OPFS artifact — never from the picked file, which a card never
+   *  needs (it appears only after stage 1) and which a GIF cannot even render, since its card
+   *  is a `<video>`. */
   const previewUrls = new SvelteMap<string, string>();
 
   /** Take a job's preview from the first source that has one; later sources are no-ops. */
@@ -397,13 +398,10 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       observeJob(t.jobId);
       // Count panel work as resolved when the task moves to a card or terminates.
       if (!PANEL_STAGES.has(t.phase)) countResolved(t.jobId);
-      // Card preview comes from the transcoded artifact, not the picked File — a Blob URL from
-      // the pick dies with the page, while the artifact is on disk and survives a reload. The
-      // read is a no-op when the pick already seeded one, and it is what gives a replayed job
-      // (`replayJobs`) its image back after a refresh.
-      if (t.meta && (t.phase === 'uploading' || t.phase === 'failed')) {
-        void ensureArtifactPreview(t.jobId, t.meta.type);
-      }
+      // Card preview is the artifact on disk: `meta` only exists once stage 1 wrote it, so it
+      // is the exact signal that a preview can be read. This is also what gives a replayed job
+      // (`replayJobs`) its image back after a reload, when the picked file is long gone.
+      if (t.meta) void ensureArtifactPreview(t.jobId, t.meta.type);
       // The hosted copy is fetched here, in the page that will paint it, so the swap away
       // from the local preview lands on a warm cache instead of a skeleton.
       if (t.url) ensureHostedReady(t.jobId, t.url, t.meta?.type);
@@ -466,10 +464,11 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       toastedDuplicates.clear();
     }
     pipeline.addFiles(files, (jobId, file) => {
-      // The picked file is the card's first preview: its object URL exists before any
-      // transcode, so something is painted the moment the card appears. The OPFS artifact is
-      // only a fallback — read asynchronously, it can land after the job is already `done`.
-      setPreview(jobId, file);
+      // The picked file is not the card's preview: a card only appears once stage 1 has
+      // finished, so the OPFS artifact is already on disk by then, and it is the bytes the
+      // album will actually hold. The pick would also be wrong for a GIF, which renders in a
+      // <video> (type 1) that cannot decode it — the card sat on its skeleton for the whole
+      // upload. `ensureArtifactPreview` reads the artifact back instead.
       queueSizeProbe(jobId, file);
     });
   }

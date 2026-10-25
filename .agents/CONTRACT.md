@@ -286,10 +286,6 @@ Back-filled from the commit history. Tagged sections are not yet written.
     long-press, marquee, `selectAll` and Ctrl+A all reach them, which is what makes the batch
     "delete" the way out of a stuck upload. The failure cover is `bg-black/55`, matching the
     uploading curtain's own weight: a failed card is still a card in the grid, not a hole in it.
-  - **A replayed card takes its preview from OPFS, not from the pick.** The object URL created
-    at enqueue is gone after a reload, so `ensureArtifactPreview` reads the artifact back; that
-    is what gives a resumed or replayed card its image. The first frame after a reload can still
-    be a skeleton, because the read is asynchronous — the alternative, a second upload, is worse.
   - **Nothing asserts any of this**, and `WaterfallLayout`'s `overlays` prop type is narrower
     than the value the store actually passes (`preview` is missing from the declared type).
 - **Lightbox.** The action sheet is a **bottom sheet**, not a dropdown — a dropdown's top-right
@@ -588,16 +584,23 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
     as a hardcoded `src/` constant was removed on 2026-10-19 for exactly this reason.
   - Panel rows exist only for phases in `PANEL_STAGES = {queued, lease-wait, transcoding,
 hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
-  - **The local preview holds until the hosted copy is paintable.** The card's first preview is
-    an object URL of the **picked file**, created at enqueue (`setPreview`) — not the OPFS
-    artifact, whose read is asynchronous and, on a fast link, lands after the job is already
-    `done`, leaving nothing to show during the handoff. When `done` arrives the card keeps that
-    local preview until the page has fetched the hosted URL with the element that will paint it
+  - **The local preview is the OPFS artifact, and holds until the hosted copy is paintable.**
+    The card never previews the picked file: a card only exists after stage 1, so the artifact
+    is already on disk, and it is the bytes the album will hold. `meta` is the signal — it is
+    set exactly when the artifact lands — so `ensureArtifactPreview` reads `{jobId}.{ext}` back
+    and nothing else seeds `previewUrls`. Two reasons this is not just tidier: a picked Blob URL
+    dies with the page, so a replayed job had no preview at all after a reload; and a **GIF**
+    previews into a `<video>` (its `type` is 1), which cannot decode a GIF, so every GIF upload
+    sat on its skeleton for the whole transfer. When `done` arrives the card keeps that local
+    preview until the page has fetched the hosted URL with the element that will paint it
     (`ensureHostedReady`: an `Image` for images, a `video` stopped at its first frame), then
     swaps. `pendingMediaUrl` is the one rule: `pending` → local, `ready`/`failed` → hosted.
     ⚠️ Swapping `src` first is what produced the "long loading animation" report: it replaced an
     already-painted image with bytes the document had not fetched, and the skeleton is derived
-    from `loadedUrl !== photo.url`.
+    from `loadedUrl !== photo.url`. The one cost of reading the artifact is that the first frame
+    after the card appears can still be a skeleton, because the read is asynchronous; it starts
+    at the same moment as the upload and reads local disk, so it is a few milliseconds, and the
+    alternative (a wrong preview, or none at all) is worse.
   - **No prewarm in the SharedWorker.** It used to fetch the returned URL (no-cors, 2 s cap)
     before reporting `done`, on the theory that the card would then swap over a warm cache.
     A worker's fetch does not populate the renderer's cache, so it bought a second download of
@@ -1179,6 +1182,7 @@ The parts of this contract that are asserted by `npm test`:
 | A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/pendingPhoto.test.ts`    |
 | A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/pendingPhoto.test.ts`    |
 | A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/pendingPhoto.test.ts`    |
+| A card's local preview comes from OPFS, never from the picked file (§3)              | `web/tests/unit/uploadPreview.test.ts`   |
 | A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`        |
 | The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`        |
