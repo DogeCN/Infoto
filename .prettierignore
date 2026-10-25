@@ -7,4 +7,6 @@ web/playwright-report/
 web/public/
 package-lock.json
 src/worker/schema-ddl.ts
+# Generated: appended by the engineering-best-practices health-score script, never hand-edited.
+.agents/health/
 .tmp-*
