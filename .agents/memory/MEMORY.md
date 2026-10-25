@@ -162,6 +162,16 @@ Each of these exists because the logic had two hand-written copies that had alre
 
 ---
 
+## Admin Translation Drafts (2026-10-26, ADR 0021)
+
+- `POST /admin/translate` is root-only and **stateless**: the body carries the card's current content plus both locales, it never reads or writes D1, and nothing is saved until the admin saves the draft through the normal create endpoint. Reader-side fallback was rejected for this iteration — no translation table, no cache, no `/sync` change.
+- The model is Workers AI `@cf/meta/m2m100-1.2b` behind the injected `Translator` on `AppEnv`; `src/worker/index.ts` builds it from `env.AI`. **Unit tests inject a fake and never call AI.** A deployment without the binding answers `503 translation_unavailable`; the `[ai]` block in `wrangler.toml` sets `remote = true` because Workers AI has no local simulation. For a network where the binding's remote edge path is unreachable, local dev can set `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` in `.dev.vars` and `restTranslationRunner` posts to `api.cloudflare.com` instead — it wins over the binding when both exist, and production receives neither variable.
+- Announcement Markdown is segmented before translation: fenced code, blank lines and whole-line `::poll:` references stay literal, text blocks are chunked at ≤800 characters, and poll options go one by one so order and count cannot drift.
+- Request rules live beside the adapter in `worker/translate.ts` (`readTranslationRequest`, `isOversizedTranslation`, `isTranslatable`); the route only maps them to `400` / `413` / `503` / `502`. Sizes are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTION_CHARS` in `shared/types.ts` — the same constants `routes/sync.ts` and the poll editor use. Three copies of `20_000` and two of `200` existed before 2026-10-26; do not reintroduce one.
+- `translateDraft` is overloaded on the request kind, so the returned draft's type follows the request and no caller re-checks `kind`. `routes/admin/TranslateButton.svelte` is the one control both card lists render.
+
+---
+
 ## Lightbox Media Sizing & Loading (2026-09-27)
 
 - **Never size `<img>` / `<video>` with the `width`/`height` attributes here.** They are presentational hints that set a concrete rendered width, which `max-width` can then only _shrink_ — the box stops tracking the aspect ratio. In practice this clipped the rounded corners and pushed the card-corner control off the visible media. Size entirely in CSS via `.lb-box` (see below); use the attributes for nothing.

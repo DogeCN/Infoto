@@ -810,6 +810,24 @@ before deadline` / `no response before deadline`).
     deliberately **not** rounded (a CSS pixel maps to `dpr` device pixels).
   - The waterfall's `padTop` reads the same `--bar-h` with `TOP_GAP = 0`.
   - Nothing asserts the admin inset.
+  - **A card can be translated into the other registered locale.** Each announcement and poll
+    row carries a `Languages` control (`routes/admin/TranslateButton.svelte`, one component for
+    both lists — the markup used to be duplicated) whose accessible name names the target
+    language and whose glyph becomes a spinner while that card's request is in flight. One
+    request at a time: the busy flag disables every card's button. Success switches the page's
+    language and content bucket to the target locale and opens the existing **create** editor
+    seeded with the draft — nothing is written until the admin saves, and the save goes through
+    the normal create endpoint. `POST /admin/translate` is root-only and stateless (the body
+    carries the content, never a row id): a deployment without the `AI` binding answers
+    `503 translation_unavailable`, a model failure or empty output `502 translation_failed`, a
+    body over `MAX_TEXT_LENGTH` `413 too_large`, and a malformed body `400`. Local dev may set
+    `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` in `.dev.vars` to post to the REST endpoint
+    instead, because the local binding's remote edge path is unreachable on some networks;
+    production has neither variable, so the binding is the only transport there. Fenced code, blank
+    lines and whole-line `::poll:` references pass through untranslated (ADR 0021). Its limits
+    are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTION_CHARS` in `shared/types.ts` — the same
+    constants the sync validator and the poll editor use — and the request parser lives beside
+    the model adapter in `worker/translate.ts`, so a rule is written once.
 
 ---
 
@@ -1193,6 +1211,7 @@ The parts of this contract that are asserted by `npm test`:
 | A queued op is superseded in place, and an in-flight one never is                    | `web/tests/unit/syncEngine.test.ts`      |
 | A photo op waits for the upload op that creates its row                              | `web/tests/unit/pendingPhotoOps.test.ts` |
 | The server clears the opposite attitude when either is added                         | `src/worker/routes/sync.test.ts`         |
+| A translation request writes no row, and only root may ask                           | `src/worker/routes/admin.test.ts`        |
 | The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`           |
 | A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/pendingPhoto.test.ts`    |
 | A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/pendingPhoto.test.ts`    |

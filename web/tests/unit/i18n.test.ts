@@ -7,7 +7,7 @@ import {
   LOCALE_OPTIONS,
   setLocale,
 } from '../../src/lib/i18n.svelte';
-import { activeLocale, copy as moduleCopy, locales } from '$shared/copy';
+import { activeLocale, copy as moduleCopy, locales, otherLocale } from '$shared/copy';
 
 function fakeStorage(initial: Record<string, string> = {}) {
   const map = new Map(Object.entries(initial));
@@ -59,6 +59,12 @@ test('i18n: detects, lists, validates, and persists locales without mutating cop
       }),
     );
     assert.equal(getLocale(), 'en-US');
+  }
+
+  // Translation targets the one other shipped locale.
+  {
+    assert.equal(otherLocale('en-US'), 'zh-CN');
+    assert.equal(otherLocale('zh-CN'), 'en-US');
   }
 
   // Lists every shipped locale in its own language.

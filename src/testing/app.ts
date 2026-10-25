@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Op, SyncResponse } from '../shared/types.ts';
+import type { Op, SyncResponse, Translator } from '../shared/types.ts';
 import { createApp } from '../worker/app.ts';
 import { VERIFY_URL } from '../worker/turnstile.ts';
 import { openLocalDb } from './localDb.ts';
@@ -35,6 +35,7 @@ export function makeApp(
     turnstileSecret?: string;
     turnstileSiteKey?: string;
     mediaHostUrl?: string;
+    translate?: Translator;
   } = {},
 ): {
   db: ReturnType<typeof openLocalDb>;

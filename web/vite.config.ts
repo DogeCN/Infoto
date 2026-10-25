@@ -94,6 +94,7 @@ const config = {
       '/admin/announcements': proxy(),
       '/admin/polls': proxy(),
       '/admin/feedback': proxy(),
+      '/admin/translate': proxy(),
     },
   },
   test: {

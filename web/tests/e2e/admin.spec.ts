@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { fmt, locales, plural } from '../../../src/shared/copy';
-import type { Poll, SyncResponse } from '../../../src/shared/types';
+import type { Announcement, Poll, SyncResponse } from '../../../src/shared/types';
 
 const locale = 'zh-CN';
 const copy = locales[locale];
@@ -200,4 +200,121 @@ test('admin manages independent multiple-choice polls and copies stable referenc
       ),
     )
     .toBe(`::poll:${locale}:${createdId}`);
+});
+
+test('admin translates a card into the other locale and opens a pre-filled editor', async ({
+  page,
+}) => {
+  const sourceLocale = 'zh-CN';
+  const targetLocale = 'en-US';
+  const sourceCopy = locales[sourceLocale];
+  const targetCopy = locales[targetLocale];
+  // The native target label differs between the test runner's ICU and the browser's
+  // ("English" vs "American English"), so match the stable prefix instead.
+  const translatePrefix = sourceCopy.admin.translateTo.split('{language}')[0]!;
+  const translateName = new RegExp(`^${translatePrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+
+  const announcement: Announcement = {
+    id: 7,
+    title: 'Announcement title',
+    contentMd: 'Announcement body',
+    locale: sourceLocale,
+    sort: 0,
+    updatedAt: 1_700_000_000_000,
+    reactions: [],
+  };
+  const poll: Poll = {
+    id: 42,
+    options: ['Option A', 'Option B'],
+    allowMultiple: true,
+    locale: sourceLocale,
+    sort: 0,
+    updatedAt: 1_700_000_000_000,
+    votes: [],
+  };
+
+  await page.addInitScript(() => {
+    localStorage.setItem('infoto-self-id', '0');
+    localStorage.setItem('infoto-locale', 'zh-CN');
+  });
+  await page.route('**/sync', async (route) => {
+    await route.fulfill({
+      json: {
+        ok: true,
+        serverTime: Date.now(),
+        selfId: 0,
+        mediaHostUrl: 'https://facade.test',
+        photos: [],
+        announcements: [announcement],
+        polls: [poll],
+        feedback: [],
+      } satisfies SyncResponse,
+    });
+  });
+  await page.route('**/admin/translate', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const body = route.request().postDataJSON() as { kind: 'announcement' | 'poll' };
+    if (body.kind === 'announcement') {
+      await route.fulfill({
+        json: {
+          ok: true,
+          kind: 'announcement',
+          title: 'English title',
+          contentMd: 'English body',
+        },
+      });
+    } else {
+      await route.fulfill({
+        json: { ok: true, kind: 'poll', options: ['Option A EN', 'Option B EN'] },
+      });
+    }
+  });
+
+  await page.goto('/admin');
+  const announcementRow = page.getByRole('listitem').filter({ hasText: announcement.title });
+  await expect(announcementRow).toBeVisible();
+  await announcementRow.getByRole('button', { name: translateName }).click();
+  await expect(
+    announcementRow.getByRole('button', { name: sourceCopy.admin.translating }),
+  ).toBeVisible();
+
+  const announcementDialog = page.getByRole('dialog', {
+    name: targetCopy.admin.editor.titlePlaceholder,
+    exact: true,
+  });
+  await expect(announcementDialog).toBeVisible();
+  await expect(announcementDialog.getByLabel(targetCopy.admin.editor.titlePlaceholder)).toHaveValue(
+    'English title',
+  );
+  await expect(announcementDialog.locator('textarea')).toHaveValue('English body');
+  await expect(page.locator('html')).toHaveAttribute('lang', targetLocale);
+  await announcementDialog
+    .getByRole('button', { name: targetCopy.admin.editor.cancel })
+    .last()
+    .click();
+
+  // Return to the source language, then translate the poll card.
+  await page.getByRole('button', { name: targetCopy.settings.switchToChinese }).click();
+  await page.getByRole('tab', { name: sourceCopy.admin.tabs.polls, exact: true }).click();
+  const pollRow = page.getByRole('listitem').filter({ hasText: poll.options[0]! });
+  await expect(pollRow).toBeVisible();
+  await pollRow.getByRole('button', { name: translateName }).click();
+  await expect(pollRow.getByRole('button', { name: sourceCopy.admin.translating })).toBeVisible();
+
+  const pollDialog = page.getByRole('dialog', {
+    name: targetCopy.admin.newPoll,
+    exact: true,
+  });
+  await expect(pollDialog).toBeVisible();
+  await expect(
+    pollDialog.getByRole('textbox', {
+      name: fmt(targetCopy.admin.editor.pollOptionLabel, { number: 1 }),
+    }),
+  ).toHaveValue('Option A EN');
+  await expect(
+    pollDialog.getByRole('textbox', {
+      name: fmt(targetCopy.admin.editor.pollOptionLabel, { number: 2 }),
+    }),
+  ).toHaveValue('Option B EN');
+  await expect(page.locator('html')).toHaveAttribute('lang', targetLocale);
 });

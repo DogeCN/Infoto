@@ -5,6 +5,7 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
   import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
+  import TranslateButton from './TranslateButton.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
   import { reactionCounts } from '../../core/reactions';
 
@@ -13,9 +14,20 @@
     onEdit: (announcement: Announcement) => void;
     onDelete: (id: number) => void;
     onReorder: (ids: number[]) => void;
+    onTranslate: (announcement: Announcement) => void;
+    translatingId?: number | null;
+    translateDisabled?: boolean;
   }
 
-  let { announcements, onEdit, onDelete, onReorder }: Props = $props();
+  let {
+    announcements,
+    onEdit,
+    onDelete,
+    onReorder,
+    onTranslate,
+    translatingId = null,
+    translateDisabled = false,
+  }: Props = $props();
 </script>
 
 {#if announcements.length === 0}
@@ -33,6 +45,12 @@
           </p>
         </div>
         <div class="flex shrink-0 gap-1">
+          <TranslateButton
+            locale={announcement.locale}
+            translating={translatingId === announcement.id}
+            disabled={translateDisabled || announcement.id < 0}
+            onclick={() => onTranslate(announcement)}
+          />
           <TooltipIconButton
             text={copy.admin.announcement.edit}
             ariaLabel={copy.admin.announcement.editAria}

@@ -40,6 +40,7 @@ run_worker_first = [
   "/admin/polls/*",
   "/admin/feedback",
   "/admin/feedback/*",
+  "/admin/translate",
 ]
 not_found_handling = "single-page-application"
 
@@ -47,3 +48,11 @@ not_found_handling = "single-page-application"
 binding = "DB"
 database_name = "infoto-dev"
 database_id = "00000000-0000-0000-0000-000000000000"
+
+# Admin draft translation (POST /admin/translate). Workers AI has no local
+# simulation, so the binding is explicitly remote; this only silences the
+# local-dev warning and documents the intent. Calls still use the account's
+# Workers AI quota even under `wrangler dev`.
+[ai]
+binding = "AI"
+remote = true

@@ -9,6 +9,7 @@ import {
   MEDIA_TYPE,
   MAX_POLL_OPTIONS,
   MAX_SYNC_OPS,
+  MAX_TEXT_LENGTH,
   type Announcement,
   type Feedback,
   type LocaleCode,
@@ -24,8 +25,7 @@ import { isLocaleCode } from '../../shared/copy.ts';
 import { isRecord, safeJsonParse } from '../../shared/json.ts';
 import { isAllowedMediaUrl } from './media.ts';
 
-/** Text fields an anonymous op may carry. */
-const MAX_TEXT_LENGTH = 20_000;
+/** Longest emoji an anonymous op may carry. */
 const MAX_EMOJI_LENGTH = 16;
 /** Mark column holding the user ids that applied a mark. */
 type MarkColumn = 'likes' | 'dislikes' | 'reports';

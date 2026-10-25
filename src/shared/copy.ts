@@ -275,6 +275,10 @@ export const enUS = {
     sectionLabel: 'Admin sections',
     newAnnouncement: 'New announcement',
     newPoll: 'New poll',
+    translate: 'Translate',
+    translating: 'Translating',
+    translateTo: 'Translate to {language}',
+    translateFailed: 'Translation failed — please retry',
     tabs: {
       announcements: 'Announcements',
       feedback: 'Feedback',
@@ -420,6 +424,7 @@ export const enUS = {
     pollUpdateFailed: 'poll update failed: HTTP {status}',
     pollDeleteFailed: 'poll delete failed: HTTP {status}',
     pollReorderFailed: 'poll reorder failed: HTTP {status}',
+    translateFailed: 'translation failed: HTTP {status}',
   },
 };
 
@@ -635,6 +640,10 @@ const zhCN: Copy = {
     sectionLabel: '管理页分区',
     newAnnouncement: '新增公告',
     newPoll: '新增投票',
+    translate: '翻译',
+    translating: '翻译中',
+    translateTo: '翻译为{language}',
+    translateFailed: '翻译失败，请重试',
     tabs: {
       announcements: '公告',
       feedback: '建议',
@@ -669,7 +678,7 @@ const zhCN: Copy = {
       searchAria: '搜索建议',
       delete: '删除',
       deleteAria: '删除建议',
-      idLabel: '用户 ID',
+      idLabel: 'ID',
     },
     poll: {
       empty: '暂无投票',
@@ -776,6 +785,7 @@ const zhCN: Copy = {
     pollUpdateFailed: '投票更新失败：HTTP {status}',
     pollDeleteFailed: '投票删除失败：HTTP {status}',
     pollReorderFailed: '投票排序失败：HTTP {status}',
+    translateFailed: '翻译失败：HTTP {status}',
   },
 };
 
@@ -799,6 +809,12 @@ export function pickLocale(langs?: readonly string[]): LocaleCode {
     if (isLocaleCode(lang)) return lang;
   }
   return DEFAULT_LOCALE;
+}
+
+/** The only other registered locale; null only if the build ships more than two. */
+export function otherLocale(code: LocaleCode): LocaleCode | null {
+  const others = (Object.keys(locales) as LocaleCode[]).filter((locale) => locale !== code);
+  return others.length === 1 ? others[0]! : null;
 }
 
 /** Where the page persists its language choice. `lib/i18n.svelte.ts` writes this key. */

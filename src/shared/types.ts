@@ -10,6 +10,12 @@ export const MAX_SYNC_OPS = 500;
 /** Maximum choices accepted by a poll. */
 export const MAX_POLL_OPTIONS = 100;
 
+/** Longest accepted free text: an announcement body, or a translation source. */
+export const MAX_TEXT_LENGTH = 20_000;
+
+/** Longest accepted poll option, on the wire and in a translation draft. */
+export const MAX_POLL_OPTION_CHARS = 200;
+
 /** Media kind encoded in photos.type. */
 export const MEDIA_TYPE = {
   /** Still image (WebP). */
@@ -185,3 +191,49 @@ export interface MediaHostUploadResponse {
   error?: string;
   [key: string]: unknown;
 }
+
+/** Translated announcement draft returned by POST /admin/translate. */
+export interface AnnouncementTranslationDraft {
+  kind: 'announcement';
+  title: string;
+  contentMd: string;
+}
+
+/** Translated poll options returned by POST /admin/translate; order matches the source. */
+export interface PollTranslationDraft {
+  kind: 'poll';
+  options: string[];
+}
+
+export type TranslationDraft = AnnouncementTranslationDraft | PollTranslationDraft;
+
+/** Body of POST /admin/translate: the card's current content, not a row id. */
+export interface AnnouncementTranslationRequest {
+  kind: 'announcement';
+  sourceLocale: LocaleCode;
+  targetLocale: LocaleCode;
+  title: string;
+  contentMd: string;
+}
+
+/** Body of POST /admin/translate for a poll; option order is the source order. */
+export interface PollTranslationRequest {
+  kind: 'poll';
+  sourceLocale: LocaleCode;
+  targetLocale: LocaleCode;
+  options: string[];
+  allowMultiple: boolean;
+}
+
+export type TranslationRequest = AnnouncementTranslationRequest | PollTranslationRequest;
+
+/** The draft a given request kind produces, so callers never re-check `kind`. */
+export type TranslationDraftOf<T extends TranslationRequest> =
+  T extends AnnouncementTranslationRequest
+    ? AnnouncementTranslationDraft
+    : T extends PollTranslationRequest
+      ? PollTranslationDraft
+      : never;
+
+/** Translation service injected into AppEnv; tests supply a fake, production uses Workers AI. */
+export type Translator = (request: TranslationRequest) => Promise<TranslationDraft>;

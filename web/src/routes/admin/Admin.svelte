@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import type { Announcement, LocaleCode, Poll, Vote } from '$shared/types';
+  import { otherLocale } from '$shared/copy';
   import { Megaphone, MessageSquare, ChartNoAxesColumn } from '@lucide/svelte';
-  import { copy } from '$lib/i18n.svelte';
+  import { copy, setLocale } from '$lib/i18n.svelte';
+  import { translateDraft } from '../../core/api/adminClient';
   import { Toaster, toast } from 'svelte-sonner';
   import ErrorPage from '$lib/components/ErrorPage.svelte';
   import TopBar from '$lib/components/TopBar.svelte';
@@ -55,6 +57,8 @@
   let editingPoll = $state<Poll | null>(null);
   let editorUploadTask = $state<UploadRow | null>(null);
   let editorJobId: string | null = null;
+  /** The card whose translation request is in flight; every translate button is disabled meanwhile. */
+  let translating = $state<{ kind: 'announcement' | 'poll'; id: number } | null>(null);
 
   // Draft park for tab switches: an open editor is closed when the user visits another
   // tab, but its live draft is captured and re-seeded on return (page memory only —
@@ -240,6 +244,69 @@
     store.setContentLocale(locale);
   }
 
+  /**
+   * Translate a card into the other locale, switch the whole admin view to it, and open a
+   * create editor seeded with the machine draft. Nothing is written until the admin saves.
+   *
+   * One request at a time: the busy flag disables every card's button, so `translating` only
+   * ever names the card in flight. The two handlers differ only in what they open afterwards.
+   */
+  function runTranslation(
+    kind: 'announcement' | 'poll',
+    id: number,
+    locale: LocaleCode,
+    work: (target: LocaleCode) => Promise<void>,
+  ): void {
+    if (translating || id < 0) return;
+    const target = otherLocale(locale);
+    if (!target) return;
+    translating = { kind, id };
+    void work(target)
+      .catch((error: unknown) => {
+        console.error('[translate]', error);
+        toast.error(copy.admin.translateFailed);
+      })
+      .finally(() => {
+        translating = null;
+      });
+  }
+
+  function handleTranslateAnnouncement(announcement: Announcement): void {
+    runTranslation('announcement', announcement.id, announcement.locale, async (target) => {
+      const draft = await translateDraft({
+        kind: 'announcement',
+        sourceLocale: announcement.locale,
+        targetLocale: target,
+        title: announcement.title,
+        contentMd: announcement.contentMd,
+      });
+      setLocale(target);
+      handleLocaleChange(target);
+      activeTab = 'announcements';
+      editingAnnouncement = null;
+      annRestoreDraft = { title: draft.title, contentMd: draft.contentMd };
+      editorOpen = true;
+    });
+  }
+
+  function handleTranslatePoll(poll: Poll): void {
+    runTranslation('poll', poll.id, poll.locale, async (target) => {
+      const draft = await translateDraft({
+        kind: 'poll',
+        sourceLocale: poll.locale,
+        targetLocale: target,
+        options: poll.options,
+        allowMultiple: poll.allowMultiple,
+      });
+      setLocale(target);
+      handleLocaleChange(target);
+      activeTab = 'polls';
+      editingPoll = null;
+      pollRestoreDraft = { options: draft.options, votes: [], allowMultiple: poll.allowMultiple };
+      pollEditorOpen = true;
+    });
+  }
+
   function handleAnnouncementReorder(ids: number[]): void {
     store.annReorder(ids);
   }
@@ -282,6 +349,9 @@
           onEdit={openEditAnnouncement}
           onDelete={(id) => store.annDelete(id)}
           onReorder={handleAnnouncementReorder}
+          onTranslate={handleTranslateAnnouncement}
+          translatingId={translating?.kind === 'announcement' ? translating.id : null}
+          translateDisabled={translating !== null}
         />
       {:else if activeTab === 'feedback'}
         <FeedbackList
@@ -296,6 +366,9 @@
           onEdit={openEditPoll}
           onDelete={(id) => store.pollDelete(id)}
           onReorder={(ids) => store.pollReorder(ids)}
+          onTranslate={handleTranslatePoll}
+          translatingId={translating?.kind === 'poll' ? translating.id : null}
+          translateDisabled={translating !== null}
         />
       {/if}
     </main>

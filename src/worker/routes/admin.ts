@@ -2,6 +2,7 @@
 
 import { Hono, type Context } from 'hono';
 import {
+  MAX_POLL_OPTION_CHARS,
   MAX_POLL_OPTIONS,
   type Announcement,
   type LocaleCode,
@@ -11,6 +12,7 @@ import {
 import { isLocaleCode } from '../../shared/copy.ts';
 import type { AppEnv } from '../app.ts';
 import { badRequest, idParam, readJson, reorderHandler, rootGate } from '../http.ts';
+import { isOversizedTranslation, readTranslationRequest } from '../translate.ts';
 
 /** Trimmed announcement title/body and explicit language, or null when invalid. */
 function readAnnouncementDraft(
@@ -65,15 +67,15 @@ function readPollDraft(c: Context): Promise<{
   }>(c).then((body) => {
     const options = Array.isArray(body?.options)
       ? body.options
-        .filter((option): option is string => typeof option === 'string')
-        .map((option) => option.trim())
+          .filter((option): option is string => typeof option === 'string')
+          .map((option) => option.trim())
       : [];
     const raw = body?.locale;
     const locale = isLocaleCode(raw) ? raw : null;
     if (
       options.length < 2 ||
       options.length > MAX_POLL_OPTIONS ||
-      options.some((option) => option.length === 0 || option.length > 200) ||
+      options.some((option) => option.length === 0 || option.length > MAX_POLL_OPTION_CHARS) ||
       typeof body?.allowMultiple !== 'boolean' ||
       !locale
     )
@@ -82,6 +84,23 @@ function readPollDraft(c: Context): Promise<{
     if (body?.votes !== undefined && !votes) return null;
     return { options, allowMultiple: body.allowMultiple, locale, votes };
   });
+}
+
+/** Draft translation for the admin cards. Stateless: the request carries the content. */
+function translateHandler(env: AppEnv) {
+  return async (c: Context): Promise<Response> => {
+    const request = readTranslationRequest(await readJson(c));
+    if (!request) return badRequest(c);
+    if (isOversizedTranslation(request)) return c.json({ ok: false, error: 'too_large' }, 413);
+    if (!env.translate) return c.json({ ok: false, error: 'translation_unavailable' }, 503);
+    try {
+      const draft = await env.translate(request);
+      return c.json({ ok: true, ...draft });
+    } catch (error) {
+      console.error('[translate]', error);
+      return c.json({ ok: false, error: 'translation_failed' }, 502);
+    }
+  };
 }
 
 function announcementsApp(env: AppEnv): Hono {
@@ -256,6 +275,7 @@ function feedbackApp(env: AppEnv): Hono {
 export function adminApp(env: AppEnv): Hono {
   const app = new Hono();
   app.use('*', rootGate(env.db));
+  app.post('/translate', translateHandler(env));
   app.route('/announcements', announcementsApp(env));
   app.route('/polls', pollsApp(env));
   app.route('/feedback', feedbackApp(env));

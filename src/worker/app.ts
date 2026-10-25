@@ -20,7 +20,7 @@ export interface AppEnv {
   turnstileSiteKey?: string;
   /** Static file fallback (the ASSETS binding). */
   assets?: (req: Request) => Promise<Response>;
-  /** Admin translation drafts. Absent when the deployment has no Workers AI binding. */
+  /** Admin translation drafts. Absent when neither the AI binding nor the dev REST runner exists. */
   translate?: Translator;
 }
 

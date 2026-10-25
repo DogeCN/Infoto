@@ -8,6 +8,7 @@
   import ReorderableList from '$lib/components/ReorderableList.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
   import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
+  import TranslateButton from './TranslateButton.svelte';
   import VoteBlock from '$lib/components/VoteBlock.svelte';
 
   interface Props {
@@ -16,9 +17,21 @@
     onEdit: (poll: Poll) => void;
     onDelete: (id: number) => void;
     onReorder: (ids: number[]) => void;
+    onTranslate: (poll: Poll) => void;
+    translatingId?: number | null;
+    translateDisabled?: boolean;
   }
 
-  let { polls, selfId = -1, onEdit, onDelete, onReorder }: Props = $props();
+  let {
+    polls,
+    selfId = -1,
+    onEdit,
+    onDelete,
+    onReorder,
+    onTranslate,
+    translatingId = null,
+    translateDisabled = false,
+  }: Props = $props();
 
   async function copySyntax(poll: Poll): Promise<void> {
     if (await copyToClipboard(`::poll:${poll.locale}:${poll.id}`))
@@ -48,6 +61,12 @@
           >
             <Copy class="size-4" />
           </TooltipIconButton>
+          <TranslateButton
+            locale={poll.locale}
+            translating={translatingId === poll.id}
+            disabled={translateDisabled || poll.id < 0}
+            onclick={() => onTranslate(poll)}
+          />
           <TooltipIconButton
             text={copy.admin.poll.edit}
             class="p-2"

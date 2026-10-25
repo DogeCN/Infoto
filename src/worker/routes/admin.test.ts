@@ -12,6 +12,7 @@ import {
   stubSiteverify,
   syncNew,
 } from '../../testing/app.ts';
+import type { Translator } from '../../shared/types.ts';
 
 stubSiteverify();
 
@@ -23,6 +24,18 @@ async function twoIdentities(app: TestApp): Promise<{ root: string; guest: strin
 }
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
+
+const fakeTranslate: Translator = async (request) =>
+  request.kind === 'announcement'
+    ? { kind: 'announcement', title: `T:${request.title}`, contentMd: `M:${request.contentMd}` }
+    : { kind: 'poll', options: request.options.map((option) => `T:${option}`) };
+
+const translatePost = (app: TestApp, cookie: string, body: unknown) =>
+  app.request('http://localhost/admin/translate', {
+    method: 'POST',
+    headers: { ...jsonHeaders, Cookie: cookie },
+    body: JSON.stringify(body),
+  });
 
 async function annRequest(
   app: TestApp,
@@ -400,4 +413,156 @@ test('partial reorder preserves the current order of omitted rows', async () => 
     (await snap(app, root)).feedback.map((f) => f.id),
     [2, 3, 1],
   );
+});
+
+test('translate: root gets a draft and the endpoint writes no row', async () => {
+  const { app } = makeApp({ translate: fakeTranslate });
+  const { root } = await twoIdentities(app);
+  const before = await snap(app, root);
+  const res = await translatePost(app, root, {
+    kind: 'announcement',
+    sourceLocale: 'en-US',
+    targetLocale: 'zh-CN',
+    title: 'Hello',
+    contentMd: 'Body',
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    ok: true,
+    kind: 'announcement',
+    title: 'T:Hello',
+    contentMd: 'M:Body',
+  });
+  assert.deepEqual((await snap(app, root)).announcements, before.announcements);
+});
+
+test('translate: a poll keeps its option order and count', async () => {
+  const { app } = makeApp({ translate: fakeTranslate });
+  const { root } = await twoIdentities(app);
+  const res = await translatePost(app, root, {
+    kind: 'poll',
+    sourceLocale: 'zh-CN',
+    targetLocale: 'en-US',
+    options: ['A', 'B', 'C'],
+    allowMultiple: true,
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    ok: true,
+    kind: 'poll',
+    options: ['T:A', 'T:B', 'T:C'],
+  });
+});
+
+test('translate: non-root, missing binding, and invalid requests are rejected', async () => {
+  {
+    const { app } = makeApp({ translate: fakeTranslate });
+    const { guest } = await twoIdentities(app);
+    assert.equal(
+      (
+        await translatePost(app, guest, {
+          kind: 'poll',
+          sourceLocale: 'en-US',
+          targetLocale: 'zh-CN',
+          options: ['A', 'B'],
+          allowMultiple: false,
+        })
+      ).status,
+      403,
+    );
+  }
+  {
+    const { app } = makeApp();
+    const { root } = await twoIdentities(app);
+    const res = await translatePost(app, root, {
+      kind: 'poll',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      options: ['A', 'B'],
+      allowMultiple: false,
+    });
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), { ok: false, error: 'translation_unavailable' });
+  }
+
+  const { app } = makeApp({ translate: fakeTranslate });
+  const { root } = await twoIdentities(app);
+  const invalid = [
+    {},
+    { kind: 'x', sourceLocale: 'en-US', targetLocale: 'zh-CN' },
+    {
+      kind: 'announcement',
+      sourceLocale: 'fr-FR',
+      targetLocale: 'zh-CN',
+      title: 'T',
+      contentMd: 'B',
+    },
+    {
+      kind: 'announcement',
+      sourceLocale: 'en-US',
+      targetLocale: 'en-US',
+      title: 'T',
+      contentMd: 'B',
+    },
+    {
+      kind: 'announcement',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      title: ' ',
+      contentMd: 'B',
+    },
+    {
+      kind: 'poll',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      options: ['A'],
+      allowMultiple: false,
+    },
+    {
+      kind: 'poll',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      options: ['A', 'B'],
+      allowMultiple: 'yes',
+    },
+    {
+      kind: 'poll',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      options: Array.from({ length: 101 }, (_, index) => `O${index}`),
+      allowMultiple: false,
+    },
+  ];
+  for (const body of invalid)
+    assert.equal((await translatePost(app, root, body)).status, 400, JSON.stringify(body));
+});
+
+test('translate: a failing model is a 502, and an overlong announcement is rejected', async () => {
+  const failing = makeApp({
+    translate: async () => {
+      throw new Error('boom');
+    },
+  });
+  const { root: failingRoot } = await twoIdentities(failing.app);
+  const failed = await translatePost(failing.app, failingRoot, {
+    kind: 'announcement',
+    sourceLocale: 'en-US',
+    targetLocale: 'zh-CN',
+    title: 'T',
+    contentMd: 'B',
+  });
+  assert.equal(failed.status, 502);
+  assert.deepEqual(await failed.json(), { ok: false, error: 'translation_failed' });
+
+  const { app } = makeApp({ translate: fakeTranslate });
+  const { root } = await twoIdentities(app);
+  const tooLarge = await translatePost(app, root, {
+    kind: 'announcement',
+    sourceLocale: 'en-US',
+    targetLocale: 'zh-CN',
+    title: 'T',
+    contentMd: 'x'.repeat(20_001),
+  });
+  assert.equal(tooLarge.status, 413);
+  assert.deepEqual(await tooLarge.json(), { ok: false, error: 'too_large' });
 });
