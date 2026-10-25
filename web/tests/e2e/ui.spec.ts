@@ -254,18 +254,41 @@ test('an empty album exposes a localized empty state without runtime errors', as
   expect(errors).toEqual([]);
 });
 
-test('failed image uploads retain retry and dismissal controls', async ({ page }) => {
+/** A valid 1×1 PNG: stage 1 succeeds, so the failure lands on the upload leg. */
+const PNG_1PX = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+  'base64',
+);
+
+test('a transcode failure is a toast with no card; a rejected upload keeps a retryable card', async ({
+  page,
+}) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');
   await expect(page.locator('main img').first()).toBeVisible();
+  const retry = page.getByRole('button', { name: enCopy.photoCard.retry, exact: true });
+
+  // Stage 1 failed: nothing was written, so there is no artifact to preview or retry from.
+  // The toast is the only signal, and the grid must not gain a hole.
   await page.locator('input[type=file]').setInputFiles({
     name: 'empty.png',
     mimeType: 'image/png',
     buffer: Buffer.alloc(0),
   });
-  const retry = page.getByRole('button', { name: enCopy.photoCard.retry, exact: true });
-  await expect(retry).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(fmt(enCopy.upload.failed, { fileName: 'empty.png' }))).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(retry).toHaveCount(0);
+
+  // Stage 1 succeeded, so the artifact is on disk; the upload leg then fails because the
+  // mocked `/sync` names an unresolvable facade. That card keeps both controls.
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'one-pixel.png',
+    mimeType: 'image/png',
+    buffer: PNG_1PX,
+  });
+  await expect(retry).toBeVisible({ timeout: 30_000 });
   await page.getByRole('button', { name: enCopy.uploadPanel.remove, exact: true }).click();
   await expect(retry).toHaveCount(0);
   expect(errors).toEqual([]);
