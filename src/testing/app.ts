@@ -7,8 +7,9 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Op, SyncResponse, Translator } from '../shared/types.ts';
 import { createApp } from '../worker/app.ts';
+import type { Db, DbPrepared, DbStatement } from '../worker/db.ts';
 import { VERIFY_URL } from '../worker/turnstile.ts';
-import { openLocalDb } from './localDb.ts';
+import { openLocalDb, type LocalDb } from './localDb.ts';
 
 const TEST_SECRET = 'test-secret';
 
@@ -36,6 +37,8 @@ export function makeApp(
     turnstileSiteKey?: string;
     mediaHostUrl?: string;
     translate?: Translator;
+    /** Wrap the database before the app takes it — e.g. to count what a request costs. */
+    wrapDb?: (db: LocalDb) => Db;
   } = {},
 ): {
   db: ReturnType<typeof openLocalDb>;
@@ -43,8 +46,56 @@ export function makeApp(
 } {
   const db = openLocalDb(':memory:');
   db.exec(schema);
-  const app = createApp({ db, turnstileSecret: TEST_SECRET, ...opts });
+  const { wrapDb, ...env } = opts;
+  const app = createApp({ db: wrapDb ? wrapDb(db) : db, turnstileSecret: TEST_SECRET, ...env });
   return { db, app };
+}
+
+export interface DbCallCounts {
+  /** Statements that reached the database. */
+  queries: number;
+  /** `db.batch` calls — one round trip each, however many statements it carries. */
+  batches: number;
+}
+
+/**
+ * A `Db` that counts what reaches the database, so a test can assert a request's cost instead
+ * of timing it: a stated number of statements and batches is what D1 latency is a function of,
+ * and wall-clock time in a unit test measures the machine, not the query plan.
+ */
+export function countingDb(
+  db: LocalDb,
+  counts: DbCallCounts = { queries: 0, batches: 0 },
+): { db: Db; counts: DbCallCounts } {
+  const counted = (prepared: DbPrepared): DbPrepared => ({
+    async all<T>() {
+      counts.queries++;
+      return prepared.all<T>();
+    },
+    async first<T>(col?: string) {
+      counts.queries++;
+      return prepared.first<T>(col);
+    },
+    async run() {
+      counts.queries++;
+      return prepared.run();
+    },
+  });
+  return {
+    counts,
+    db: {
+      prepare(sql) {
+        const binder = db.prepare(sql);
+        return Object.assign(counted(binder), {
+          bind: (...values: unknown[]) => counted(binder.bind(...values)),
+        });
+      },
+      batch(stmts: readonly DbStatement[]) {
+        counts.batches++;
+        return db.batch(stmts);
+      },
+    },
+  };
 }
 
 export function cookieFrom(res: Response): string {

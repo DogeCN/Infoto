@@ -58,3 +58,4 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0020](0020-auto-default-band-from-measured-cross.md)      | Auto Default Band Derived From the Measured Canvas                                      | Accepted                   |
 | [0021](0021-workers-ai-admin-translation.md)               | Workers AI Drafts Admin Translations                                                    | Accepted                   |
 | [0022](0022-poll-editor-overwrite-votes.md)                | Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll             | Accepted                   |
+| [0023](0023-sync-applies-a-batched-plan.md)                | `/sync` Applies One Batched Statement Plan, Not One Round Trip Per Op                   | Accepted                   |

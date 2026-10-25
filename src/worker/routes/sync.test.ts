@@ -1,7 +1,16 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import type { SyncResponse } from '../../shared/types.ts';
-import { cookieFrom, makeApp, postOps, stubSiteverify, sync, syncNew } from '../../testing/app.ts';
+import {
+  cookieFrom,
+  countingDb,
+  makeApp,
+  postOps,
+  stubSiteverify,
+  sync,
+  syncNew,
+} from '../../testing/app.ts';
+import type { DbCallCounts } from '../../testing/app.ts';
 
 const setSiteverify = stubSiteverify();
 
@@ -726,4 +735,71 @@ test('the server owns the like/dislike exclusion, so one op states a switch', as
   const switched = await up({ ops: [{ type: 'dislike', targetSha: 's' }] }, guest);
   assert.deepEqual(switched.photos[0]!.likes, [], 'and is gone from likes entirely');
   assert.deepEqual(switched.photos[0]!.dislikes, [0, 1], 'both dislikes stand');
+});
+
+// A 200-photo upload is the batch that makes /sync look hung: one round trip per existence
+// check plus one per insert multiplies the op count by the D1 round-trip latency, and the page
+// gives up before the snapshot comes back. The cost now depends on MAX_BATCH_STATEMENTS, not
+// on how many ops the page had queued — asserted as statements and batches, because wall-clock
+// time in a unit test measures the machine, not the query plan.
+test('a 200-upload batch costs the reads of a small one and a fixed number of writes', async () => {
+  const measure = async (count: number): Promise<DbCallCounts> => {
+    const counts: DbCallCounts = { queries: 0, batches: 0 };
+    const { app } = makeApp({
+      mediaHostUrl: 'https://facade.example',
+      wrapDb: (db) => countingDb(db, counts).db,
+    });
+    const cookie = cookieFrom(await syncNew(app));
+    // The identity read belongs to the session, not to the batch.
+    counts.queries = 0;
+    counts.batches = 0;
+    const ops = Array.from({ length: count }, (_, i) => ({
+      type: 'upload',
+      payload: {
+        sha256: `sha-${i}`,
+        url: `https://file.example/${i}.webp`,
+        width: 4,
+        height: 3,
+        size: 10,
+        type: 0,
+        createdAt: UPLOADED_AT,
+      },
+    }));
+    const json = (await (await sync(app, { ops }, cookie)).json()) as SyncResponse;
+    assert.equal(json.photos.length, count, `${count} uploads landed`);
+    return counts;
+  };
+
+  const small = await measure(5);
+  const large = await measure(200);
+  assert.equal(small.batches, 1);
+  // 200 statements, batched 100 at a time: the write count is a function of the constant.
+  assert.equal(large.batches, 2);
+  assert.equal(large.queries, small.queries, 'the read count does not grow with the op count');
+});
+
+// Statements keep the order the ops arrived in, and a chunk boundary is invisible to that order:
+// a mark that follows the upload creating its row still lands when the upload went out in an
+// earlier chunk.
+test('ops keep their order across a chunk boundary', async () => {
+  const { app } = makeApp({ mediaHostUrl: 'https://facade.example' });
+  const cookie = cookieFrom(await syncNew(app));
+  const uploads = Array.from({ length: 150 }, (_, i) => ({
+    type: 'upload',
+    payload: {
+      sha256: `sha-${i}`,
+      url: `https://file.example/${i}.webp`,
+      width: 4,
+      height: 3,
+      size: 10,
+      type: 0,
+      createdAt: UPLOADED_AT,
+    },
+  }));
+  const res = await sync(app, { ops: [...uploads, { type: 'like', targetSha: 'sha-0' }] }, cookie);
+  const json = (await res.json()) as SyncResponse;
+  assert.equal(json.photos.length, 150);
+  const liked = json.photos.find((p) => p.sha256 === 'sha-0');
+  assert.ok(liked, 'the first upload is in the album');
+  assert.deepEqual(liked.likes, [0], 'the like resolved against the row an earlier chunk wrote');
 });

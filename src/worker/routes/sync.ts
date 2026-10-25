@@ -4,7 +4,7 @@
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';
-import type { Db } from '../db.ts';
+import type { Db, DbStatement } from '../db.ts';
 import {
   MEDIA_TYPE,
   MAX_POLL_OPTIONS,
@@ -95,12 +95,11 @@ const count = (v: unknown): number | null =>
 const mediaType = (v: unknown): MediaType | null =>
   v === MEDIA_TYPE.IMAGE || v === MEDIA_TYPE.ANIMATED || v === MEDIA_TYPE.VIDEO ? v : null;
 
-/** Photo id for an op's `targetSha`, or null when the hash matches no row. */
-async function resolvePhotoId(db: Db, op: Op): Promise<number | null> {
-  if (!op.targetSha) return null;
-  const row = await db.prepare('SELECT id FROM photos WHERE sha256 = ?').bind(op.targetSha).first();
-  return row ? Number(row.id) : null;
-}
+/** Statements per `db.batch` call. One call is one round trip, and every op below becomes a
+ *  fixed one or two statements, so a request's cost is a small multiple of this constant
+ *  instead of a round trip per op — the difference between a 200-photo sync finishing and
+ *  the page giving up on it. */
+const MAX_BATCH_STATEMENTS = 100;
 
 /** The column an attitude's opposite writes: a like and a dislike are one choice, never both. */
 const OPPOSITE_MARK: Partial<Record<MarkColumn, MarkColumn>> = {
@@ -119,39 +118,73 @@ const removeMarkSql = (col: MarkColumn): string => `${col} = CASE
     ELSE (SELECT json_group_array(value) FROM json_each(${col}) WHERE value <> ?) END`;
 
 /**
- * Add or remove `userId` in one mark column, in a single statement — the membership test and
- * the write travel together, so two concurrent marks on one photo cannot drop each other.
+ * Add or remove `userId` in one mark column, as one statement addressed by sha256 — the
+ * membership test and the write travel together, so two concurrent marks on one photo cannot
+ * drop each other, and no lookup of the photo's row is needed first.
  *
  * Adding a like or a dislike also clears the opposite column in that same statement. The two
  * are one choice, and the server owns that invariant instead of trusting every client to send
  * the paired removal, so a client can state a switch with one op. Reports stand alone and may
  * coexist with either.
  */
-async function setMark(
-  db: Db,
-  photoId: number | null,
-  userId: number,
-  col: MarkColumn,
-  add: boolean,
-): Promise<void> {
-  if (photoId === null) return;
+function markStatement(userId: number, col: MarkColumn, add: boolean, sha256: string): DbStatement {
   const sets = [add ? addMarkSql(col) : removeMarkSql(col)];
   const opposite = add ? OPPOSITE_MARK[col] : undefined;
   if (opposite) sets.push(removeMarkSql(opposite));
-  const binds = sets.flatMap(() => [userId, userId]);
-  await db
-    .prepare(`UPDATE photos SET ${sets.join(', ')} WHERE id = ?`)
-    .bind(...binds, photoId)
-    .run();
+  return {
+    sql: `UPDATE photos SET ${sets.join(', ')} WHERE sha256 = ?`,
+    binds: [...sets.flatMap(() => [userId, userId]), sha256],
+  };
 }
 
-/** True when the row exists, so an op never creates an orphan reaction or vote. */
-async function announcementExists(db: Db, id: number): Promise<boolean> {
-  return (await db.prepare('SELECT id FROM announcements WHERE id = ?').bind(id).first()) !== null;
+/** The mark statements for one op, or none when it carries no hash to address. */
+function markOp(userId: number, col: MarkColumn, add: boolean, op: Op): DbStatement[] {
+  return op.targetSha ? [markStatement(userId, col, add, op.targetSha)] : [];
 }
 
-async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): Promise<void> {
-  const db = env.db;
+interface PollDefinition {
+  options: string;
+  allow_multiple: number;
+}
+
+/**
+ * The poll rows a batch votes on, read once, before any write.
+ *
+ * A poll is created by the admin endpoints and never by a sync op, so this answer cannot be
+ * changed by the ops that consume it — which is what lets every vote in the batch validate
+ * against it up front and contribute statements to a single batch instead of a read of its own.
+ */
+async function loadPolls(db: Db, ops: Op[]): Promise<Map<number, PollDefinition>> {
+  const ids = new Set<number>();
+  for (const op of ops) {
+    if (op?.type === 'vote' && typeof op.target === 'number') ids.add(op.target);
+  }
+  if (ids.size === 0) return new Map();
+  const list = [...ids];
+  const rows = await db
+    .prepare(
+      `SELECT id, options, allow_multiple FROM polls WHERE id IN (${list.map(() => '?').join(', ')})`,
+    )
+    .bind(...list)
+    .all<PollDefinition & { id: number }>();
+  return new Map(rows.results.map((row) => [row.id, row]));
+}
+
+/**
+ * The statements one op contributes, in the album's own order.
+ *
+ * Validation happens here, in JS, so a malformed op contributes nothing and cannot roll back
+ * the writes of the ops beside it. Photo ops address their photo by sha256 — the stable unique
+ * index — so no op needs a lookup of its own first, and an op that arrives after the upload
+ * which creates its row still applies: the statements keep the order the ops arrived in.
+ */
+function planOp(
+  env: AppEnv,
+  user: UserRow,
+  op: Op,
+  serverTime: number,
+  polls: Map<number, PollDefinition>,
+): DbStatement[] {
   const isRoot = user.id === ROOT_ID;
   switch (op.type) {
     case 'upload': {
@@ -168,118 +201,147 @@ async function applyOp(env: AppEnv, user: UserRow, op: Op, serverTime: number): 
       // Bounded by the server clock so a skewed or forged value cannot pin a photo into the
       // future; `uploader` stays server-authoritative.
       const createdAt = count(p.createdAt);
-      if (!sha256 || !url || width === null || height === null || size === null) return;
-      if (type === null || createdAt === null || createdAt === 0) return;
+      if (!sha256 || !url || width === null || height === null || size === null) return [];
+      if (type === null || createdAt === null || createdAt === 0) return [];
       // Keep upload URL validation consistent with the read proxy.
-      if (!isAllowedMediaUrl(env, url)) return;
-      if (await env.db.prepare('SELECT id FROM photos WHERE sha256 = ?').bind(sha256).first())
-        return;
-      await db
-        .prepare(
-          `INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .bind(sha256, url, user.id, width, height, size, Math.min(createdAt, serverTime), type)
-        .run();
-      return;
+      if (!isAllowedMediaUrl(env, url)) return [];
+      // The duplicate check travels inside the insert: a hash already in the album — including
+      // one an earlier op of this same batch just inserted — writes nothing, so a re-sent batch
+      // stays silent and no unique violation can reach the transaction.
+      return [
+        {
+          sql: `INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM photos WHERE sha256 = ?)`,
+          binds: [
+            sha256,
+            url,
+            user.id,
+            width,
+            height,
+            size,
+            Math.min(createdAt, serverTime),
+            type,
+            sha256,
+          ],
+        },
+      ];
     }
     case 'like':
-      return setMark(db, await resolvePhotoId(db, op), user.id, 'likes', true);
+      return markOp(user.id, 'likes', true, op);
     case 'unlike':
-      return setMark(db, await resolvePhotoId(db, op), user.id, 'likes', false);
+      return markOp(user.id, 'likes', false, op);
     case 'dislike':
-      return setMark(db, await resolvePhotoId(db, op), user.id, 'dislikes', true);
+      return markOp(user.id, 'dislikes', true, op);
     case 'undislike':
-      return setMark(db, await resolvePhotoId(db, op), user.id, 'dislikes', false);
+      return markOp(user.id, 'dislikes', false, op);
     case 'report':
-      return setMark(db, await resolvePhotoId(db, op), user.id, 'reports', true);
+      return markOp(user.id, 'reports', true, op);
     case 'unreport':
-      return setMark(db, await resolvePhotoId(db, op), user.id, 'reports', false);
-    case 'delete': {
-      if (!isRoot) return;
-      const photoId = await resolvePhotoId(db, op);
-      if (photoId === null) return;
-      await db.prepare('DELETE FROM photos WHERE id = ?').bind(photoId).run();
-      return;
-    }
+      return markOp(user.id, 'reports', false, op);
+    case 'delete':
+      // Root-only, and addressable by hash like every other photo op.
+      return isRoot && op.targetSha
+        ? [{ sql: 'DELETE FROM photos WHERE sha256 = ?', binds: [op.targetSha] }]
+        : [];
     case 'fb_create': {
       const payload = record(op.payload);
       const contentMd = text(payload.contentMd);
       const locale = isLocaleCode(payload.locale) ? payload.locale : null;
-      if (!contentMd || !locale) return;
+      if (!contentMd || !locale) return [];
       // One below this locale's current minimum, so the newest row sorts first.
-      await db
-        .prepare(
-          `INSERT INTO feedback (user_id, content_md, created_at, locale, sort)
-           VALUES (?, ?, ?, ?, (SELECT COALESCE(MIN(sort), 0) - 1 FROM feedback WHERE locale = ?))`,
-        )
-        .bind(user.id, contentMd, serverTime, locale, locale)
-        .run();
-      return;
+      return [
+        {
+          sql: `INSERT INTO feedback (user_id, content_md, created_at, locale, sort)
+                VALUES (?, ?, ?, ?, (SELECT COALESCE(MIN(sort), 0) - 1 FROM feedback WHERE locale = ?))`,
+          binds: [user.id, contentMd, serverTime, locale, locale],
+        },
+      ];
     }
     case 'react': {
       const annId = op.target;
-      if (annId == null || !(await announcementExists(db, annId))) return;
+      if (annId == null) return [];
       const emoji = text(record(op.payload).emoji, MAX_EMOJI_LENGTH);
-      if (emoji) {
-        await db
-          .prepare('INSERT OR REPLACE INTO reactions (ann_id, user_id, emoji) VALUES (?, ?, ?)')
-          .bind(annId, user.id, emoji)
-          .run();
-      } else {
-        await db
-          .prepare('DELETE FROM reactions WHERE ann_id = ? AND user_id = ?')
-          .bind(annId, user.id)
-          .run();
-      }
-      return;
+      // An emoji only lands on an announcement that exists: the test travels inside the
+      // insert, so neither a lookup nor an orphan row is possible.
+      if (emoji)
+        return [
+          {
+            sql: `INSERT OR REPLACE INTO reactions (ann_id, user_id, emoji)
+                  SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM announcements WHERE id = ?)`,
+            binds: [annId, user.id, emoji, annId],
+          },
+        ];
+      // Clearing a reaction needs no existence test: a delete only ever matches rows that exist.
+      return [
+        {
+          sql: 'DELETE FROM reactions WHERE ann_id = ? AND user_id = ?',
+          binds: [annId, user.id],
+        },
+      ];
     }
     case 'vote': {
       const pollId = op.target;
-      if (pollId == null) return;
-      const poll = await db
-        .prepare('SELECT options, allow_multiple FROM polls WHERE id = ?')
-        .bind(pollId)
-        .first<{ options: string; allow_multiple: number }>();
-      if (!poll) return;
+      if (pollId == null) return [];
+      const poll = polls.get(pollId);
+      if (!poll) return [];
       let optionCount: number;
       try {
         const options: unknown = JSON.parse(poll.options);
-        if (!Array.isArray(options)) return;
+        if (!Array.isArray(options)) return [];
         optionCount = options.length;
       } catch {
-        return;
+        return [];
       }
       const rawOptions = record(op.payload).options;
-      if (!Array.isArray(rawOptions) || rawOptions.length > MAX_POLL_OPTIONS) return;
+      if (!Array.isArray(rawOptions) || rawOptions.length > MAX_POLL_OPTIONS) return [];
       const options: number[] = [];
       for (const raw of rawOptions) {
         const option = count(raw);
-        if (option === null || option >= optionCount) return;
+        if (option === null || option >= optionCount) return [];
         options.push(option);
       }
       if (new Set(options).size !== options.length || (!poll.allow_multiple && options.length > 1))
-        return;
-      await db.batch([
+        return [];
+      return [
         { sql: 'DELETE FROM votes WHERE poll_id = ? AND user_id = ?', binds: [pollId, user.id] },
         ...options.map((option) => ({
           sql: 'INSERT INTO votes (poll_id, user_id, option) VALUES (?, ?, ?)',
           binds: [pollId, user.id, option],
         })),
-      ]);
-      return;
+      ];
     }
+    default:
+      // An op type this deployment does not know — a page newer than the server — writes nothing.
+      return [];
   }
 }
 
-/** Apply the batch, dropping an op that throws without affecting the others. */
+/**
+ * Plan every op, then write the plan in a fixed handful of transactions.
+ *
+ * Each op below is one or two statements, so what a request costs is the statement count
+ * divided by `MAX_BATCH_STATEMENTS` — not a round trip per op, which is what let a 200-photo
+ * upload outlast the page's patience for the response. A chunk is one transaction and its ops
+ * are independent, so a chunk that fails is dropped on its own, leaving the others applied.
+ */
 async function applyOps(env: AppEnv, user: UserRow, ops: Op[], serverTime: number): Promise<void> {
+  const polls = await loadPolls(env.db, ops);
+  const statements: DbStatement[] = [];
   for (const op of ops) {
     if (!op || typeof op.type !== 'string') continue;
     try {
-      await applyOp(env, user, op, serverTime);
+      statements.push(...planOp(env, user, op, serverTime, polls));
     } catch (e) {
       console.error('[sync] op dropped', op.type, e);
+    }
+  }
+  for (let offset = 0; offset < statements.length; offset += MAX_BATCH_STATEMENTS) {
+    const chunk = statements.slice(offset, offset + MAX_BATCH_STATEMENTS);
+    try {
+      await env.db.batch(chunk);
+    } catch (e) {
+      console.error('[sync] ops dropped', chunk.length, e);
     }
   }
 }

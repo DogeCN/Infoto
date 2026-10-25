@@ -779,7 +779,7 @@ before deadline` / `no response before deadline`).
     suites), and the deferral below is (`pendingPhotoOps.test.ts`).
   - **A photo op must follow the upload op that creates its row.** A mark whose sha the snapshot
     does not carry is not written to the log at all: `/sync` applies a batch in array order, so
-    it would be a no-op on an unknown sha (`resolvePhotoId` → null) and then cleared as
+    it would be a no-op on an unknown sha (its `UPDATE … WHERE sha256 = ?` matches no row) and then cleared as
     confirmed — the mark silently lost. The mark itself is the state (`pendingMarks`, persisted),
     and `photoOpQueued` states it as ops — awaited by the upload store when the upload op lands,
     and also called by `applySync` for a row the snapshot has just delivered. That is what makes
@@ -793,7 +793,7 @@ before deadline` / `no response before deadline`).
     clears the opposite column in the statement that writes either** — the exclusion is a server
     guarantee now, not a client convention, so a switch costs one op.
   - **That ordering guard is for marks only; a delete is the opposite case.** Deleting a sha the
-    server has never heard of is a harmless no-op (`resolvePhotoId` → null), and the pending
+    server has never heard of is a harmless no-op (`DELETE … WHERE sha256 = ?` matches no row), and the pending
     photo's tombstone depends on exactly that. So `deletePhotos` submits its op straight to
     `submit`, never through the guard — the optimistic removal has **already** taken the row out
     of `photos` by then, and routing a delete through the "does this row still exist?" check
