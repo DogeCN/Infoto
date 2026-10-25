@@ -72,9 +72,15 @@ export interface QueuedUploadFields {
   createdAt: number;
 }
 
-/** A whole number within the server's accepted range for media metadata. */
+/** A whole number within the range the server accepts for one media field. `min` is 0 for the
+ *  box and the size because `/sync`'s `count()` accepts 0, and a zero box is the layout's job
+ *  (`w: p.width || 1`), not a reason to hide a photo the server would keep. */
 const mediaInt = (v: unknown, min: number): number | null =>
   typeof v === 'number' && Number.isSafeInteger(v) && v >= min ? v : null;
+
+/** A non-empty string within `max` characters, as `/sync`'s `text()` demands. */
+const mediaText = (v: unknown, max: number): string | null =>
+  typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
 
 /**
  * The card an unconfirmed `upload` op describes, or null when the op is not a complete one.
@@ -84,24 +90,28 @@ const mediaInt = (v: unknown, min: number): number | null =>
  * a reload otherwise loses, because the card showing it lived in the upload store's memory and
  * the SharedWorker drops its resume record the moment the upload succeeds.
  *
- * The acceptance rules mirror the server's, so an op the server would drop never renders a card
- * that could not go away. `isAllowedMediaUrl` is the one rule it cannot mirror: it needs the
- * Worker's environment, and a bad URL is caught by the card's own load failure instead.
+ * The acceptance rules are the server's own (`routes/sync.ts` `planOp`), deliberately: an op the
+ * server would drop must not draw a card that nothing can ever confirm, and an op it would keep
+ * must not be hidden, which is the bug this projection exists to fix. `isAllowedMediaUrl` is the
+ * one rule that cannot be mirrored here — it needs the Worker's environment — and a rejected URL
+ * shows up as the card's own load failure instead.
  */
 export function queuedUploadFromOp(op: Op): QueuedUploadFields | null {
   if (op.type !== 'upload') return null;
   const payload = (op.payload ?? {}) as Partial<UploadPayload>;
-  const { sha256, url, type, createdAt } = payload;
-  if (typeof sha256 !== 'string' || !sha256 || typeof url !== 'string' || !url) return null;
-  const width = mediaInt(payload.width, 1);
-  const height = mediaInt(payload.height, 1);
+  const sha256 = mediaText(payload.sha256, 128);
+  const url = mediaText(payload.url, 2048);
+  if (!sha256 || !url) return null;
+  const width = mediaInt(payload.width, 0);
+  const height = mediaInt(payload.height, 0);
   const size = mediaInt(payload.size, 0);
   if (width === null || height === null || size === null) return null;
+  const type = payload.type;
   if (type !== MEDIA_TYPE.IMAGE && type !== MEDIA_TYPE.ANIMATED && type !== MEDIA_TYPE.VIDEO)
     return null;
-  const created = mediaInt(createdAt, 1);
-  if (created === null) return null;
-  return { sha256, url, width, height, size, type, createdAt: created };
+  const createdAt = mediaInt(payload.createdAt, 1);
+  if (createdAt === null) return null;
+  return { sha256, url, width, height, size, type, createdAt };
 }
 
 /**

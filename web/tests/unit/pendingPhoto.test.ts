@@ -131,11 +131,12 @@ test('queued upload: the op is a card only when its payload is complete', () => 
   for (const bad of [
     { sha256: '' },
     { sha256: undefined },
+    { sha256: 'a'.repeat(129) },
     { url: '' },
+    { url: 'https://host/' + 'a'.repeat(2049) },
     { width: undefined },
     { width: -1 },
     { width: 1.5 },
-    { height: 0 },
     { size: -1 },
     { type: 3 },
     { type: undefined },
@@ -144,6 +145,11 @@ test('queued upload: the op is a card only when its payload is complete', () => 
   ]) {
     assert.equal(queuedUploadFromOp(uploadOp(bad)), null, JSON.stringify(bad));
   }
+
+  // The server accepts a zero box (`count()` is `>= 0`), so the projection must too: hiding a
+  // photo the server would keep is the invisible-photo bug in miniature. The layout already
+  // defends the empty box with `w: p.width || 1`.
+  assert.equal(queuedUploadFromOp(uploadOp({ width: 0, height: 0 }))?.width, 0);
 });
 
 test('queued upload: the log projects cards in order, without a landed or live duplicate', () => {
