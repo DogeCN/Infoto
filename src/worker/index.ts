@@ -4,10 +4,12 @@
 import { createApp, type AppEnv } from './app.ts';
 import { d1Db } from './db-d1.ts';
 import {
-  m2m100Translator,
+  MAX_OUTPUT_TOKENS,
+  responseText,
   restTranslationRunner,
+  structuredTranslator,
   TRANSLATION_MODEL,
-  type TranslationRunner,
+  type ModelRunner,
 } from './translate.ts';
 
 export interface Env {
@@ -33,18 +35,19 @@ export default {
       const ai = env.AI;
       // Local dev can opt into the REST transport from `.dev.vars`; production has neither
       // variable and therefore falls through to the Workers AI binding.
-      const restRunner: TranslationRunner | undefined =
+      const restRunner: ModelRunner | undefined =
         env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN
           ? restTranslationRunner(env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_API_TOKEN)
           : undefined;
-      const bindingRunner: TranslationRunner | undefined = ai
-        ? async (text, sourceLang, targetLang) => {
+      const bindingRunner: ModelRunner | undefined = ai
+        ? async (messages, schema) => {
             const result = await ai.run(TRANSLATION_MODEL, {
-              text,
-              source_lang: sourceLang,
-              target_lang: targetLang,
+              messages,
+              response_format: { type: 'json_schema', json_schema: schema },
+              temperature: 0,
+              max_tokens: MAX_OUTPUT_TOKENS,
             });
-            return 'translated_text' in result ? (result.translated_text ?? '') : '';
+            return responseText(result);
           }
         : undefined;
       const runner = restRunner ?? bindingRunner;
@@ -54,7 +57,7 @@ export default {
         turnstileSecret: env.TURNSTILE_SECRET_KEY,
         turnstileSiteKey: env.TURNSTILE_SITE_KEY,
         assets: (req) => env.ASSETS.fetch(req),
-        translate: runner ? m2m100Translator(runner) : undefined,
+        translate: runner ? structuredTranslator(runner) : undefined,
       };
       app = createApp(appEnv);
       apps.set(env, app);

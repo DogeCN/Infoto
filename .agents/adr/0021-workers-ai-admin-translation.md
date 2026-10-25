@@ -12,17 +12,22 @@
     content (`title`/`contentMd` or `options`/`allowMultiple`) plus `sourceLocale` and
     `targetLocale`; it never reads or writes D1. `sourceLocale` is the card's own `locale`;
     `targetLocale` is the one other registered locale.
-  - Use Workers AI `@cf/meta/m2m100-1.2b` through an injected `Translator` service. The
-    production runner lives in `src/worker/index.ts`; unit tests inject a fake and never call AI.
+  - Use Workers AI `@cf/qwen/qwen3-30b-a3b-fp8` through an injected `Translator` service. It is
+    a chat model: both transports send the shared translation prompt (`translationMessages`)
+    and read `response`. The initial small NMT model (`m2m100-1.2b`) echoed or garbled
+    Markdown-heavy prose, so it was replaced. The production runner lives in
+    `src/worker/index.ts`; unit tests inject a fake and never call AI.
   - Local development may opt into a REST transport when `.dev.vars` supplies
     `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The REST runner posts to
     `api.cloudflare.com` and is selected only when both variables exist; production has neither
     and therefore uses the `AI` binding. This exists because the local AI binding's remote edge
     path can be unreachable while `api.cloudflare.com` is reachable. The token is dev-only,
     never rendered, and never logged.
-  - Split announcement Markdown into text blocks and literal blocks. Fenced code, blank lines and
-    whole-line `::poll:` references stay literal; text blocks are translated in chunks of at most
-    800 characters. Poll options are translated one by one, preserving order and count.
+  - One structured call per request. Announcements send `{ title, texts }`, where `texts` holds
+    only the non-literal blocks: fenced code, blank lines and whole-line `::poll:` references are
+    removed from the payload and reassembled in code. Polls send `{ options }` as one array. The
+    model returns JSON through `response_format: { type: 'json_schema', json_schema }`; the
+    adapter validates array length and order before reassembling or returning.
   - Return a draft only. The admin UI switches its language and content bucket to the target
     locale and opens the existing create editor seeded with that draft. Saving still goes through
     the existing `POST /admin/announcements` or `POST /admin/polls`, so the result is a normal

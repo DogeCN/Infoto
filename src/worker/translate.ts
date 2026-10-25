@@ -5,7 +5,7 @@
 // written once — the route and the adapter used to carry separate copies of the same numbers.
 
 import { isLocaleCode } from '../shared/copy.ts';
-import { isRecord } from '../shared/json.ts';
+import { isRecord, safeJsonParse } from '../shared/json.ts';
 import {
   MAX_POLL_OPTION_CHARS,
   MAX_POLL_OPTIONS,
@@ -16,11 +16,10 @@ import {
   type Translator,
 } from '../shared/types.ts';
 
-/** One text-in / text-out call to the translation model. */
-export type TranslationRunner = (
-  text: string,
-  sourceLang: string,
-  targetLang: string,
+/** One structured model call: chat messages + JSON schema -> raw response text. */
+export type ModelRunner = (
+  messages: Array<{ role: 'system' | 'user'; content: string }>,
+  schema: Record<string, unknown>,
 ) => Promise<string>;
 
 const LANGUAGE_CODE: Record<LocaleCode, string> = {
@@ -28,20 +27,60 @@ const LANGUAGE_CODE: Record<LocaleCode, string> = {
   'zh-CN': 'zh',
 };
 
+const LANGUAGE_NAME: Record<string, string> = {
+  en: 'English',
+  zh: 'Simplified Chinese',
+};
+
 /** The one model both transports use. */
-export const TRANSLATION_MODEL = '@cf/meta/m2m100-1.2b';
+export const TRANSLATION_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 /** Per-call ceiling for the dev REST transport. */
 const REST_TIMEOUT_MS = 30_000;
+/** The whole body is one JSON response; leave room for a long announcement. */
+export const MAX_OUTPUT_TOKENS = 8192;
 
-/** A conservative chunk ceiling: m2m100 has a small context window. */
-const MAX_CHUNK_CHARS = 800;
-const POLL_CONCURRENCY = 4;
 const POLL_LINE = /^\s*::poll:[A-Za-z][A-Za-z0-9-]*:\d+\s*$/;
+
+const ANNOUNCEMENT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    texts: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['title', 'texts'],
+  additionalProperties: false,
+};
+
+const POLL_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    options: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['options'],
+  additionalProperties: false,
+};
 
 export interface Segment {
   /** Literal segments are reinserted unchanged: fenced code, blank lines, poll references. */
   literal: boolean;
   text: string;
+}
+
+/** Extract text from the binding/REST output shapes (plain string, `response`, or chat choices). */
+export function responseText(result: unknown): string {
+  if (typeof result === 'string') return result;
+  if (!isRecord(result)) return '';
+  if (typeof result.response === 'string') return result.response;
+  if (isRecord(result.response)) return JSON.stringify(result.response);
+  const choices = result.choices;
+  if (!Array.isArray(choices)) return '';
+  for (const choice of choices) {
+    if (!isRecord(choice)) continue;
+    if (isRecord(choice.message) && typeof choice.message.content === 'string')
+      return choice.message.content;
+    if (typeof choice.text === 'string') return choice.text;
+  }
+  return '';
 }
 
 function languageOf(locale: LocaleCode): string | null {
@@ -85,7 +124,7 @@ export function isOversizedTranslation(request: TranslationRequest): boolean {
 
 /**
  * Everything the model adapter requires of a typed request. The route validates the wire body
- * first, but `m2m100Translator` is also a plain function that a caller can hand anything.
+ * first, but `structuredTranslator` is also a plain function that a caller can hand anything.
  */
 export function isTranslatable(request: TranslationRequest): boolean {
   return readTranslationRequest(request) !== null && !isOversizedTranslation(request);
@@ -138,96 +177,58 @@ export function splitAnnouncement(contentMd: string): Segment[] {
   return segments;
 }
 
-/** Cut a line at a sentence boundary within `max`, or hard-cut when there is none. */
-function sentenceCut(text: string, max: number): number {
-  const window = text.slice(0, max);
-  let cut = -1;
-  for (const token of ['. ', '! ', '? ', '。', '！', '？', '\n']) {
-    const at = window.lastIndexOf(token);
-    if (at >= 0) cut = Math.max(cut, at + 1);
-  }
-  return cut;
+/**
+ * A text block is a run of non-blank source lines. The model may add outer or doubled
+ * newlines; collapse them back to the source's single-line structure. Literal blank-line
+ * segments are reassembled separately, so their count is not affected.
+ */
+function normalizeBlock(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/^\n+|\n+$/g, '')
+    .replace(/\n{2,}/g, '\n');
 }
 
-function splitLongLine(line: string, max: number): string[] {
-  const chunks: string[] = [];
-  let rest = line;
-  while (rest.length > max) {
-    const cut = sentenceCut(rest, max);
-    const size = cut > 0 ? cut : max;
-    chunks.push(rest.slice(0, size));
-    rest = rest.slice(size);
-  }
-  if (rest) chunks.push(rest);
-  return chunks;
+/** Parse the structured reply; tolerate a stray Markdown fence around the JSON. */
+function parseJsonDraft(raw: string): Record<string, unknown> {
+  const text = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '');
+  const parsed = safeJsonParse<unknown>(text, null);
+  if (!isRecord(parsed)) throw new Error('invalid_response');
+  return parsed;
 }
 
-/** Chunks retain their separators, so joining the translated chunks restores the layout. */
-function splitText(text: string, max: number): string[] {
-  if (text.length <= max) return [text];
-  const lines = text.split('\n');
-  const chunks: string[] = [];
-  let current = '';
-  const flush = () => {
-    if (current) {
-      chunks.push(current);
-      current = '';
-    }
-  };
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]! + (index < lines.length - 1 ? '\n' : '');
-    if (line.length > max) {
-      flush();
-      chunks.push(...splitLongLine(line, max));
-      continue;
-    }
-    if (current.length + line.length > max) flush();
-    current += line;
-  }
-  flush();
-  return chunks;
-}
-
-async function translateTextBlock(
-  run: TranslationRunner,
-  text: string,
-  sourceLang: string,
-  targetLang: string,
-): Promise<string> {
-  const chunks = splitText(text, MAX_CHUNK_CHARS);
-  const translated: string[] = [];
-  for (const chunk of chunks) {
-    const result = await run(chunk, sourceLang, targetLang);
-    if (!result.trim()) throw new Error('empty_translation');
-    translated.push(result);
-  }
-  return translated.join('');
-}
-
-async function mapLimit<T, U>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<U>,
-): Promise<U[]> {
-  const results = new Array<U>(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await fn(items[index]!, index);
-    }
-  });
-  await Promise.all(workers);
-  return results;
+function buildMessages(
+  source: string,
+  target: string,
+  instruction: string,
+  payload: unknown,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        `You are translating a JSON payload from ${source} to ${target}. ${instruction} ` +
+        `Write natural, idiomatic ${target} as a native speaker would: prefer concise, direct ` +
+        'phrasing and natural word order over stacked noun phrases, literal word-for-word calques, ' +
+        'redundant pronouns, source-language constructions, or sentence-by-sentence mirroring. ' +
+        'You may reorder or split sentences, but keep every fact, technical term, and all inline ' +
+        'Markdown, URLs, and inline code. Keep the JSON keys unchanged and the same number and order ' +
+        'of array items. Return only JSON matching the schema, with no commentary.',
+    },
+    { role: 'user', content: JSON.stringify(payload) },
+  ];
 }
 
 /**
- * Build a Translator over a single-string translation call. Announcement bodies are
- * split into blocks so Markdown structure survives; poll options are translated one by
- * one so their order and count cannot drift.
+ * Translate a whole request in one structured model call. Announcement literal blocks
+ * (fences, blank lines, poll references) are never sent to the model: they are removed from
+ * the payload as text blocks and reassembled in code after the array comes back. Poll options
+ * travel as one array, so the model cannot change their count or order silently.
  */
-export function m2m100Translator(run: TranslationRunner): Translator {
+export function structuredTranslator(run: ModelRunner): Translator {
   return async (request): Promise<TranslationDraft> => {
     const sourceLang = languageOf(request.sourceLocale);
     const targetLang = languageOf(request.targetLocale);
@@ -235,29 +236,63 @@ export function m2m100Translator(run: TranslationRunner): Translator {
       throw new Error('unsupported_locale');
     }
     if (!isTranslatable(request)) throw new Error('invalid_request');
+    const source = LANGUAGE_NAME[sourceLang] ?? sourceLang;
+    const target = LANGUAGE_NAME[targetLang] ?? targetLang;
 
     if (request.kind === 'announcement') {
-      const title = (await translateTextBlock(run, request.title, sourceLang, targetLang)).trim();
-      if (!title) throw new Error('empty_translation');
+      const segments = splitAnnouncement(request.contentMd);
+      const texts = segments.filter((segment) => !segment.literal).map((segment) => segment.text);
+      const draft = parseJsonDraft(
+        await run(
+          buildMessages(
+            source,
+            target,
+            'Translate the values of "title" and every "texts" entry;',
+            { title: request.title, texts },
+          ),
+          ANNOUNCEMENT_SCHEMA,
+        ),
+      );
+      const title = typeof draft.title === 'string' ? draft.title.trim() : '';
+      const translated = draft.texts;
+      if (!title || !Array.isArray(translated) || translated.length !== texts.length) {
+        throw new Error('invalid_response');
+      }
 
       const pieces: string[] = [];
-      for (const segment of splitAnnouncement(request.contentMd)) {
-        pieces.push(
-          segment.literal
-            ? segment.text
-            : await translateTextBlock(run, segment.text, sourceLang, targetLang),
-        );
+      let next = 0;
+      for (const segment of segments) {
+        if (segment.literal) {
+          pieces.push(segment.text);
+          continue;
+        }
+        const value = translated[next];
+        next += 1;
+        if (typeof value !== 'string' || !value.trim()) throw new Error('empty_translation');
+        pieces.push(normalizeBlock(value));
       }
       const contentMd = pieces.join('\n');
       if (!contentMd.trim()) throw new Error('empty_translation');
       return { kind: 'announcement', title, contentMd };
     }
 
-    const options = await mapLimit(request.options, POLL_CONCURRENCY, async (option) => {
-      const translated = (await run(option.trim(), sourceLang, targetLang)).trim();
-      if (!translated) throw new Error('empty_translation');
-      return translated;
-    });
+    const draft = parseJsonDraft(
+      await run(
+        buildMessages(source, target, 'Translate the values of every "options" entry;', {
+          options: request.options,
+        }),
+        POLL_SCHEMA,
+      ),
+    );
+    const translated = draft.options;
+    if (!Array.isArray(translated) || translated.length !== request.options.length) {
+      throw new Error('invalid_response');
+    }
+    const options: string[] = [];
+    for (const option of translated) {
+      if (typeof option !== 'string' || !option.trim()) throw new Error('empty_translation');
+      options.push(option.trim());
+    }
     return { kind: 'poll', options };
   };
 }
@@ -271,8 +306,8 @@ export function restTranslationRunner(
   accountId: string,
   apiToken: string,
   fetchFn: typeof fetch = fetch,
-): TranslationRunner {
-  return async (text, sourceLang, targetLang) => {
+): ModelRunner {
+  return async (messages, schema) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
     try {
@@ -284,7 +319,12 @@ export function restTranslationRunner(
             Authorization: `Bearer ${apiToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ text, source_lang: sourceLang, target_lang: targetLang }),
+          body: JSON.stringify({
+            messages,
+            response_format: { type: 'json_schema', json_schema: schema },
+            temperature: 0,
+            max_tokens: MAX_OUTPUT_TOKENS,
+          }),
           signal: controller.signal,
         },
       );
@@ -292,11 +332,9 @@ export function restTranslationRunner(
       if (!response.ok || !isRecord(data) || data.success !== true || !isRecord(data.result)) {
         throw new Error(`rest_translate_failed_${response.status}`);
       }
-      const translated = data.result.translated_text;
-      if (typeof translated !== 'string' || !translated.trim()) {
-        throw new Error('empty_translation');
-      }
-      return translated;
+      const text = responseText(data.result);
+      if (!text.trim()) throw new Error('empty_translation');
+      return text;
     } finally {
       clearTimeout(timer);
     }

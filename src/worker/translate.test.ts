@@ -1,10 +1,18 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import type { TranslationRequest } from '../shared/types.ts';
-import { restTranslationRunner, m2m100Translator, splitAnnouncement } from './translate.ts';
+import {
+  restTranslationRunner,
+  splitAnnouncement,
+  structuredTranslator,
+  type ModelRunner,
+} from './translate.ts';
 
-const labelled = (text: string, source: string, target: string): string =>
-  `[${source}>${target}]${text}`;
+const jsonRunner = (draft: unknown, onCall?: () => void): ModelRunner => {
+  return async () => {
+    onCall?.();
+    return JSON.stringify(draft);
+  };
+};
 
 test('translate: segmenter marks fences, blank lines, and poll references literal', () => {
   assert.deepEqual(splitAnnouncement('A\n\n```\nB\n```\n::poll:en-US:1'), [
@@ -17,138 +25,141 @@ test('translate: segmenter marks fences, blank lines, and poll references litera
   ]);
 });
 
-test('translate: announcement drafts translate text blocks and preserve literal blocks', async () => {
-  const calls: string[] = [];
-  const translator = m2m100Translator(async (text, source, target) => {
-    calls.push(text);
-    return labelled(text, source, target);
-  });
-  const contentMd = 'Intro\n\n```\ncode\n```\n\n::poll:en-US:7\nOutro';
-  const draft = await translator({
+test('translate: one structured call translates an announcement and reassembles literals', async () => {
+  let calls = 0;
+  let messages: Array<{ role: string; content: string }> = [];
+  let schema: Record<string, unknown> = {};
+  const runner: ModelRunner = async (nextMessages, nextSchema) => {
+    calls += 1;
+    messages = nextMessages;
+    schema = nextSchema;
+    return JSON.stringify({ title: 'Title2', texts: ['Intro2', 'Closing2'] });
+  };
+  const draft = await structuredTranslator(runner)({
     kind: 'announcement',
     sourceLocale: 'en-US',
     targetLocale: 'zh-CN',
     title: 'Title',
-    contentMd,
+    contentMd: 'Intro\n\n```\ncode\n```\n\n::poll:en-US:1\nClosing',
   });
+  assert.equal(calls, 1);
   assert.equal(draft.kind, 'announcement');
   if (draft.kind !== 'announcement') return;
-  assert.equal(draft.title, '[en>zh]Title');
-  assert.equal(draft.contentMd, '[en>zh]Intro\n\n```\ncode\n```\n\n::poll:en-US:7\n[en>zh]Outro');
-  assert.deepEqual(calls, ['Title', 'Intro', 'Outro']);
+  assert.equal(draft.title, 'Title2');
+  assert.equal(draft.contentMd, 'Intro2\n\n```\ncode\n```\n\n::poll:en-US:1\nClosing2');
+  assert.deepEqual(JSON.parse(messages[1]!.content), {
+    title: 'Title',
+    texts: ['Intro', 'Closing'],
+  });
+  assert.equal(schema.type, 'object');
 });
 
-test('translate: long text is chunked and poll options keep their order', async () => {
-  const lengths: number[] = [];
-  const translator = m2m100Translator(async (text, source, target) => {
-    lengths.push(text.length);
-    return labelled(text, source, target);
-  });
-  const draft = await translator({
-    kind: 'announcement',
+test('translate: one structured call translates all poll options in order', async () => {
+  let calls = 0;
+  const draft = await structuredTranslator(
+    jsonRunner({ options: ['Yes2', 'No2'] }, () => {
+      calls += 1;
+    }),
+  )({
+    kind: 'poll',
     sourceLocale: 'en-US',
     targetLocale: 'zh-CN',
-    title: 'T',
-    contentMd: 'a'.repeat(2_000),
-  });
-  assert.equal(draft.kind, 'announcement');
-  assert.ok(lengths.length >= 4, `title plus at least three body chunks: ${lengths.join(',')}`);
-  assert.ok(
-    lengths.every((length) => length <= 800),
-    'every model call stays within the chunk ceiling',
-  );
-
-  const poll = await translator({
-    kind: 'poll',
-    sourceLocale: 'zh-CN',
-    targetLocale: 'en-US',
-    options: ['A', 'B', 'C'],
+    options: ['Yes', 'No'],
     allowMultiple: true,
   });
-  assert.deepEqual(poll, {
-    kind: 'poll',
-    options: ['[zh>en]A', '[zh>en]B', '[zh>en]C'],
-  });
+  assert.equal(calls, 1);
+  assert.deepEqual(draft, { kind: 'poll', options: ['Yes2', 'No2'] });
 });
 
-test('translate: empty output, invalid polls, and unsupported locales are rejected', async () => {
-  const empty = m2m100Translator(async () => '');
+test('translate: malformed or incomplete structured output is rejected', async () => {
   await assert.rejects(
-    empty({
+    structuredTranslator(jsonRunner({ title: 'T', texts: ['only one'] }))({
       kind: 'announcement',
       sourceLocale: 'en-US',
       targetLocale: 'zh-CN',
       title: 'T',
-      contentMd: 'B',
+      contentMd: 'A\n\nB',
+    }),
+    /invalid_response/,
+  );
+  await assert.rejects(
+    structuredTranslator(jsonRunner({ title: 'T', texts: ['A', ''] }))({
+      kind: 'announcement',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      title: 'T',
+      contentMd: 'A\n\nB',
     }),
     /empty_translation/,
   );
   await assert.rejects(
-    empty({
+    structuredTranslator(jsonRunner({ options: ['only one'] }))({
       kind: 'poll',
       sourceLocale: 'en-US',
       targetLocale: 'zh-CN',
       options: ['A', 'B'],
       allowMultiple: false,
     }),
-    /empty_translation/,
+    /invalid_response/,
   );
-
-  const echo = m2m100Translator(async (text) => text);
   await assert.rejects(
-    echo({
+    structuredTranslator(async () => 'not json')({
       kind: 'poll',
       sourceLocale: 'en-US',
       targetLocale: 'zh-CN',
-      options: ['A'],
+      options: ['A', 'B'],
       allowMultiple: false,
     }),
-    /invalid_request/,
-  );
-  await assert.rejects(
-    echo({
-      kind: 'announcement',
-      sourceLocale: 'fr-FR' as never,
-      targetLocale: 'zh-CN',
-      title: 'T',
-      contentMd: 'B',
-    } satisfies TranslationRequest),
-    /unsupported_locale/,
-  );
-  await assert.rejects(
-    echo({
-      kind: 'announcement',
-      sourceLocale: 'en-US',
-      targetLocale: 'en-US',
-      title: 'T',
-      contentMd: 'B',
-    }),
-    /unsupported_locale/,
+    /invalid_response/,
   );
 });
 
-test('translate: the dev REST transport posts one string and rejects what it cannot read', async () => {
-  let seen: { url: string; init: RequestInit } | null = null;
-  const ok = restTranslationRunner('acct', 'token', async (url, init) => {
-    seen = { url: String(url), init: init ?? {} };
-    return Response.json({ success: true, result: { translated_text: 'Bonjour' } });
+test('translate: model-added blank lines are normalized per text entry', async () => {
+  const draft = await structuredTranslator(
+    jsonRunner({ title: 'T2', texts: ['\nIntro\n\n', '\n- A\n\n- B\n'] }),
+  )({
+    kind: 'announcement',
+    sourceLocale: 'en-US',
+    targetLocale: 'zh-CN',
+    title: 'T',
+    contentMd: 'Intro\n\n- A\n- B',
   });
-  assert.equal(await ok('Hello', 'en', 'zh'), 'Bonjour');
-  assert.match(seen!.url, /accounts\/acct\/ai\/run\/@cf\/meta\/m2m100-1\.2b$/);
-  assert.equal((seen!.init.headers as Record<string, string>)['Authorization'], 'Bearer token');
-  assert.deepEqual(JSON.parse(String(seen!.init.body)), {
-    text: 'Hello',
-    source_lang: 'en',
-    target_lang: 'zh',
+  assert.equal(draft.kind, 'announcement');
+  if (draft.kind !== 'announcement') return;
+  assert.equal(draft.contentMd, 'Intro\n\n- A\n- B');
+});
+
+test('translate: the dev REST transport sends a JSON-schema request', async () => {
+  let seen: { url: string; body: Record<string, unknown> } | null = null;
+  const runner = restTranslationRunner('acct', 'token', async (url, init) => {
+    seen = { url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> };
+    return Response.json({
+      success: true,
+      result: { response: JSON.stringify({ options: ['A2'] }) },
+    });
   });
+  assert.equal(
+    await runner(
+      [
+        { role: 'system', content: 's' },
+        { role: 'user', content: 'u' },
+      ],
+      {
+        type: 'object',
+      },
+    ),
+    JSON.stringify({ options: ['A2'] }),
+  );
+  assert.match(seen!.url, /@cf\/qwen\/qwen3-30b-a3b-fp8$/);
+  assert.equal((seen!.body.response_format as { type: string }).type, 'json_schema');
+  assert.equal(seen!.body.temperature, 0);
+  assert.equal(seen!.body.max_tokens, 8192);
 
   const fail = restTranslationRunner('acct', 'token', async () =>
     Response.json({}, { status: 502 }),
   );
-  await assert.rejects(fail('Hello', 'en', 'zh'), /rest_translate_failed_502/);
-
-  const unreadable = restTranslationRunner('acct', 'token', async () =>
-    Response.json({ success: true, result: {} }),
+  await assert.rejects(
+    fail([{ role: 'user', content: 'u' }], { type: 'object' }),
+    /rest_translate_failed_502/,
   );
-  await assert.rejects(unreadable('Hello', 'en', 'zh'), /empty_translation/);
 });
