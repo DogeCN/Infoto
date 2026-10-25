@@ -1,7 +1,12 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { EMPTY_MARKS } from '../../src/core/ops';
-import { pendingPhoto, samePendingPhoto, type PendingPhotoFields } from '../../src/core/pending';
+import {
+  pendingMediaUrl,
+  pendingPhoto,
+  samePendingPhoto,
+  type PendingPhotoFields,
+} from '../../src/core/pending';
 
 const fields = (over: Partial<PendingPhotoFields> = {}): PendingPhotoFields => ({
   id: -1,
@@ -45,4 +50,22 @@ test('pending photo: projects the card and keeps identity while its fields hold'
     samePendingPhoto(photo, fields({ marks: { likes: [], dislikes: [], reports: [] } })),
     false,
   );
+});
+
+// The upload-complete handoff: the card keeps the already-decoded local preview until the
+// hosted copy has actually loaded in this page. Swapping `src` first is what showed a
+// skeleton over a photo the user could already see.
+test('pending media url: the local preview holds until the hosted copy is renderable', () => {
+  const hosted = 'https://cdn.test/a.webp';
+  const local = 'blob:http://localhost/abc';
+
+  assert.equal(pendingMediaUrl(hosted, local, 'pending'), local);
+  assert.equal(pendingMediaUrl(hosted, local, 'ready'), hosted);
+  // A failed hosted load falls through so the card can report the failure.
+  assert.equal(pendingMediaUrl(hosted, local, 'failed'), hosted);
+  // Before the upload finishes there is no hosted URL at all.
+  assert.equal(pendingMediaUrl('', local, undefined), local);
+  // No local preview (another tab, or the artifact read failed): use the hosted URL.
+  assert.equal(pendingMediaUrl(hosted, '', 'pending'), hosted);
+  assert.equal(pendingMediaUrl('', '', undefined), '');
 });

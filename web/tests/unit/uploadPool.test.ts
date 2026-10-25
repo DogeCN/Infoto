@@ -61,8 +61,8 @@ test('upload pool: the upload leg runs at its own ceiling, not the transcode poo
       });
     });
   });
-  // The completion path prewarms the returned URL; an immediate rejection keeps the test off
-  // the network without changing what is asserted here.
+  // The worker no longer fetches the returned URL (the page preloads it), so the network
+  // stub only keeps the test hermetic.
   vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')));
   vi.stubGlobal('self', {});
   vi.stubGlobal('onconnect', undefined);

@@ -3,6 +3,27 @@
 import type { Photo } from '$shared/types';
 import type { MarkSet } from './ops';
 
+/** How far the hosted copy of a pending card's media has got in this page. */
+export type HostedReadiness = 'pending' | 'ready' | 'failed';
+
+/**
+ * The URL a pending card should render.
+ *
+ * While the hosted copy is still loading here, the already-decoded local preview keeps its
+ * place: swapping `src` the moment the upload finishes replaced a painted image with one the
+ * document had not fetched yet, which is the skeleton the user saw at completion. A failed
+ * hosted load falls through to the hosted URL anyway, so the card can report the failure
+ * instead of hiding it behind a stale local copy.
+ */
+export function pendingMediaUrl(
+  hosted: string,
+  local: string,
+  readiness: HostedReadiness | undefined,
+): string {
+  if (hosted && readiness === 'pending' && local) return local;
+  return hosted || local;
+}
+
 export interface PendingPhotoFields {
   id: number;
   sha256: string;

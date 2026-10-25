@@ -8,7 +8,12 @@ import { getLocale } from '$lib/i18n.svelte';
 import { translateTaskError } from '$base/upload/pipeline';
 import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from '../transcode/pipeline';
 import { readArtifact } from '../transcode/opfs';
-import { pendingPhoto, samePendingPhoto } from '../core/pending';
+import {
+  pendingMediaUrl,
+  pendingPhoto,
+  samePendingPhoto,
+  type HostedReadiness,
+} from '../core/pending';
 import type { SyncEngine } from '../core/engine';
 import type { createAppStore } from './appStore.svelte';
 import { setMediaHostSink, setPendingUploadCancelSink } from './appStore.svelte';
@@ -90,6 +95,48 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   /** Object URLs for transcoded OPFS previews, released when jobs leave or the store is destroyed. */
   const previewUrls = new SvelteMap<string, string>();
 
+  /**
+   * Hosted copies already fetched into *this page*, per job. The upload's completion swaps the
+   * card from the OPFS object URL to the hosted URL, and until the hosted bytes are here that
+   * swap is a skeleton over a photo the user could already see. Preloading them in the page —
+   * not in the SharedWorker, whose cache is not the renderer's — is what makes the handoff
+   * seamless; the state also carries the URL so a retry cannot reuse a stale verdict.
+   */
+  const hostedReady = new SvelteMap<string, { url: string; state: HostedReadiness }>();
+
+  /** Jobs whose hosted copy is being fetched right now (one attempt at a time). */
+  const hostedReads = new Set<string>();
+
+  /**
+   * Fetch the hosted copy with the element that will render it. An `<img>` sends the same
+   * `Accept` an image request sends, so it primes the exact cache entry the card looks up;
+   * a video stops at its first decoded frame rather than downloading the whole file.
+   */
+  function ensureHostedReady(jobId: string, url: string, type: number | undefined): void {
+    if (hostedReady.get(jobId)?.url === url || hostedReads.has(jobId)) return;
+    hostedReads.add(jobId);
+    hostedReady.set(jobId, { url, state: 'pending' });
+    const settle = (state: HostedReadiness): void => {
+      hostedReads.delete(jobId);
+      if (destroyed || !uploadTasks.has(jobId)) return;
+      hostedReady.set(jobId, { url, state });
+    };
+    if (type === 0) {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => settle('ready');
+      img.onerror = () => settle('failed');
+      img.src = url;
+      return;
+    }
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.onloadeddata = () => settle('ready');
+    video.onerror = () => settle('failed');
+    video.src = url;
+  }
+
   /** Object URL for the OPFS artifact, once per job (no-op while the read is in flight). */
   const previewReads = new Set<string>();
   async function ensureArtifactPreview(jobId: string, type: number): Promise<void> {
@@ -119,6 +166,8 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     tempCreatedAt.delete(jobId);
     writeTempCreatedAt(tempCreatedAt);
     photoCache.delete(jobId);
+    hostedReady.delete(jobId);
+    hostedReads.delete(jobId);
     const sha = uploadTasks.get(jobId)?.sha256;
     if (sha) store.forgetPendingPhoto(sha);
     const preview = previewUrls.get(jobId);
@@ -222,7 +271,11 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       };
       const sha = t.sha256 ?? '';
       const marks = store.pendingMarksFor(sha);
-      const url = t.url ?? previewUrls.get(t.jobId) ?? '';
+      const hosted = t.url ?? '';
+      const local = previewUrls.get(t.jobId) ?? '';
+      const verdict = hosted ? hostedReady.get(t.jobId) : undefined;
+      const readiness = verdict?.url === hosted ? verdict.state : undefined;
+      const url = pendingMediaUrl(hosted, local, readiness);
       const createdAt = tempCreatedAt.get(t.jobId) ?? Date.now();
       const fields = {
         id,
@@ -334,6 +387,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       if (t.meta && (t.phase === 'uploading' || t.phase === 'failed')) {
         void ensureArtifactPreview(t.jobId, t.meta.type);
       }
+      // The hosted copy is fetched here, in the page that will paint it, so the swap away
+      // from the local preview lands on a warm cache instead of a skeleton.
+      if (t.url) ensureHostedReady(t.jobId, t.url, t.meta?.type);
       // Drop confirmed terminal echoes without recreating optimistic cards.
       if (
         (t.phase === 'done' || t.phase === 'duplicate') &&
@@ -377,6 +433,17 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     }),
   );
 
+  /**
+   * The picked file as the card's first preview. Its object URL exists synchronously, before
+   * any transcode, so the card has something painted the moment it appears. The OPFS artifact
+   * preview is read asynchronously and, on a fast connection, arrives after the job is already
+   * `done` — leaving nothing to hold on screen during the swap to the hosted URL.
+   */
+  function seedSourcePreview(jobId: string, file: File): void {
+    if (previewUrls.has(jobId)) return;
+    previewUrls.set(jobId, URL.createObjectURL(file));
+  }
+
   function addFiles(files: FileList | File[]): void {
     // A pick while nothing is in flight starts a fresh batch — the counter describes one
     // batch, not the session.
@@ -391,7 +458,10 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       toastedFailures.clear();
       toastedDuplicates.clear();
     }
-    pipeline.addFiles(files, queueSizeProbe);
+    pipeline.addFiles(files, (jobId, file) => {
+      seedSourcePreview(jobId, file);
+      queueSizeProbe(jobId, file);
+    });
   }
 
   onDestroy(() => {

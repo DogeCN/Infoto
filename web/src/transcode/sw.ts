@@ -115,10 +115,6 @@ function releaseUploadSlot(): void {
   else uploadRunning--;
 }
 
-/** How long the post-upload URL prewarm may hold the completion state before the
- *  job is declared done anyway (the card then degrades to a normal lazy load). */
-const PREWARM_BUDGET_MS = 2_000;
-
 // ---- lease pool ----------------------------------------------------------------
 
 interface Lease {
@@ -421,17 +417,10 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
     // once per /sync request, so a batch of uploads would otherwise share one millisecond
     // and "latest" could not order them.
     rec.createdAt = Date.now();
-    // Prewarm the host URL before the page learns it. The optimistic card swaps its
-    // src from the OPFS object URL to this URL the moment the notification lands,
-    // and an un-warmed src renders as a skeleton until the fetch finishes. Fetched
-    // no-cors so an opaque response can't throw; capped so a slow host only delays
-    // the completion state, never hangs it.
-    await Promise.race([
-      fetch(r.url, { mode: 'no-cors', signal: AbortSignal.timeout(PREWARM_BUDGET_MS) }).catch(
-        () => undefined,
-      ),
-      new Promise<void>((resolve) => setTimeout(resolve, PREWARM_BUDGET_MS)),
-    ]);
+    // No prewarm here: this worker's fetch does not populate the renderer's cache, so it
+    // bought a second download of every artifact and up to two seconds of delay before
+    // `done`. The page preloads the URL with the element that will paint it instead, and
+    // keeps the local preview on screen until that lands.
     rec.phase = 'done';
     // The resume record only covers an upload interrupted mid-transfer. Once the artifact
     // has landed there is nothing to resume, and leaving the record replayed the whole
