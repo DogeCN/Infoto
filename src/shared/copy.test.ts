@@ -61,8 +61,11 @@ const IGNORED_DIRECTORIES = new Set([
   'test-results',
 ]);
 
+// Scratch files are not source: `.tmp-*` is the gitignored pattern agents are told to use
+// for a one-off probe, and a probe may legitimately hold the language's own text.
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap((name) => {
+    if (name.startsWith('.tmp-')) return [];
     const path = resolve(directory, name);
     const stats = statSync(path);
     if (stats.isDirectory()) {
@@ -145,19 +148,44 @@ test('copy: keeps every locale table aligned with en-US and actually translated'
 });
 
 // A key no source reads is dead weight: it lingers unnoticed because the alignment test
-// above only compares key sets, and it gets copied into every new language table. Fail on
-// any registered leaf whose name appears nowhere outside the copy module.
+// above only compares key sets, and it gets copied into every new language table. A
+// reference is a member chain that *ends with the key's own path* — a bare leaf name proves
+// nothing here, because `download` also names a Markdown attribute, `close` a click handler
+// and `count` every tally in the app. The one indirect form is a subtree indexed by a value
+// (`copy.api[errorKey]`): there the keys travel as quoted strings, so under a dynamically
+// indexed subtree a quoted leaf counts and nothing else does.
+const KNOWN_UNUSED: readonly string[] = [
+  // Empty is the intended steady state: every registered key is read by a source file. An
+  // unused key is deleted (both locale tables and this list) rather than parked here.
+];
+
 test('copy: references every registered key from source', () => {
   const copyPath = resolve(ROOT, 'src/shared/copy.ts');
-  const source = sourceFiles(ROOT)
-    .filter((path) => path !== copyPath)
-    .map((path) => readFileSync(path, 'utf8'))
-    .join('\n');
+  const files = sourceFiles(ROOT).filter((path) => path !== copyPath && !path.endsWith('.test.ts'));
+  // A walker that read nothing reports no unused keys for the same reason a clean tree
+  // does, so the scan states its own size.
+  assert.ok(files.length > 50, `the scan read only ${files.length} source files`);
+
+  const chains = new Set<string>();
+  const quoted = new Set<string>();
+  const indexed = new Set<string>();
+  for (const file of files) {
+    const text = readFileSync(file, 'utf8');
+    for (const match of text.matchAll(/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+/g)) {
+      chains.add(match[0]);
+    }
+    for (const match of text.matchAll(/['"]([A-Za-z_$][\w$]*)['"]/g)) quoted.add(match[1]!);
+    for (const match of text.matchAll(/\bcopy\.([A-Za-z_$][\w$]*)\[/g)) indexed.add(match[1]!);
+  }
+  assert.ok(chains.size > 500, `the scan found only ${chains.size} member chains`);
+  assert.ok(indexed.size > 0, 'no dynamically indexed copy subtree found');
+
   const unused = paths(enUS).filter((leaf) => {
-    const key = leaf.split('.').pop() ?? leaf;
-    return !new RegExp(`\\b${key}\\b`).test(source);
+    const [root, last, ...rest] = leaf.split('.');
+    if (rest.length === 0 && indexed.has(root!) && quoted.has(last!)) return false;
+    return ![...chains].some((chain) => chain === leaf || chain.endsWith(`.${leaf}`));
   });
-  assert.deepEqual(unused, []);
+  assert.deepEqual(unused, KNOWN_UNUSED);
 });
 
 test('copy: formats placeholders and plural categories', () => {
@@ -189,10 +217,10 @@ test('copy: negotiates an exact shipped tag and follows the active locale', () =
 
   setActiveLocale('en-US');
   assert.equal(activeLocale(), 'en-US');
-  assert.equal(copy.settings.language, 'Language');
+  assert.equal(copy.settings.volume, 'Volume');
   assert.equal(plural(1, { one: '{n} vote', other: '{n} votes' }), '{n} vote');
   setActiveLocale('zh-CN');
-  assert.equal(copy.settings.language, locales['zh-CN'].settings.language);
+  assert.equal(copy.settings.volume, locales['zh-CN'].settings.volume);
   assert.equal(copy.sync, locales['zh-CN'].sync);
   assert.equal(plural(2, locales['zh-CN'].vote.count), locales['zh-CN'].vote.count.other);
   setActiveLocale('fr-FR' as LocaleCode);

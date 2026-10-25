@@ -36,15 +36,15 @@ test('i18n: detects, lists, validates, and persists locales without mutating cop
     const before = JSON.stringify(locales);
     setLocale('zh-CN');
     assert.equal(getLocale(), 'zh-CN');
-    assert.equal(copy.settings.language, locales['zh-CN'].settings.language);
+    assert.equal(copy.settings.volume, locales['zh-CN'].settings.volume);
     assert.equal(activeLocale(), 'zh-CN');
-    assert.equal(moduleCopy.settings.language, locales['zh-CN'].settings.language);
+    assert.equal(moduleCopy.settings.volume, locales['zh-CN'].settings.volume);
     setLocale('en-US');
-    assert.equal(copy.settings.language, 'Language');
+    assert.equal(copy.settings.volume, 'Volume');
     setLocale('zh-CN');
     assert.equal(JSON.stringify(locales), before);
-    assert.equal(locales['en-US'].settings.language, 'Language');
-    assert.equal(locales['zh-CN'].settings.language, copy.settings.language);
+    assert.equal(locales['en-US'].settings.volume, 'Volume');
+    assert.equal(locales['zh-CN'].settings.volume, copy.settings.volume);
 
     const store = fakeStorage();
     setLocale('zh-CN', store);

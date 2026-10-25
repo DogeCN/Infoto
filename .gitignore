@@ -17,7 +17,7 @@ dist/
 .svelte-check/
 web/test-results/
 test-results/
-# Seeded sample media (downloaded + transcoded once into the repo for local-DB seeding).
+# Uploads accepted by the local media-host stand-in (`scripts/local-media-host.mjs`).
 .local-media/
 .tmp-*
 

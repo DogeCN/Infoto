@@ -7,3 +7,4 @@ web/playwright-report/
 web/public/
 package-lock.json
 src/worker/schema-ddl.ts
+.tmp-*

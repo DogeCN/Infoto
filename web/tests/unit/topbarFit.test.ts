@@ -124,11 +124,7 @@ test('top bar fit: scales the controls with the bar instead of leaving empty spa
   }
 });
 
-// Place the first gallery row immediately after the measured bar height.
-test('top bar fit: keeps the waterfall inset level with the bar at every width', () => {
-  const TOP_GAP = 0;
-  for (let w = 320; w <= 2560; w += 7) {
-    assert.ok(Math.ceil(barHeight(w) + TOP_GAP) >= barHeight(w));
-    assert.ok(Math.ceil(barHeight(w) + TOP_GAP) - barHeight(w) <= 1);
-  }
-});
+// `WaterfallLayout` owns `padTop = ceil(barHeight + TOP_GAP)` and exports neither value, so a
+// case written here can only restate `ceil(x) >= x` against a local constant — it cannot
+// fail. The load-bearing half is the non-integer height that forces the ceil, asserted above
+// (`Number.isInteger(barHeight(600)) === false`), so the inset needs no fourth case.

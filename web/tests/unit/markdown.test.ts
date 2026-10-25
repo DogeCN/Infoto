@@ -1,5 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import MarkdownIt from 'markdown-it';
 import {
   insertImageAt,
@@ -175,4 +177,37 @@ test('markdown media: the renderer emits the final element, not an image to upgr
 
   // Alt text is escaped, not injected as markup.
   assert.match(md.render('![a"b](https://host/a.png)'), /alt="a&quot;b"/);
+});
+
+// The extension `extFor` writes into the multipart filename survives into the returned URL,
+// and this module reads it back to pick the element. The two tables therefore have to agree:
+// a video MIME whose extension is unknown here renders as a plain download link instead of a
+// player, which reads as "the editor uploaded something it cannot show". `extFor` is private,
+// so its table is read from source (the pattern `gifFrameTiming.test.ts` uses for the worker).
+test('markdown media: every MIME the upload client names maps to an extension this module knows', () => {
+  const source = readFileSync(
+    path.join(import.meta.dirname, '..', '..', 'src', 'core', 'api', 'uploadClient.ts'),
+    'utf8',
+  );
+  const table = /const known: Record<string, string> = \{([\s\S]*?)\n {2}\};/.exec(source);
+  assert.ok(table, 'uploadClient.ts has no extFor MIME table');
+  const pairs = [...table[1]!.matchAll(/'([\w.+-]+\/[\w.+-]+)':\s*'([\w]+)'/g)].map((match) => ({
+    mime: match[1]!,
+    ext: match[2]!,
+  }));
+  // A table parsed as empty would pass every assertion below for the same reason a correct one
+  // does, so the scan states its own size.
+  assert.ok(pairs.length >= 20, `parsed only ${pairs.length} MIME→extension pairs`);
+
+  for (const { mime, ext } of pairs) {
+    const family = mime.slice(0, mime.indexOf('/'));
+    const kind = family === 'image' ? 'image' : family === 'video' ? 'video' : 'audio';
+    const url = `https://host/x.${ext}`;
+    assert.equal(markdownMediaKind(url), kind, `${mime} uploads as .${ext}`);
+    assert.equal(
+      isEmbeddableArtifact(url),
+      true,
+      `${mime} uploads as .${ext}, which renders as a link`,
+    );
+  }
 });

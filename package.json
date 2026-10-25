@@ -26,7 +26,6 @@
     "test": "vitest run && npm test -w infoto-web",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
-    "format": "prettier --write .",
     "ts-check": "tsc -p tsconfig.worker.json && tsc -p tsconfig.local.json && tsc -p tsconfig.test.json && npm run ts-check -w infoto-web"
   },
   "dependencies": {

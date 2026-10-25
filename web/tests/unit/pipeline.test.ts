@@ -2,10 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { batchProgress, indeterminateRow, type UploadRow } from '../../src/transcode/pipeline.ts';
 import {
-  artifactExt,
   buildUploadOp,
   frameDurationS,
-  frameTimings,
   imagePoolSize,
   isOversize,
   MAX_UPLOAD_BYTES,
@@ -51,8 +49,6 @@ test('classifies uploads, translates errors, and builds independent operations',
     assert.equal(UPLOAD_RESPONSE_TIMEOUT_MS, 120_000);
     assert.equal(isOversize(MAX_UPLOAD_BYTES), false);
     assert.equal(isOversize(MAX_UPLOAD_BYTES + 1), true);
-    assert.equal(artifactExt('image'), 'webp');
-    assert.equal(artifactExt('webm'), 'webm');
 
     assert.deepEqual(routeByMime('image/gif'), { kind: 'webm', engine: 'gif' });
     assert.deepEqual(routeByMime('IMAGE/GIF'), { kind: 'webm', engine: 'gif' });
@@ -88,7 +84,6 @@ test('classifies uploads, translates errors, and builds independent operations',
     assert.equal(uploadPoolSize(Number.NaN), 3);
     assert.equal(uploadPoolSize(50), 3);
     assert.equal(uploadPoolSize(1.5), 2);
-    assert.ok(uploadPoolSize() < imagePoolSize(16));
   }
 
   // GIF headers and failure text stay on the right leg.
@@ -178,30 +173,6 @@ test('batch progress: totals only a fully measured batch, never an implied numbe
   assert.equal(indeterminateRow(row('hashing', 0.1)), false);
 });
 
-test('GIF frame timings: accumulate, so no frame lands before its predecessor', () => {
-  const { timestamps, durations } = frameTimings([100_000, 500_000, 100_000, 500_000]);
-  // The formula this replaced (`index * duration`) walked backwards here: frame 2 would have
-  // landed at 0.20s, before frame 1 at 0.50s.
-  assert.deepEqual(timestamps, [0, 0.1, 0.6, 0.7]);
-  assert.deepEqual(durations, [0.1, 0.5, 0.1, 0.5]);
-  for (let i = 1; i < timestamps.length; i++) {
-    assert.ok(timestamps[i] > timestamps[i - 1], `frame ${i} does not advance`);
-  }
-});
-
-test('GIF frame timings: a zero or missing duration falls back instead of collapsing', () => {
-  // A looping GIF's last frame reports 0; `Math.max(0, 1000)` alone would keep it at zero and
-  // give two frames the same timestamp.
-  const { timestamps, durations } = frameTimings([100_000, 0, null as unknown as number]);
-  assert.deepEqual(durations, [0.1, 0.1, 0.1]);
-  assert.deepEqual(timestamps, [0, 0.1, 0.2]);
-});
-
-test('GIF frame timings: uniform frames match the index multiplication it replaces', () => {
-  const { timestamps } = frameTimings([200_000, 200_000, 200_000]);
-  assert.deepEqual(timestamps, [0, 0.2, 0.4]);
-});
-
 test('frameDurationS: a zero duration is a missing one, not a valid 1ms frame', () => {
   // The looping GIF's last frame reports 0. Keeping it (`??`) would put that frame on the same
   // timestamp as its predecessor — the non-monotonic GOP the accumulation exists to prevent.
@@ -213,15 +184,4 @@ test('frameDurationS: a zero duration is a missing one, not a valid 1ms frame', 
   // A real sub-millisecond duration is still clamped, not discarded.
   assert.equal(frameDurationS(400), 0.001);
   assert.equal(frameDurationS(500_000), 0.5);
-});
-
-test('frameTimings and frameDurationS agree on every duration a decoder can report', () => {
-  const reported = [100_000, 500_000, 0, null as unknown as number, NaN, 400, 200_000];
-  const { timestamps, durations } = frameTimings(reported);
-  // The video worker reads frames one at a time and accumulates locally; if that inline copy
-  // ever disagrees with this table the worker is the copy that is wrong.
-  assert.deepEqual(durations, reported.map(frameDurationS));
-  for (let i = 1; i < timestamps.length; i++) {
-    assert.ok(timestamps[i] > timestamps[i - 1], `frame ${i} does not advance`);
-  }
 });

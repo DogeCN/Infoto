@@ -13,8 +13,13 @@ function fakeStorage(initial?: string): Pick<Storage, 'getItem' | 'setItem'> {
   };
 }
 
-test('settings persistence: validates persisted settings and applies filters', async () => {
-  // Round-trips v4 settings: an explicit pixel band or null (auto).
+/** A stored blob with a replacement `playback` block, otherwise the saved current version. */
+function withPlayback(stored: string, playback: unknown): string {
+  return JSON.stringify({ ...JSON.parse(stored), playback });
+}
+
+test('settings persistence: round-trips the current version, clamps ranges, and drops older blobs whole', async () => {
+  // Round-trips the current settings: an explicit pixel band or null (auto).
   {
     const d = defaultSettings();
     assert.equal(d.layout.band, null);
@@ -68,8 +73,10 @@ test('settings persistence: validates persisted settings and applies filters', a
     assert.equal(loadSettings(fakeStorage()).layout.band, null);
     assert.equal(loadSettings(fakeStorage('not json')).layout.band, null);
     assert.equal(loadSettings(fakeStorage('{"v":4}')).layout.band, null);
+
+    // A stored range outside the slider is clamped, not treated as a second default.
     const low = JSON.stringify({
-      v: 4,
+      v: 5,
       filters: {
         types: [0, 1, 2],
         ownedByMe: 'off',
@@ -79,10 +86,14 @@ test('settings persistence: validates persisted settings and applies filters', a
         ranges: {},
       },
       layout: { dir: 'v', strategy: 'shortest', band: 10, gap: 99 },
+      playback: { volume: 0.4 },
     });
-    const clamped = loadSettings(fakeStorage(low)).layout;
-    assert.equal(clamped.band, MIN_BAND);
-    assert.equal(clamped.gap, 32);
+    const clamped = loadSettings(fakeStorage(low));
+    assert.equal(clamped.layout.band, MIN_BAND);
+    assert.equal(clamped.layout.gap, 32);
+    // The layout clamp leaves the other section alone.
+    assert.equal(clamped.playback.volume, 0.4);
+
     assert.equal(
       loadSettings({
         getItem: () => {
@@ -120,6 +131,12 @@ test('settings persistence: validates persisted settings and applies filters', a
       (value: typeof stored) => {
         value.layout.band = 'wide';
       },
+      (value: typeof stored) => {
+        value.playback.volume = 'loud';
+      },
+      (value: typeof stored) => {
+        value.playback = undefined;
+      },
     ]) {
       const value = structuredClone(stored);
       mutate(value);
@@ -128,4 +145,33 @@ test('settings persistence: validates persisted settings and applies filters', a
     assert.doesNotThrow(() => loadSettings());
     assert.doesNotThrow(() => saveSettings(defaultSettings()));
   }
+});
+
+// The playback level is the `<video>` volume property, not a mute toggle: it is a 0…1 number,
+// so an out-of-range value is clamped and anything that is not a number resets the blob.
+test('settings playback: volume round-trips, clamps into 0…1, and a v4 blob is discarded', () => {
+  assert.equal(defaultSettings().playback.volume, 1);
+
+  const storage = fakeStorage();
+  saveSettings({ ...defaultSettings(), playback: { volume: 0.35 } }, storage);
+  const stored = storage.getItem('infoto-settings')!;
+  assert.equal(loadSettings(storage).playback.volume, 0.35);
+
+  assert.equal(loadSettings(fakeStorage(withPlayback(stored, { volume: 1.7 }))).playback.volume, 1);
+  assert.equal(
+    loadSettings(fakeStorage(withPlayback(stored, { volume: -0.2 }))).playback.volume,
+    0,
+  );
+  assert.equal(loadSettings(fakeStorage(withPlayback(stored, { volume: 0 }))).playback.volume, 0);
+
+  for (const bad of ['loud', null, {}, [0.5]]) {
+    assert.deepEqual(
+      loadSettings(fakeStorage(withPlayback(stored, { volume: bad }))),
+      defaultSettings(),
+    );
+  }
+
+  // The previous schema version is dropped whole — no per-field migration, volume included.
+  const v4 = JSON.stringify({ ...JSON.parse(stored), v: 4, playback: { volume: 0.5 } });
+  assert.deepEqual(loadSettings(fakeStorage(v4)), defaultSettings());
 });

@@ -59,8 +59,9 @@ export default tseslint.config(
     },
   },
   {
-    // worker tests and e2e intentionally use console/assert style
-    files: ['**/*.test.ts', '**/*.spec.ts'],
+    // `console` is the Worker's and the client's only diagnostic channel — catch paths log,
+    // and the upload trace lines are gated on `import.meta.env.DEV` — so the rule stays off
+    // with no per-directory exception to keep in sync.
     rules: { 'no-console': 'off' },
   },
   prettier,

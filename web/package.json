@@ -12,8 +12,7 @@
     "ts-check": "svelte-check --tsconfig tsconfig.json --fail-on-warnings",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test",
-    "ci": "npm run ts-check && npm run test && npm run e2e"
+    "e2e": "playwright test"
   },
   "devDependencies": {
     "@lucide/svelte": "^1.47.0",

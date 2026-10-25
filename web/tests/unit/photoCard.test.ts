@@ -18,7 +18,10 @@ const card = readFileSync(
 function failedBranch(): string {
   const start = card.indexOf('{#if loadFailed}');
   assert.ok(start >= 0, 'PhotoCard has no loadFailed branch');
-  const end = card.indexOf('{:else if photo.url}', start);
+  // The media branch is gated on `showMedia` (in the viewport's load band), not on the URL
+  // alone — the failure branch must still come first, or a card whose image is out of the
+  // band would render a skeleton over the 404.
+  const end = card.indexOf('{:else if showMedia}', start);
   assert.ok(end > start, 'the loadFailed branch is not the first media branch');
   return card.slice(start, end);
 }

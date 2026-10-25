@@ -25,7 +25,15 @@ test('motion tokens resolve without a document', () => {
     assert.equal(motionMs(phase), MS[phase]);
     assert.equal(motionEase(phase), EASE[phase]);
   }
-  assert.deepEqual(bubbleTransition, { y: 3, duration: MS.exit, easing: bubbleTransition.easing });
+  // `bubbleTransition.easing` is a built function, so the exit curve is compared where it
+  // can be: at sampled positions. Swapping in another phase's curve changes these numbers.
+  assert.equal(bubbleTransition.y, 3);
+  assert.equal(bubbleTransition.duration, motionMs('exit'));
+  assert.equal(typeof bubbleTransition.easing, 'function');
+  const exitEase = motionEaseFn('exit');
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    assert.equal(bubbleTransition.easing(t), exitEase(t), `bubble easing at ${t}`);
+  }
 });
 
 test('the reflow flip window outlasts the reflow it is bracketing', () => {
