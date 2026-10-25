@@ -46,16 +46,16 @@ test('upload preview: the picked file never seeds it', () => {
   );
 });
 
-// The op-log path cannot be unit-tested end to end (the store pulls in the SharedWorker bundle),
-// so its wiring is asserted here: the cards a reload shows are read from the durable log through
-// the engine and projected by the one pure rule, and the read is never a sync trigger.
-test('upload preview: op-log cards are projected from the log, not from a job', () => {
-  const refresh = bodyOf(/async function refreshQueuedUploads\(/);
-  assert.ok(refresh.includes('engine.queuedOps('), 'the projection does not read the op log');
-  assert.ok(refresh.includes('queuedUploadCards('), 'the projection skips the one pure rule');
+// The record path cannot be unit-tested end to end (the store pulls in the SharedWorker bundle),
+// so its wiring is asserted here: the cards a reload shows come from the durable photo records
+// through the engine, projected by the one pure rule — never from an artifact.
+test('upload preview: record cards are projected from the records, not from a job', () => {
+  const refresh = bodyOf(/async function refreshHostedPhotos\(/);
+  assert.ok(refresh.includes('engine.hostedPhotos('), 'the projection does not read the records');
+  assert.ok(refresh.includes('hostedPhotoCards('), 'the projection skips the one pure rule');
   assert.equal(
     refresh.includes('previewUrls'),
     false,
-    'an op-derived card must not claim an OPFS preview: the artifact is pruned at 30 jobs and the op carries the hosted URL',
+    'a hosted card must not claim an OPFS preview: it renders the hosted URL, and the artifact is pruned',
   );
 });

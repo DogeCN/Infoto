@@ -600,10 +600,10 @@ test('keepalivePrefix: sends the longest prefix that fits the browser body cap',
   assert.deepEqual(keepalivePrefix([op(1), giant])!.ops, [op(1)]);
 });
 
-test('removeOpsBySha withdraws a pending upload op and keeps the pending count honest', async () => {
+test('withdrawPhoto removes a pending photo record and its ops, and keeps the pending count honest', async () => {
   const uploadOp = (sha: string): Op => ({
     type: 'upload',
-    targetSha: sha,
+    target: null,
     payload: {
       sha256: sha,
       url: `https://cdn.test/${sha}.webp`,
@@ -611,24 +611,34 @@ test('removeOpsBySha withdraws a pending upload op and keeps the pending count h
       height: 1,
       size: 1,
       type: 0,
+      createdAt: 1_000,
     },
   });
+  const record = (sha: string) => ({
+    sha256: sha,
+    status: 'uploading' as const,
+    meta: { width: 1, height: 1, size: 1, type: 0 as const },
+    artifact: { key: `job-${sha}`, ext: 'webp' as const },
+    url: `https://cdn.test/${sha}.webp`,
+    createdAt: 1_000,
+  });
   const e = engine();
-  await e.addOp(uploadOp('sha-a'));
-  await e.addOp(uploadOp('sha-b'));
+  await e.addUploadOp(uploadOp('sha-a'), record('sha-a'));
+  await e.addUploadOp(uploadOp('sha-b'), record('sha-b'));
   assert.equal(e.state.pending, 2);
+  assert.equal((await e.hostedPhotos()).length, 2);
 
-  assert.equal(await e.removeOpsBySha('sha-a'), 1);
+  // The record knows which op it owns, so the withdrawal deletes exactly that op.
+  await e.withdrawPhoto('sha-a');
   assert.equal(e.state.pending, 1);
   assert.deepEqual(
-    (await readOps(db)).map((entry) => entry.op.targetSha),
+    (await e.hostedPhotos()).map((r) => r.sha256),
     ['sha-b'],
   );
-  // Withdrawing an absent sha changes nothing, including the pending count.
-  assert.equal(await e.removeOpsBySha('sha-a'), 0);
+  // Withdrawing something already gone changes nothing, including the pending count.
+  await e.withdrawPhoto('sha-a');
   assert.equal(e.state.pending, 1);
 });
-
 test('addOp supersedes a queued op on the same dimension, and never an in-flight one', async () => {
   const like = (sha: string): Op => ({ type: 'like', targetSha: sha, payload: null });
   const e = engine();

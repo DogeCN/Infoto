@@ -60,3 +60,4 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0022](0022-poll-editor-overwrite-votes.md)                | Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll             | Accepted                   |
 | [0023](0023-sync-applies-a-batched-plan.md)                | `/sync` Applies One Batched Statement Plan, Not One Round Trip Per Op                   | Accepted                   |
 | [0024](0024-op-log-is-a-render-source.md)                  | The Op Log Is a Render Source — Unconfirmed Uploads Draw as Cards                       | Accepted                   |
+| [0025](0025-one-record-per-photo.md)                       | One Durable Record Per Photo, Keyed by sha256                                           | Accepted                   |

@@ -240,7 +240,6 @@ class AdminCollection<T extends { id: number; sort: number; locale: LocaleCode }
 
 /** Cache the public self ID for initial rendering; authenticated snapshots replace it. */
 const SELF_ID_KEY = 'infoto-self-id';
-const PENDING_MARKS_KEY = 'infoto-pending-marks';
 
 function readCachedSelfId(): number {
   try {
@@ -254,27 +253,6 @@ function readCachedSelfId(): number {
     /* noop */
   }
   return -1;
-}
-
-function readCachedPendingMarks(): Map<string, ops.MarkSet> {
-  try {
-    const raw = localStorage.getItem(PENDING_MARKS_KEY);
-    if (raw !== null) {
-      const parsed = JSON.parse(raw) as [string, ops.MarkSet][];
-      return new Map(parsed);
-    }
-  } catch {
-    /* noop */
-  }
-  return new Map();
-}
-
-function writePendingMarks(marks: Map<string, ops.MarkSet>): void {
-  try {
-    localStorage.setItem(PENDING_MARKS_KEY, JSON.stringify([...marks.entries()]));
-  } catch {
-    /* storage blocked */
-  }
 }
 
 /** Facade sink, wired by the upload store once its pipeline exists. Layering note:
@@ -386,7 +364,7 @@ class AppState {
 
   /** Optimistic marks on photos whose row does not exist server-side yet, keyed by sha256
    *  (the same address photo ops use). Merged into the pending cards so they highlight. */
-  pendingMarks = $state<Map<string, ops.MarkSet>>(readCachedPendingMarks());
+  pendingMarks = $state<Map<string, ops.MarkSet>>(new Map());
 
   private engine: SyncEngine | null = null;
 
@@ -528,7 +506,7 @@ class AppState {
     // The card goes regardless — a failed transcode carries no sha and still has a card.
     cancelPendingUpload(sha);
     if (!sha || !this.engine) return;
-    await this.engine.removeOpsBySha(sha);
+    await this.engine.withdrawPhoto(sha);
     await this.submit({ type: 'delete', targetSha: sha });
   }
 
@@ -541,7 +519,6 @@ class AppState {
     const marks = new Map(this.pendingMarks);
     marks.delete(sha256);
     this.pendingMarks = marks;
-    writePendingMarks(marks);
   }
 
   /** Optimistic root delete without confirmation. */
@@ -555,13 +532,20 @@ class AppState {
     return this.pendingMarks.get(sha256) ?? ops.EMPTY_MARKS;
   }
 
-  /** Apply one mark to a pending card and replace the map entry. */
+  /** Apply one mark to a pending card and replace the map entry, writing it through to the
+   *  photo's record so the mark cannot outlive the photo it belongs to. */
   private setPendingMark(sha256: string, kind: ops.MarkKind, add: boolean): void {
     const cur = this.pendingMarks.get(sha256) ?? ops.EMPTY_MARKS;
-    const marks = new Map(this.pendingMarks);
-    marks.set(sha256, ops.applyMarkToSet(cur, kind, this.selfId, add));
+    const set = ops.applyMarkToSet(cur, kind, this.selfId, add);
+    this.pendingMarks = new Map(this.pendingMarks.set(sha256, set));
+    void this.engine?.updatePhotoMarks(sha256, set).catch((e) => console.warn('[mark]', e));
+  }
+
+  /** Replace the mark map from the photo records, which are the durable owner. Called by the
+   *  upload store after it reads them; a mark survives a reload this way and nowhere else. */
+  hydratePendingMarks(marks: Map<string, ops.MarkSet>): void {
+    if (marks.size === 0 && this.pendingMarks.size === 0) return;
     this.pendingMarks = marks;
-    writePendingMarks(marks);
   }
 
   /** Apply one mark locally (pending card or snapshot row) and queue its op. */

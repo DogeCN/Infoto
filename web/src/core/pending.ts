@@ -1,7 +1,8 @@
 // Optimistic pending-card projection — pure, so the upload store only wires it to state.
 
-import { MEDIA_TYPE, type Op, type Photo, type UploadPayload } from '$shared/types';
+import type { Photo } from '$shared/types';
 import type { MarkSet } from './ops';
+import type { PhotoRecord } from './oplog';
 
 /** How far the hosted copy of a pending card's media has got in this page. */
 export type HostedReadiness = 'pending' | 'ready' | 'failed';
@@ -60,9 +61,9 @@ export function pendingMediaUrl(
   return hosted || local;
 }
 
-/** The fields one unconfirmed `upload` op states — everything a card renders, minus what the
- *  store owns (`id`, `uploader`, `marks`). */
-export interface QueuedUploadFields {
+/** The fields a hosted photo record states — everything a card renders, minus what the store
+ *  owns (`id`, `uploader`, `marks`). */
+export interface HostedPhotoFields {
   sha256: string;
   url: string;
   width: number;
@@ -72,93 +73,48 @@ export interface QueuedUploadFields {
   createdAt: number;
 }
 
-/** A whole number within the range the server accepts for one media field. `min` is 0 for the
- *  box and the size because `/sync`'s `count()` accepts 0, and a zero box is the layout's job
- *  (`w: p.width || 1`), not a reason to hide a photo the server would keep. */
-const mediaInt = (v: unknown, min: number): number | null =>
-  typeof v === 'number' && Number.isSafeInteger(v) && v >= min ? v : null;
-
-/** A non-empty string within `max` characters, as `/sync`'s `text()` demands. */
-const mediaText = (v: unknown, max: number): string | null =>
-  typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
-
 /**
- * The card an unconfirmed `upload` op describes, or null when the op is not a complete one.
+ * The cards the photo records still describe, in upload order.
  *
- * An upload op is written only once the facade has returned the photo's URL, so it is the whole
- * record of a photo that is hosted and paid for but not yet in the album — which is exactly what
- * a reload otherwise loses, because the card showing it lived in the upload store's memory and
- * the SharedWorker drops its resume record the moment the upload succeeds.
- *
- * The acceptance rules are the server's own (`routes/sync.ts` `planOp`), deliberately: an op the
- * server would drop must not draw a card that nothing can ever confirm, and an op it would keep
- * must not be hidden, which is the bug this projection exists to fix. `isAllowedMediaUrl` is the
- * one rule that cannot be mirrored here — it needs the Worker's environment — and a rejected URL
- * shows up as the card's own load failure instead.
- */
-export function queuedUploadFromOp(op: Op): QueuedUploadFields | null {
-  if (op.type !== 'upload') return null;
-  const payload = (op.payload ?? {}) as Partial<UploadPayload>;
-  const sha256 = mediaText(payload.sha256, 128);
-  const url = mediaText(payload.url, 2048);
-  if (!sha256 || !url) return null;
-  const width = mediaInt(payload.width, 0);
-  const height = mediaInt(payload.height, 0);
-  const size = mediaInt(payload.size, 0);
-  if (width === null || height === null || size === null) return null;
-  const type = payload.type;
-  if (type !== MEDIA_TYPE.IMAGE && type !== MEDIA_TYPE.ANIMATED && type !== MEDIA_TYPE.VIDEO)
-    return null;
-  const createdAt = mediaInt(payload.createdAt, 1);
-  if (createdAt === null) return null;
-  return { sha256, url, width, height, size, type, createdAt };
-}
-
-/**
- * The cards the op log states, in submission order — the cards a page load must show before any
- * sync trigger runs.
+ * A record is the client's own durable word about a photo the album does not have yet: the worker
+ * writes it as `uploading`, the page turns it into `hosted` in the same transaction that appends
+ * the upload op, and a successful sync deletes it. So this projection is a filter, not a
+ * reconstruction — there is no second place a photo's existence could be read from and disagree.
  *
  * `landed` is the album's own hashes and `live` the hashes of cards an in-memory job already
- * owns, so this projection can never double-draw a photo: the moment a snapshot carries a sha,
- * or a job owns it, the op-derived card is gone.
- *
- * Per sha the log's own last word decides, which is what keeps the card honest about deletion: an
- * `upload` op draws it, and a later `delete` for the same sha withdraws it. That tombstone is the
- * only durable record that the photo is gone — the withdrawal cannot remove the upload op
- * (`removeOpsBySha` matches `targetSha`, and an upload op carries none) — so without it, deleting
- * a card and reloading before the next sync brought the photo back. A later upload for the same
- * sha is the user putting the file back: it revives the card, and the newest op describes it.
+ * owns, so a photo is never drawn twice: the moment a snapshot carries a sha, or a job owns it,
+ * its record-derived card is gone.
  */
-export function queuedUploadCards(
-  ops: readonly Op[],
+export function hostedPhotoCards(
+  records: readonly PhotoRecord[],
   seen: { landed: ReadonlySet<string>; live: ReadonlySet<string> },
-): QueuedUploadFields[] {
-  const cards = new Map<string, QueuedUploadFields>();
-  for (const op of ops) {
-    if (op.type === 'delete') {
-      if (op.targetSha) cards.delete(op.targetSha);
-      continue;
-    }
-    const fields = queuedUploadFromOp(op);
-    if (!fields) continue;
-    // Re-setting moves the sha to the end, so a re-upload keeps the log's order rather than the
-    // position of the op it superseded.
-    cards.delete(fields.sha256);
-    cards.set(fields.sha256, fields);
-  }
-  const out: QueuedUploadFields[] = [];
-  for (const [sha, fields] of cards) {
-    if (seen.landed.has(sha) || seen.live.has(sha)) continue;
-    out.push(fields);
+): HostedPhotoFields[] {
+  const out: HostedPhotoFields[] = [];
+  for (const record of records) {
+    // Only the hosted state has a URL and an upload op behind it; `uploading` and `failed`
+    // records belong to the worker, which replays them as jobs of its own.
+    if (record.status !== 'hosted') continue;
+    const { sha256, url, meta, createdAt } = record;
+    if (!url || !meta || createdAt === undefined) continue;
+    if (seen.landed.has(sha256) || seen.live.has(sha256)) continue;
+    out.push({
+      sha256,
+      url,
+      width: meta.width,
+      height: meta.height,
+      size: meta.size,
+      type: meta.type,
+      createdAt,
+    });
   }
   return out;
 }
 
 /** Whether two projections are the same cards, field for field. A re-read that changed nothing
  *  must not hand the layout a new array, or a failed sync would re-key the whole grid. */
-export function sameQueuedUploads(
-  a: readonly QueuedUploadFields[],
-  b: readonly QueuedUploadFields[],
+export function sameHostedCards(
+  a: readonly HostedPhotoFields[],
+  b: readonly HostedPhotoFields[],
 ): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -177,7 +133,6 @@ export function sameQueuedUploads(
   }
   return true;
 }
-
 export interface PendingPhotoFields {
   id: number;
   sha256: string;

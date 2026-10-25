@@ -2,16 +2,21 @@
 
 import { MAX_SYNC_OPS, type Op, type SyncRequest, type SyncResponse } from '$shared/types';
 import { postSync } from './api/syncClient';
-import { coalesceKey } from './ops';
+import { coalesceKey, type MarkSet } from './ops';
 import {
   rebuildCache,
   appendOp,
+  appendUpload,
   countOps,
+  deletePhotoRecords,
   openOplogDb,
   putOp,
   readOps,
+  readPhotoRecords,
   readSnapshot,
-  removeOpsBySha,
+  removePhoto,
+  updatePhotoRecord,
+  type PhotoRecord,
 } from './oplog';
 
 /** Browser hard limit for a keepalive request body. */
@@ -154,20 +159,43 @@ export class SyncEngine {
   }
 
   /**
-   * Withdraw every queued operation addressed to `sha256` — a pending upload the user deleted
-   * before its first sync. An operation already claimed by an in-flight request is withdrawn
-   * too: the request cannot be un-sent, so the caller files a delete op *afterwards* and the
-   * server ends up correct whether that request lands or fails (create+delete, or nothing).
-   * Returns how many operations were withdrawn.
+   * Persist an upload op and the photo record it belongs to in one transaction.
+   *
+   * The op is what the server applies; the record is what the page draws until it does. Writing
+   * them separately is what left a window in which a photo was on the host with no durable trace
+   * on either side — the record had been deleted and the op not yet appended.
    */
-  async removeOpsBySha(sha256: string): Promise<number> {
+  async addUploadOp(op: Op, record: PhotoRecord): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
-    const removed = await removeOpsBySha(this.db, sha256);
-    if (removed > 0) {
-      this.pending = await countOps(this.db);
-      this.emit();
-    }
-    return removed;
+    const key = await appendUpload(this.db, op, record);
+    this.pending = await countOps(this.db);
+    this.emit();
+    return Number(key);
+  }
+
+  /** Every unconfirmed photo record, in upload order. A read, never a trigger. */
+  async hostedPhotos(): Promise<PhotoRecord[]> {
+    if (!this.db) this.db = await openOplogDb();
+    return readPhotoRecords(this.db);
+  }
+
+  /** Write a pending photo's marks into its record, so they cannot outlive the photo. */
+  async updatePhotoMarks(sha256: string, marks: MarkSet): Promise<void> {
+    if (!this.db) this.db = await openOplogDb();
+    await updatePhotoRecord(this.db, sha256, (record) => ({ ...record, marks }));
+  }
+
+  /**
+   * Withdraw a photo the user deleted: its record, the mark ops addressed to it and the upload op
+   * the record owns, in one transaction. An op already claimed by an in-flight request cannot be
+   * un-sent, so the caller files a `delete` op afterwards and the server ends up correct whether
+   * that request lands or fails (create+delete, or nothing).
+   */
+  async withdrawPhoto(sha256: string): Promise<void> {
+    if (!this.db) this.db = await openOplogDb();
+    await removePhoto(this.db, sha256);
+    this.pending = await countOps(this.db);
+    this.emit();
   }
 
   /**
@@ -284,6 +312,11 @@ export class SyncEngine {
         this.pending = await countOps(db);
         const queuedOps = (await readOps(db)).map((entry) => entry.op);
         await this.applySnapshot(db, response, { attempt, queuedOps });
+        // After the fold, never before: a confirmed photo's record carries the marks
+        // `applySync` has just stated as ops.
+        await deletePhotoRecords(db, confirmedShas(batch.map((entry) => entry.op))).catch((error) =>
+          console.warn('[sync] photo record cleanup failed', error),
+        );
       }
       return { ok: true, confirmedThroughVersion };
     } catch (error) {
@@ -334,6 +367,17 @@ export class SyncEngine {
       this.flushOnPagehide();
     });
   }
+}
+
+/** The shas of the upload ops a confirmed batch carried — exactly the records it retires. */
+function confirmedShas(ops: readonly Op[]): string[] {
+  const out: string[] = [];
+  for (const op of ops) {
+    if (op.type !== 'upload') continue;
+    const sha = (op.payload as { sha256?: unknown } | null | undefined)?.sha256;
+    if (typeof sha === 'string' && sha) out.push(sha);
+  }
+  return out;
 }
 
 async function clearKeys(db: IDBDatabase, keys: IDBValidKey[]): Promise<void> {

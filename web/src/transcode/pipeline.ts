@@ -3,7 +3,8 @@
 import { buildUploadOp, routeByMime, translateTaskError, uid } from '$base/upload/pipeline';
 import { clamp01 } from '$base/lib/num';
 import { copy } from '$shared/copy';
-import { openOplogDb, appendOp } from '../core/oplog';
+import { extOfType } from '$shared/media';
+import { openOplogDb, appendUpload } from '../core/oplog';
 import { LeaseClient } from './lease';
 import {
   isSwToPage,
@@ -77,9 +78,10 @@ export interface PipelineIo {
   ) => WorkerLike;
   onEvent?: (line: string) => void;
   /**
-   * Album upload op exit: the sync engine queues it when provided, otherwise the pipeline writes directly to the op-log for harnesses and unit tests.
+   * Album upload op exit: the sink persists the op with the photo record in one transaction.
+   * Optional only for harnesses — the fallback writes both halves directly to the same stores.
    */
-  onUploadOp?: (op: Op) => void | Promise<void>;
+  onUploadOp?: (op: Op, artifact: { key: string; ext: 'webp' | 'webm' }) => void | Promise<void>;
   /** A job left the SharedWorker (cancelJob) — the page must drop its row/card. */
   onJobRemoved?: (jobId: string) => void;
   /** File outside the accept surface in addFiles — surface a user-visible notice. */
@@ -387,13 +389,27 @@ export class UploadPipeline {
       createdAt: createdAt ?? Date.now(),
     };
     const op: Op = buildUploadOp(payload);
+    // The artifact's name has to exist before its own digest does, so the job id is the handle
+    // the record keeps; nothing else keys on it.
+    const artifact = { key: jobId, ext: extOfType(meta.type) } as const;
     if (this.io.onUploadOp) {
-      await this.io.onUploadOp(op);
-    } else if (!this.db) {
-      this.db = await openOplogDb();
-      await appendOp(this.db, op);
+      await this.io.onUploadOp(op, artifact);
     } else {
-      await appendOp(this.db, op);
+      if (!this.db) this.db = await openOplogDb();
+      // The fallback keeps the same invariant as the sink: op and record land together.
+      await appendUpload(this.db, op, {
+        sha256,
+        status: 'hosted',
+        meta: {
+          width: meta.width,
+          height: meta.height,
+          size: meta.size,
+          type: meta.type,
+        },
+        artifact,
+        url,
+        createdAt: createdAt ?? Date.now(),
+      });
     }
     try {
       this.sw?.port.postMessage({ t: 'opWritten', jobId });

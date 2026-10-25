@@ -1,30 +1,54 @@
-// Durable operations and the album's known media hashes in IndexedDB. Confirmed operations are removed after synchronization.
+// Durable client state: the ordered op log, and one record per photo keyed by its sha256.
+// Confirmed operations and their records are removed after synchronization.
+//
+// The two stores are written together where they must agree: `appendUpload` appends the upload
+// op and marks the photo `hosted` in one transaction, so there is no window in which a photo is
+// on the host with no durable trace on either side.
 
-import type { Op, SyncResponse } from '$shared/types';
+import type { MediaType, Op, SyncResponse } from '$shared/types';
+import type { MarkSet } from './ops';
 
 const DB_NAME = 'infoto';
-const DB_VERSION = 2;
+/** 3 replaced the jobId-keyed resume store with the per-photo records below. */
+const DB_VERSION = 3;
 const STORE = 'oplog';
 const CACHE_STORE = 'metaCache';
+const PHOTO_STORE = 'photos';
 /** Reserved metaCache key holding the last full /sync snapshot. Album hashes are 64 hex
  *  characters, so this word can never collide with one. */
 const SNAPSHOT_KEY = 'snapshot';
-/** Survivable upload jobs: enough metadata to resume an upload after a page reload
- *  (the artifact itself is in OPFS). */
-const RESUME_STORE = 'pendingUploads';
+/** Store the previous version used for resumable uploads; 3 absorbed it into `photos`. */
+const LEGACY_RESUME_STORE = 'pendingUploads';
 
-export interface PendingUploadRecord {
-  jobId: string;
-  fileName: string;
+/**
+ * Everything the client durably knows about one photo that is not yet in the album, keyed by
+ * the photo's own sha256 — the same address every op uses.
+ *
+ * One record replaces three former stores (a jobId-keyed resume record, the localStorage mark
+ * set, the sessionStorage sort stamp), which is what keeps their lifetimes honest: deleting the
+ * record deletes all of it. `jobId` survives only as `artifact.key`, because the OPFS file name
+ * has to exist before its own digest does.
+ */
+export interface PhotoRecord {
   sha256: string;
-  meta: { width: number; height: number; size: number; type: 0 | 1 | 2 };
-  artifactExt: 'webp' | 'webm';
-  /** Set when the upload leg failed. The record is kept anyway — it is what brings the card
-   *  back after a reload — and this flag is what stops the reload from retrying the upload
-   *  automatically: the record is rebuilt as a failed card the user can retry by hand. */
-  failed?: boolean;
-  /** The failure code, so a reloaded card reports the original reason rather than a generic one. */
+  /** `uploading` = resume material, `hosted` = a queued upload op owns it, `failed` = the upload
+   *  leg was rejected and a retry can still reuse the artifact. */
+  status: 'uploading' | 'hosted' | 'failed';
+  /** Stage-1 artifact metadata, present once the bytes are on disk. */
+  meta?: { width: number; height: number; size: number; type: MediaType };
+  fileName?: string;
+  /** OPFS artifact handle: the file is `{key}.{ext}`. */
+  artifact?: { key: string; ext: 'webp' | 'webm' };
+  /** The hosted URL the facade returned. Set when `status` becomes `hosted`. */
+  url?: string;
+  /** When the facade returned `url` (ms epoch) — the photo's own timestamp, and what orders it. */
+  createdAt?: number;
+  /** Failure code, so a reloaded card reports the original reason. */
   error?: string;
+  /** Optimistic marks made before the album has the row. */
+  marks?: MarkSet;
+  /** The upload op this record owns, so withdrawing the photo deletes exactly that op. */
+  opKey?: IDBValidKey;
 }
 
 /** Open (or upgrade) the database. Factory injection keeps unit tests easy; a missing
@@ -43,8 +67,12 @@ export function openOplogDb(factory?: IDBFactory): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(CACHE_STORE)) {
         db.createObjectStore(CACHE_STORE);
       }
-      if (!db.objectStoreNames.contains(RESUME_STORE)) {
-        db.createObjectStore(RESUME_STORE, { keyPath: 'jobId' });
+      if (!db.objectStoreNames.contains(PHOTO_STORE)) {
+        db.createObjectStore(PHOTO_STORE, { keyPath: 'sha256' });
+      }
+      // Nothing to migrate: a v2 resume record is about a transfer this build cannot describe.
+      if (db.objectStoreNames.contains(LEGACY_RESUME_STORE)) {
+        db.deleteObjectStore(LEGACY_RESUME_STORE);
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -83,6 +111,24 @@ export function appendOp(db: IDBDatabase, op: Op): Promise<IDBValidKey> {
   });
 }
 
+/**
+ * Persist a photo's upload op and its record together: the op is what the server will apply, the
+ * record is what the page renders until it does. One transaction, because a photo that reached
+ * the host with only one of the two halves written is exactly the state that has no recovery.
+ */
+export function appendUpload(db: IDBDatabase, op: Op, record: PhotoRecord): Promise<IDBValidKey> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE, PHOTO_STORE], 'readwrite');
+    const added = tx.objectStore(STORE).add(op);
+    added.onsuccess = () => {
+      // Same transaction, so the key is already known to the record that owns it.
+      tx.objectStore(PHOTO_STORE).put({ ...record, status: 'hosted', opKey: added.result });
+    };
+    tx.oncomplete = () => resolve(added.result);
+    tx.onerror = () => reject(tx.error ?? new Error('oplog appendUpload failed'));
+  });
+}
+
 /** Overwrite one queued operation in place, keeping its key — and with it its position in the
  *  log, which is what makes superseding a queued op order-safe. */
 export function putOp(db: IDBDatabase, key: IDBValidKey, op: Op): Promise<void> {
@@ -117,41 +163,99 @@ export function countOps(db: IDBDatabase): Promise<number> {
   return withStore(db, STORE, 'readonly', (store) => store.count());
 }
 
-/** Delete every queued operation addressed to `sha256` and return how many went. Withdraws
- *  a pending upload's ops before its first sync, so the server never sees them. */
-export async function removeOpsBySha(db: IDBDatabase, sha256: string): Promise<number> {
-  const entries = await readOps(db);
-  const keys = entries.filter((e) => e.op.targetSha === sha256).map((e) => e.key);
-  if (keys.length === 0) return 0;
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    const store = tx.objectStore(STORE);
-    for (const key of keys) store.delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('oplog removeOpsBySha failed'));
-  });
-  return keys.length;
-}
-
 /** Clear the oplog for isolated test setup. */
 export function clearOps(db: IDBDatabase): Promise<void> {
   return withStore(db, STORE, 'readwrite', (store) => store.clear());
 }
 
-// Persist upload metadata so SharedWorker restarts can resume artifacts stored in OPFS.
+// ---- photo records ----------------------------------------------------------------
 
-export async function putPendingUpload(db: IDBDatabase, rec: PendingUploadRecord): Promise<void> {
-  await withStore(db, RESUME_STORE, 'readwrite', (store) => store.put(rec));
-}
-
-export function deletePendingUpload(db: IDBDatabase, jobId: string): Promise<void> {
-  return withStore(db, RESUME_STORE, 'readwrite', (store) => store.delete(jobId));
-}
-
-export function readPendingUploads(db: IDBDatabase): Promise<PendingUploadRecord[]> {
-  return withStore(db, RESUME_STORE, 'readonly', (store) => store.getAll()).then(
-    (rows) => rows as PendingUploadRecord[],
+/** Every photo record, in insertion order (upload order). */
+export function readPhotoRecords(db: IDBDatabase): Promise<PhotoRecord[]> {
+  return withStore(db, PHOTO_STORE, 'readonly', (store) => store.getAll()).then(
+    (rows) => rows as PhotoRecord[],
   );
+}
+
+/** One photo's record, or null when the client knows nothing about it. */
+export function readPhotoRecord(db: IDBDatabase, sha256: string): Promise<PhotoRecord | null> {
+  return withStore(
+    db,
+    PHOTO_STORE,
+    'readonly',
+    (store) => store.get(sha256) as IDBRequest<PhotoRecord | undefined>,
+  ).then((row) => row ?? null);
+}
+
+/** Insert or replace a record (the worker writes `uploading` / `failed`). */
+export function putPhotoRecord(db: IDBDatabase, record: PhotoRecord): Promise<void> {
+  return withStore(db, PHOTO_STORE, 'readwrite', (store) => store.put(record)).then(
+    () => undefined,
+  );
+}
+
+/** Read, change and write one record in a single transaction; a missing record is a no-op, so a
+ *  late write cannot resurrect a photo that was confirmed or withdrawn meanwhile. */
+export function updatePhotoRecord(
+  db: IDBDatabase,
+  sha256: string,
+  mutate: (record: PhotoRecord) => PhotoRecord,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PHOTO_STORE, 'readwrite');
+    const store = tx.objectStore(PHOTO_STORE);
+    const got = store.get(sha256) as IDBRequest<PhotoRecord | undefined>;
+    got.onsuccess = () => {
+      const record = got.result;
+      if (record) store.put(mutate(record));
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('oplog updatePhotoRecord failed'));
+  });
+}
+
+export function deletePhotoRecord(db: IDBDatabase, sha256: string): Promise<void> {
+  return withStore(db, PHOTO_STORE, 'readwrite', (store) => store.delete(sha256));
+}
+
+/** Drop the records of photos the server has confirmed (or that a sync has retired). */
+export function deletePhotoRecords(db: IDBDatabase, shas: readonly string[]): Promise<void> {
+  if (shas.length === 0) return Promise.resolve();
+  return withStore(db, PHOTO_STORE, 'readwrite', (store) => {
+    for (const sha of shas) store.delete(sha);
+    return store.count();
+  }).then(() => undefined);
+}
+
+/**
+ * Withdraw a photo the user deleted: its record, the mark ops addressed to it, and the upload op
+ * the record owns, in one transaction. The upload op is deleted by its own key rather than by
+ * scanning for a sha it does not carry, which is what makes the withdrawal exact; the tombstone
+ * `delete` op filed afterwards still covers an op an in-flight request already took.
+ */
+export function removePhoto(db: IDBDatabase, sha256: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE, PHOTO_STORE], 'readwrite');
+    const log = tx.objectStore(STORE);
+    const records = tx.objectStore(PHOTO_STORE);
+    const got = records.get(sha256) as IDBRequest<PhotoRecord | undefined>;
+    got.onsuccess = () => {
+      const record = got.result;
+      if (record?.opKey !== undefined) log.delete(record.opKey);
+      records.delete(sha256);
+      const cursorReq = log.openCursor();
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (!cursor) return;
+        const op = cursor.value as Op;
+        // An upload op carries no sha of its own; every other photo op does.
+        if (op.type !== 'upload' && op.targetSha === sha256) cursor.delete();
+        cursor.continue();
+      };
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('oplog removePhoto failed'));
+  });
 }
 
 // ---- sha cache + snapshot ---------------------------------------------------------

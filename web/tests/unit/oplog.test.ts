@@ -4,14 +4,18 @@ import assert from 'node:assert/strict';
 import type { Op, SyncResponse } from '$shared/types';
 import {
   appendOp,
+  appendUpload,
   clearOps,
   countOps,
   isKnownAlbumSha,
   openOplogDb,
   readOps,
+  readPhotoRecord,
+  readPhotoRecords,
   readSnapshot,
   rebuildCache,
-  removeOpsBySha,
+  removePhoto,
+  type PhotoRecord,
 } from '../../src/core/oplog';
 
 const op = (i: number) => ({ type: 'like' as const, target: i, payload: null });
@@ -69,23 +73,50 @@ test('appends, clears, and replaces the known-hash cache wholesale', async () =>
   }
 });
 
-test('removeOpsBySha withdraws every op addressed to one sha and nothing else', async () => {
+test('a photo record and its upload op are written together, and withdrawn together', async () => {
   const db = await freshDb();
   try {
-    const shaOp = (type: Op['type'], sha: string): Op => ({ type, targetSha: sha, payload: null });
-    await appendOp(db, shaOp('upload', 'sha-a'));
-    await appendOp(db, shaOp('like', 'sha-a'));
-    await appendOp(db, shaOp('upload', 'sha-b'));
-    await appendOp(db, op(7)); // announcement-addressed, carries no sha
+    const upload = (sha: string): Op => ({
+      type: 'upload',
+      target: null,
+      payload: { sha256: sha, url: `https://host/${sha}.webp` },
+    });
+    const record = (sha: string): PhotoRecord => ({
+      sha256: sha,
+      status: 'uploading',
+      meta: { width: 8, height: 6, size: 10, type: 0 },
+      artifact: { key: `job-${sha}`, ext: 'webp' },
+      url: `https://host/${sha}.webp`,
+      createdAt: 1_000,
+    });
 
-    assert.equal(await removeOpsBySha(db, 'sha-a'), 2);
-    assert.equal(await countOps(db), 2);
+    // One transaction: the op the server will apply and the record the page draws.
+    const key = await appendUpload(db, upload('sha-a'), record('sha-a'));
+    const hosted = await readPhotoRecord(db, 'sha-a');
+    assert.equal(hosted?.status, 'hosted');
+    assert.equal(hosted?.opKey, key);
+    assert.equal(hosted?.url, 'https://host/sha-a.webp');
+
+    // Mark ops for the same sha, one unrelated op, and a second photo.
+    await appendOp(db, { type: 'like', targetSha: 'sha-a', payload: null });
+    await appendOp(db, { type: 'like', target: 7, payload: null });
+    await appendUpload(db, upload('sha-b'), record('sha-b'));
+    assert.equal((await readPhotoRecords(db)).length, 2);
+
+    // Withdrawal deletes the record, its mark ops and the upload op it owns — by that op's own
+    // key, since an upload op carries no sha to scan for.
+    await removePhoto(db, 'sha-a');
+    assert.equal(await readPhotoRecord(db, 'sha-a'), null);
+    // An upload op carries its sha in the payload, never as `targetSha`.
+    const label = (o: Op): unknown =>
+      o.targetSha ?? (o.payload as { sha256?: string } | null)?.sha256 ?? o.target;
     assert.deepEqual(
-      (await readOps(db)).map((e) => e.op.targetSha ?? e.op.target),
-      ['sha-b', 7],
+      (await readOps(db)).map((e) => label(e.op)),
+      [7, 'sha-b'],
     );
-    // Withdrawing an absent sha is a counted no-op.
-    assert.equal(await removeOpsBySha(db, 'sha-a'), 0);
+    // Withdrawing something already gone is a no-op.
+    await removePhoto(db, 'sha-a');
+    assert.equal(await countOps(db), 2);
   } finally {
     db.close();
   }

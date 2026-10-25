@@ -298,7 +298,7 @@ Back-filled from the commit history. Tagged sections are not yet written.
     Once the facade returns a URL the job is finished: the resume record is deleted and the card
     lives only in the upload store's memory, so a reload left the photo hosted and paid for with
     nothing on screen while its `upload` op sat in the log. That case is not a failure and gets
-    no failure UI — it renders as an op-derived card (see the §3 Upload overlay bullet), which is
+    no failure UI — it renders as a record-derived card (see the §3 Upload overlay bullet), which is
     the same card a `done` job leaves behind: plain media, no curtain, no controls.
   - Failed uploads are excluded from **preview** only. They are selectable like any other card —
     clicking one no longer opens the Lightbox (there is nothing to look at), but multi-select,
@@ -308,7 +308,7 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - **What is asserted, and what is not.** `photoCard.test.ts` holds the failure glyph and its
     container sizing; `uploadPreview.test.ts` holds that the preview comes from OPFS and not the
     pick; `pendingPhoto.test.ts` holds `rendersCard` across every phase and the op-log
-    projection; `pendingUploadCards.test.ts` holds that an unconfirmed batch still reads as cards
+    records; `pendingUploadCards.test.ts` holds that an unconfirmed batch still reads as cards
     after a failed sync and that a confirmed one retires them. The overlay's own
     geometry, layering and curtain arithmetic are asserted nowhere.
 - **Lightbox.** The action sheet is a **bottom sheet**, not a dropdown — a dropdown's top-right
@@ -625,29 +625,26 @@ hashing}`. `uploading` and `failed` appear on the **card**, not as rows.
     at the same moment as the upload and reads local disk, so it is a few milliseconds, and the
     alternative (a wrong preview, or none at all) is worse.
   - **A photo whose upload finished but whose row is not confirmed still has a card after a
-    reload, projected from the op log.** This is the one place the op log is a _render_ source
-    rather than only a write queue, and it is the difference between a timed-out 200-photo batch
-    leaving 200 invisible photos and leaving 200 cards the user can see — and delete. After
-    `done` there is no resume record (`sw.ts` deletes it), no live job (`replayJobs` skips
-    `done`), and no artifact to borrow: `reclaimTerminalJobs` prunes terminal artifacts down to
-    30 every 15 s, so a 200-photo batch could not be covered by them anyway. What survives is the
-    `upload` op, and it is complete — `payload.url` is the hosted URL, plus width/height/size/
-    type and the upload instant the SharedWorker stamped. The card is `queuedUploadFromOp` →
-    `queuedUploadCards` → `pendingPhoto`, read once at page open and again when a sync attempt
-    ends (`SyncEngine.queuedOps`), and it is **never a sync trigger of its own** (ADR 0008).
+    reload, projected from its record.** This is the difference between a timed-out 200-photo
+    batch leaving 200 invisible photos and leaving 200 cards the user can see — and delete. The
+    record is the client's own durable word about the photo (ADR 0025): the worker writes it as
+    `uploading`, the page turns it into `hosted` **in the same transaction that appends the upload
+    op**, and only a confirmed sync deletes it. So the card is `hostedPhotoCards` over
+    `SyncEngine.hostedPhotos()` → `pendingPhoto`, read once at page open and again when a sync
+    attempt ends, and it is **never a sync trigger of its own** (ADR 0008). It has to be the
+    record and not the artifact: an artifact's name must exist before its own digest does, and
+    `reclaimTerminalJobs` prunes terminal artifacts down to 30 every 15 s, so a 200-photo batch
+    could not be covered by them anyway.
     ⚠️ Four rules hold it together: it carries **no overlay** — nothing measured it, and a
     curtain parked at `CURTAIN_MAX_OPEN` would draw a permanent 10% band that reads as progress
     which does not exist; it is drawn through `pendingPhotos` behind the same landed-sha guard as
     a `done` card, so a snapshot carrying the sha replaces it without a double frame; it is
     deduped against the live tasks' shas, so a job still on screen never gets a second card; and
-    deleting it goes through the ordinary pending-photo path (withdraw, then tombstone), after
-    which the queued tombstone itself withdraws the card — the log's own last word per sha, so
-    the card stays gone across a reload. That tombstone is the only durable record: an `upload` op
-    carries no `targetSha`, so `removeOpsBySha` cannot withdraw it. A session-scoped set covers
-    the moment before the tombstone lands; a later upload of the same sha is the user putting the
-    file back and revives the card. A delete in another tab becomes visible here only at the next
-    read.
-  - **No prewarm in the SharedWorker.** It used to fetch the returned URL (no-cors, 2 s cap)
+    deleting it is **one transaction** — the record, its mark ops and the upload op the record
+    owns (`opKey`) — followed by the tombstone `delete` op that covers an op already claimed by an
+    in-flight request. Nothing else has to remember the deletion, so the card stays gone across a
+    reload with no session-scoped state. A delete in another tab becomes visible here only at the
+    next read. - **No prewarm in the SharedWorker.** It used to fetch the returned URL (no-cors, 2 s cap)
     before reporting `done`, on the theory that the card would then swap over a warm cache.
     A worker's fetch does not populate the renderer's cache, so it bought a second download of
     every artifact plus up to two seconds of delay before `done`. Measured with a 900 ms delay
@@ -787,36 +784,32 @@ before deadline` / `no response before deadline`).
     reads the store must wire `onCachedSnapshot`** — `App.svelte` and `Admin.svelte` both do.
     Wiring only the gallery left the admin tabs blank for a round trip, and blank forever with no
     server; that gap is why this sentence names both call sites. The same page-open pass also
-    reads the **op log** (`refreshQueuedUploads` in the upload store): a photo the snapshot cannot
+    reads the **photo records** (`refreshHostedPhotos` in the upload store): a photo the snapshot cannot
     know about — its row was never confirmed — is exactly the one a returning visitor would
     otherwise lose, and the two reads together are what make "render before the network answers"
     mean the whole screen.
-  - **Deleting a pending photo withdraws its ops; it does not delete after the fact.** A sha
-    with no server row is a pending upload, so `deletePhotos` routes it to
-    `withdrawPendingUpload`: the card's cancel sink (registered by the upload store through
-    `setPendingUploadCancelSink`, the same layering bridge as the media-host sink) aborts an
-    in-flight transfer before it can write its upload op, `engine.removeOpsBySha` withdraws
-    every queued op carrying that sha (the marks — a like on a photo that never lands is a server
-    no-op but a lie in the log; an `upload` op carries no `targetSha`, so it is the tombstone that
-    cancels it, not the withdrawal), and only then is a `delete` op filed.
-    That op is the **tombstone**, and it must come after the withdrawal — `removeOpsBySha`
-    matches by sha and would otherwise take the tombstone with it. The tombstone covers the one
-    race this cannot close locally: an upload op already claimed by an in-flight sync request
-    cannot be un-sent, so if it lands the next sync deletes the row it created, and if it fails
-    the op is simply gone. The other half of the same race is closed in `onUploadOp`, which
-    writes nothing when no tracked task still owns the sha: a `done` notification arriving just
-    after a delete would otherwise append its upload op behind the tombstone, and the photo
-    would land. Before this, deleting a pending photo touched neither the card nor the oplog:
-    the card stayed as a ghost until a reload (the optimistic card is the upload store's, not
-    the photo store's), and a delete filed while the upload was still in flight appended as
-    `[delete, upload]` — the server no-ops the delete on an unknown sha and then creates the
-    row, so the "deleted" photo landed for real. The delete glue itself is untested
-    (`createUploadStore` needs a component context); `removeOpsBySha` is (oplog + engine
-    suites), and the deferral below is (`pendingPhotoOps.test.ts`).
-  - **A photo op must follow the upload op that creates its row.** A mark whose sha the snapshot
+  - **Deleting a pending photo withdraws it; it does not delete after the fact.** A sha with no
+    server row is a pending upload, so `deletePhotos` routes it to `withdrawPendingUpload`: the
+    card's cancel sink (registered by the upload store through `setPendingUploadCancelSink`, the
+    same layering bridge as the media-host sink) aborts an in-flight transfer before it can write
+    its upload op, and `engine.withdrawPhoto` deletes the photo in one transaction — its record,
+    the mark ops addressed to it and the upload op the record owns (`opKey`), because an `upload`
+    op carries no `targetSha` to scan for. Only then is a `delete` op filed: the **tombstone**
+    must come after the withdrawal so the withdrawal cannot take it with it, and it covers the one
+    race that cannot be closed locally — an upload op already claimed by an in-flight sync request
+    cannot be un-sent, so if it lands the next sync deletes the row it created. The other half of
+    that race is closed in `onUploadOp`, which writes nothing when no tracked task still owns the
+    sha: a `done` notification arriving just after a delete would otherwise append its upload op
+    behind the tombstone, and the photo would land. Before this, deleting a pending photo touched
+    neither the card nor the oplog: the card stayed as a ghost until a reload, and a delete filed
+    while the upload was still in flight appended as `[delete, upload]` — the server no-ops the
+    delete on an unknown sha and then creates the row, so the "deleted" photo landed for real. The
+    delete glue itself is untested (`createUploadStore` needs a component context);
+    `withdrawPhoto` is (oplog + engine suites), and the deferral below is
+    (`pendingPhotoOps.test.ts`). - **A photo op must follow the upload op that creates its row.** A mark whose sha the snapshot
     does not carry is not written to the log at all: `/sync` applies a batch in array order, so
     it would be a no-op on an unknown sha (its `UPDATE … WHERE sha256 = ?` matches no row) and then cleared as
-    confirmed — the mark silently lost. The mark itself is the state (`pendingMarks`, persisted),
+    confirmed — the mark silently lost. The mark itself is the state (on the photo record, durable),
     and `photoOpQueued` states it as ops — awaited by the upload store when the upload op lands,
     and also called by `applySync` for a row the snapshot has just delivered. That is what makes
     it reload-proof: a queue of ops would not have been. Before this the mark was submitted
@@ -1254,8 +1247,8 @@ The parts of this contract that are asserted by `npm test`:
 | A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/pendingPhoto.test.ts`       |
 | A card's local preview comes from OPFS, never from the picked file (§3)              | `web/tests/unit/uploadPreview.test.ts`      |
 | An unconfirmed `upload` op still renders a card after a failed sync                  | `web/tests/unit/pendingUploadCards.test.ts` |
-| A confirmed sync retires those cards, and a landed/live sha never double-draws       | `web/tests/unit/pendingUploadCards.test.ts` |
-| Reading the op log for rendering is not a sync request                               | `web/tests/unit/syncEngine.test.ts`         |
+| A confirmed sync retires those records, and a landed/live sha never double-draws     | `web/tests/unit/pendingUploadCards.test.ts` |
+| An upload op and its photo record are written together, and withdrawn together       | `web/tests/unit/oplog.test.ts`              |
 | A 200-op `/sync` costs a fixed handful of round trips, not one per op                | `src/worker/routes/sync.test.ts`            |
 | A GIF frame duration is read through the one owner, never re-derived in the worker   | `web/tests/unit/gifFrameTiming.test.ts`     |
 | A GIF's frame timestamps accumulate, and a zero duration is a missing one            | `web/tests/unit/pipeline.test.ts`           |

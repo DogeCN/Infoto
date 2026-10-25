@@ -1,11 +1,11 @@
-// An upload-leg failure keeps its resume record, marked `failed`: the artifact is still in
-// OPFS, so the card comes back after a reload with its image and a retry the user presses.
-// The mark is what keeps the reload from re-running /upload on its own — a resume is for a
-// transfer interrupted mid-flight, not for one the facade rejected.
+// An upload-leg failure rewrites its photo record as `failed`: the artifact is still in OPFS, so
+// the card comes back after a reload with its image and a retry the user presses. The status is
+// what keeps the reload from re-running /upload on its own — a resume is for a transfer
+// interrupted mid-flight, not for one the facade rejected.
 import 'fake-indexeddb/auto';
 import { afterEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
-import { openOplogDb, readPendingUploads } from '../../src/core/oplog';
+import { openOplogDb, readPhotoRecord } from '../../src/core/oplog';
 
 const h = vi.hoisted(() => ({
   postUpload: vi.fn(),
@@ -105,10 +105,10 @@ test('album upload resume: an upload failure keeps a marked record so the card s
     },
   });
 
-  // afterStage1 persists the resume record before runUpload starts the transfer.
+  // afterStage1 persists the record as `uploading` before runUpload starts the transfer.
   await until(
-    async () => (await readPendingUploads(db)).length === 1,
-    'the pending record to persist',
+    async () => (await readPhotoRecord(db, 'sha-failed'))?.status === 'uploading',
+    'the uploading record to persist',
   );
   assert.equal(h.postUpload.mock.calls.length, 1);
 
@@ -117,12 +117,13 @@ test('album upload resume: an upload failure keeps a marked record so the card s
   // The record stays, marked, so `resumePendingUploads` rebuilds a failed card instead of
   // re-running the upload the facade just rejected.
   await until(
-    async () => (await readPendingUploads(db))[0]?.failed === true,
+    async () => (await readPhotoRecord(db, 'sha-failed'))?.status === 'failed',
     'the record to be marked failed',
   );
-  const [record] = await readPendingUploads(db);
-  assert.equal(record?.jobId, 'job-fail');
-  assert.equal(record?.failed, true);
+  const record = await readPhotoRecord(db, 'sha-failed');
+  // The artifact handle survives on the record; the job id lives only there, as a handle.
+  assert.equal(record?.artifact?.key, 'job-fail');
+  assert.equal(record?.status, 'failed');
   // The reason travels with the record, so the reloaded card reports it instead of a generic one.
   assert.equal(record?.error, 'timeout');
   assert.equal(

@@ -3,7 +3,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { toast } from 'svelte-sonner';
 import { copy, fmt } from '$shared/copy';
 import { extOfType } from '$shared/media';
-import type { Op, Photo } from '$shared/types';
+import type { MediaType, Op, Photo, UploadPayload } from '$shared/types';
 import { getLocale } from '$lib/i18n.svelte';
 import { translateTaskError } from '$base/upload/pipeline';
 import { UploadPipeline, type PipelineTaskSnapshot } from '../transcode/pipeline';
@@ -11,15 +11,17 @@ import { readArtifact } from '../transcode/opfs';
 import {
   pendingMediaUrl,
   pendingPhoto,
-  queuedUploadCards,
+  hostedPhotoCards,
   rendersCard,
   type UploadOverlay,
   samePendingPhoto,
-  sameQueuedUploads,
+  sameHostedCards,
   type HostedReadiness,
-  type QueuedUploadFields,
+  type HostedPhotoFields,
 } from '../core/pending';
 import type { SyncEngine } from '../core/engine';
+import type { PhotoRecord } from '../core/oplog';
+import type { MarkSet } from '../core/ops';
 import type { createAppStore } from './appStore.svelte';
 import { setMediaHostSink, setPendingUploadCancelSink } from './appStore.svelte';
 
@@ -28,14 +30,18 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   let destroyed = false;
   const pipeline = new UploadPipeline({
     onEvent: import.meta.env.DEV ? (line) => console.log('[upload]', line) : undefined,
-    // Append completed uploads to the sync engine without triggering an immediate snapshot.
-    onUploadOp: async (op) => {
+    // Append completed uploads to the sync engine without triggering an immediate snapshot. The
+    // op and the photo's record are written in one transaction, so a hosted photo always has a
+    // durable trace: the op the server will apply, and the record the page draws until it does.
+    onUploadOp: async (op, artifact) => {
       const sha = uploadOpSha(op);
       // The card is gone — cancelled, dismissed, or its pending photo deleted. Writing the op
       // now would recreate the row the user just removed, after the tombstone that deleted it,
       // because /sync applies a batch in array order and a delete of an unknown sha is a no-op.
       if (sha && !hasTaskForSha(sha)) return;
-      await engine.addOp(op);
+      const record = sha ? hostedRecord(op, sha, artifact) : null;
+      if (!record) return;
+      await engine.addUploadOp(op, record);
       // Release the photo ops that were waiting for this row to exist.
       if (sha) await store.photoOpQueued(sha);
     },
@@ -64,6 +70,32 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   function hasTaskForSha(sha: string): boolean {
     for (const t of uploadTasks.values()) if (t.sha256 === sha) return true;
     return false;
+  }
+
+  /**
+   * The record a hosted photo owns: everything the card renders that is not store state, so the
+   * library survives a reload without the op log being read for rendering as well.
+   */
+  function hostedRecord(
+    op: Op,
+    sha256: string,
+    artifact: { key: string; ext: 'webp' | 'webm' },
+  ): PhotoRecord | null {
+    const payload = (op.payload ?? {}) as Partial<UploadPayload>;
+    const { url, width, height, size, type, createdAt } = payload;
+    if (typeof url !== 'string' || !url) return null;
+    if (typeof width !== 'number' || typeof height !== 'number' || typeof size !== 'number')
+      return null;
+    if (typeof type !== 'number' || typeof createdAt !== 'number' || createdAt === 0) return null;
+    return {
+      sha256,
+      status: 'hosted',
+      meta: { width, height, size, type: type as MediaType },
+      artifact,
+      url,
+      createdAt,
+      marks: store.pendingMarksFor(sha256),
+    };
   }
 
   // /sync names the upload facade; the SharedWorker needs it before any job can upload.
@@ -171,7 +203,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       jobByTempId.delete(id);
     }
     tempCreatedAt.delete(jobId);
-    writeTempCreatedAt(tempCreatedAt);
     photoCache.delete(jobId);
     hostedReady.delete(jobId);
     hostedReads.delete(jobId);
@@ -199,82 +230,46 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   // a lingering failed upload deserves a fresh reminder.
   const toastedFailures = new Set<string>();
   const toastedDuplicates = new Set<string>();
-  const TEMP_CREATED_KEY = 'infoto-temp-created';
-  const TEMP_CREATED_TTL_MS = 30 * 60 * 1000;
+  // A live job's card needs a timestamp that does not move on every progress tick. It is not
+  // persisted: a hosted photo's own instant lives in its record, and a resumed job is a job that
+  // is only now visible.
+  const tempCreatedAt = new Map<string, number>();
 
-  function readTempCreatedAt(): Map<string, number> {
-    try {
-      const raw = sessionStorage.getItem(TEMP_CREATED_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as [string, number][];
-        const now = Date.now();
-        const map = new Map<string, number>();
-        for (const [jobId, ts] of parsed) {
-          if (
-            typeof jobId === 'string' &&
-            typeof ts === 'number' &&
-            Number.isFinite(ts) &&
-            ts <= now &&
-            now - ts < TEMP_CREATED_TTL_MS
-          )
-            map.set(jobId, ts);
-        }
-        return map;
-      }
-    } catch {
-      /* noop */
-    }
-    return new Map();
-  }
-
-  function writeTempCreatedAt(map: Map<string, number>): void {
-    try {
-      sessionStorage.setItem(TEMP_CREATED_KEY, JSON.stringify([...map.entries()]));
-    } catch {
-      /* noop */
-    }
-  }
-
-  // Stable optimistic timestamps preserve sort order across progress updates.
-  const tempCreatedAt = new Map<string, number>(readTempCreatedAt());
-
-  // ---- Cards the op log still states ----
-  // An upload that finished has no resume record left (the SharedWorker deletes it at
-  // `done`) and no live job, so after a reload the only durable trace of the photo is its
-  // `upload` op — which carries the hosted URL, the dimensions and the upload instant. The
-  // card is projected from that, so a page load shows the photos the log is still holding
-  // instead of an empty grid the user cannot act on.
-  /** The projection, in op submission order. */
-  let queuedUploads = $state<QueuedUploadFields[]>([]);
-  /** Temp ids for the op-derived cards, from the same counter as the live ones, so the two
-   *  card sets can never collide in one selection. */
+  // ---- Cards the photo records state ----
+  // The record is the client's own word about a photo the album does not have yet. The worker
+  // writes it as `uploading`, the page turns it into `hosted` in the same transaction that
+  // appends the upload op, and a confirmed sync deletes it. The card is a filter over those
+  // records, so there is no second place a photo's existence could be read from and disagree.
+  /** The projection, in upload order. */
+  let hostedRecords = $state<HostedPhotoFields[]>([]);
+  /** Temp ids for those cards, from the same counter as the live ones, so the two card sets can
+   *  never collide in one selection. */
   const tempIdBySha = new Map<string, number>();
-  /** Shas the user deleted this session. `removeOpsBySha` matches `targetSha` and an upload op
-   *  carries none, so the op outlives the withdrawal until a sync confirms it; without this a
-   *  re-read would put the card back in the meantime. */
-  const withdrawnShas = new Set<string>();
-  /** `photoCache` key for an op-derived card, distinct from every jobId. */
-  const queuedKey = (sha: string): string => `op:${sha}`;
+  /** `photoCache` key for a record-derived card, distinct from every jobId. */
+  const hostedKey = (sha: string): string => `hosted:${sha}`;
 
   /**
-   * Re-project the cards the op log states. Called at page open and after a sync attempt
-   * finishes — a read of the log, never a sync trigger of its own (ADR 0008).
+   * Re-read the photo records. Called at page open and after a sync attempt finishes — a read of
+   * durable state, never a sync trigger of its own (ADR 0008).
    */
-  async function refreshQueuedUploads(): Promise<void> {
+  async function refreshHostedPhotos(): Promise<void> {
     if (destroyed) return;
-    let ops: Op[];
+    let records: PhotoRecord[];
     try {
-      ops = await engine.queuedOps();
+      records = await engine.hostedPhotos();
     } catch {
-      // An unreadable log leaves the cards on screen alone rather than emptying the grid.
+      // An unreadable store leaves the cards on screen alone rather than emptying the grid.
       return;
     }
     const landed = new Set(store.photos.map((photo) => photo.sha256));
     const live = new Set<string>();
     for (const task of uploadTasks.values()) if (task.sha256) live.add(task.sha256);
-    const next = queuedUploadCards(ops, { landed, live }).filter(
-      (fields) => !withdrawnShas.has(fields.sha256),
-    );
+    const next = hostedPhotoCards(records, { landed, live });
+    // Marks on these photos are durable with them, so the store's own map is hydrated from the
+    // same read: one owner, no localStorage copy to drift.
+    const marks = new Map<string, MarkSet>();
+    for (const record of records) if (record.marks) marks.set(record.sha256, record.marks);
+    store.hydratePendingMarks(marks);
     for (const fields of next) {
       if (!tempIdBySha.has(fields.sha256)) tempIdBySha.set(fields.sha256, nextTempId--);
     }
@@ -282,12 +277,11 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     for (const sha of [...tempIdBySha.keys()]) {
       if (keep.has(sha)) continue;
       tempIdBySha.delete(sha);
-      photoCache.delete(queuedKey(sha));
+      photoCache.delete(hostedKey(sha));
     }
     // A re-read that changed nothing must not hand the layout a new array.
-    if (!sameQueuedUploads(queuedUploads, next)) queuedUploads = next;
+    if (!sameHostedCards(hostedRecords, next)) hostedRecords = next;
   }
-
   const pendingPhotos = $derived.by(() => {
     const out: Photo[] = [];
     // Sync-landed shas hide optimistic done/duplicate cards in the same render
@@ -334,10 +328,10 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
         out.push(photo);
       }
     }
-    // Unconfirmed uploads from the op log: the same card a `done` job leaves behind, still
+    // Photos the records state as hosted: the same card a `done` job leaves behind, still
     // awaiting the sync that turns it into a row. The guard mirrors the live `done` path, so
     // the moment the snapshot carries this sha the real photo takes the card's place.
-    for (const q of queuedUploads) {
+    for (const q of hostedRecords) {
       if (landedShas.has(q.sha256)) continue;
       const id = tempIdBySha.get(q.sha256);
       if (id === undefined) continue;
@@ -355,7 +349,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
         createdAt: q.createdAt,
         marks: store.pendingMarksFor(q.sha256),
       };
-      const key = queuedKey(q.sha256);
+      const key = hostedKey(q.sha256);
       const cached = photoCache.get(key);
       if (cached && samePendingPhoto(cached, fields)) {
         out.push(cached);
@@ -437,13 +431,14 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       pipeline.cancel(t.jobId);
       dropTask(t.jobId);
     }
-    // A card projected from the op log has no job to cancel. It goes now, and its sha is
-    // remembered so the next read of the log cannot bring it back before the tombstone lands.
+    // A record-derived card has no job to cancel: its record is the durable half, so deleting it
+    // deletes the card. Withdrawing the photo is the app store's call (it also files the
+    // tombstone); doing it again here is idempotent and keeps the card from outliving the click.
     if (!tempIdBySha.has(sha)) return;
-    withdrawnShas.add(sha);
     tempIdBySha.delete(sha);
-    photoCache.delete(queuedKey(sha));
-    queuedUploads = queuedUploads.filter((fields) => fields.sha256 !== sha);
+    photoCache.delete(hostedKey(sha));
+    hostedRecords = hostedRecords.filter((fields) => fields.sha256 !== sha);
+    void engine.withdrawPhoto(sha).catch(() => undefined);
     store.forgetPendingPhoto(sha);
   }
 
@@ -500,7 +495,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
         tempIdByJob.set(t.jobId, id);
         jobByTempId.set(id, t.jobId);
         if (!tempCreatedAt.has(t.jobId)) tempCreatedAt.set(t.jobId, Date.now());
-        writeTempCreatedAt(tempCreatedAt);
       }
       uploadTasks = new Map(uploadTasks.set(t.jobId, t));
     }),
@@ -529,10 +523,10 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   // attempt finishes — that is the only other moment the set can change, since the confirmed
   // keys are what a sync deletes. A newly appended op always has a live card of its own, so an
   // append is deliberately not read back. Neither call is a sync trigger (ADR 0008).
-  void refreshQueuedUploads();
+  void refreshHostedPhotos();
   let wasSyncing = engine.state.syncing;
   const unsubscribeQueued = engine.onState((state) => {
-    if (wasSyncing && !state.syncing) void refreshQueuedUploads();
+    if (wasSyncing && !state.syncing) void refreshHostedPhotos();
     wasSyncing = state.syncing;
   });
 

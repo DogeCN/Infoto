@@ -13,12 +13,13 @@ import {
 } from '$base/upload/pipeline';
 import { postUpload, type UploadResult } from '../core/api/uploadClient';
 import {
-  deletePendingUpload,
+  deletePhotoRecord,
   isKnownAlbumSha,
   openOplogDb,
-  putPendingUpload,
-  readPendingUploads,
-  type PendingUploadRecord,
+  putPhotoRecord,
+  readPhotoRecord,
+  readPhotoRecords,
+  type PhotoRecord,
 } from '../core/oplog';
 import { readArtifact, removeArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
@@ -189,7 +190,7 @@ function failJob(rec: JobRec, error: string): void {
   // A transcode failure ends the job for good: there is no artifact to resume from, so the
   // record would only re-run a transcode that already failed. Only cancel removes the artifact.
   if (!failedInUpload) {
-    if (db) void deletePendingUpload(db, rec.jobId).catch(() => undefined);
+    if (db && rec.sha256) void deletePhotoRecord(db, rec.sha256).catch(() => undefined);
     // No card renders this job (see `rendersCard`), so nothing can press retry and the source
     // Blob would otherwise sit in this worker until the record is pruned — up to the full file
     // size for ten minutes. Editor jobs never reach here before `uploading`.
@@ -201,22 +202,27 @@ function failJob(rec: JobRec, error: string): void {
   // survives a reload and the user can retry it by hand. Without the flag the reload would
   // resume the upload on its own, which is a retry nobody asked for.
   if (db) {
-    const record = resumeRecord(rec, true);
-    if (record) void putPendingUpload(db, record).catch(() => undefined);
+    const record = photoRecord(rec, 'failed');
+    if (record) void putPhotoRecord(db, record).catch(() => undefined);
   }
   notify(rec);
 }
 
 /** The resume record for a job whose stage 1 finished, or null while it has not. */
-function resumeRecord(rec: JobRec, failed = false): PendingUploadRecord | null {
+/** The record this job owns, keyed by the photo's sha — the one durable address it has. */
+function photoRecord(rec: JobRec, status: PhotoRecord['status']): PhotoRecord | null {
   if (!rec.sha256 || !rec.meta || !rec.artifact) return null;
   return {
-    jobId: rec.jobId,
-    fileName: rec.fileName,
     sha256: rec.sha256,
+    status,
     meta: rec.meta,
-    artifactExt: rec.artifact.ext,
-    ...(failed ? { failed: true, error: rec.error } : {}),
+    fileName: rec.fileName,
+    // The artifact's name has to exist before its own digest does (it is hashed while being
+    // written), so the job id survives here as a handle, not as a key.
+    artifact: { key: rec.jobId, ext: rec.artifact.ext },
+    ...(rec.url ? { url: rec.url } : {}),
+    ...(rec.createdAt ? { createdAt: rec.createdAt } : {}),
+    ...(status === 'failed' && rec.error ? { error: rec.error } : {}),
   };
 }
 
@@ -307,7 +313,6 @@ function forgetJob(jobId: string): void {
   // once the record is gone — so it has to go with the job.
   if (rec?.leaseId) leases.delete(rec.leaseId);
   jobs.delete(jobId);
-  if (db) void deletePendingUpload(db, jobId).catch(() => undefined);
   owners.delete(jobId);
   const vi = videoQueue.indexOf(jobId);
   if (vi >= 0) videoQueue.splice(vi, 1);
@@ -356,7 +361,13 @@ async function afterStage1(rec: JobRec): Promise<void> {
   if (!db) db = await openOplogDb().catch(() => null as unknown as IDBDatabase);
   if (db && rec.sha256) {
     if (rec.cancelled) return;
-    const known = await isKnownAlbumSha(db, rec.sha256).catch(() => false);
+    // Known means the album has it *or* this client already holds it: a photo whose upload is
+    // still unconfirmed must not be uploaded twice just because no snapshot has landed yet.
+    const sha = rec.sha256;
+    const held = await readPhotoRecord(db, sha)
+      .then((record) => record !== null && record.status !== 'failed')
+      .catch(() => false);
+    const known = held || (await isKnownAlbumSha(db, sha).catch(() => false));
     if (known) {
       rec.phase = 'duplicate';
       notify(rec);
@@ -368,10 +379,10 @@ async function afterStage1(rec: JobRec): Promise<void> {
   // Remember the job: a reload kills this worker, but the artifact is on disk, so the
   // upload can be resumed instead of silently losing a photo the user already uploaded.
   if (db) {
-    const record = resumeRecord(rec);
+    const record = photoRecord(rec, 'uploading');
     if (record) {
       if (rec.cancelled) return;
-      await putPendingUpload(db, record).catch(() => undefined);
+      await putPhotoRecord(db, record).catch(() => undefined);
     }
   }
   await runUpload(rec);
@@ -457,12 +468,10 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
     // `done`. The page preloads the URL with the element that will paint it instead, and
     // keeps the local preview on screen until that lands.
     rec.phase = 'done';
-    // The resume record only covers an upload interrupted mid-transfer. Once the artifact
-    // has landed there is nothing to resume, and leaving the record replayed the whole
-    // upload on the next page load -- a second /upload for a photo the album already has,
-    // and a second op appended to the op-log each time. Terminal records are capped, so the
-    // pending-op badge settled on that cap and never cleared.
-    if (db) void deletePendingUpload(db, rec.jobId).catch(() => undefined);
+    // The record is not deleted here: the page turns it into `hosted` in the same transaction
+    // that appends the upload op, so the photo always has a durable trace. Replay only ever
+    // resumes a record still marked `uploading`, which is what stops a completed upload from
+    // running twice on the next page load.
     notify(rec);
     return;
   }
@@ -600,6 +609,11 @@ function reclaimTerminalJobs(): void {
     // The artifact is unreferenced once the record is gone; failed jobs keep
     // theirs until this point precisely so a manual retry can reuse it.
     if (ext) void removeArtifact(rec.jobId, ext);
+    // A pruned failure has nothing left to retry, so its record goes too. A `done` job's record
+    // is a `hosted` card the page owns, and it must survive this sweep.
+    if (db && rec.phase === 'failed' && rec.sha256) {
+      void deletePhotoRecord(db, rec.sha256).catch(() => undefined);
+    }
   }
 }
 
@@ -623,7 +637,14 @@ setInterval(() => {
 
 /** Resume interrupted album uploads from persisted metadata and OPFS artifacts. */
 let resumed = false;
-async function resumePendingUploads(): Promise<void> {
+/**
+ * Rebuild jobs from the photo records an earlier page left `uploading` or `failed`.
+ *
+ * The record is keyed by the photo's sha and carries the artifact handle, so resumption needs no
+ * second store: a record whose artifact is still on disk is a photo the user already paid to
+ * transcode, and one whose artifact is gone is garbage the same read removes.
+ */
+async function resumePhotoRecords(): Promise<void> {
   if (resumed) return;
   resumed = true;
   if (!db) db = await openOplogDb().catch(() => null);
@@ -631,37 +652,41 @@ async function resumePendingUploads(): Promise<void> {
     resumed = false;
     return;
   }
-  const records = await readPendingUploads(db).catch(() => []);
-  for (const r of records) {
-    if (jobs.has(r.jobId)) continue;
-    // Delete resumable records whose artifacts are missing.
-    const blob = await readArtifact(r.jobId, r.artifactExt);
+  const records = await readPhotoRecords(db).catch(() => []);
+  for (const record of records) {
+    // A `hosted` record belongs to a queued upload op, not to this worker: the server has the
+    // photo, so there is nothing to resume and the page draws the card from the record itself.
+    if (record.status === 'hosted') continue;
+    if (!record.meta || !record.artifact) continue;
+    const { key, ext } = record.artifact;
+    if (jobs.has(key)) continue;
+    const blob = await readArtifact(key, ext);
     if (!blob) {
-      void deletePendingUpload(db, r.jobId).catch(() => undefined);
+      void deletePhotoRecord(db, record.sha256).catch(() => undefined);
       continue;
     }
     const rec: JobRec = {
-      jobId: r.jobId,
+      jobId: key,
       purpose: 'album',
-      fileName: r.fileName,
+      fileName: record.fileName ?? '',
       mime: '',
       file: EMPTY_BLOB,
       engine: 'image',
-      phase: r.failed ? 'failed' : 'uploading',
-      error: r.failed ? r.error : undefined,
-      artifact: { ext: r.artifactExt, size: r.meta.size },
-      sha256: r.sha256,
-      meta: r.meta,
+      phase: record.status === 'failed' ? 'failed' : 'uploading',
+      error: record.error,
+      artifact: { ext, size: record.meta.size },
+      sha256: record.sha256,
+      meta: record.meta,
       opWritten: false,
       editorResultAcked: false,
       cancelled: false,
     };
-    jobs.set(r.jobId, rec);
+    jobs.set(key, rec);
     // A record left behind by a failed upload leg is rebuilt as the failed card it was, not
     // restarted: the artifact is on disk, so the card has its image back and the retry is the
-    // user's to press. Only a record without the flag resumes — that is an upload interrupted
+    // user's to press. Only an `uploading` record resumes — that is an upload interrupted
     // mid-transfer, which nobody rejected.
-    if (r.failed) {
+    if (record.status === 'failed') {
       notify(rec);
       continue;
     }
@@ -669,7 +694,6 @@ async function resumePendingUploads(): Promise<void> {
     void runUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));
   }
 }
-
 onconnect = (e: MessageEvent) => {
   const port = e.ports[0]!;
   ports.add(port);
@@ -684,7 +708,7 @@ onconnect = (e: MessageEvent) => {
   port.onmessageerror = () => undefined;
   // Resume before replaying: jobs rebuilt from disk must be in `jobs` so the replay
   // below hands the fresh page its cards.
-  void resumePendingUploads().then(() => replayJobs(port));
+  void resumePhotoRecords().then(() => replayJobs(port));
 };
 
 /** Replay non-terminal album jobs on reconnect. Editor results remain private to their owning page. */
@@ -781,8 +805,10 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
         owner?.postMessage({ t: 'leaseRevoked', leaseId, jobId: m.jobId });
       }
       // Cancel is the one path that may drop the artifact: the job will never be
-      // retried, so nothing else will ever read it again.
+      // retried, so nothing else will ever read it again. The record goes with it, or the next
+      // page load would rebuild the card from a photo the user deleted.
       if (rec.artifact) void removeArtifact(m.jobId, rec.artifact.ext);
+      if (db && rec.sha256) void deletePhotoRecord(db, rec.sha256).catch(() => undefined);
       broadcast({ t: 'jobRemoved', jobId: m.jobId });
       return;
     }

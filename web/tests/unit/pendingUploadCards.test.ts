@@ -1,21 +1,38 @@
-// The regression behind this file: a 200-photo upload whose /sync timed out left 200
-// unconfirmed `upload` ops in the oplog and *nothing on screen*, because the card showing them
-// lived in the upload store's memory and the SharedWorker deletes its resume record the moment
-// the upload succeeds. The op is the durable record of a photo that is hosted and paid for —
-// so it must read as a card after the page that created it is gone, and it must disappear the
-// moment a sync confirms it.
+// The regression behind this file: a batch whose /sync timed out left the photos hosted and
+// invisible, because the card showing them lived in the upload store's memory. The photo record
+// is the durable half: the worker writes `uploading`, the page turns it into `hosted` in the same
+// transaction that appends the upload op, and only a confirmed sync deletes it.
+//
+// These cases drive the real stores through the engine, so they cover the seam a pure projection
+// cannot: what a reload actually reads.
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, test } from 'vitest';
 import assert from 'node:assert/strict';
-import type { Op, Photo, SyncResponse, UploadPayload } from '$shared/types';
+import type { Photo, SyncResponse, UploadPayload } from '$shared/types';
 import { buildUploadOp } from '../../src/base/upload/pipeline';
 import { SyncEngine } from '../../src/core/engine';
-import { appendOp, clearOps, openOplogDb, readOps } from '../../src/core/oplog';
-import { queuedUploadCards, type QueuedUploadFields } from '../../src/core/pending';
+import {
+  appendUpload,
+  clearOps,
+  openOplogDb,
+  putPhotoRecord,
+  readOps,
+  readPhotoRecord,
+  readPhotoRecords,
+  removePhoto,
+  type PhotoRecord,
+} from '../../src/core/oplog';
+import { hostedPhotoCards, type HostedPhotoFields } from '../../src/core/pending';
 
 let db: IDBDatabase;
 
 beforeEach(async () => {
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase('infoto');
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();
+    req.onblocked = () => resolve();
+  });
   db = await openOplogDb();
   await clearOps(db);
 });
@@ -37,6 +54,17 @@ const payload = (sha: string): UploadPayload => ({
   type: 0,
   createdAt: 1_700_000_000_000,
 });
+
+/** What the page writes when an upload finishes: the op and the record, one transaction. */
+const hosted = (sha: string): Promise<IDBValidKey> =>
+  appendUpload(db, buildUploadOp(payload(sha)), {
+    sha256: sha,
+    status: 'uploading',
+    meta: { width: 800, height: 600, size: 100, type: 0 },
+    artifact: { key: `job-${sha}`, ext: 'webp' },
+    url: `https://host/${sha}.webp`,
+    createdAt: 1_700_000_000_000,
+  });
 
 const photo = (id: number, sha: string): Photo => ({
   id,
@@ -64,31 +92,31 @@ const snapshot = (photos: Photo[] = []): SyncResponse => ({
   feedback: [],
 });
 
-/** The op-log path the upload store runs at page open: read, then project. */
+/** The page's own read: records in, cards out. */
 const cards = async (
   engine: SyncEngine,
   landed = new Set<string>(),
-): Promise<QueuedUploadFields[]> =>
-  queuedUploadCards(await engine.queuedOps(), { landed, live: new Set() });
+): Promise<HostedPhotoFields[]> =>
+  hostedPhotoCards(await engine.hostedPhotos(), { landed, live: new Set() });
 
-const logged = async (): Promise<Op[]> => (await readOps(db)).map((entry) => entry.op);
+const logged = async (): Promise<number> => (await readOps(db)).length;
 
-test('queued upload cards: an unconfirmed batch still reads as cards after a failed sync', async () => {
-  await appendOp(db, buildUploadOp(payload('a')));
-  await appendOp(db, buildUploadOp(payload('b')));
-  await appendOp(db, { type: 'like', targetSha: 'a' });
+test('a hosted photo still reads as a card after a failed sync', async () => {
+  await hosted('a');
+  await hosted('b');
 
   const engine = new SyncEngine({
     db,
-    // The failure the user saw: the request never comes back in time.
+    // The failure the report saw: the request never comes back in time.
     postSyncFn: () => Promise.reject(new Error('sync_timeout')),
   });
   const attempt = await engine.sync();
   assert.equal(attempt.ok, false);
   assert.equal(attempt.confirmedThroughVersion, 0, 'nothing was confirmed');
 
-  // The log is untouched by a failed attempt, so the page still shows the photos it holds.
-  assert.equal((await logged()).length, 3);
+  // Both halves of the pair survive a failed attempt: the ops the server never applied, and the
+  // records the page draws from.
+  assert.equal(await logged(), 2);
   const projected = await cards(engine);
   assert.deepEqual(
     projected.map((fields) => fields.sha256),
@@ -101,9 +129,9 @@ test('queued upload cards: an unconfirmed batch still reads as cards after a fai
   assert.equal(projected[0]!.createdAt, 1_700_000_000_000, 'the upload instant survives');
 });
 
-test('queued upload cards: a confirmed sync retires the cards', async () => {
-  await appendOp(db, buildUploadOp(payload('a')));
-  await appendOp(db, buildUploadOp(payload('b')));
+test('a confirmed sync retires both the ops and the records', async () => {
+  await hosted('a');
+  await hosted('b');
 
   const engine = new SyncEngine({
     db,
@@ -112,48 +140,63 @@ test('queued upload cards: a confirmed sync retires the cards', async () => {
   });
   await engine.sync();
 
-  assert.deepEqual(await logged(), [], 'confirmed keys are cleared');
+  assert.equal(await logged(), 0, 'confirmed keys are cleared');
+  assert.deepEqual(await readPhotoRecords(db), [], 'and their records go with them');
   assert.deepEqual(await cards(engine), [], 'so there is no card left to draw');
 });
 
-test('queued upload cards: a landed or live sha never draws a second card', async () => {
-  await appendOp(db, buildUploadOp(payload('a')));
-  await appendOp(db, buildUploadOp(payload('b')));
+test('a withdrawn photo leaves nothing behind', async () => {
+  await hosted('a');
+  await hosted('b');
   const engine = new SyncEngine({ db });
-  const ops = await engine.queuedOps();
 
-  // A partial batch: the snapshot can carry one sha while the other one's op is still queued.
+  // The upload op is deleted by its own key — the record is what knows that key.
+  await removePhoto(db, 'a');
+  assert.equal(await readPhotoRecord(db, 'a'), null);
+  assert.equal(await logged(), 1, 'only the other photo op is left');
   assert.deepEqual(
-    queuedUploadCards(ops, { landed: new Set(['a']), live: new Set() }).map((f) => f.sha256),
+    (await cards(engine)).map((fields) => fields.sha256),
+    ['b'],
+  );
+});
+
+test('a landed or live sha never draws a second card', async () => {
+  await hosted('a');
+  await hosted('b');
+  const engine = new SyncEngine({ db });
+  const records = await engine.hostedPhotos();
+
+  // A partial batch: the snapshot can carry one sha while the other one is still queued.
+  assert.deepEqual(
+    hostedPhotoCards(records, { landed: new Set(['a']), live: new Set() }).map((f) => f.sha256),
     ['b'],
   );
   // A live job owns the card for its own sha.
   assert.deepEqual(
-    queuedUploadCards(ops, { landed: new Set(), live: new Set(['a']) }).map((f) => f.sha256),
+    hostedPhotoCards(records, { landed: new Set(), live: new Set(['a']) }).map((f) => f.sha256),
     ['b'],
   );
 });
 
-// The withdrawal of a pending photo cannot remove its upload op (`removeOpsBySha` matches
-// `targetSha` and an upload op carries none), so the tombstone it files is the only durable
-// record that the photo is gone. Without honouring it, deleting a card and reloading before the
-// next sync brought the photo back — the card, the hosted bytes and the op disagreeing.
-test('queued upload cards: a deleted photo stays deleted across a reload', async () => {
-  await appendOp(db, buildUploadOp(payload('a')));
-  await appendOp(db, { type: 'delete', targetSha: 'a' });
+test('a late mark write cannot resurrect a withdrawn photo', async () => {
+  await hosted('a');
   const engine = new SyncEngine({ db });
-  assert.deepEqual(await cards(engine), [], 'the queued tombstone withdraws the card');
+  await removePhoto(db, 'a');
+  // The record is gone, so the write is a no-op rather than a half-resurrected card.
+  await engine.updatePhotoMarks('a', { likes: [0], dislikes: [], reports: [] });
+  assert.equal(await readPhotoRecord(db, 'a'), null);
+  assert.deepEqual(await cards(engine), []);
 });
 
-test('queued upload cards: re-picking a deleted file draws its new card', async () => {
-  await appendOp(db, buildUploadOp(payload('a')));
-  await appendOp(db, { type: 'delete', targetSha: 'a' });
-  await appendOp(db, buildUploadOp({ ...payload('a'), url: 'https://host/a-again.webp' }));
+test('a worker-owned record is not a card: the worker replays it as a job', async () => {
   const engine = new SyncEngine({ db });
-  const projected = await cards(engine);
-  assert.deepEqual(
-    projected.map((fields) => fields.sha256),
-    ['a'],
-  );
-  assert.equal(projected[0]!.url, 'https://host/a-again.webp', 'the newest upload describes it');
+  const workerRecord = (sha: string, status: PhotoRecord['status']): PhotoRecord => ({
+    sha256: sha,
+    status,
+    meta: { width: 4, height: 3, size: 10, type: 0 },
+    artifact: { key: `job-${sha}`, ext: 'webp' },
+  });
+  await putPhotoRecord(db, workerRecord('a', 'uploading'));
+  await putPhotoRecord(db, workerRecord('b', 'failed'));
+  assert.deepEqual(await cards(engine), []);
 });
