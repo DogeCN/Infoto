@@ -744,7 +744,7 @@ test('the server owns the like/dislike exclusion, so one op states a switch', as
 // time in a unit test measures the machine, not the query plan.
 test('a 200-upload batch costs the reads of a small one and a fixed number of writes', async () => {
   const measure = async (count: number): Promise<DbCallCounts> => {
-    const counts: DbCallCounts = { queries: 0, batches: 0 };
+    const counts: DbCallCounts = { queries: 0, batches: 0, maxBinds: 0 };
     const { app } = makeApp({
       mediaHostUrl: 'https://facade.example',
       wrapDb: (db) => countingDb(db, counts).db,
@@ -753,6 +753,7 @@ test('a 200-upload batch costs the reads of a small one and a fixed number of wr
     // The identity read belongs to the session, not to the batch.
     counts.queries = 0;
     counts.batches = 0;
+    counts.maxBinds = 0;
     const ops = Array.from({ length: count }, (_, i) => ({
       type: 'upload',
       payload: {
@@ -802,4 +803,24 @@ test('ops keep their order across a chunk boundary', async () => {
   const liked = json.photos.find((p) => p.sha256 === 'sha-0');
   assert.ok(liked, 'the first upload is in the album');
   assert.deepEqual(liked.likes, [0], 'the like resolved against the row an earlier chunk wrote');
+});
+
+// D1 rejects a statement that binds more than 100 parameters (`d1/platform/limits`), and
+// MAX_SYNC_OPS lets one request vote on more distinct polls than that — so the poll read is
+// sliced. node:sqlite would accept the oversized statement silently, which is why this asserts
+// the invariant (no statement over-binds) rather than a failure.
+test('a batch never binds more parameters than one D1 query allows', async () => {
+  const counts: DbCallCounts = { queries: 0, batches: 0, maxBinds: 0 };
+  const { app } = makeApp({ wrapDb: (db) => countingDb(db, counts).db });
+  const cookie = cookieFrom(await syncNew(app));
+  counts.maxBinds = 0;
+  const ops = Array.from({ length: 250 }, (_, i) => ({
+    type: 'vote',
+    target: 10_000 + i,
+    payload: { options: [0] },
+  }));
+  const res = await sync(app, { ops }, cookie);
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as SyncResponse).photos.length, 0);
+  assert.ok(counts.maxBinds <= 100, `bound ${counts.maxBinds} parameters in one statement`);
 });

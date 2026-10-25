@@ -56,6 +56,8 @@ export interface DbCallCounts {
   queries: number;
   /** `db.batch` calls — one round trip each, however many statements it carries. */
   batches: number;
+  /** The most parameters bound by any single statement, against D1's 100-per-query cap. */
+  maxBinds: number;
 }
 
 /**
@@ -65,7 +67,7 @@ export interface DbCallCounts {
  */
 export function countingDb(
   db: LocalDb,
-  counts: DbCallCounts = { queries: 0, batches: 0 },
+  counts: DbCallCounts = { queries: 0, batches: 0, maxBinds: 0 },
 ): { db: Db; counts: DbCallCounts } {
   const counted = (prepared: DbPrepared): DbPrepared => ({
     async all<T>() {
@@ -87,11 +89,17 @@ export function countingDb(
       prepare(sql) {
         const binder = db.prepare(sql);
         return Object.assign(counted(binder), {
-          bind: (...values: unknown[]) => counted(binder.bind(...values)),
+          bind: (...values: unknown[]) => {
+            counts.maxBinds = Math.max(counts.maxBinds, values.length);
+            return counted(binder.bind(...values));
+          },
         });
       },
       batch(stmts: readonly DbStatement[]) {
         counts.batches++;
+        for (const statement of stmts) {
+          counts.maxBinds = Math.max(counts.maxBinds, statement.binds.length);
+        }
         return db.batch(stmts);
       },
     },

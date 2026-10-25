@@ -147,8 +147,12 @@ interface PollDefinition {
   allow_multiple: number;
 }
 
+/** D1's per-query cap on bound parameters is 100 (`d1/platform/limits`). `MAX_SYNC_OPS` lets one
+ *  request vote on more distinct polls than that, so this read is sliced rather than built whole. */
+const MAX_BOUND_PARAMS = 100;
+
 /**
- * The poll rows a batch votes on, read once, before any write.
+ * The poll rows a batch votes on, read before any write.
  *
  * A poll is created by the admin endpoints and never by a sync op, so this answer cannot be
  * changed by the ops that consume it — which is what lets every vote in the batch validate
@@ -159,15 +163,19 @@ async function loadPolls(db: Db, ops: Op[]): Promise<Map<number, PollDefinition>
   for (const op of ops) {
     if (op?.type === 'vote' && typeof op.target === 'number') ids.add(op.target);
   }
-  if (ids.size === 0) return new Map();
   const list = [...ids];
-  const rows = await db
-    .prepare(
-      `SELECT id, options, allow_multiple FROM polls WHERE id IN (${list.map(() => '?').join(', ')})`,
-    )
-    .bind(...list)
-    .all<PollDefinition & { id: number }>();
-  return new Map(rows.results.map((row) => [row.id, row]));
+  const out = new Map<number, PollDefinition>();
+  for (let offset = 0; offset < list.length; offset += MAX_BOUND_PARAMS) {
+    const slice = list.slice(offset, offset + MAX_BOUND_PARAMS);
+    const rows = await db
+      .prepare(
+        `SELECT id, options, allow_multiple FROM polls WHERE id IN (${slice.map(() => '?').join(', ')})`,
+      )
+      .bind(...slice)
+      .all<PollDefinition & { id: number }>();
+    for (const row of rows.results) out.set(row.id, row);
+  }
+  return out;
 }
 
 /**

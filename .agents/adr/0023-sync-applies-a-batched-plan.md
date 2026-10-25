@@ -25,7 +25,9 @@
     row still applies — the property the client's whole deferral mechanism depends on.
   - The only read the plan needs is the poll definitions a batch votes on, and it happens
     before any write. That is safe because a poll is created by an admin endpoint and never by a
-    sync op, so its answer cannot change under the ops that consume it.
+    sync op, so its answer cannot change under the ops that consume it. That read binds one
+    parameter per distinct poll, and D1 caps a statement at 100 bound parameters while
+    `MAX_SYNC_OPS` allows 500 ops in one request, so the ids are read in slices of 100.
   - Failure isolation moves from per-op to per-chunk: a chunk that throws is logged and dropped
     and the rest still apply. A failed _request_ still leaves the whole op list in the client's
     log, because `clearKeys` runs only after an `ok` response.
