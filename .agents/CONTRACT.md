@@ -286,8 +286,10 @@ Back-filled from the commit history. Tagged sections are not yet written.
     long-press, marquee, `selectAll` and Ctrl+A all reach them, which is what makes the batch
     "delete" the way out of a stuck upload. The failure cover is `bg-black/55`, matching the
     uploading curtain's own weight: a failed card is still a card in the grid, not a hole in it.
-  - **Nothing asserts any of this**, and `WaterfallLayout`'s `overlays` prop type is narrower
-    than the value the store actually passes (`preview` is missing from the declared type).
+  - **What is asserted, and what is not.** `photoCard.test.ts` holds the failure glyph and its
+    container sizing; `uploadPreview.test.ts` holds that the preview comes from OPFS and not the
+    pick; `pendingPhoto.test.ts` holds `rendersCard` across every phase. The overlay's own
+    geometry, layering and curtain arithmetic are asserted nowhere.
 - **Lightbox.** The action sheet is a **bottom sheet**, not a dropdown — a dropdown's top-right
   anchor is outside a thumb's reach on a phone.
   - Seven actions in a three-column grid, each a distinct hue. This is a scanning cue and is

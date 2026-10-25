@@ -11,26 +11,29 @@
   } from '$base/lib/layout';
   import { marqueeHits, type Rect } from '$base/lib/marquee';
   import type { Photo } from '$shared/types';
+  import type { UploadOverlay } from '../../core/pending';
   import PhotoCard from './PhotoCard.svelte';
   import Lightbox from './Lightbox.svelte';
   import MultiSelectBar from './MultiSelectBar.svelte';
   import { scroll } from '../../state/scroll.svelte';
   import { barHeight } from './topbarFit';
   import { barHVar } from '../../state/barHeight.svelte';
+  import { autoBandPx } from '../../state/canvasBand.svelte';
+  import { autoBand } from '$base/lib/band';
 
   interface Props {
     photos: Photo[];
     /** Pending upload entries (placed right after info cards, before other media; excluded from sorting/filtering). */
     pending?: Photo[];
-    /** Curtain overlays for pending entries: fraction (uploading) / failed (full cover + retry). */
-    overlays?: Map<number, { fraction?: number; failed?: boolean; error?: string }>;
+    /** Curtain overlays for pending entries; see `UploadOverlay` in `core/pending`. */
+    overlays?: Map<number, UploadOverlay>;
     onRetryUpload?: (photo: Photo) => void;
     /** Dismiss a failed upload card (cancel on the pipeline + drop locally). */
     onDismissUpload?: (photo: Photo) => void;
     dir?: ScrollDir;
     strategy?: FillStrategy;
-    /** Target row height / column width in CSS pixels. */
-    band?: number;
+    /** Target row height / column width in CSS pixels; null follows the measured canvas. */
+    band?: number | null;
     gap?: number;
     bufferScreens?: number;
     /** Live height of a fixed bottom overlay (the upload panel), measured by that overlay.
@@ -60,12 +63,12 @@
   let {
     photos,
     pending = [],
-    overlays = new Map<number, { fraction?: number; failed?: boolean; error?: string }>(),
+    overlays = new Map<number, UploadOverlay>(),
     onRetryUpload,
     onDismissUpload,
     dir = 'v',
     strategy = 'sequential',
-    band = 260,
+    band = null,
     gap = 12,
     bufferScreens = 2,
     bottomInset = 0,
@@ -218,6 +221,17 @@
     const s = strategy;
     // Scale the layout gap with the zoom level.
     const g = Math.max(0, Math.round(gap * zoom));
+    // Horizontal mode has no second scroll axis, so the overlay's closed footprint is taken
+    // out of the cross size instead. No breathing room here: the row already ends at the
+    // panel's top edge, and an open drawer is allowed to overlap it.
+    const reservedBottom = d === 'h' ? restBottomInset : 0;
+    const cross =
+      (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX + reservedBottom);
+    // The untouched default (band = null) follows the measured cross size. Publish the
+    // resolved value even while the list is empty: it is a property of the canvas, and the
+    // settings panel shows it as the slider's default.
+    const autoB = autoBand(cross, gap);
+    if (w > 0) autoBandPx.value = autoB;
     if (w <= 0 || items.length === 0) {
       // Cancel pending layout work when the list becomes empty.
       if (layoutTimer !== undefined) {
@@ -232,14 +246,8 @@
       layoutReady = false;
       return;
     }
-    // Column count comes from the persisted pixel band and the measured cross size.
-    // Horizontal mode has no second scroll axis, so the overlay's closed footprint is taken
-    // out of the cross size instead. No breathing room here: the row already ends at the
-    // panel's top edge, and an open drawer is allowed to overlap it.
-    const reservedBottom = d === 'h' ? restBottomInset : 0;
-    const cross =
-      (d === 'v' ? w : viewportH) - (d === 'v' ? padX * 2 : padTop + padX + reservedBottom);
-    const b = Math.max(1, Math.round(band * zoom));
+    // Column count comes from the pixel band and the measured cross size.
+    const b = Math.max(1, Math.round((band ?? autoB) * zoom));
     let itemsKey = layoutKeyCache.get(allPhotos);
     if (!itemsKey) {
       itemsKey = items.map((i) => `${i.id}:${i.w}:${i.h}`).join(',');

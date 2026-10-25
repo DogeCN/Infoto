@@ -6,8 +6,23 @@ import type { MarkSet } from './ops';
 /** How far the hosted copy of a pending card's media has got in this page. */
 export type HostedReadiness = 'pending' | 'ready' | 'failed';
 
+/**
+ * The curtain a pending card draws over its media, threaded store → layout → card.
+ *
+ * `fraction` is upload progress for the lifting veil; `failed` replaces it with the full cover
+ * and its retry. `preview` marks media that has not been hosted yet, so a decode failure is
+ * treated as transient rather than as a missing file.
+ */
+export interface UploadOverlay {
+  fraction?: number;
+  failed?: boolean;
+  /** Localised summary of the failure, shown on the cover. */
+  error?: string;
+  preview?: boolean;
+}
+
 /** The subset of a task snapshot that decides whether it renders a card. */
-export interface CardStage {
+interface CardStage {
   phase: string;
   url?: string;
   meta?: unknown;

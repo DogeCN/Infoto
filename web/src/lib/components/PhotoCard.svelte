@@ -8,6 +8,7 @@
   import TooltipIconButton from './TooltipIconButton.svelte';
   import GlitchText from './GlitchText.svelte';
   import type { GeomStamp } from '$base/lib/layout';
+  import type { UploadOverlay } from '../../core/pending';
   import {
     ThumbsUp,
     ThumbsDown,
@@ -33,10 +34,8 @@
     /** performance.now() of the latest layout commit; a remount inside the flip window
      *  (derived from `--duration-reflow`) glides, a later one appears in place. */
     reflowAt?: number;
-    /** Upload curtain overlay: fraction = progress (reveal ratio), failed = full cover + retry.
-     *  `preview` marks media that is only a local stand-in, so a source the browser cannot
-     *  decode falls back to the skeleton instead of the broken-photo placeholder. */
-    overlay?: { fraction?: number; failed?: boolean; error?: string; preview?: boolean };
+    /** Upload curtain overlay; see `UploadOverlay` in `core/pending`. */
+    overlay?: UploadOverlay;
     selected?: boolean;
     multiMode?: boolean;
     onClick?: () => void;
