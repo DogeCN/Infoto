@@ -140,11 +140,18 @@ Back-filled from the commit history. Tagged sections are not yet written.
     slice/jitter only. Same layer stack, less capability.
   - The two 404 wordings differ on purpose: the SPA one is a route miss, the Worker's also
     covers a removed image — hence `spaNotFoundMessage` vs `workerNotFoundMessage`.
-- **Broken media shows nothing.** A card whose media fails to load renders a bare
-  `--color-card` surface — no status code, no glyph, no toast. The grid stays silent about it;
-  the report is the toast the Lightbox raises when that card is opened. The earlier glitching
-  `404` fallback was removed on 2026-10-04 as vestigial, and the real HTTP status was never
-  obtainable cross-origin anyway, so it could only ever have been a guess.
+- **Broken media shows a glitching 404.** A card whose media fails to load renders the same
+  `GlitchText` the error page uses, over a `--color-card` surface, and still opens the Lightbox,
+  which raises a failure toast of its own. The size is a container-query expression with a
+  breakpoint at 140px card width: `clamp(0.65rem, 14cqmin, 0.85rem)` below it,
+  `clamp(1.25rem, 22cqmin, 3.5rem)` above. **The number is a label, not a measured status** —
+  media is fetched cross-origin, where an `<img>`/`<video>` error event carries no HTTP status
+  and `fetch()` can only return an opaque response. It is read as "this file cannot be shown".
+  This fallback was removed on 2026-10-04 (in a commit about reflow motion, which is why the
+  deletion and the contract entry describing it were easy to miss) and restored on 2026-10-19:
+  a failed card with no marker is indistinguishable from one that has not loaded yet, and the
+  silent version shipped alongside a transcode defect that blanked every uploaded GIF — with
+  nothing in the grid to say so. Removing it again needs a replacement indicator, not deletion.
 - **Segmented sort pill.** The pill never decides its own shape — it renders `showLabels`
   as handed to it, and the **top bar** decides via `resolveBarMode`. Three modes: `full`
   (one screen, labels), `compact` (one screen, icons), `paged` (two screens, whose first

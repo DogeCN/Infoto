@@ -5,6 +5,7 @@
   import { fmt, plural } from '$shared/copy';
   import { reflowFlipWindowMs } from '$base/lib/motion';
   import TooltipIconButton from './TooltipIconButton.svelte';
+  import GlitchText from './GlitchText.svelte';
   import type { GeomStamp } from '$base/lib/layout';
   import {
     ThumbsUp,
@@ -199,6 +200,12 @@
   });
 
   /** Display load failures for hosted media; retain the skeleton for unavailable local previews. */
+  // A card whose media will not load reads as "404" — the same glyph the not-found page uses.
+  // The number is a label, not a measured status: media is fetched cross-origin, where an
+  // <img>/<video> error event carries no HTTP status and fetch() can only return an opaque
+  // response. It says "this file cannot be shown", which is the only thing the card knows.
+  const failStatus = '404';
+
   function handleMediaError(): void {
     if (overlay?.preview) return;
     loadFailed = true;
@@ -236,12 +243,17 @@
     onClick?.();
   }}
 >
-  <!-- Media: on load failure the card keeps a bare raised surface. The failure is reported by
-       the Lightbox, which the card still opens; the grid itself shows nothing.
+  <!-- Media: on load failure render a glitching error code. The failure is also reported by the
+       Lightbox toast, which the card still opens; the grid shows this glyph instead of silence.
        Empty URL (upload still in flight) keeps the skeleton instead of an <img>
        whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
-    <div class="h-full w-full bg-card"></div>
+    <div class="flex h-full w-full items-center justify-center bg-card [container-type:size]">
+      <GlitchText
+        text={failStatus}
+        size={width < 140 ? 'clamp(0.65rem, 14cqmin, 0.85rem)' : 'clamp(1.25rem, 22cqmin, 3.5rem)'}
+      />
+    </div>
   {:else if photo.url}
     {#if loadedUrl !== photo.url}
       <div class="absolute inset-0 skeleton" aria-hidden="true"></div>
