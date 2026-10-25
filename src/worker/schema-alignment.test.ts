@@ -10,7 +10,9 @@ import { EXPORT_COLUMNS, MIGRATE_TABLES } from './routes/migrate.ts';
 
 const file = readFileSync(path.join(import.meta.dirname, '..', '..', 'schema.sql'), 'utf8');
 
-const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
+/** Line endings are the only permitted difference: the generator embeds `schema.sql`
+ *  verbatim, so anything else means the generated file was hand-edited. */
+const normalizeEol = (s: string): string => s.replace(/\r\n/g, '\n');
 
 /** Table name -> declared column names, read out of the CREATE TABLE statements. */
 function schemaColumns(sql: string): Map<string, string[]> {
@@ -45,7 +47,7 @@ function schemaColumns(sql: string): Map<string, string[]> {
 }
 
 test('schema-ddl.ts and the migrate export lists match schema.sql', () => {
-  assert.equal(norm(SCHEMA_SQL), norm(file));
+  assert.equal(normalizeEol(SCHEMA_SQL), normalizeEol(file));
   const declared = schemaColumns(file);
   for (const [table, columns] of Object.entries(EXPORT_COLUMNS)) {
     assert.deepEqual([...columns], declared.get(table), table);

@@ -1,26 +1,12 @@
 // Initialize local D1 only when tables are missing. Suppress statement output and preserve error diagnostics.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
-
-const require = createRequire(import.meta.url);
+import { databaseSync, localDbFiles } from './local-db.mjs';
 
 const root = path.resolve(import.meta.dirname, '..', '..');
 const WRANGLER = path.join(root, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
-const SQLITE_DIR = path.join(root, '.wrangler', 'state', 'v3', 'd1', 'miniflare-D1DatabaseObject');
 const PROBE_TABLE = 'users';
-
-/** Local D1 database files, ordered by modification time. A single file identifies the active database unambiguously. */
-function localDbFiles() {
-  if (!existsSync(SQLITE_DIR)) return [];
-  return readdirSync(SQLITE_DIR)
-    .filter((f) => f.endsWith('.sqlite') && !f.startsWith('metadata.'))
-    .map((f) => path.join(SQLITE_DIR, f))
-    .filter((f) => statSync(f).size > 0)
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-}
 
 /**
  * True when the local D1 already carries the schema.
@@ -32,7 +18,7 @@ export function hasLocalSchema() {
   if (files.length !== 1) return false; // no DB yet, or an ambiguous rename
   let DatabaseSync;
   try {
-    ({ DatabaseSync } = require('node:sqlite'));
+    DatabaseSync = databaseSync();
   } catch {
     return false; // runtime without node:sqlite
   }

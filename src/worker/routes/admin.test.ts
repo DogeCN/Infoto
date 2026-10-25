@@ -127,6 +127,23 @@ test('create rejects a missing or blank field', async () => {
   const { root } = await twoIdentities(app);
   assert.equal((await annCreate(app, root, '', 'b')).status, 400);
   assert.equal((await annCreate(app, root, 'a', '')).status, 400);
+  // A whitespace-only body trims to empty: the card is not created with no content.
+  assert.equal((await annCreate(app, root, 'a', '   ')).status, 400);
+});
+
+test('an overlong announcement body is refused with 413 instead of stored', async () => {
+  const { app } = makeApp();
+  const { root } = await twoIdentities(app);
+  const tooLarge = 'x'.repeat(20_001);
+
+  const created = await annCreate(app, root, 'a', tooLarge);
+  assert.equal(created.status, 413);
+  assert.deepEqual(await created.json(), { ok: false, error: 'too_large' });
+
+  await annCreate(app, root, 'a', 'body');
+  assert.equal((await annPut(app, root, 1, 'a', tooLarge)).status, 413);
+  // The refused update wrote nothing.
+  assert.equal((await snap(app, root)).announcements[0]!.contentMd, 'body');
 });
 
 test('update existing → 200; update missing → 404', async () => {
@@ -137,6 +154,35 @@ test('update existing → 200; update missing → 404', async () => {
   assert.equal((await annPut(app, root, 999, 'x', 'y')).status, 404);
   const after = await snap(app, root);
   assert.equal(after.announcements[0]!.title, 'a2');
+});
+
+test('a locale change moves the row to the end of the target locale order', async () => {
+  const { app } = makeApp();
+  const { root } = await twoIdentities(app);
+  for (const title of ['en-0', 'en-1']) await annCreate(app, root, title, 'body', 'en-US');
+  for (const title of ['zh-0', 'zh-1']) await annCreate(app, root, title, 'body', 'zh-CN');
+  const moving = (await snap(app, root)).announcements.find((item) => item.title === 'en-1')!;
+
+  assert.equal(
+    (await annPut(app, root, moving.id, moving.title, moving.contentMd, 'zh-CN')).status,
+    200,
+  );
+  const zh = (await snap(app, root)).announcements.filter((item) => item.locale === 'zh-CN');
+  // Three rows, one index each: keeping the source locale's sort would leave 0,1,1.
+  assert.deepEqual(
+    zh.map((item) => item.sort),
+    [0, 1, 2],
+  );
+  assert.equal(zh.at(-1)!.title, 'en-1');
+
+  // An edit that keeps the locale keeps its position instead of appending again.
+  const staying = zh[0]!;
+  assert.equal(
+    (await annPut(app, root, staying.id, 'still-first', staying.contentMd, 'zh-CN')).status,
+    200,
+  );
+  const kept = (await snap(app, root)).announcements.filter((item) => item.locale === 'zh-CN');
+  assert.equal(kept.find((item) => item.title === 'still-first')!.sort, 0);
 });
 
 test('the snapshot carries announcements and feedback from every locale', async () => {
@@ -160,6 +206,78 @@ test('the snapshot carries announcements and feedback from every locale', async 
     'English suggestion',
     'Localized suggestion',
   ]);
+});
+
+test('a poll locale change joins the target locale order without a duplicate sort', async () => {
+  const { app } = makeApp();
+  const { root } = await twoIdentities(app);
+  const create = async (label: string, locale: string): Promise<number> => {
+    const res = await pollRequest(app, 'POST', '', root, {
+      options: [`${label}-a`, `${label}-b`],
+      allowMultiple: false,
+      locale,
+    });
+    return ((await res.json()) as { poll: { id: number } }).poll.id;
+  };
+  const first = await create('en0', 'en-US');
+  const second = await create('en1', 'en-US');
+  await create('zh0', 'zh-CN');
+  await create('zh1', 'zh-CN');
+
+  const overwrite = (id: number) =>
+    pollRequest(app, 'PUT', `/${id}`, root, {
+      options: ['moved-a', 'moved-b'],
+      allowMultiple: false,
+      votes: [],
+      locale: 'zh-CN',
+    });
+
+  assert.equal((await overwrite(second)).status, 200);
+  const zh = (await snap(app, root)).polls.filter((poll) => poll.locale === 'zh-CN');
+  assert.deepEqual(
+    zh.map((poll) => poll.sort),
+    [0, 1, 2],
+  );
+  assert.deepEqual(zh.at(-1)!.options, ['moved-a', 'moved-b']);
+
+  assert.equal((await overwrite(first)).status, 200);
+  const grown = (await snap(app, root)).polls.filter((poll) => poll.locale === 'zh-CN');
+  assert.deepEqual(
+    grown.map((poll) => poll.sort),
+    [0, 1, 2, 3],
+  );
+});
+
+test('poll create rejects a non-string option and a vote set it cannot store', async () => {
+  const { app } = makeApp();
+  const { root } = await twoIdentities(app);
+  // A dropped entry would shift every option index a later vote addresses.
+  assert.equal(
+    (
+      await pollRequest(app, 'POST', '', root, {
+        options: ['A', 7, 'B'],
+        allowMultiple: false,
+        locale: 'en-US',
+      })
+    ).status,
+    400,
+  );
+  // A create has nothing to apply votes to; accepting the field would store none of them.
+  assert.equal(
+    (
+      await pollRequest(app, 'POST', '', root, {
+        options: ['A', 'B'],
+        allowMultiple: false,
+        votes: [{ userId: 0, option: 1 }],
+        locale: 'en-US',
+      })
+    ).status,
+    400,
+  );
+  assert.equal((await pollCreate(app, root, ['A', 'B'])).status, 200);
+  const after = await snap(app, root);
+  assert.equal(after.polls.length, 1);
+  assert.deepEqual(after.polls[0]!.votes, []);
 });
 
 test('poll overwrite stores the supplied option order and vote set verbatim', async () => {

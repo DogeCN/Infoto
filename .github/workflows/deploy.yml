@@ -112,6 +112,15 @@ jobs:
           sed -i "s/^name = .*/name = \"$DEPLOY_NAME\"/" wrangler.toml
           sed -i "s/^database_name = .*/database_name = \"$DEPLOY_NAME\"/" wrangler.toml
           sed -i "s/^database_id = .*/database_id = \"$DB_ID\"/" wrangler.toml
+          # sed exits 0 whether or not it matched, so a reformatted key would leave the
+          # checked-in target in place and this run would deploy — and write to — the
+          # wrong Worker/D1. Read back what was written and fail loudly instead.
+          grep -q "^name = \"$DEPLOY_NAME\"$" wrangler.toml \
+            || { echo "::error::name patch did not apply — refusing to deploy the wrong target"; exit 1; }
+          grep -q "^database_name = \"$DEPLOY_NAME\"$" wrangler.toml \
+            || { echo "::error::database_name patch did not apply — refusing to deploy the wrong target"; exit 1; }
+          grep -q "^database_id = \"$DB_ID\"$" wrangler.toml \
+            || { echo "::error::database_id patch did not apply — refusing to deploy the wrong target"; exit 1; }
           # The site key must match the secret injected below: a tag push uses the
           # real key, a branch push the Cloudflare test key.
           SITE_KEY="${{ inputs.TURNSTILE_SITE_KEY }}"

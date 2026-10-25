@@ -1,6 +1,7 @@
 // Root-only SQL export and import. Import replaces the dataset and restores backup tables on failure.
 
 import type { Context } from 'hono';
+import { MAX_IMPORT_BYTES } from '../../shared/types.ts';
 import type { AppEnv } from '../app.ts';
 import type { Db } from '../db.ts';
 import { badRequest, forbidden, requireRoot } from '../http.ts';
@@ -32,7 +33,6 @@ export const EXPORT_COLUMNS = {
 
 export const MIGRATE_TABLES = Object.keys(EXPORT_COLUMNS);
 
-const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 /** Statements per transaction. */
 const CHUNK = 100;
 

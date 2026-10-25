@@ -1,14 +1,14 @@
 // Admin translation drafts. The runner is injected so unit tests never call Workers AI.
 //
-// This module also owns the request contract: the endpoint's body parser, the size rule that
-// answers 413, and the predicate the model adapter re-checks. They live together so a limit is
-// written once — the route and the adapter used to carry separate copies of the same numbers.
+// This module also owns the announcement and translation request contract: the body parsers,
+// the size rule that answers 413, and the draft-shape checks. They live here so a limit is
+// written once and every admin route applies the same rule.
 
 import { isLocaleCode } from '../shared/copy.ts';
 import { isRecord, safeJsonParse } from '../shared/json.ts';
+import { parsePollOptions, POLL_REFERENCE } from '../shared/poll.ts';
 import {
   MAX_POLL_OPTION_CHARS,
-  MAX_POLL_OPTIONS,
   MAX_TEXT_LENGTH,
   type LocaleCode,
   type TranslationDraft,
@@ -22,12 +22,13 @@ export type ModelRunner = (
   schema: Record<string, unknown>,
 ) => Promise<string>;
 
-const LANGUAGE_CODE: Record<LocaleCode, string> = {
+const LANGUAGE_CODE: Record<LocaleCode, 'en' | 'zh'> = {
   'en-US': 'en',
   'zh-CN': 'zh',
 };
+type LanguageCode = (typeof LANGUAGE_CODE)[LocaleCode];
 
-const LANGUAGE_NAME: Record<string, string> = {
+const LANGUAGE_NAME: Record<LanguageCode, string> = {
   en: 'English',
   zh: 'Simplified Chinese',
 };
@@ -38,8 +39,6 @@ export const TRANSLATION_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const REST_TIMEOUT_MS = 30_000;
 /** The whole body is one JSON response; leave room for a long announcement. */
 export const MAX_OUTPUT_TOKENS = 8192;
-
-const POLL_LINE = /^\s*::poll:[A-Za-z][A-Za-z0-9-]*:\d+\s*$/;
 
 const ANNOUNCEMENT_SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -60,7 +59,7 @@ const POLL_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-export interface Segment {
+interface Segment {
   /** Literal segments are reinserted unchanged: fenced code, blank lines, poll references. */
   literal: boolean;
   text: string;
@@ -83,8 +82,24 @@ export function responseText(result: unknown): string {
   return '';
 }
 
-function languageOf(locale: LocaleCode): string | null {
-  return Object.hasOwn(LANGUAGE_CODE, locale) ? LANGUAGE_CODE[locale] : null;
+/** The short model language code for a registered locale. */
+function languageOf(locale: LocaleCode): LanguageCode {
+  return LANGUAGE_CODE[locale];
+}
+
+/**
+ * Announcement card content: a trimmed, non-empty title and a non-empty body. Sizes are
+ * `isOversizedAnnouncement`'s job, so a caller can answer 413 instead of collapsing an
+ * overlong card into the same 400 as a malformed one.
+ */
+export function readAnnouncementContent(
+  body: unknown,
+): { title: string; contentMd: string } | null {
+  if (!isRecord(body)) return null;
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  const contentMd = typeof body.contentMd === 'string' ? body.contentMd : '';
+  if (!title || !contentMd.trim()) return null;
+  return { title, contentMd };
 }
 
 /**
@@ -99,35 +114,27 @@ export function readTranslationRequest(body: unknown): TranslationRequest | null
   if (!sourceLocale || !targetLocale || sourceLocale === targetLocale) return null;
 
   if (body.kind === 'announcement') {
-    const title = typeof body.title === 'string' ? body.title.trim() : '';
-    const contentMd = typeof body.contentMd === 'string' ? body.contentMd : '';
-    if (!title || !contentMd.trim()) return null;
-    return { kind: 'announcement', sourceLocale, targetLocale, title, contentMd };
+    const content = readAnnouncementContent(body);
+    if (!content) return null;
+    return { kind: 'announcement', sourceLocale, targetLocale, ...content };
   }
 
-  if (body.kind !== 'poll' || !Array.isArray(body.options)) return null;
-  if (typeof body.allowMultiple !== 'boolean') return null;
-  if (!body.options.every((option): option is string => typeof option === 'string')) return null;
-  const options = body.options.map((option) => option.trim());
-  if (options.length < 2 || options.length > MAX_POLL_OPTIONS) return null;
-  if (options.some((option) => !option || option.length > MAX_POLL_OPTION_CHARS)) return null;
+  if (body.kind !== 'poll' || typeof body.allowMultiple !== 'boolean') return null;
+  const options = parsePollOptions(body.options);
+  if (!options) return null;
   return { kind: 'poll', sourceLocale, targetLocale, options, allowMultiple: body.allowMultiple };
+}
+
+/** Announcement text beyond the stored and translated limit; the endpoint answers 413. */
+export function isOversizedAnnouncement(title: string, contentMd: string): boolean {
+  return title.length > MAX_TEXT_LENGTH || contentMd.length > MAX_TEXT_LENGTH;
 }
 
 /** Announcement text beyond the model's budget; the endpoint answers 413 rather than 400. */
 export function isOversizedTranslation(request: TranslationRequest): boolean {
   return (
-    request.kind === 'announcement' &&
-    (request.title.length > MAX_TEXT_LENGTH || request.contentMd.length > MAX_TEXT_LENGTH)
+    request.kind === 'announcement' && isOversizedAnnouncement(request.title, request.contentMd)
   );
-}
-
-/**
- * Everything the model adapter requires of a typed request. The route validates the wire body
- * first, but `structuredTranslator` is also a plain function that a caller can hand anything.
- */
-export function isTranslatable(request: TranslationRequest): boolean {
-  return readTranslationRequest(request) !== null && !isOversizedTranslation(request);
 }
 
 /**
@@ -161,7 +168,7 @@ export function splitAnnouncement(contentMd: string): Segment[] {
       segments.push({ literal: true, text: line });
       continue;
     }
-    if (POLL_LINE.test(line)) {
+    if (POLL_REFERENCE.test(line)) {
       flush();
       segments.push({ literal: true, text: line });
       continue;
@@ -230,14 +237,8 @@ function buildMessages(
  */
 export function structuredTranslator(run: ModelRunner): Translator {
   return async (request): Promise<TranslationDraft> => {
-    const sourceLang = languageOf(request.sourceLocale);
-    const targetLang = languageOf(request.targetLocale);
-    if (!sourceLang || !targetLang || sourceLang === targetLang) {
-      throw new Error('unsupported_locale');
-    }
-    if (!isTranslatable(request)) throw new Error('invalid_request');
-    const source = LANGUAGE_NAME[sourceLang] ?? sourceLang;
-    const target = LANGUAGE_NAME[targetLang] ?? targetLang;
+    const source = LANGUAGE_NAME[languageOf(request.sourceLocale)];
+    const target = LANGUAGE_NAME[languageOf(request.targetLocale)];
 
     if (request.kind === 'announcement') {
       const segments = splitAnnouncement(request.contentMd);
@@ -273,6 +274,9 @@ export function structuredTranslator(run: ModelRunner): Translator {
       }
       const contentMd = pieces.join('\n');
       if (!contentMd.trim()) throw new Error('empty_translation');
+      // The announcement create endpoint enforces the same ceiling, so returning an overlong
+      // draft would hand the admin a card that cannot be saved.
+      if (isOversizedAnnouncement(title, contentMd)) throw new Error('invalid_response');
       return { kind: 'announcement', title, contentMd };
     }
 
@@ -290,8 +294,12 @@ export function structuredTranslator(run: ModelRunner): Translator {
     }
     const options: string[] = [];
     for (const option of translated) {
-      if (typeof option !== 'string' || !option.trim()) throw new Error('empty_translation');
-      options.push(option.trim());
+      if (typeof option !== 'string') throw new Error('invalid_response');
+      const value = option.trim();
+      if (!value) throw new Error('empty_translation');
+      // The saved poll enforces the same per-option ceiling, so an overlong draft is unsavable.
+      if (value.length > MAX_POLL_OPTION_CHARS) throw new Error('invalid_response');
+      options.push(value);
     }
     return { kind: 'poll', options };
   };

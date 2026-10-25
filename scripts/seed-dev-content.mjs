@@ -22,14 +22,19 @@ db.exec(`
   DELETE FROM sqlite_sequence WHERE name IN ('polls', 'announcements', 'feedback');
 `);
 
-// Demo identities so reactions, votes, and feedback reference distinct users
-// (id 0 is the root user; the sync flow reuses whatever already exists).
+// Demo identities so reactions, votes, and feedback reference distinct users. Id 0 is the root
+// user, and it must carry the deterministic all-zero uuid: the session cookie is HttpOnly and
+// the sync flow reuses an existing row, so the seeded browser test (and a manual admin session)
+// authenticates by presenting that exact uuid. The UPDATE after the inserts is what makes this
+// idempotent — `INSERT OR IGNORE` leaves an already-existing row's uuid untouched.
+const ROOT_UUID = '00000000-0000-0000-0000-000000000000';
 const insertUser = db.prepare(
   'INSERT OR IGNORE INTO users (id, uuid, created_at) VALUES (?, ?, ?)',
 );
-insertUser.run(0, 'seed-root-user', now - 90 * 86_400_000);
+insertUser.run(0, ROOT_UUID, now - 90 * 86_400_000);
 insertUser.run(1, 'seed-guest-one', now - 30 * 86_400_000);
 insertUser.run(2, 'seed-guest-two', now - 12 * 86_400_000);
+db.prepare('UPDATE users SET uuid = ? WHERE id = 0').run(ROOT_UUID);
 
 const AGE_UNITS = { m: 60_000, h: 3_600_000, d: 86_400_000 };
 function parseAge(text) {

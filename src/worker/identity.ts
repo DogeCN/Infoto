@@ -6,7 +6,7 @@ import type { Db } from './db.ts';
 const COOKIE_NAME = 'uuid';
 /** Cookie lifetime in seconds. The cookie is re-issued on every /sync, so this is a
  *  sliding window; 400 days is the largest value browsers accept. */
-const COOKIE_MAX_AGE = 345_600_000;
+const COOKIE_MAX_AGE = 34_560_000;
 export const ROOT_ID = 0;
 
 export interface UserRow {

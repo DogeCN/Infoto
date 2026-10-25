@@ -14,7 +14,7 @@ export const FONT_SOURCES = [
   { css: 'https://fonts.googleapis.com', files: 'https://fonts.gstatic.com' },
 ] as const;
 
-export type FontSource = (typeof FONT_SOURCES)[number];
+type FontSource = (typeof FONT_SOURCES)[number];
 
 /** SPA families: Inter and Noto Sans SC, weights 400–700. */
 export const APP_FONT_QUERY =

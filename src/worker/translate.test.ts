@@ -114,6 +114,43 @@ test('translate: malformed or incomplete structured output is rejected', async (
   );
 });
 
+test('translate: a draft the album would refuse is rejected, not returned', async () => {
+  // A translated poll option over MAX_POLL_OPTION_CHARS could never be saved: the poll
+  // endpoints apply the same ceiling, so an overlong draft is a dead end.
+  await assert.rejects(
+    structuredTranslator(jsonRunner({ options: ['y'.repeat(201), 'B'] }))({
+      kind: 'poll',
+      sourceLocale: 'zh-CN',
+      targetLocale: 'en-US',
+      options: ['s'.repeat(200), 'B'],
+      allowMultiple: false,
+    }),
+    /invalid_response/,
+  );
+  // Same for an announcement draft over MAX_TEXT_LENGTH.
+  await assert.rejects(
+    structuredTranslator(jsonRunner({ title: 'T', texts: ['x'.repeat(20_001)] }))({
+      kind: 'announcement',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      title: 'T',
+      contentMd: 'A',
+    }),
+    /invalid_response/,
+  );
+  // A non-string array entry is malformed output, not a translation.
+  await assert.rejects(
+    structuredTranslator(jsonRunner({ options: ['A2', 7] }))({
+      kind: 'poll',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      options: ['A', 'B'],
+      allowMultiple: false,
+    }),
+    /invalid_response/,
+  );
+});
+
 test('translate: model-added blank lines are normalized per text entry', async () => {
   const draft = await structuredTranslator(
     jsonRunner({ title: 'T2', texts: ['\nIntro\n\n', '\n- A\n\n- B\n'] }),

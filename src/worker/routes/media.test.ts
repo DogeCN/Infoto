@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { isStorableMediaUrl } from '../../shared/media.ts';
 import { makeApp } from '../../testing/app.ts';
-import { isStorableMediaUrl } from './media.ts';
 
 test('validates media origins, redirect targets, and response isolation', async () => {
   // Media URLs reject local literals, credentials, and trailing-dot local hosts.

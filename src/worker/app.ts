@@ -54,12 +54,12 @@ export function createApp(env: AppEnv): Hono {
   app.get('/admin/migrate', migrateExportHandler(env));
   app.post('/admin/migrate', migrateImportHandler(env));
   app.route('/admin', adminApp(env));
-  // /admin (the management page) is a front-end route: the SPA fallback serves it.
-  app.all('/admin/*', (c) => notFoundPage(c.req.raw));
   app.get('*', async (c) => {
-    // The SPA shell exists for exactly two client routes. Everything else is a hard 404:
-    // answering arbitrary paths with index.html made crawlers (and Google's URL fetcher)
-    // read missing pages as existing ones. Trailing slashes normalize to the same routes.
+    // This handler runs only for a request that reached the Worker: `run_worker_first` names
+    // the paths a deployment hands over, and `wrangler dev` hands over everything. It serves
+    // the SPA shell for the two client routes and answers every other path with a hard 404 —
+    // an unmatched `/admin/*` included, so no API-shaped path can fall through to the shell.
+    // Trailing slashes normalize to the same routes.
     const path = new URL(c.req.raw.url).pathname.replace(/\/+$/, '') || '/';
     if ((path === '/' || path === '/admin') && env.assets) {
       const res = await env.assets(c.req.raw);

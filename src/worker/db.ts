@@ -10,7 +10,7 @@ export interface DbStatement {
   readonly binds: readonly unknown[];
 }
 
-export interface DbRows<T> {
+interface DbRows<T> {
   results: T[];
 }
 
@@ -26,7 +26,7 @@ export interface DbPrepared {
   run(): Promise<DbRunResult>;
 }
 
-export interface DbBinder extends DbPrepared {
+interface DbBinder extends DbPrepared {
   bind(...values: unknown[]): DbPrepared;
 }
 

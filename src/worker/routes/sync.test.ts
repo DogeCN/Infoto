@@ -50,6 +50,8 @@ test('first identity: fake token ok, selfId 0, camelCase, no users, empty feedba
   const set = res.headers.get('set-cookie') ?? '';
   assert.ok(set.includes('HttpOnly'));
   assert.ok(set.includes('SameSite=Lax'));
+  // 400 days in seconds: the sliding-window lifetime the cookie comment names.
+  assert.ok(set.includes('Max-Age=34560000'), set);
   assert.ok(!set.includes('Secure'));
 });
 

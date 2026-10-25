@@ -7,7 +7,7 @@ import type { Db } from './db.ts';
 import { ROOT_ID, resolveUser } from './identity.ts';
 
 /** Tables whose `sort` column holds a manual display order within a locale. */
-export type SortTable = 'announcements' | 'feedback' | 'polls';
+type SortTable = 'announcements' | 'feedback' | 'polls';
 
 /** JSON body of `c`, or null when it is missing or malformed. */
 export function readJson<T>(c: Context): Promise<T | null> {

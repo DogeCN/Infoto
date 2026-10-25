@@ -16,6 +16,10 @@ export const MAX_TEXT_LENGTH = 20_000;
 /** Longest accepted poll option, on the wire and in a translation draft. */
 export const MAX_POLL_OPTION_CHARS = 200;
 
+/** Largest SQL import body /admin/migrate accepts, in bytes. The browser refuses the same
+ *  size before sending, so the two halves must read one value. */
+export const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+
 /** Media kind encoded in photos.type. */
 export const MEDIA_TYPE = {
   /** Still image (WebP). */
@@ -52,7 +56,7 @@ export interface Photo {
 }
 
 /** One reaction row: one emoji per user per announcement. */
-export interface Reaction {
+interface Reaction {
   userId: number;
   emoji: string;
 }
@@ -98,7 +102,7 @@ export interface Feedback {
 }
 
 /** All op kinds accepted by POST /sync (the single write entry point). */
-export type OpType =
+type OpType =
   // photo area
   | 'upload'
   | 'like'
@@ -131,7 +135,7 @@ export interface UploadPayload {
 }
 
 /** Payload for `fb_create`; locale is captured when the user submits the suggestion. */
-export interface FeedbackPayload {
+interface FeedbackPayload {
   contentMd: string;
   locale: LocaleCode;
 }
@@ -146,7 +150,7 @@ export interface VotePayload {
   options: number[];
 }
 
-export type OpPayload =
+type OpPayload =
   UploadPayload | FeedbackPayload | ReactPayload | VotePayload | Record<string, unknown>;
 
 /** One op-log entry, applied by /sync strictly in array order. */
