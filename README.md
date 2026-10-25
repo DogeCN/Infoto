@@ -22,7 +22,9 @@
 
 Infoto is a full-stack shared photo album: a **Cloudflare Workers** (Hono + D1) backend and
 a **Svelte 5** SPA. The SPA build output in `dist/` is served by the Worker's `ASSETS`
-binding — API routes take priority over static assets, so the whole album is one deploy.
+binding. Cloudflare checks the asset layer before the Worker, so every path the Worker serves
+is listed in `run_worker_first` (`wrangler.toml`) — a path that is missing from that list never
+reaches the Worker, and the album still deploys as one unit.
 
 Media never flows through the album server. The browser transcodes photos to WebP and
 videos to WebM (WebCodecs + SharedWorker), uploads the finished artifact **directly to an
@@ -62,7 +64,7 @@ imports business-layer code.
 | `npm test`           | All unit tests (root + web)                                    |
 | `npm run lint`       | ESLint + Prettier check (CI gate)                              |
 | `npm run ts-check`   | Type gate: tsc × 3 + `svelte-check --fail-on-warnings`         |
-| `npm run db:local`   | Seed local D1 with `schema.sql` (`--force` to reset)           |
+| `npm run db:local`   | Apply `schema.sql` to local D1 (`--force` re-applies it)       |
 | `npm run gen-schema` | Regenerate `src/worker/schema-ddl.ts` from `schema.sql`        |
 
 Web-only: `npm run e2e -w infoto-web` (Playwright, local and manual).
@@ -125,7 +127,7 @@ body is surfaced as `http_<status>`. `GET /health → 200 { "ok": true }` is a c
 probe, not part of the contract.
 
 **The URL contract.** The returned URL is checked by `isStorableMediaUrl`
-(`src/worker/routes/media.ts`); a URL that fails is **silently dropped** — the upload op is
+(`src/shared/media.ts`); a URL that fails is **silently dropped** — the upload op is
 discarded and the photo never appears. It must be:
 
 - `https:` with no embedded credentials, and
@@ -195,7 +197,8 @@ a tag that already exists; `--dry-run` prints the plan without writing anything.
 ## 简体中文
 
 自托管共享相册：**Cloudflare Workers**（Hono + D1）后端 + **Svelte 5** SPA。SPA 构建产物
-`dist/` 由 Worker 的 `ASSETS` 绑定直接托管——API 路由优先于静态资源，整个相册一次部署即成。
+`dist/` 由 Worker 的 `ASSETS` 绑定托管。Cloudflare 先检查静态资源层，因此 Worker 提供的每条路径
+都必须列在 `run_worker_first`（`wrangler.toml`）里——漏列就不会到达 Worker；整个相册仍是一次部署。
 
 媒体文件不经过相册服务器：浏览器端转码（WebCodecs + SharedWorker，照片转 WebP、视频转
 WebM），把成品**直传给外部图片宿主门面**，服务器只存返回的 URL；访客通过带 SSRF 防护的
@@ -233,7 +236,7 @@ dist/              Vite 构建产物（wrangler [assets] 托管）
 | `npm test`           | 全部单测（根 + web）                                   |
 | `npm run lint`       | ESLint + Prettier 检查（CI 门禁）                      |
 | `npm run ts-check`   | 类型门禁：tsc × 3 + `svelte-check --fail-on-warnings`  |
-| `npm run db:local`   | 向本地 D1 灌 `schema.sql`（`--force` 重置）            |
+| `npm run db:local`   | 向本地 D1 应用 `schema.sql`（`--force` 覆盖重放）      |
 | `npm run gen-schema` | 从 `schema.sql` 重新生成 `src/worker/schema-ddl.ts`    |
 
 web 子包专用：`npm run e2e -w infoto-web`（Playwright，本地手动）。
@@ -288,7 +291,7 @@ Infoto 只读 `data` 字段，原样写入 `photos.url`。任何失败返回非 
 `{ "error": "<机器码>", "msg": "<可读详情>" }`——非 JSON 响应体会被当作 `http_<状态码>` 处理。
 `GET /health → 200 { "ok": true }` 是探针便利接口，不属于契约。
 
-**URL 契约**。返回的 URL 由 `isStorableMediaUrl`（`src/worker/routes/media.ts`）校验，
+**URL 契约**。返回的 URL 由 `isStorableMediaUrl`（`src/shared/media.ts`）校验，
 不合格会被**静默丢弃**——上传 op 被丢弃、照片永远不出现，访客看不到任何错误，所以这是实现
 门面最重要的一条。URL 必须满足：
 

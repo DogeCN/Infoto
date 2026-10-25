@@ -62,12 +62,17 @@ this table.
 | `--ease-reflow`                | `cubic-bezier(0.22, 0.61, 0.36, 1)` | Waterfall box retarget — no overshoot                    |
 | `--duration-reflow`            | `450ms`                             | Waterfall box retarget — no overshoot                    |
 | `--shadow-md`                  | `0 4px 12px rgba(0, 0, 0, 0.4)`     | Light popover: toast, dropdown                           |
-| `--shadow-lg`                  | `0 20px 50px rgba(0, 0, 0, 0.6)`    | Heavy popover: lightbox menu, upload panel               |
+| `--shadow-lg`                  | `0 20px 50px rgba(0, 0, 0, 0.6)`    | Heavy popover: migrate menu, upload panel                |
 | `--shadow-lift`                | `0 -8px 24px rgba(0, 0, 0, 0.45)`   | A bar pinned to the bottom edge                          |
 
 Enter and exit are **different pairs**. A single class driving both directions runs at
-enter timing on close; when both matter, derive duration and ease from the state
-(`MultiSelectBar` is the worked example).
+enter timing on close; when both matter, derive duration and ease from the state. No component
+does that today: the one surface that used to be cited as the example (`MultiSelectBar`) slides its
+transform on one `--duration-spring` / `--ease-spring` pair in both directions and hides with
+`inert` + `pointer-events-none`. That hiding mechanism is not a preference: a `visibility` leg with
+a `0s` duration is interpolated **discretely**, so it resolves to `hidden` at t=0 and the element
+disappears before its exit transform can paint — the exit slide silently did not exist while the
+class read as if it did.
 
 **Reflow is its own phase and must not be `spring`.** The waterfall writes
 `transform` / `width` / `height` and lets a CSS transition interpolate, so an interrupted
@@ -93,6 +98,10 @@ that has to land on a computed size.
   `size-[var(--bar-icon)]`.
 - **One disabled treatment.** Do not re-add per-site `disabled:opacity-*`, and do not
   override `button:disabled{cursor:not-allowed}`.
+- **A value a `<meta>` cannot read from a custom property is stated once, here.** `web/index.html`
+  carries `theme-color` `#0a0e1a` — the `--color-background` value — because a `<meta content>`
+  is not a CSS declaration and no token reference resolves there. Changing the page background
+  colour therefore has two edits, and this note is the reason the second one is not drift.
 
 ---
 
@@ -110,6 +119,10 @@ Verified against the tree on 2026-10-03.
 - **Shadows belong to popovers only.** Cards and buttons carry no shadow. Current holders
   are `ActionSheet`, `AdminMigrateMenu`, `ErrorPage`, `OverlaySidebar`, `ReactionPicker`,
   `Tooltip`, `UploadPanel` — a shadow appearing anywhere else is drift.
+  One named exception: the Lightbox caption (`.lb-meta`) carries a black `text-shadow` so the
+  overlay text stays legible over arbitrary media. It is a legibility device on top of an image,
+  not a surface shadow, and it is the only literal shadow value left in `web/src/lib`; it is
+  recorded rather than tokenised because no other surface may use it.
 - **Dark is not a theme.** The site is permanently dark; there is no theme switch, and the
   root carries `color-scheme: dark`.
 - **Pill-shaped controls say `rounded-full` explicitly.** Everything else is a solid fill.
@@ -130,8 +143,8 @@ Back-filled from the commit history. Tagged sections are not yet written.
 
 - **Error page.** Two surfaces draw one design, defined in `src/shared/glitch.ts`.
   - `ErrorPage.svelte` delegates to `GlitchText`, which injects the shared CSS and supplies only
-    the JS half. It renders a **404 only** — both call sites (`Root.svelte:24`,
-    `Admin.svelte:329`) pass `code={404}`, so it has no 5xx branch and takes no message prop.
+    the JS half. It renders a **404 only** and takes no props: the SPA has one error surface —
+    a route miss — so the 5xx wording belongs to the Worker page alone.
   - `src/worker/errors.ts` inlines the same CSS and serves `notFoundPage` (arbitrary paths,
     `/admin/*`, missing or deleted `/l/:id36`) and `serverErrorPage` (`onError`), each with its
     own wording and `Accept-Language` output. JSON endpoints must return
@@ -190,8 +203,11 @@ Back-filled from the commit history. Tagged sections are not yet written.
     timer — a language switch resizes the pill but not the header, so nothing else would.
   - The pager arrow lives on **both** screens, at each screen's outer edge; a single-screen
     pager leaves the other screen with no way to switch.
-  - **Nothing asserts any of this.** `pillMeasure.ts` has zero tests, and on the `SortTabs`
-    path its report is discarded because that component takes no `onWidths`.
+  - **Nothing asserts any of this.** `pillMeasure.ts` has zero tests. The measurement itself runs
+    **once** per resize: `SortPill` forwards `onWidths` into `SegmentedControl`, which owns the
+    action. A wrapper that measured on its own account as well would append two clone probes to
+    `<body>` and discard one result — the work is not halved by sharing the action, it is
+    duplicated by not sharing it.
 - **Tooltips are always the custom component.** Every hover hint is `Tooltip.svelte`, or
   `TooltipIconButton.svelte` when the trigger is an icon button (it takes the text once, as
   both tooltip and `aria-label`; `ariaLabel` overrides when the spoken name is longer, and
@@ -280,6 +296,20 @@ Back-filled from the commit history. Tagged sections are not yet written.
     `volumeMuted`) is therefore lost and the fade-in replays on return — intended for the
     former, a real loss for the latter. Geometry is deliberately carried across the unmount;
     ⚠️ §4.4 is the model, and it is the reason a remount can glide at all.
+  - **Media is loaded in a narrower band than the render window.** A card renders its `<img>` /
+    `<video>` only while its box sits within the viewport plus `MEDIA_LOAD_LOOKAHEAD = 0.4` of a
+    viewport on each side; the rest of the buffer band paints the skeleton with the media element
+    absent. The render window is five viewports wide because scroll smoothness needs it; holding
+    media across all of it multiplies decoded-image memory by the buffer factor, and that is what
+    makes a long album kill a mobile tab. Because the band is wider than the viewport, a card
+    enters it before it is visible, so the skeleton is normally painted off-screen. Leaving the
+    band **removes** the element — `loadedUrl` is cleared with it, so a return paints a skeleton
+    instead of a blank frame — and a destroyed card's video is paused and detached from its source.
+  - **The residual risk is a single very large original.** A waterfall card decodes at the
+    photo's natural size; there is no rendition service in this deployment, so a 12-megapixel
+    photo costs ~48 MB of decoded bitmap wherever it is shown. The band bounds _how many_ are
+    decoded, not _how big_ each one is. A future fix is a smaller stored rendition (cap the
+    artifact's long edge at transcode time), and it is a product decision, not a render tweak.
   - **Reflow rides `transform` / `width` / `height` on `--duration-reflow` / `--ease-reflow`**
     and nothing else. `border-color` and `opacity` stay on the exit pair — they are hover and
     selection state, not geometry. A card's start box comes from `WaterfallLayout`'s
@@ -307,11 +337,25 @@ Back-filled from the commit history. Tagged sections are not yet written.
     long-press, marquee, `selectAll` and Ctrl+A all reach them, which is what makes the batch
     "delete" the way out of a stuck upload. The failure cover is `bg-black/55`, matching the
     uploading curtain's own weight: a failed card is still a card in the grid, not a hole in it.
+  - **An optimistic upload card is inserted at the very front, newest first.** The grid renders
+    `[pending…newest-first, …hosted in the active order]`. A card the user created belongs where
+    the action landed, so its provisional `createdAt` never decides its position: under an
+    ascending sort, a random order, or a filter it would otherwise sit at the far end or vanish,
+    and the card would look lost. The prepend is not a second sort — the hosted photos still take
+    exactly one `applyFilters` + one `sortPhotos` pass. Three consequences are deliberate:
+    - Pending cards bypass the filters, for the same reason they bypass the sort: hiding an
+      in-flight upload behind an active filter reads as a failed upload. Its panel row keeps
+      reporting progress either way.
+    - `selectAll` selects every card on screen, pending included; **only hosted photos** carry a
+      size and a download target, so a batch selection of pending cards deletes without reporting
+      bytes it does not have. `allSelected` compares against all cards, so the control's icon
+      matches what the user sees.
+    - The empty state distinguishes "no photos at all" from "nothing matches the filters" by
+      counting every card, pending included.
   - **What is asserted, and what is not.** `photoCard.test.ts` holds the failure glyph and its
-    container sizing; `uploadPreview.test.ts` holds that the preview comes from OPFS and not the
-    pick; `pendingPhoto.test.ts` holds `rendersCard` across every phase and the op-log
-    records; `photoRecords.test.ts` holds that an unconfirmed batch still reads as cards
-    after a failed sync and that a confirmed one retires them. The overlay's own
+    container sizing; `photoRecords.test.ts` holds everything record-shaped: the local preview
+    comes from OPFS and not the pick, `rendersCard` holds across every phase, an unconfirmed
+    batch still reads as cards after a failed sync, and a confirmed one retires them. The overlay's own
     geometry, layering and curtain arithmetic are asserted nowhere.
 - **Lightbox.** The action sheet is a **bottom sheet**, not a dropdown — a dropdown's top-right
   anchor is outside a thumb's reach on a phone.
@@ -337,46 +381,43 @@ Back-filled from the commit history. Tagged sections are not yet written.
     has gone too far. With a floor of 1 both inputs were live but inert — they computed a value,
     clamped it straight back to 1, and nothing moved. "Zoomed in" therefore means
     `!isAtRest(scale)` (above 1.01), **never** `scale > MIN_SCALE`: a 0.8 image is smaller than
-    the stage, so it centres and refuses to pan exactly like a 1.0 one does. Pinch and double-tap
-    zoom **around the gesture point** (the two-finger midpoint, or the cursor for wheel/double-click),
-    recomputed every frame from the gesture-start state so there is no cumulative drift. The
-    **wheel zooms on any wheel event** (trackpad pinch arrives as `Ctrl`+wheel) anchored on the
-    cursor — `Ctrl` is no longer required for wheel zoom. Double-click/double-tap easing is on
-    (`zoomToPoint(..., animate=true)`). Two-finger pinch **and `Ctrl`+drag both rotate**:
-    `Ctrl`+drag treats the card centre as a fixed pivot — the pointer's distance from it drives
-    scale and its angle around it drives rotation (the image scales and spins about the stage
-    centre, never drifting) — so desktop gets the same zoom+rotate the touch pinch has. `Ctrl` may
-    be pressed **any time**: held at press _or_ pressed mid-drag (the plain drag switches into the
-    `Ctrl` mode on the `Control` keydown, and the `Control` keydown no longer resets the zoom,
-    which used to fight "press Ctrl to begin"). **Both** touch pinch and `Ctrl`+drag rotation snap
-    to the nearest 90° on release (kept as a signed value so a −90° gesture does not spin a full
-    turn) — the desktop path had been missing the snap. The snap eases via the **Web Animations API**, not the inline CSS `transition`: a pinch's surviving
+    the stage, so it centres and refuses to pan exactly like a 1.0 one does (if it is _rotated_,
+    it stays pannable even at fit). Pinch and double-tap zoom **around the gesture point** (the
+    two-finger midpoint, or the cursor for wheel/double-click), recomputed every frame from the
+    gesture-start state so there is no cumulative drift. The **wheel zooms on any wheel event**
+    (trackpad pinch arrives as `Ctrl`+wheel) anchored on the cursor — `Ctrl` is no longer required
+    for wheel zoom — and each wheel step is **eased through the same transform transition as a
+    double-click**, so a notch glides instead of snapping; a retarget while the transition runs
+    starts from the interpolated frame, so rapid ticks stay continuous. Double-click/double-tap
+    easing is on (`zoomToPoint(..., animate=true)`). Two-finger pinch **and `Ctrl`+drag both
+    rotate**: `Ctrl`+drag pivots on the **media's own centre**, wherever it currently sits — the
+    pointer's distance from that centre drives scale and its angle around it drives rotation,
+    with the pan carried through untouched, so pressing `Ctrl` on a panned or zoomed image never
+    snaps it back to the stage centre (it used to zero the offset) — and desktop gets the same
+    zoom+rotate the touch pinch has. `Ctrl` may be pressed **any time**: held at press _or_
+    pressed mid-drag or mid-pan (the plain drag switches into the `Ctrl` mode on the `Control`
+    keydown, and the `Control` keydown never resets the zoom). **Both** touch pinch and
+    `Ctrl`+drag rotation snap to the nearest 90° on release (kept as a signed value so a −90°
+    gesture does not spin a full turn) — the desktop path had been missing the snap. The snap
+    eases via the **Web Animations API**, not the inline CSS `transition`: a pinch's surviving
     finger is armed for panning and `isRotated()` is true even at 90°, so any stray move rewrites the transform with `transition:'none'` and cancels a
     CSS-transition ease mid-flight — which is exactly why a two-finger rotate sometimes snapped with no easing, depending on whether the leftover finger
     twitched within the exit-phase settle (`motionMs('exit')`, currently 160ms — the WAAPI options read the
     tokens, they do not restate them). WAAPI composites over the inline style, so the pan writes that follow cannot kill the ease; the rotation settles and
     only then does the panned position take over. A new gesture cancels any in-flight snap (see `snapWithEase` / `onPointerDown`). Rotation survives zoom
-    resets (double-tap,
-    double-`Ctrl`) and is only cleared on a photo switch. Panning (and rotation) is
-    gated on the **rendered media actually exceeding the viewport** (`isZoomedBeyondViewport`)
-    or being rotated — not on a bare scale comparison — so a small image zoomed to, say, 1.3×
-    (still smaller than the viewport) no longer enters pan mode. A rotated image stays pannable
-    **even at fit scale** (a pure rotation leaves `scale = 1` but its bounding box can overflow the
-    stage), so `clampPan` force-centres only when at fit _and_ unrotated; otherwise it bounds the
-    offset by the rotated box's overflow. The clamp is bounded by **half the overflow on each
-    axis**: a media box larger than the stage may move until an edge meets the stage edge, while
-    one still smaller than the stage is held centred rather than slammed into a corner — the two
-    "no gap" edge conditions can never both hold for a sub-viewport box, and applying both pinned
-    it bottom-right. **The clamp reads the wrap's layout box (`offsetWidth`/`offsetHeight`), never
-    its rendered rect.** A rendered rect follows the transform, and every eased zoom writes the
-    transform and clamps within the same frame, before the transition has interpolated: the rect
-    therefore still describes the _previous_ scale, every bound collapses to 0, and the anchor
-    `zoomToPoint` had just computed is discarded — a double tap off-centre zoomed about the centre
-    instead of the tapped point. The clamp still runs **after** the transform write
-    (`clampSettled`), which matters for the unanimated frames for the mirror-image reason.
-    The transform is written **directly to the DOM**, not through component state, and the
-    counter-scaled corner control gets the identical transition string. Zoom resets on every
-    photo switch.
+    resets (double-tap/double-click) and is only cleared on a photo switch. Panning is
+    **gated on the media being zoomed or rotated** (`isPannable`: `!isAtRest(scale) ||
+isRotated(rot)`), so any zoom or rotation turns a drag into a pan instead of a swipe — not on
+    the rendered box overflowing the stage, which left a small image zoomed to 1.3× unable to pan
+    at all. The pan itself is **unbounded**: a rotated image at fit scale, or a zoomed one with no
+    overflow left on an axis, is dragged exactly as freely as a large one (the old `clampPan`
+    bounded the offset by half the rendered overflow, which a rotated photo barely has, so its
+    drag died a few pixels in). `settlePan` only recentres the **fit view**: at or below fit scale
+    **and** axis-aligned the offset is zeroed, the one state every reset path expects to find the
+    photo in; `zoomToPoint` applies the same rule when a zoom lands at fit (a rotated fit view
+    keeps its offset). The transform is written **directly to the DOM**, not through component
+    state, and the counter-scaled corner control gets the identical transition string. Zoom resets
+    on every photo switch.
   - **A pinch owns the whole multi-touch sequence, not just the frames where two fingers are
     down.** `pinchSequence` is set by `startPinch` and cleared only once every pointer of that
     sequence has left; while it holds, a release may pan an already-zoomed photo but is never a
@@ -415,14 +456,16 @@ Back-filled from the commit history. Tagged sections are not yet written.
     `toggleZoomAt`; **only a media click ever arms the next one**, which makes a spent click
     structurally unable to take part. A photo switch clears the armed click too, since it
     describes the photo just left. `DBL_MS = 500` matches the platform threshold a native
-    `dblclick` imposed, so the gesture keeps its rhythm.
+    `dblclick` imposed, so the gesture keeps its rhythm. **It is one window for both
+    modalities** — the touch path used to fall through to the engine's own 300 ms default while
+    the mouse path passed 500, so the same cadence zoomed with a mouse and not with a finger.
   - **The trailing `click` a touch double-tap leaves behind must not page.** A real mobile browser
     fires native `click` per tap on top of the pointer events, so the second tap's click would
     read as a mask click and page the photo the user had just zoomed; `suppressClickUntil` (600 ms)
     swallows it. Nothing listens for the native `dblclick` any more, so it needs no guard of its
     own — `handleStageClick` neither clears the window nor pairs. The e2e harness still replays
     those native events (`sendMouse`) because driving pointer events alone never exposed the bug.
-  - All gesture/transform math (zoom-to-point, pinch, `Ctrl`+drag, pan clamp, overflow gate,
+  - All gesture/transform math (zoom-to-point, pinch, `Ctrl`+drag, fit recentring, pan gate,
     rotation snap, double-tap/swipe/click-nav classification) lives in the pure module
     `web/src/base/lib/lightboxEngine.ts` and is covered by `web/tests/unit/lightboxEngine.test.ts`
     — the `<Lightbox>` component only wires events and writes the transform to the DOM. The
@@ -456,12 +499,16 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - Adjacent neighbours are preloaded with `new Image()`, wraparound, images only.
   - **The geometry lives in `base/lib/lightboxEngine.ts`, and it is covered; the wiring is not.**
     The component keeps only event handling, DOM writes and the elements the engine's rects are
-    read from. `lightboxEngine.test.ts` asserts the clamp, the anchor maths, the pinch
-    recomputation, the Ctrl-drag emulation and the tap/swipe/click classifiers — 15 cases. What
+    read from. `lightboxEngine.test.ts` asserts the fit-view recentring and unbounded pan, the
+    pan gate, the anchor maths, the pinch recomputation, the Ctrl-drag pivot/pan preservation
+    and the tap/swipe/click classifiers — 17 cases. What
     remains unasserted is everything that needs a live DOM: that the engine is actually called on
-    the right events, and the sizing formula. The e2e suite asserts the sheet's colours and
-    hover, the counter between the arrows, wrap-around paging, and Ctrl-drag zoom — but not
-    pinch, double-click, wheel zoom, swipe, any key binding, or the sizing formula.
+    the right events, and the sizing formula. `ui.spec.ts` asserts the sheet's colours and hover,
+    the counter between the arrows, wrap-around paging, and Ctrl-drag zoom; `lightbox-pinch.spec.ts`
+    covers the multi-touch release path; `lightbox-gestures.spec.ts` covers an unbounded drag after
+    a wheel or double-click zoom, a lightly zoomed drag panning rather than swiping, and `Ctrl`+drag
+    keeping the pan it started from. Still unasserted: wheel easing, swipe, key bindings, and the
+    sizing formula.
 - **Sidebar / overlay stack.** `base/lib/overlay.ts` is the **only** owner of focus trapping,
   Escape and scroll locking. `OverlaySidebar`, `ActionSheet` and `Lightbox` all use it.
   - The stack is last-in-first-out; a handler acts only when its own node is on top.
@@ -512,8 +559,10 @@ Back-filled from the commit history. Tagged sections are not yet written.
   size the percentage and the count read as clutter, and the fill bar already carries the
   proportion. The number is the transcode panel's counter exactly: `text-sm font-semibold
 tabular-nums`, swapping in place inside one grid cell so the cross-fade never reflows the
-  row. Its hop is `countHop` from `base/lib/motion.ts` (entry downward, exit upward), the
-  generic form of the upload panel's own hop, so the two counters cannot drift apart.
+  row. Its hop is `countHop` / `countHopOut` from `base/lib/motion.ts` (entry downward, exit
+  upward, both exported from the one module), the generic form of the upload panel's own hop, so
+  the counters cannot drift apart — `VoteBlock`, `PollEditorDialog` and `UploadPanel` all import
+  the pair rather than deriving the exit from `{ ...countHop, y: -countHop.y }`.
   - The full reading is not lost, only moved: the number's `aria-label` still says
     "2 votes", and `web/tests/e2e/admin.spec.ts` asserts that name as well as the digit.
   - A poll nobody has answered yet shows no number at all — an empty poll is already legible
@@ -593,6 +642,19 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
   - `designTokens.test.ts` asserts the layer, that every value names a declared token, the heading
     ladder and shared weight, the quote bar, the code chip, and that no structural rule hardcodes
     a hex. Each guard was verified against the regression it exists for.
+- **Settings panel.** Two sections — Filters and Interface. Interface carries the language
+  toggle, the two layout toggles, and three single-thumb sliders: target band, gap, playback
+  volume.
+  - **The volume slider is the site's playback level, never a mute control.** It spans 0–100 %
+    in steps of 5 and writes the `<video>` `volume` property on every surface that plays one — a
+    waterfall card, the Lightbox video, video rendered by Markdown. Each element keeps its own
+    mute state, autoplay stays muted, and 0 % is silence rather than an accidental unmute.
+  - `state/playback.svelte.ts` owns the live level; `App` publishes the stored value before the
+    first paint and keeps it in step with the settings callback. No component keeps a copy.
+  - It takes no part in the layout-preview transparency: changing the level moves no geometry.
+  - The persisted blob is **v5**. A missing or non-numeric `playback.volume` invalidates the
+    whole blob and the defaults apply; an out-of-range value is clamped. Same rule as `gap`, and
+    no per-field migration (red line 1).
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
   - **The facade address is configuration, never a constant.** `/sync` names the host in
     `mediaHostUrl`; the Worker reads `MEDIA_HOST_URL` and the page forwards it to the
@@ -808,7 +870,7 @@ before deadline` / `no response before deadline`).
     delete on an unknown sha and then creates the row, so the "deleted" photo landed for real. The
     delete glue itself is untested (`createUploadStore` needs a component context);
     `withdrawPhoto` is (oplog + engine suites), and the deferral below is
-    (`pendingPhotoOps.test.ts`). - **A photo op must follow the upload op that creates its row.** A mark whose sha the snapshot
+    (`photoRecords.test.ts`). - **A photo op must follow the upload op that creates its row.** A mark whose sha the snapshot
     does not carry is not written to the log at all: `/sync` applies a batch in array order, so
     it would be a no-op on an unknown sha (its `UPDATE … WHERE sha256 = ?` matches no row) and then cleared as
     confirmed — the mark silently lost. The mark itself is the state (on the photo record, durable),
@@ -856,9 +918,19 @@ before deadline` / `no response before deadline`).
     instead, because the local binding's remote edge path is unreachable on some networks;
     production has neither variable, so the binding is the only transport there. Fenced code, blank
     lines and whole-line `::poll:` references pass through untranslated (ADR 0021). Its limits
-    are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTION_CHARS` in `shared/types.ts` — the same
-    constants the sync validator and the poll editor use — and the request parser lives beside
-    the model adapter in `worker/translate.ts`, so a rule is written once.
+    are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTIONS` / `MAX_POLL_OPTION_CHARS` in
+    `shared/types.ts`; `shared/poll.ts#parsePollOptions` is the one poll-option rule and
+    `POLL_REFERENCE` the one `::poll:` pattern, used by both the renderer and the segmenter, and
+    the announcement **write** path answers the same `413` as the translate endpoint — an
+    overlong card can neither be stored nor be left permanently untranslatable.
+  - **Each feedback row copies its Markdown in one click, and confirms in place.** A copy
+    icon-button sits to the left of delete in the row's top-right cluster and writes `contentMd`
+    through `copyToClipboard`. Success raises **no toast**: the glyph cross-fades to a check inside
+    the same 16px cell (copy fading out, check fading in, one grid cell so the button never moves),
+    the button takes its active treatment, and after `COPIED_HOLD_MS = 1600` the check fades back
+    to the copy glyph. The confirmation belongs where the click landed. Failure is the one generic
+    toast (`lightbox.copyFailed`) — a second copy of that string is exactly the drift the copy
+    table exists to prevent.
 
 ---
 
@@ -1223,49 +1295,55 @@ agrees with the list.
 
 The parts of this contract that are asserted by `npm test`:
 
-| Invariant                                                                            | Enforced by                              |
-| ------------------------------------------------------------------------------------ | ---------------------------------------- |
-| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions           | `web/tests/unit/designTokens.test.ts`    |
-| `motion.ts` motion fallbacks equal the `@theme` motion tokens                        | `web/tests/unit/designTokens.test.ts`    |
-| `schema.sql` equals `schema-ddl.ts` byte for byte                                    | `src/worker/schema-alignment.test.ts`    |
-| Layer direction: no import points above its own layer (AGENTS.md red line 5)         | `web/tests/unit/layering.test.ts`        |
-| Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)        | `src/worker/assets-routing.test.ts`      |
-| No `transition` in `web/src` carries a literal duration or easing curve              | `web/tests/unit/designTokens.test.ts`    |
-| `GLITCH_PALETTE` equals the matching `@theme` colours                                | `web/tests/unit/designTokens.test.ts`    |
-| The reflow flip window outlasts the reflow duration it brackets                      | `web/tests/unit/motion.test.ts`          |
-| Lightbox gesture geometry: clamp, anchor, pinch, tap/swipe/click                     | `web/tests/unit/lightboxEngine.test.ts`  |
-| The upload's silence budget ends where the response budget begins                    | `web/tests/unit/uploadClient.test.ts`    |
-| The upload leg's ceiling holds independently of the image pool                       | `web/tests/unit/uploadPool.test.ts`      |
-| `uploadPoolSize` stays under the image pool at its widest                            | `web/tests/unit/pipeline.test.ts`        |
-| Which op dimensions collapse, and which never do (ADR 0016)                          | `web/tests/unit/frontend.test.ts`        |
-| The local fold clears the opposite attitude, as the server does                      | `web/tests/unit/frontend.test.ts`        |
-| A queued op is superseded in place, and an in-flight one never is                    | `web/tests/unit/syncEngine.test.ts`      |
-| A photo op waits for the upload op that creates its row                              | `web/tests/unit/pendingPhotoOps.test.ts` |
-| The server clears the opposite attitude when either is added                         | `src/worker/routes/sync.test.ts`         |
-| A translation request writes no row, and only root may ask                           | `src/worker/routes/admin.test.ts`        |
-| The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`           |
-| A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/pendingPhoto.test.ts`    |
-| A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/pendingPhoto.test.ts`    |
-| A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/pendingPhoto.test.ts`    |
-| A card's local preview comes from OPFS, never from the picked file (§3)              | `web/tests/unit/uploadPreview.test.ts`   |
-| A hosted photo record still renders a card after a failed sync                       | `web/tests/unit/photoRecords.test.ts`    |
-| A confirmed sync retires those records, and a landed/live sha never double-draws     | `web/tests/unit/photoRecords.test.ts`    |
-| An upload op and its photo record are written together, and withdrawn together       | `web/tests/unit/oplog.test.ts`           |
-| A 200-op `/sync` costs a fixed handful of round trips, not one per op                | `src/worker/routes/sync.test.ts`         |
-| A GIF frame duration is read through the one owner, never re-derived in the worker   | `web/tests/unit/gifFrameTiming.test.ts`  |
-| A GIF's frame timestamps accumulate, and a zero duration is a missing one            | `web/tests/unit/pipeline.test.ts`        |
-| A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`        |
-| Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`        |
-| The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`        |
-| A picked file previews locally by MIME **or** file name                              | `web/tests/unit/markdown.test.ts`        |
-| The editor uploads any file, not only images and videos                              | `web/tests/unit/editorUpload.test.ts`    |
-| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer       | `web/tests/unit/designTokens.test.ts`    |
-| Markdown structure follows GitHub: heading ladder, quote bar, code chip              | `web/tests/unit/designTokens.test.ts`    |
-| A block-opening or block-closing image carries no rhythm margin                      | `web/tests/unit/designTokens.test.ts`    |
-| No decorative text is injected into a line: quote glyphs and code backticks          | `web/tests/unit/designTokens.test.ts`    |
-| A table reads at body size, on a collapsed grid, and scrolls when wide               | `web/tests/unit/designTokens.test.ts`    |
-| The font race cancels the losers, and a failed source removes only itself            | `src/shared/fonts.test.ts`               |
-| The error page's CSP hash equals the race script it authorises                       | `src/shared/fonts.test.ts`               |
+| Invariant                                                                            | Enforced by                             |
+| ------------------------------------------------------------------------------------ | --------------------------------------- |
+| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions           | `web/tests/unit/designTokens.test.ts`   |
+| `motion.ts` motion fallbacks equal the `@theme` motion tokens                        | `web/tests/unit/designTokens.test.ts`   |
+| `schema.sql` and `schema-ddl.ts` are byte-identical (line endings normalised)        | `src/worker/schema-alignment.test.ts`   |
+| Layer direction: no import points above its own layer (AGENTS.md red line 5)         | `web/tests/unit/layering.test.ts`       |
+| Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)        | `src/worker/assets-routing.test.ts`     |
+| No `transition` in `web/src` carries a literal duration or easing curve              | `web/tests/unit/designTokens.test.ts`   |
+| `GLITCH_PALETTE` equals the matching `@theme` colours                                | `web/tests/unit/designTokens.test.ts`   |
+| The reflow flip window outlasts the reflow duration it brackets                      | `web/tests/unit/motion.test.ts`         |
+| Lightbox gesture geometry: fit recentring, pan gate, anchor, pinch, tap/swipe/click  | `web/tests/unit/lightboxEngine.test.ts` |
+| The upload's silence budget ends where the response budget begins                    | `web/tests/unit/uploadClient.test.ts`   |
+| The upload leg's ceiling holds independently of the image pool                       | `web/tests/unit/uploadPool.test.ts`     |
+| Which op dimensions collapse, and which never do (ADR 0016)                          | `web/tests/unit/frontend.test.ts`       |
+| The local fold clears the opposite attitude, as the server does                      | `web/tests/unit/frontend.test.ts`       |
+| A queued op is superseded in place, and an in-flight one never is                    | `web/tests/unit/syncEngine.test.ts`     |
+| A photo op waits for the upload op that creates its row                              | `web/tests/unit/photoRecords.test.ts`   |
+| The server clears the opposite attitude when either is added                         | `src/worker/routes/sync.test.ts`        |
+| A translation request writes no row, and only root may ask                           | `src/worker/routes/admin.test.ts`       |
+| The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`          |
+| A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/photoRecords.test.ts`   |
+| A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/photoRecords.test.ts`   |
+| A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/photoRecords.test.ts`   |
+| A card's local preview comes from OPFS, never from the picked file (§3)              | `web/tests/unit/photoRecords.test.ts`   |
+| A hosted photo record still renders a card after a failed sync                       | `web/tests/unit/photoRecords.test.ts`   |
+| A confirmed sync retires those records, and a landed/live sha never double-draws     | `web/tests/unit/photoRecords.test.ts`   |
+| An upload op and its photo record are written together, and withdrawn together       | `web/tests/unit/oplog.test.ts`          |
+| A 200-op `/sync` costs a fixed handful of round trips, not one per op                | `src/worker/routes/sync.test.ts`        |
+| A GIF frame duration is read through the one owner, never re-derived in the worker   | `web/tests/unit/gifFrameTiming.test.ts` |
+| A GIF's timestamps accumulate; no frame lands before its predecessor                 | `web/tests/unit/gifFrameTiming.test.ts` |
+| A zero GIF frame duration is treated as missing, not as an instant frame             | `web/tests/unit/pipeline.test.ts`       |
+| Every MIME the upload can name maps to an extension the Markdown classifier knows    | `web/tests/unit/markdown.test.ts`       |
+| A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`       |
+| Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`       |
+| The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`       |
+| A picked file previews locally by MIME **or** file name                              | `web/tests/unit/markdown.test.ts`       |
+| The editor uploads any file, not only images and videos                              | `web/tests/unit/editorUpload.test.ts`   |
+| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer       | `web/tests/unit/designTokens.test.ts`   |
+| Markdown structure follows GitHub: heading ladder, quote bar, code chip              | `web/tests/unit/designTokens.test.ts`   |
+| A block-opening or block-closing image carries no rhythm margin                      | `web/tests/unit/designTokens.test.ts`   |
+| No decorative text is injected into a line: quote glyphs and code backticks          | `web/tests/unit/designTokens.test.ts`   |
+| A table reads at body size, on a collapsed grid, and scrolls when wide               | `web/tests/unit/designTokens.test.ts`   |
+| The font race cancels the losers, and a failed source removes only itself            | `src/shared/fonts.test.ts`              |
+| The error page's CSP hash equals the race script it authorises                       | `src/shared/fonts.test.ts`              |
+| The playback level is a setting: v5 round-trips, clamps, and a bad one resets (§3)   | `web/tests/unit/settings.test.ts`       |
+| Every registered copy key is read by a source file (§10)                             | `src/shared/copy.test.ts`               |
+| An overlong announcement is refused on write, and a create takes no votes            | `src/worker/routes/admin.test.ts`       |
+| A locale change joins the target locale's order instead of duplicating an index      | `src/worker/routes/admin.test.ts`       |
+| A translation the album would refuse is rejected, never returned as a draft          | `src/worker/translate.test.ts`          |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are
@@ -1284,7 +1362,7 @@ Known gaps, in the order they should be closed:
    behaviour but is excluded from CI.
 2. **No screenshot baseline exists anywhere.** Appearance is the one thing with zero
    regression net, and it is the only category this contract cannot express as an assertion.
-3. `pillMeasure.ts` has no unit coverage; `topbarFit.ts` has four cases including one for
+3. `pillMeasure.ts` has no unit coverage; `topbarFit.ts` has three cases including one for
    flapping, which is why it is the one that did not regress. The waterfall reflow has exactly
    one assertion — that the flip window brackets its own animation — and none at all for the
    layout itself, because that is DOM timing and belongs in the e2e suite.
@@ -1300,3 +1378,10 @@ Closed on 2026-10-04: `errors.ts` no longer embeds bare hex — the glitch palet
 `src/shared/glitch.ts` and is asserted against the table above. Also closed: the glitch glyph
 asked `ERROR_FONT_QUERY` for a weight it never shipped, so the standalone error page was
 rendering synthetic bold (§4.8).
+
+Closed on 2026-10-26: the copy-key gate stopped matching bare leaf words and now requires a real
+member chain, so a deleted call site fails `npm test` (its first strict run found one dead key,
+`settings.language`, which is gone); the segmented pill is measured once instead of twice; the
+GIF accumulation rule moved onto the gate that can actually see the worker; and the schema gate
+compares content after line-ending normalisation instead of collapsing all whitespace and case.
+Still open above: `overlay.ts`, `pillMeasure.ts`, and the screenshot baseline.

@@ -38,7 +38,7 @@ A normalization pass removed ~30 hard-coded colour literals and ~13 magic millis
 - **Never re-type a palette colour or a shadow in a component.** `#22d3ee` is `--color-primary`, `#f43f5e` is `--color-destructive`, `0 4px 12px rgba(0,0,0,.4)` is `--shadow-md`. The three mark colours are tokens, not arbitrary values: like = `destructive`, dislike = `dislike` (`#3b82f6`), report = `warning`. Media and panel surfaces share `--radius-card` (14px).
 - **JS-driven animation reads the tokens, it does not restate them.** Web Animations, Svelte `transition:` params and JS timers cannot see a CSS custom property, so `web/src/base/lib/motion.ts` resolves `--duration-*` / `--ease-*` from the document (with `@theme` values as fallback) and `motionEaseFn` converts a `cubic-bezier(...)` token into the `EasingFunction` Svelte expects. Re-typing `cubic-bezier(0.2, 0, 0, 1)` in a component is how the token file and the components diverged.
 - **The top bar publishes what it measures.** `barCssVars` emits `--bar-h` _and_ `--bar-icon` / `--bar-badge` / `--bar-badge-text`; eight `size-[calc(var(--bar-h)*0.3125)]` strings became `size-[var(--bar-icon)]`. Same rule as §Responsive Layout: one measurement, no re-derived formula downstream.
-- **Enter and exit are different pairs**, but a single class driving both directions runs at enter timing on close. When both matter, derive the duration/ease from the state (`MultiSelectBar` is the worked example).
+- **Enter and exit are different pairs**, but a single class driving both directions runs at enter timing on close. When both matter, derive the duration/ease from the state — no component does that today; `MultiSelectBar` slides its transform on one spring pair in both directions and hides with `inert` + `pointer-events-none`. ⚠️ **A `visibility` leg with `0s` is not a delay, it is an instant hide**: the property interpolates discretely, so `visible → hidden` resolves at t=0 and the exit transform never paints. The bar's exit slide did not exist for as long as the class read as if it did; use `inert` for hiding.
 - **One disabled treatment** (`--control-disabled-opacity`, applied by `button:disabled` in `@layer base`) — do not re-add per-site `disabled:opacity-*`, and do not override `button:disabled{cursor:not-allowed}`.
 - **Third-party CSS is a second palette unless every variable is bound** (2026-10-12). `@tailwindcss/typography` styles `.prose` entirely through `--tw-prose-*` variables and ships a **light-surface** default (body `oklch(37.3% .034 259.733)`, near-black), which renders as a dark slab on this palette. `app.css` binds all sixteen to site tokens, body → `--color-foreground` (measured 15.62:1). **The sweep when adopting a CSS plugin is `grep -o '\-\-tw-prose-[a-z-]*' dist/assets/*.css` and bind what it reads** — nothing in the plugin's palette is derived from `@theme`, so the tokens do not reach it for free.
 - **Markdown follows `github-markdown-css` for its non-interactive elements** (2026-10-12). Colours are mapped onto site tokens rather than pasted, because GitHub's values assume a white canvas (`#1f2328` on `#ffffff`); what is borrowed is the tonal _relationship_ (body brightest → one muted tier for quotes/lead/markers/captions → borders quietest). Structure is taken directly: **every heading at one weight** (GitHub's rule), the 2/1.5/1.25/1/.875/.875 ladder, a hairline under h1+h2, the quote as `0 1em` + a `0.25em` bar at weight 400 upright, lists at `2em`, `hr` as a `0.25em` band, inline code as a `.2em .4em` / 6px / 85% chip, tables as body-size text on a collapsed 1px grid with zebra rows. **Links keep the site accent and `MarkdownView`'s own media/file affordances are untouched** — interactive elements sit outside this palette, deliberately.
@@ -168,7 +168,7 @@ Each of these exists because the logic had two hand-written copies that had alre
 - The model is Workers AI `@cf/qwen/qwen3-30b-a3b-fp8` behind the injected `Translator` on `AppEnv` (chat prompt, reads `response`; the initial `m2m100-1.2b` echoed/garbled Markdown and was replaced); `src/worker/index.ts` builds it from `env.AI`. **Unit tests inject a fake and never call AI.** A deployment without the binding answers `503 translation_unavailable`; the `[ai]` block in `wrangler.toml` sets `remote = true` because Workers AI has no local simulation. For a network where the binding's remote edge path is unreachable, local dev can set `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` in `.dev.vars` and `restTranslationRunner` posts to `api.cloudflare.com` instead — it wins over the binding when both exist, and production receives neither variable.
 - One request = one model call. Announcement Markdown is segmented into text and literal blocks; only the title and text blocks go to the model as one `{ title, texts }` payload, while fenced code, blank lines and whole-line `::poll:` references are reassembled in code. Polls send all options as one `{ options }` payload. The model replies through `response_format: { type: 'json_schema', json_schema }`; array length and order are validated before returning.
 - `chat_template_kwargs: { enable_thinking: false }` is accepted by the Qwen3 REST endpoint but puts the final JSON in `reasoning` while `content` / `response` stay empty — do not use it. The translation prompt asks for concise, natural target-language phrasing (no literal calques, stacked noun phrases, or sentence mirroring) to reduce translationese.
-- Request rules live beside the adapter in `worker/translate.ts` (`readTranslationRequest`, `isOversizedTranslation`, `isTranslatable`); the route only maps them to `400` / `413` / `503` / `502`. Sizes are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTION_CHARS` in `shared/types.ts` — the same constants `routes/sync.ts` and the poll editor use. Three copies of `20_000` and two of `200` existed before 2026-10-26; do not reintroduce one.
+- Request rules live beside the adapter in `worker/translate.ts` (`readAnnouncementContent`, `readTranslationRequest`, `isOversizedAnnouncement`, `isOversizedTranslation`) and in `shared/poll.ts` (`parsePollOptions`, `POLL_REFERENCE`); each route only maps a refusal to `400` / `413` / `503` / `502`, and an adapter does not re-validate a request the endpoint has already parsed. Sizes are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTIONS` / `MAX_POLL_OPTION_CHARS` / `MAX_IMPORT_BYTES` in `shared/types.ts`, and the announcement **write** path answers the same `413` as the translate endpoint — a card the album would refuse can no longer be stored and then be permanently untranslatable.
 - `translateDraft` is overloaded on the request kind, so the returned draft's type follows the request and no caller re-checks `kind`. `routes/admin/TranslateButton.svelte` is the one control both card lists render.
 
 ---
@@ -184,9 +184,19 @@ Each of these exists because the logic had two hand-written copies that had alre
 
 ---
 
-## Unit Suite Shape (2026-09-27)
+## Lightbox Gestures (2026-10-26)
 
-- Keep the unit suite under 100 cases. Merge related assertions into one case instead of adding a fine-grained test per branch.
+- **Panning is unbounded by design.** No edge clamp: the only forced position is the fit view (at or below fit scale **and** unrotated), which centres. A user-chosen offset survives every zoom and rotation, and the media may be dragged off-stage. Any boundary is felt as a stuck drag — a rotated image's bounding box barely overflows and a lightly zoomed one has no overflow left on an axis, so the old half-overflow clamp let the drag die a few pixels in.
+- **`Ctrl`+drag pivots on the media's own centre and carries the pan through untouched.** Pressing `Ctrl` on a panned/zoomed image used to zero the offset and snap it back to the stage centre; the gesture now starts from the current scale/rotation/pan and may begin mid-drag or mid-pan.
+- **A drag pans whenever the media is zoomed or rotated** (`isPannable`), not only when the rendered box already overflows the stage. A lightly zoomed image dragged used to read as a swipe and mark the photo.
+- **Every zoom path is eased.** Wheel zoom uses the same 160 ms transform transition as double-click/double-tap (`applyWrap(…, animate)`); the retarget starts from the interpolated frame, so rapid wheel ticks stay continuous.
+
+---
+
+## Unit Suite Shape (2026-09-27, count target retired 2026-10-26)
+
+- **No case-count target.** A case is a contract, not a budget. Merge only assertions that share one owner **and** one failure mode; the suite grows with the behaviour it covers and is bounded by consolidation, never by deletion. The old "keep it under 100 cases" rule was violated 2.35× (235 cases by 2026-10-26) and the one time it was enforced (`ec40dbd`, 208→49, `topbarFit` 20→2) the same file records the lost coverage as real. If a count is wanted as a signal, report it.
+- **One test file per owner.** Files are keyed by the module whose contract they hold, not by test granularity: `photoRecords.test.ts` owns every card/record/preview rule, so a new rule about a pending card belongs there instead of in a fifth sibling. A grab bag (`frontend.test.ts`, six cases over four modules) is the anti-pattern — it is what makes a failure hard to locate.
 - Sync failures, including HTTP 429, do not schedule retries. Tests use fake timers to verify that queued operations remain local until a permitted trigger.
 
 ---
@@ -363,6 +373,7 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 ## Performance Troubleshooting
 
 - **Client requests must have timeout**: when backend is down connection is not rejected (dev proxy keeps holding), fetch without timeout never settles → `engine.syncing` always true, all writes stuck. Countermeasure `SYNC_TIMEOUT_MS = 15_000` (one AbortController per attempt, timeout throws `sync_timeout`) + `onError` dedup toast.
+- **A long album crashes a mobile tab through decoded images, not DOM.** An `<img>` in the document holds its **natural-size** decode for as long as it exists (a 12 MP photo ≈ 48 MB), so the virtualizer's render window — five viewports, chosen for scroll smoothness — multiplies that by its buffer factor. The render band and the **media** band are therefore different: media exists only within the viewport ±0.4 viewport (`MEDIA_LOAD_LOOKAHEAD` in `WaterfallLayout`), and leaving that band removes the element and clears `loadedUrl`. Bound what is decoded, not what is rendered. The real ceiling is the stored pixel size, which nothing here can downscale at render time (no rendition service) — capping the artifact's long edge at transcode time is the remaining lever, and it is a product decision.
 - **Determining "jank" must use real user machine data**: Playwright browser **has no extensions**, all 60fps probes don't mean user isn't janky (local user has 猫抓 + 篡改猴 + uBlock installed, profile shows extensions 3.4%, app JS only 0.04%). Prioritize getting Firefox profile and parse with skill `frontend-jank-triage`'s `analyze_profile.py`.
 - First visit profile: `load` 348ms / first image 16665ms / 401→Turnstile→200 takes 4.3s — slow in identity chain, not resources.
 
@@ -381,7 +392,7 @@ The top bar went through **three rounds of fixing the wrong thing**. The rule th
 
 ## Documentation & Module Layout
 
-- **Sole documentation is `AGENTS.md`** (architecture layers + red lines); everything else is code/comments.
+- **The documentation set is one entry point plus the knowledge directory.** `AGENTS.md` is the entry point (rules, architecture, commands); `README.md` carries the public overview and the facade contract; `.agents/CONTRACT.md` carries appearance and component behaviour. "Everything else is code/comments" was true before those two earned their keep and is not any more.
 - **A comment states what the code does and the constraint it must respect — never what changed or was asked for.** Restated as a hard rule 2026-10-12. Past tense aimed at the code ("this used to…", "the old constant…", "before this was…") and requirement narration ("per the user's decision", "fixes the bug where…") both belong in this file, not in the source: a comment has to survive the next edit unchanged, and one describing a past state goes stale the moment the state changes. What earns a comment is the constraint a reader cannot infer — why the clamp must run after the write, why the value is measured rather than guessed, why two surfaces share an owner. State it in the present tense as a rule ("the ceiling is frozen for the gesture, because a live ceiling pulls the sheet down mid-drag") and it stays true after the code moves.
 - **`.agents/` is the only tracked home for agent-facing knowledge.** `memory/` (daily logs + `MEMORY.md`), `adr/` (permanent decisions), `CONTRACT.md` (observable behaviour), `documents/` (design records too large or too working-state for an ADR).
 - ⚠️ **An ADR number is assigned once, and the collision is silent.** `0019` was issued twice — the markdown-parser ADR (2026-10-18) and the poll-editor ADR (2026-10-25). Nothing checks it: the index links by filename, so both files existed, only one was listed, and every cross-reference to "0019" resolved to whichever file the writer had in mind. Two writers numbering independently in one tree will collide. **Before taking the next number, read the directory, not the index** — the index is a derived file and had already dropped one row. The fix renumbers the _younger_ decision to the next free number (here 0022) and re-points every reference; an ADR's number is not stable once it is cited, so renumbering the older one would have broken citations that predate the collision.
@@ -508,3 +519,32 @@ Extracting one glitch stylesheet for two surfaces made them identical — and ex
 query shipped the `font-weight: 800` the glyph asked for, so both rendered synthetic bold while the
 now-identical surfaces looked fine side by side. **Unifying a definition answers "do they agree",
 never "can each of them actually render it".**
+
+## What an Adversarial Review Finds That a Green Suite Does Not (2026-10-26)
+
+Four reviewers over worker/core/UI/tests produced 60+ findings with the suite 235/235 green. The
+categories are the durable lesson:
+
+- **A stated policy value drifts unless a test asserts it.** `COOKIE_MAX_AGE` was `345_600_000`
+  seconds (4000 days) under a comment saying "400 days is the largest value browsers accept". Both
+  the number and the comment read as authoritative; only the missing assertion let them disagree by
+  10×. Any constant whose meaning is a policy (a lifetime, a ceiling, a threshold) gets a test that
+  pins the value, not just a comment that states it.
+- **A shell patch that does not match exits 0.** `sed -i "s/^name = .*/…/"` in `deploy.yml` is a
+  silent no-op when its anchor moves — a tag push would then deploy production under the dev Worker
+  name, and nothing read the file back. **Every scripted edit of a config file gets a read-back
+  check**; an exit code proves the command ran, not that it changed anything.
+- **A gate that normalises its comparison is weaker than the sentence describing it.** The schema
+  gate collapsed whitespace and lowercased both sides while three documents said "byte-identical";
+  the copy-key gate matched a bare leaf word, so deleting every call site of `copy.lightbox.download`
+  still passed (the word `download` exists in a Markdown attribute). **State the comparison the gate
+  actually makes** — and tighten the gate when the sentence is the better rule.
+- **Two copies of one derivation are fine until the third; the fourth is where they diverge.** The
+  artifact extension was derived in four places keyed on three different inputs, the mark kind →
+  column table existed twice (so a fourth mark kind would have been silently skipped at retirement),
+  and the poll-option rule existed three times with two different behaviours (filter vs reject).
+  Unifying is not cosmetic: the filter-vs-reject split was a real API inconsistency.
+- **A test that cannot fail is worse than no test.** Two cases compared a value with itself
+  (`ceil(x) >= x`, `easing === easing`); one asserted geometry against a constant declared inside
+  the test. They pass on every input, including broken code, and they are invisible in a diff.
+  When a case's assertion mentions the same expression twice, it is not an assertion.

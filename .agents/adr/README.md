@@ -20,6 +20,13 @@ Do **not** create an ADR for:
 
 File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat-fallback.md`)
 
+**A number is assigned once.** Before taking the next one, read the directory rather than this
+index — the index is derived and has dropped a row before. If a decision supersedes one whose
+number is already cited in code, memory or another ADR, the revision **keeps that number with a
+`-revised` suffix** (`0006-revised-….md`), must be listed in the index beside the original, and
+must be cited as `NNNN-revised`. A _new_ decision always takes the next free number; renumbering
+an already-cited ADR breaks every reference to it.
+
 ```markdown
 # NNNN: [Decision Title]
 
@@ -46,7 +53,7 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0008](0008-explicit-sync-triggers.md)                     | Synchronization Uses Explicit User and Page-Lifecycle Triggers                          | Accepted                   |
 | [0009](0009-standalone-image-host-facade.md)               | Image Host as a Standalone Facade                                                       | Accepted                   |
 | [0010](0010-locale-scoped-content-and-standalone-polls.md) | Locale-Scoped Content and Standalone Multi-Select Polls                                 | Superseded by 0013         |
-| [0011](0011-web-fonts-google-china-endpoint.md)            | Web Fonts Load From Google's China Endpoint                                             | Accepted                   |
+| [0011](0011-web-fonts-google-china-endpoint.md)            | Web Fonts Load From Google's China Endpoint                                             | Superseded by 0017         |
 | [0012](0012-published-bar-height.md)                       | Measured Bar Height Is Published Once, Consumed Everywhere                              | Accepted                   |
 | [0013](0013-all-locale-sync-and-poll-references.md)        | All-Locale Sync Snapshots and Language-Addressed Poll References                        | Accepted                   |
 | [0014](0014-transcode-output-streams-to-opfs.md)           | Transcode Output Streams Straight to OPFS, and a Hidden Page Keeps Its Lease            | Accepted                   |
@@ -59,5 +66,5 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0021](0021-workers-ai-admin-translation.md)               | Workers AI Drafts Admin Translations                                                    | Accepted                   |
 | [0022](0022-poll-editor-overwrite-votes.md)                | Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll             | Accepted                   |
 | [0023](0023-sync-applies-a-batched-plan.md)                | `/sync` Applies One Batched Statement Plan, Not One Round Trip Per Op                   | Accepted                   |
-| [0024](0024-op-log-is-a-render-source.md)                  | The Op Log Is a Render Source — Unconfirmed Uploads Draw as Cards                       | Accepted                   |
+| [0024](0024-op-log-is-a-render-source.md)                  | The Op Log Is a Render Source — Unconfirmed Uploads Draw as Cards                       | Superseded by 0025         |
 | [0025](0025-one-record-per-photo.md)                       | One Durable Record Per Photo, Keyed by sha256                                           | Accepted                   |

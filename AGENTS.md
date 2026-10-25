@@ -6,7 +6,7 @@
 
 ## 1. Project Overview
 
-Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Svelte 5** SPA. The SPA build output in `dist/` is served directly by the Worker's `ASSETS` binding (API routes take priority over static assets).
+Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Svelte 5** SPA. The SPA build output in `dist/` is served by the Worker's `ASSETS` binding. **The asset layer is checked before the Worker**, so every path the Worker serves is listed in `run_worker_first`; a path that is not listed never reaches the Worker at all (`wrangler.toml`, CONTRACT §4.15).
 
 ---
 
@@ -46,12 +46,14 @@ dist/              Vite build output (not in git, served by wrangler [assets])
 
 ## 4. Tech Stack
 
-| Layer    | Technology                                                          |
-| -------- | ------------------------------------------------------------------- |
-| Backend  | Cloudflare Workers, Hono, D1 (SQLite), Turnstile, Transcoding proxy |
-| Frontend | Svelte 5 (runes), Vite 6, Tailwind 4, TypeScript 5                  |
-| Testing  | Vitest 2.1 (unit, node env), Playwright (e2e, local manual only)    |
-| Tooling  | ESLint 10 (flat) + Prettier 3, npm workspaces, GitHub Actions       |
+| Layer    | Technology                                                       |
+| -------- | ---------------------------------------------------------------- |
+| Backend  | Cloudflare Workers, Hono, D1 (SQLite), Turnstile                 |
+| Frontend | Svelte 5 (runes), Vite 6, Tailwind 4, TypeScript 5               |
+| Testing  | Vitest 2.1 (unit, node env), Playwright (e2e, local manual only) |
+| Tooling  | ESLint 10 (flat) + Prettier 3, npm workspaces, GitHub Actions    |
+
+Transcoding is not a Worker concern: the browser encodes (WebCodecs + SharedWorker) and the artifact goes straight to the external media-host facade (§6).
 
 ---
 
@@ -75,8 +77,9 @@ Run from the repo root:
 | `npm run lint`       | ESLint + Prettier check (CI gate)                                                                                                   |
 | `npm run lint:fix`   | Auto-fix + format                                                                                                                   |
 | `npm run ts-check`   | Type gate: tsc × 3 + `svelte-check --fail-on-warnings`                                                                              |
-| `npm run db:local`   | Seed local D1 with `schema.sql` (idempotent; `--force` to reset)                                                                    |
-| `npm run db:reset`   | Reset local D1 data                                                                                                                 |
+| `npm run db:local`   | Apply `schema.sql` to local D1 (idempotent; `--force` re-applies it over an existing schema)                                        |
+| `npm run db:seed`    | Seed local D1 with demo announcements / polls / votes / reactions / feedback (`scripts/seed-content.md`, the localized row source)  |
+| `npm run db:reset`   | Delete the local D1 state and rebuild it from `schema.sql`                                                                          |
 | `npm run gen-schema` | Generate `src/worker/schema-ddl.ts` from `schema.sql`                                                                               |
 | `npm run release`    | Cut a release: bump both manifests + lockfile, commit, tag, push (refuses a dirty tree / non-`main` / an existing tag; `--dry-run`) |
 
@@ -96,7 +99,7 @@ Uploads go to a **standalone image-host facade** deployed separately (the refere
 ## 8. Coding Conventions
 
 1. **Single lockfile**: Never create `package-lock.json` in `web/`; always install at root with `npm ci`.
-2. **Single test stack**: Test files use `import { test } from 'vitest'` + `node:assert`, never `node:test`, `describe`/`it`, or `expect`. A grouped `describe('G')` / `it('C')` pair is written as one `test('G: C')`.
+2. **Single unit-test stack**: Unit test files (`src/**/*.test.ts`, `web/tests/unit/**`) use `import { test } from 'vitest'` + `node:assert/strict`, never `node:test`, `describe`/`it`, or `expect`. A grouped `describe('G')` / `it('C')` pair is written as one `test('G: C')`. The Playwright specs under `web/tests/e2e/` are a separate stack: they use `test`/`expect`/`test.describe` from `@playwright/test` and never run in CI (§7).
 3. **Vitest pinned to 2.1.x**: Root and web unified; 5.x has known SSR/node:sqlite compatibility issues.
 4. **`node:sqlite` must be loaded through `createRequire`**: Vite's SSR transform strips the `node:` prefix from a static import, breaking the module under vitest. See `src/testing/localDb.ts` and `scripts/lib/apply-local-schema.mjs` — never `import { DatabaseSync } from 'node:sqlite'` directly.
 5. **e2e not in CI**: Needs browser + local stack; run locally and manually. CI only runs lint/type/unit tests.
@@ -201,34 +204,35 @@ When a significant architectural decision is made, create `.agents/adr/NNNN-titl
 
 ## 12. Key Files Reference
 
-| File                                            | Purpose                                                                                                |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `.agents/CONTRACT.md`                           | Design & component behaviour contract — the single source of truth for appearance                      |
-| `schema.sql`                                    | D1 DDL — source of truth; regenerate `schema-ddl.ts` from it (red line 3)                              |
-| `src/shared/copy.ts`                            | i18n copy tables (en-US / zh-CN), BCP-47 exact-match keys                                              |
-| `src/shared/json.ts`                            | `isRecord` / `safeJsonParse` — the one shape guard and lenient parser for both runtimes                |
-| `src/shared/media.ts`                           | Base-36 media ids, artifact extensions, `isLoopbackOrigin` (both runtimes)                             |
-| `src/testing/localDb.ts`                        | Local/unit-test Db over `node:sqlite` (via `createRequire`); never imported by the Worker              |
-| `src/worker/schema-ddl.ts`                      | Generated DDL string for the Worker — never hand-edit                                                  |
-| `README.md`                                     | Overview + facade API contract (§Media host facade) — read this to plug in a different storage backend |
-| `web/src/core/engine.ts`                        | Sync engine (oplog, sync trigger points)                                                               |
-| `web/src/base/upload/pipeline.ts`               | Upload pipeline (pure logic, testable)                                                                 |
-| `web/src/transcode/pipeline.ts`                 | Transcode pipeline orchestrator                                                                        |
-| `web/src/transcode/sw.ts`                       | SharedWorker scheduler (image/video pools, lease heartbeats)                                           |
-| `web/src/base/lib/band.ts`                      | Target pixel-band defaults and slider bounds for the waterfall                                         |
-| `web/src/base/lib/motion.ts`                    | Motion-token reader for WAAPI / Svelte transitions — mirrors the `app.css` `@theme` block              |
-| `web/src/base/lib/num.ts`                       | `clamp01` / `clamp` — progress fractions, slider positions, normalised ratios                          |
-| `web/src/base/lib/pointer.ts`                   | `startPointerResize` — the one pointer-drag-to-value gesture                                           |
-| `web/src/base/lib/hover.svelte.ts`              | `createHoverIntent` — instant enter, debounced leave for hover-revealed surfaces                       |
-| `web/src/base/lib/clock.svelte.ts`              | `clockNow` / `holdClock` — the one shared 30-second tick behind every relative-time label              |
-| `web/src/base/lib/clipboard.ts`                 | `copyToClipboard` — success is a boolean so callers keep their own copy labels                         |
-| `web/src/base/lib/device.svelte.ts`             | `canHover` / `prefersReducedMotion` — the one source for the two behaviour-changing device queries     |
-| `web/src/lib/components/topbarFit.ts`           | Top-bar density resolution (measured widths, hysteresis)                                               |
-| `web/src/lib/components/UploadPanel.svelte`     | Sole upload overlay                                                                                    |
-| `web/src/lib/components/TimeLabel.svelte`       | Sole time display component                                                                            |
-| `web/src/lib/components/SwapLabel.svelte`       | Sole hover-swap label (TimeLabel and the sidebar's VersionLabel both render through it)                |
-| `web/src/lib/components/VersionLabel.svelte`    | Build version in the sidebar footer — latest tag, commit hash on hover (build-time injected)           |
-| `web/src/lib/components/ReorderableList.svelte` | Reusable drag-sort list                                                                                |
-| `web/src/lib/components/PollReferences.svelte`  | Sole renderer for Markdown interleaved with `::poll:<lang>:<id>` poll references                       |
-| `web/src/lib/components/EditorDialog.svelte`    | Sole editor shell — scroll region, footer, overlay focus trap / scroll lock / Escape                   |
-| `web/src/lib/components/pillMeasure.ts`         | Sole segmented-pill density measurement (clone probe, never hidden-copy widths)                        |
+| File                                            | Purpose                                                                                                                          |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `.agents/CONTRACT.md`                           | Design & component behaviour contract — the single source of truth for appearance                                                |
+| `schema.sql`                                    | D1 DDL — source of truth; regenerate `schema-ddl.ts` from it (red line 3)                                                        |
+| `src/shared/copy.ts`                            | i18n copy tables (en-US / zh-CN), BCP-47 exact-match keys                                                                        |
+| `src/shared/json.ts`                            | `isRecord` / `safeJsonParse` — the one shape guard and lenient parser for both runtimes                                          |
+| `src/shared/media.ts`                           | Base-36 media ids, artifact extensions, and the media-URL host policy (`isLoopbackOrigin` / `isStorableMediaUrl`, both runtimes) |
+| `src/shared/poll.ts`                            | Poll rules shared by both runtimes — `parsePollOptions`, `POLL_REFERENCE` (`::poll:<locale>:<id>`)                               |
+| `src/testing/localDb.ts`                        | Local/unit-test Db over `node:sqlite` (via `createRequire`); never imported by the Worker                                        |
+| `src/worker/schema-ddl.ts`                      | Generated DDL string for the Worker — never hand-edit                                                                            |
+| `README.md`                                     | Overview + facade API contract (§Media host facade) — read this to plug in a different storage backend                           |
+| `web/src/core/engine.ts`                        | Sync engine (oplog, sync trigger points)                                                                                         |
+| `web/src/base/upload/pipeline.ts`               | Upload pipeline (pure logic, testable)                                                                                           |
+| `web/src/transcode/pipeline.ts`                 | Transcode pipeline orchestrator                                                                                                  |
+| `web/src/transcode/sw.ts`                       | SharedWorker scheduler (image/video pools, lease heartbeats)                                                                     |
+| `web/src/base/lib/band.ts`                      | Target pixel-band defaults and slider bounds for the waterfall                                                                   |
+| `web/src/base/lib/motion.ts`                    | Motion-token reader for WAAPI / Svelte transitions — mirrors the `app.css` `@theme` block                                        |
+| `web/src/base/lib/num.ts`                       | `clamp01` / `clamp` — progress fractions, slider positions, normalised ratios                                                    |
+| `web/src/base/lib/pointer.ts`                   | `startPointerResize` — the one pointer-drag-to-value gesture                                                                     |
+| `web/src/base/lib/hover.svelte.ts`              | `createHoverIntent` — instant enter, debounced leave for hover-revealed surfaces                                                 |
+| `web/src/base/lib/clock.svelte.ts`              | `clockNow` / `holdClock` — the one shared 30-second tick behind every relative-time label                                        |
+| `web/src/base/lib/clipboard.ts`                 | `copyToClipboard` — success is a boolean so callers keep their own copy labels                                                   |
+| `web/src/base/lib/device.svelte.ts`             | `canHover` / `prefersReducedMotion` — the one source for the two behaviour-changing device queries                               |
+| `web/src/lib/components/topbarFit.ts`           | Top-bar density resolution (measured widths, hysteresis)                                                                         |
+| `web/src/lib/components/UploadPanel.svelte`     | Sole upload overlay                                                                                                              |
+| `web/src/lib/components/TimeLabel.svelte`       | Sole time display component                                                                                                      |
+| `web/src/lib/components/SwapLabel.svelte`       | Sole hover-swap label (TimeLabel and the sidebar's VersionLabel both render through it)                                          |
+| `web/src/lib/components/VersionLabel.svelte`    | Build version in the sidebar footer — latest tag, commit hash on hover (build-time injected)                                     |
+| `web/src/lib/components/ReorderableList.svelte` | Reusable drag-sort list                                                                                                          |
+| `web/src/lib/components/PollReferences.svelte`  | Sole renderer for Markdown interleaved with `::poll:<lang>:<id>` poll references                                                 |
+| `web/src/lib/components/EditorDialog.svelte`    | Sole editor shell — scroll region, footer, overlay focus trap / scroll lock / Escape                                             |
+| `web/src/lib/components/pillMeasure.ts`         | Sole segmented-pill density measurement (clone probe, never hidden-copy widths)                                                  |
