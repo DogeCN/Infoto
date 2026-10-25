@@ -39,7 +39,7 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0002](0002-progress-only-real-measurements.md)            | Progress Reports Only Real Measurements                                                 | Accepted                   |
 | [0003](0003-measured-responsive-layout.md)                 | Responsive State From Measured Widths, Not Breakpoints                                  | Accepted                   |
 | [0004](0004-two-layer-i18n-copy.md)                        | Two-Layer i18n Copy: `$state` vs Live Proxy                                             | Accepted                   |
-| [0005](0005-waterfall-target-band-width.md)                | Waterfall Density Controlled by Target Band Width                                       | Accepted                   |
+| [0005](0005-waterfall-target-band-width.md)                | Waterfall Density Controlled by Target Band Width                                       | Superseded by 0020         |
 | [0006](0006-dual-source-web-fonts.md)                      | Web Fonts Race the Official Host Against the USTC Mirror                                | Superseded by 0006-revised |
 | [0006-revised](0006-revised-official-font-host-only.md)    | Web Fonts Load From the Official Host Only                                              | Superseded by 0011         |
 | [0007](0007-shared-frontend-lifecycle.md)                  | Shared Frontend Lifecycle and Utility Boundaries                                        | Accepted                   |
@@ -51,4 +51,9 @@ File name: `NNNN-title.md` (zero-padded sequential number, e.g., `0001-no-compat
 | [0013](0013-all-locale-sync-and-poll-references.md)        | All-Locale Sync Snapshots and Language-Addressed Poll References                        | Accepted                   |
 | [0014](0014-transcode-output-streams-to-opfs.md)           | Transcode Output Streams Straight to OPFS, and a Hidden Page Keeps Its Lease            | Accepted                   |
 | [0015](0015-one-dimension-per-refactor-commit.md)          | One Dimension Per Refactor Commit, and a New Abstraction Is Specified Before It Is Used | Accepted                   |
+| [0016](0016-op-log-supersedes-last-value-writes.md)        | The Op Log Supersedes Writes That Only Have a Last Value                                | Accepted                   |
+| [0017](0017-web-fonts-race-two-google-endpoints.md)        | Web Fonts Race Google's China Endpoint Against the Global Host                          | Accepted                   |
+| [0018](0018-poll-edits-keep-votes.md)                      | Editing a Poll Keeps Its Votes Unless the Question Changed                              | Superseded by 0019         |
 | [0019](0019-poll-editor-overwrite-votes.md)                | Poll Editor Reorders Options With Their Votes and Overwrites the Whole Poll             | Accepted                   |
+| [0020](0020-auto-default-band-from-measured-cross.md)      | Auto Default Band Derived From the Measured Canvas                                      | Accepted                   |
+| [0021](0021-workers-ai-admin-translation.md)               | Workers AI Drafts Admin Translations                                                    | Accepted                   |
