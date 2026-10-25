@@ -8,14 +8,16 @@ import {
   appendOp,
   appendUpload,
   countOps,
-  deletePhotoRecords,
+  deleteOps,
   openOplogDb,
   putOp,
   readOps,
   readPhotoRecords,
   readSnapshot,
-  removePhoto,
+  removePhotos,
+  retirePhotos,
   updatePhotoRecord,
+  uploadOpShas,
   type PhotoRecord,
 } from './oplog';
 
@@ -56,12 +58,11 @@ export interface EngineIo {
 }
 
 export interface SyncSnapshotContext {
-  attempt: number;
   /** Unconfirmed operations to reapply over the server snapshot. */
   queuedOps: Op[];
 }
 
-export type SyncAttemptResult =
+type SyncAttemptResult =
   | { ok: true; confirmedThroughVersion: number }
   | { ok: false; error: unknown; confirmedThroughVersion: number };
 
@@ -186,29 +187,17 @@ export class SyncEngine {
   }
 
   /**
-   * Withdraw a photo the user deleted: its record, the mark ops addressed to it and the upload op
-   * the record owns, in one transaction. An op already claimed by an in-flight request cannot be
-   * un-sent, so the caller files a `delete` op afterwards and the server ends up correct whether
-   * that request lands or fails (create+delete, or nothing).
+   * Withdraw photos the user deleted: each record, the mark ops addressed to it and the upload op
+   * the record owns, in one transaction for the whole selection. An op already claimed by an
+   * in-flight request cannot be un-sent, so the caller files a `delete` op afterwards and the
+   * server ends up correct whether that request lands or fails (create+delete, or nothing).
    */
-  async withdrawPhoto(sha256: string): Promise<void> {
+  async withdrawPhotos(shas: readonly string[]): Promise<void> {
+    if (shas.length === 0) return;
     if (!this.db) this.db = await openOplogDb();
-    await removePhoto(this.db, sha256);
+    await removePhotos(this.db, shas);
     this.pending = await countOps(this.db);
     this.emit();
-  }
-
-  /**
-   * Every operation still unconfirmed, in submission order — the durable state a page load
-   * renders from before any sync trigger runs.
-   *
-   * This is a read of the op log, never a trigger: nothing here sends, retries or schedules
-   * anything (ADR 0008 keeps the trigger list closed). An op an in-flight request is already
-   * carrying is still unconfirmed, so it is included — it has not been removed from the log yet.
-   */
-  async queuedOps(): Promise<Op[]> {
-    if (!this.db) this.db = await openOplogDb();
-    return (await readOps(this.db)).map((entry) => entry.op);
   }
 
   private pagehideUrl(): string {
@@ -254,7 +243,7 @@ export class SyncEngine {
           .then((response) => {
             // Non-ok and a failed clear both leave the op queued, so the
             // next session resends it — never swallow that reason.
-            if (response.ok) return clearKeys(db, keys);
+            if (response.ok) return deleteOps(db, keys);
             this.reportPagehideError(new Error(`pagehide flush rejected: HTTP ${response.status}`));
           })
           .catch((error: unknown) => this.reportPagehideError(error))
@@ -284,7 +273,7 @@ export class SyncEngine {
     });
   }
 
-  private async runSync(attempt: number): Promise<SyncAttemptResult> {
+  private async runSync(): Promise<SyncAttemptResult> {
     let available: Awaited<ReturnType<typeof readOps>> = [];
     let confirmedThroughVersion = 0;
     this.syncing = true;
@@ -301,7 +290,7 @@ export class SyncEngine {
         const { response } = await (this.io.postSyncFn ?? postSync)(request, {
           keepalive: this.keepaliveEligible(request.ops),
         });
-        await clearKeys(
+        await deleteOps(
           db,
           batch.map((entry) => entry.key),
         );
@@ -311,11 +300,11 @@ export class SyncEngine {
         }
         this.pending = await countOps(db);
         const queuedOps = (await readOps(db)).map((entry) => entry.op);
-        await this.applySnapshot(db, response, { attempt, queuedOps });
-        // After the fold, never before: a confirmed photo's record carries the marks
-        // `applySync` has just stated as ops.
-        await deletePhotoRecords(db, confirmedShas(batch.map((entry) => entry.op))).catch((error) =>
-          console.warn('[sync] photo record cleanup failed', error),
+        await this.applySnapshot(db, response, { queuedOps });
+        // After the fold, never before. The retirement states the marks the record still carries
+        // itself, so a client that never hydrated its in-memory mark map cannot lose them.
+        await retirePhotos(db, uploadOpShas(batch.map((entry) => entry.op)), response.selfId).catch(
+          (error) => console.warn('[sync] photo record cleanup failed', error),
         );
       }
       return { ok: true, confirmedThroughVersion };
@@ -343,7 +332,8 @@ export class SyncEngine {
   }
 
   private beginSync(): Promise<SyncAttemptResult> {
-    const promise = this.runSync(++this.attempt);
+    this.attempt += 1;
+    const promise = this.runSync();
     this.activeSync = promise;
     const clear = () => {
       if (this.activeSync === promise) this.activeSync = null;
@@ -367,28 +357,6 @@ export class SyncEngine {
       this.flushOnPagehide();
     });
   }
-}
-
-/** The shas of the upload ops a confirmed batch carried — exactly the records it retires. */
-function confirmedShas(ops: readonly Op[]): string[] {
-  const out: string[] = [];
-  for (const op of ops) {
-    if (op.type !== 'upload') continue;
-    const sha = (op.payload as { sha256?: unknown } | null | undefined)?.sha256;
-    if (typeof sha === 'string' && sha) out.push(sha);
-  }
-  return out;
-}
-
-async function clearKeys(db: IDBDatabase, keys: IDBValidKey[]): Promise<void> {
-  if (keys.length === 0) return;
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('oplog', 'readwrite');
-    const store = tx.objectStore('oplog');
-    for (const key of keys) store.delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('oplog clearKeys failed'));
-  });
 }
 
 /** Get (or create) the global engine instance; a caller that already has one adopts

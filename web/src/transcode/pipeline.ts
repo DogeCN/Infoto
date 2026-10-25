@@ -4,7 +4,6 @@ import { buildUploadOp, routeByMime, translateTaskError, uid } from '$base/uploa
 import { clamp01 } from '$base/lib/num';
 import { copy } from '$shared/copy';
 import { extOfType } from '$shared/media';
-import { openOplogDb, appendUpload } from '../core/oplog';
 import { LeaseClient } from './lease';
 import {
   isSwToPage,
@@ -118,7 +117,6 @@ export class UploadPipeline {
   private editorSnapshot: PipelineTaskSnapshot | null = null;
   private snapshots = new Map<string, PipelineTaskSnapshot>();
   private io: PipelineIo;
-  private db: IDBDatabase | null = null;
   private readonly editorWaiters = new Map<
     string,
     { resolve: (url: string) => void; reject: (error: Error) => void }
@@ -392,25 +390,8 @@ export class UploadPipeline {
     // The artifact's name has to exist before its own digest does, so the job id is the handle
     // the record keeps; nothing else keys on it.
     const artifact = { key: jobId, ext: extOfType(meta.type) } as const;
-    if (this.io.onUploadOp) {
-      await this.io.onUploadOp(op, artifact);
-    } else {
-      if (!this.db) this.db = await openOplogDb();
-      // The fallback keeps the same invariant as the sink: op and record land together.
-      await appendUpload(this.db, op, {
-        sha256,
-        status: 'hosted',
-        meta: {
-          width: meta.width,
-          height: meta.height,
-          size: meta.size,
-          type: meta.type,
-        },
-        artifact,
-        url,
-        createdAt: createdAt ?? Date.now(),
-      });
-    }
+    // The sink is the only writer: it persists the op with the photo record in one transaction.
+    await this.io.onUploadOp?.(op, artifact);
     try {
       this.sw?.port.postMessage({ t: 'opWritten', jobId });
     } catch {
@@ -448,7 +429,7 @@ export class UploadPipeline {
   /**
    * Entry: picked files (the accept list is `image/*,video/*` — exactly routeByMime's coverage surface). `onQueued` fires per accepted file with its job id, letting the page grab the File (the SW clone takes over from here) e.g. to probe source dimensions.
    */
-  addFiles(files: FileList | File[], onQueued?: (jobId: string, file: File) => void): void {
+  addFiles(files: FileList | File[]): void {
     try {
       if (!this.sw) this.start();
     } catch (error) {
@@ -473,7 +454,6 @@ export class UploadPipeline {
       }
       const jobId = uid();
       this.emit({ jobId, fileName: file.name, purpose: 'album', phase: 'queued' });
-      onQueued?.(jobId, file);
       this.sw!.port.postMessage({
         t: 'addJob',
         jobId,
@@ -504,15 +484,6 @@ export class UploadPipeline {
   cancel(jobId: string): void {
     this.stopVideoWorker(jobId);
     this.sw?.port.postMessage({ t: 'cancelJob', jobId });
-  }
-
-  /** One of the token release paths: destroy this page's video worker when done. */
-  private terminateVideoWorker(jobId: string): void {
-    const w = this.videoWorkers.get(jobId);
-    if (w) {
-      w.terminate();
-      this.videoWorkers.delete(jobId);
-    }
   }
 
   /**

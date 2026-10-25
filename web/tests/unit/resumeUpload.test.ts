@@ -5,7 +5,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
-import { openOplogDb, readPhotoRecord } from '../../src/core/oplog';
+import { openOplogDb, readPhotoRecord, updatePhotoRecord } from '../../src/core/oplog';
 
 const h = vi.hoisted(() => ({
   postUpload: vi.fn(),
@@ -112,6 +112,10 @@ test('album upload resume: an upload failure keeps a marked record so the card s
   );
   assert.equal(h.postUpload.mock.calls.length, 1);
 
+  // A mark made while the upload is in flight lives on the record. The worker's failure write
+  // must merge, not replace: replacing would drop the marks (and the opKey) the page's card owns.
+  const marks = { likes: [0], dislikes: [], reports: [] };
+  await updatePhotoRecord(db, 'sha-failed', (record) => ({ ...record, marks }));
   releaseUpload!({ ok: false, error: 'timeout' });
 
   // The record stays, marked, so `resumePendingUploads` rebuilds a failed card instead of
@@ -124,6 +128,7 @@ test('album upload resume: an upload failure keeps a marked record so the card s
   // The artifact handle survives on the record; the job id lives only there, as a handle.
   assert.equal(record?.artifact?.key, 'job-fail');
   assert.equal(record?.status, 'failed');
+  assert.deepEqual(record?.marks, marks, 'the failure write kept the marks the card owned');
   // The reason travels with the record, so the reloaded card reports it instead of a generic one.
   assert.equal(record?.error, 'timeout');
   assert.equal(

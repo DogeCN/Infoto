@@ -1,10 +1,13 @@
-// The regression behind this file: a batch whose /sync timed out left the photos hosted and
-// invisible, because the card showing them lived in the upload store's memory. The photo record
-// is the durable half: the worker writes `uploading`, the page turns it into `hosted` in the same
-// transaction that appends the upload op, and only a confirmed sync deletes it.
+// One photo record, end to end. The regression this guards: a batch whose /sync timed out left
+// the photos hosted and invisible, because the card showing them lived in the upload store's
+// memory. The record is the durable half — the worker writes `uploading`, the page turns it into
+// `hosted` in the same transaction that appends the upload op, and only a confirmed sync retires
+// it.
 //
 // These cases drive the real stores through the engine, so they cover the seam a pure projection
-// cannot: what a reload actually reads.
+// cannot: what a reload actually reads. They do NOT cover the page store's own projection
+// (`refreshHostedPhotos`, temp ids, the in-memory mark map) — that layer needs a component
+// context, and `uploadPreview.test.ts` guards its wiring from source instead.
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -19,7 +22,7 @@ import {
   readOps,
   readPhotoRecord,
   readPhotoRecords,
-  removePhoto,
+  removePhotos,
   type PhotoRecord,
 } from '../../src/core/oplog';
 import { hostedPhotoCards, type HostedPhotoFields } from '../../src/core/pending';
@@ -151,7 +154,7 @@ test('a withdrawn photo leaves nothing behind', async () => {
   const engine = new SyncEngine({ db });
 
   // The upload op is deleted by its own key — the record is what knows that key.
-  await removePhoto(db, 'a');
+  await removePhotos(db, ['a']);
   assert.equal(await readPhotoRecord(db, 'a'), null);
   assert.equal(await logged(), 1, 'only the other photo op is left');
   assert.deepEqual(
@@ -181,7 +184,7 @@ test('a landed or live sha never draws a second card', async () => {
 test('a late mark write cannot resurrect a withdrawn photo', async () => {
   await hosted('a');
   const engine = new SyncEngine({ db });
-  await removePhoto(db, 'a');
+  await removePhotos(db, ['a']);
   // The record is gone, so the write is a no-op rather than a half-resurrected card.
   await engine.updatePhotoMarks('a', { likes: [0], dislikes: [], reports: [] });
   assert.equal(await readPhotoRecord(db, 'a'), null);
@@ -199,4 +202,20 @@ test('a worker-owned record is not a card: the worker replays it as a job', asyn
   await putPhotoRecord(db, workerRecord('a', 'uploading'));
   await putPhotoRecord(db, workerRecord('b', 'failed'));
   assert.deepEqual(await cards(engine), []);
+});
+
+// The withdrawal cannot remove the tombstone's future, and the tombstone must not swallow the
+// photo the user puts back: an upload after a withdrawal is a new record and a new card.
+test('re-picking a deleted file puts its card back', async () => {
+  await hosted('a');
+  const engine = new SyncEngine({ db });
+  await removePhotos(db, ['a']);
+  assert.deepEqual(await cards(engine), [], 'the withdrawal took the card');
+
+  await hosted('a');
+  assert.deepEqual(
+    (await cards(engine)).map((fields) => fields.sha256),
+    ['a'],
+    'a later upload of the same sha revives it',
+  );
 });

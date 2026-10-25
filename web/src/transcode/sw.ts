@@ -13,12 +13,12 @@ import {
 } from '$base/upload/pipeline';
 import { postUpload, type UploadResult } from '../core/api/uploadClient';
 import {
-  deletePhotoRecord,
+  deletePhotoRecordIfOwned,
   isKnownAlbumSha,
   openOplogDb,
-  putPhotoRecord,
   readPhotoRecord,
   readPhotoRecords,
+  updatePhotoRecord,
   type PhotoRecord,
 } from '../core/oplog';
 import { readArtifact, removeArtifact, storeArtifact } from './opfs';
@@ -177,11 +177,11 @@ function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
  * Mark a job failed with `error` and notify its holders; centralises the repeated
  * terminal-failure assignment.
  *
- * The resume record is kept when the failure happened in the upload leg. `rec.phase` at the
- * call is the stage that failed: `transcoding` means no artifact exists yet, so a resumed
- * upload would have nothing to send, while `uploading` means the artifact is on disk and the
- * record is what brings the card back after a reload. Keeping it is also what stops the card
- * from vanishing on refresh — the page rebuilds the job from the record and replays it.
+ * The photo record is kept when the failure happened in the upload leg. `rec.phase` at the call
+ * is the stage that failed: `transcoding` means no artifact exists yet, so a resumed upload
+ * would have nothing to send, while `uploading` means the artifact is on disk and the record is
+ * what brings the card back after a reload. Keeping it is also what stops the card from
+ * vanishing on refresh — the worker rebuilds the job from the record.
  */
 function failJob(rec: JobRec, error: string): void {
   const failedInUpload = rec.phase === 'uploading';
@@ -190,7 +190,9 @@ function failJob(rec: JobRec, error: string): void {
   // A transcode failure ends the job for good: there is no artifact to resume from, so the
   // record would only re-run a transcode that already failed. Only cancel removes the artifact.
   if (!failedInUpload) {
-    if (db && rec.sha256) void deletePhotoRecord(db, rec.sha256).catch(() => undefined);
+    if (db && rec.sha256) {
+      void deletePhotoRecordIfOwned(db, rec.sha256, rec.jobId).catch(() => undefined);
+    }
     // No card renders this job (see `rendersCard`), so nothing can press retry and the source
     // Blob would otherwise sit in this worker until the record is pruned — up to the full file
     // size for ten minutes. Editor jobs never reach here before `uploading`.
@@ -201,14 +203,18 @@ function failJob(rec: JobRec, error: string): void {
   // An upload failure keeps its record, marked: the artifact is still on disk, so the card
   // survives a reload and the user can retry it by hand. Without the flag the reload would
   // resume the upload on its own, which is a retry nobody asked for.
-  if (db) {
-    const record = photoRecord(rec, 'failed');
-    if (record) void putPhotoRecord(db, record).catch(() => undefined);
+  if (db && rec.sha256) {
+    // Merge, never replace: the record may already own this photo's marks and its opKey.
+    const error = rec.error ?? 'upload_failed';
+    void updatePhotoRecord(db, rec.sha256, (record) => ({
+      ...record,
+      status: 'failed',
+      error,
+    })).catch(() => undefined);
   }
   notify(rec);
 }
 
-/** The resume record for a job whose stage 1 finished, or null while it has not. */
 /** The record this job owns, keyed by the photo's sha — the one durable address it has. */
 function photoRecord(rec: JobRec, status: PhotoRecord['status']): PhotoRecord | null {
   if (!rec.sha256 || !rec.meta || !rec.artifact) return null;
@@ -378,12 +384,16 @@ async function afterStage1(rec: JobRec): Promise<void> {
   notify(rec, { fraction: 0 });
   // Remember the job: a reload kills this worker, but the artifact is on disk, so the
   // upload can be resumed instead of silently losing a photo the user already uploaded.
-  if (db) {
-    const record = photoRecord(rec, 'uploading');
-    if (record) {
-      if (rec.cancelled) return;
-      await putPhotoRecord(db, record).catch(() => undefined);
-    }
+  if (db && rec.sha256) {
+    if (rec.cancelled) return;
+    const sha = rec.sha256;
+    // Upsert: a retry of a failed photo keeps the marks it already had.
+    await updatePhotoRecord(
+      db,
+      sha,
+      (record) => ({ ...record, status: 'uploading' }),
+      () => photoRecord(rec, 'uploading'),
+    ).catch(() => undefined);
   }
   await runUpload(rec);
 }
@@ -395,9 +405,10 @@ async function runEditorUpload(rec: JobRec): Promise<void> {
   await runUpload(rec, rec.file);
 }
 
-/** Stage 2: 100MB pre-check + one /upload attempt, no auto-retry — a failure marks the
- *  file failed and deletes its resume record, so a later page load will not re-run the
- *  upload; retryJob is manual-only, reusing the artifact that stays in OPFS.
+/** Stage 2: 100MB pre-check + one /upload attempt, no auto-retry — an upload-leg failure writes
+ *  the photo record as `failed` (keeping its artifact and the marks it owns), so a later page
+ *  load rebuilds the failed card instead of re-running the upload; retryJob is manual-only,
+ *  reusing the artifact that stays in OPFS.
  *  `source` = the blob to send; absent → the album artifact is read back from OPFS
  *  (the editor passes the picked file it still holds). */
 async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
@@ -612,7 +623,7 @@ function reclaimTerminalJobs(): void {
     // A pruned failure has nothing left to retry, so its record goes too. A `done` job's record
     // is a `hosted` card the page owns, and it must survive this sweep.
     if (db && rec.phase === 'failed' && rec.sha256) {
-      void deletePhotoRecord(db, rec.sha256).catch(() => undefined);
+      void deletePhotoRecordIfOwned(db, rec.sha256, rec.jobId).catch(() => undefined);
     }
   }
 }
@@ -662,7 +673,7 @@ async function resumePhotoRecords(): Promise<void> {
     if (jobs.has(key)) continue;
     const blob = await readArtifact(key, ext);
     if (!blob) {
-      void deletePhotoRecord(db, record.sha256).catch(() => undefined);
+      void deletePhotoRecordIfOwned(db, record.sha256, key).catch(() => undefined);
       continue;
     }
     const rec: JobRec = {
@@ -808,7 +819,9 @@ function handleMessage(port: MessagePort, m: PageToSwMessage): void {
       // retried, so nothing else will ever read it again. The record goes with it, or the next
       // page load would rebuild the card from a photo the user deleted.
       if (rec.artifact) void removeArtifact(m.jobId, rec.artifact.ext);
-      if (db && rec.sha256) void deletePhotoRecord(db, rec.sha256).catch(() => undefined);
+      if (db && rec.sha256) {
+        void deletePhotoRecordIfOwned(db, rec.sha256, rec.jobId).catch(() => undefined);
+      }
       broadcast({ t: 'jobRemoved', jobId: m.jobId });
       return;
     }

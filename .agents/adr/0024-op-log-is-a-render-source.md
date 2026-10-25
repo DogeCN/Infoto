@@ -1,7 +1,7 @@
 # 0024: The Op Log Is a Render Source — Unconfirmed Uploads Draw as Cards
 
 - **Date**: 2026-10-26
-- **Status**: Accepted
+- **Status**: Superseded by 0025 (the op log stopped being the render source: one record per photo now carries the card, its marks and its artifact handle)
 - **Context**: A 200-photo batch whose `/sync` timed out (ADR 0023) left 200 unconfirmed `upload`
   ops in IndexedDB after a reload, and **nothing on screen**. The card that had been showing
   those photos lived in the upload store's memory (`$state(new Map())`), the SharedWorker deletes

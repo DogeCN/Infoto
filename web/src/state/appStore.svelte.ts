@@ -502,12 +502,25 @@ class AppState {
    * nothing. That is also why the withdrawal must run first: it matches every op by sha and
    * would otherwise take the tombstone with it.
    */
-  private async withdrawPendingUpload(sha: string): Promise<void> {
-    // The card goes regardless — a failed transcode carries no sha and still has a card.
-    cancelPendingUpload(sha);
-    if (!sha || !this.engine) return;
-    await this.engine.withdrawPhoto(sha);
-    await this.submit({ type: 'delete', targetSha: sha });
+  private async withdrawPendingUpload(shas: readonly string[]): Promise<void> {
+    // The cards go regardless — a failed transcode carries no sha and still has a card.
+    for (const sha of shas) cancelPendingUpload(sha);
+    if (!this.engine) return;
+    // One transaction for the whole selection: the record, its mark ops and the upload op each
+    // record owns.
+    await this.engine.withdrawPhotos(shas);
+    for (const sha of shas) await this.submit({ type: 'delete', targetSha: sha });
+  }
+
+  /** Keep the map when nothing changed: the cards compare mark arrays by reference, and a new
+   *  Map on every read re-keys every marked card. */
+  private sameMarks(next: Map<string, ops.MarkSet>): boolean {
+    if (next.size !== this.pendingMarks.size) return false;
+    for (const [sha, marks] of next) {
+      const current = this.pendingMarks.get(sha);
+      if (current !== marks) return false;
+    }
+    return true;
   }
 
   /** A pending card is gone for good (cancelled / failed / dismissed): drop its state. */
@@ -544,7 +557,7 @@ class AppState {
   /** Replace the mark map from the photo records, which are the durable owner. Called by the
    *  upload store after it reads them; a mark survives a reload this way and nowhere else. */
   hydratePendingMarks(marks: Map<string, ops.MarkSet>): void {
-    if (marks.size === 0 && this.pendingMarks.size === 0) return;
+    if (this.sameMarks(marks)) return;
     this.pendingMarks = marks;
   }
 
@@ -599,13 +612,14 @@ class AppState {
       if (photo) ids.push(photo.id);
     }
     if (ids.length > 0) this.removePhotos(ids);
+    const pending = shas.filter((sha) => !bySha.has(sha));
     for (const sha of shas) {
       // Submitted directly, never through the mark guard: the optimistic removal above has
       // already taken the row out of `photos`, and a delete of an unknown sha is a server
       // no-op anyway — which is what makes the pending tombstone work.
       if (bySha.has(sha)) void this.submit({ type: 'delete', targetSha: sha });
-      else void this.withdrawPendingUpload(sha);
     }
+    void this.withdrawPendingUpload(pending);
   }
 
   // Announcements

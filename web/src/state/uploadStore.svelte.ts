@@ -431,14 +431,13 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       pipeline.cancel(t.jobId);
       dropTask(t.jobId);
     }
-    // A record-derived card has no job to cancel: its record is the durable half, so deleting it
-    // deletes the card. Withdrawing the photo is the app store's call (it also files the
-    // tombstone); doing it again here is idempotent and keeps the card from outliving the click.
+    // A record-derived card has no job to cancel, and the record itself is deleted by the app
+    // store's withdrawal (which also files the tombstone). This only takes the card and its
+    // in-memory state off screen in the same click.
     if (!tempIdBySha.has(sha)) return;
     tempIdBySha.delete(sha);
     photoCache.delete(hostedKey(sha));
     hostedRecords = hostedRecords.filter((fields) => fields.sha256 !== sha);
-    void engine.withdrawPhoto(sha).catch(() => undefined);
     store.forgetPendingPhoto(sha);
   }
 
@@ -519,10 +518,10 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     pipeline.addFiles(files);
   }
 
-  // The cards a previous page left queued, read once at page open, and re-read when a sync
-  // attempt finishes — that is the only other moment the set can change, since the confirmed
-  // keys are what a sync deletes. A newly appended op always has a live card of its own, so an
-  // append is deliberately not read back. Neither call is a sync trigger (ADR 0008).
+  // The cards a previous page left hosted, read once at page open, and re-read when a sync
+  // attempt finishes — a sync is what deletes a confirmed photo's record, so that is the only
+  // other moment the set can change. A newly appended op always has a live card of its own, so
+  // an append is deliberately not read back. Neither call is a sync trigger (ADR 0008).
   void refreshHostedPhotos();
   let wasSyncing = engine.state.syncing;
   const unsubscribeQueued = engine.onState((state) => {
