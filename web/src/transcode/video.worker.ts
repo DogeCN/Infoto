@@ -19,7 +19,7 @@ import {
   getFirstEncodableVideoCodec,
 } from 'mediabunny';
 import {
-  GIF_FRAME_FALLBACK_US,
+  frameDurationS,
   OPUS_BITRATE,
   VP9_QUANTIZER,
   parseGifLsdSize,
@@ -189,15 +189,18 @@ async function transcodeGif(
     let timestampS = 0;
     for (let i = 0; i < frameCount; i++) {
       const { image } = await decoder.decode({ frameIndex: i });
-      const durationUs = Math.max(image.duration ?? GIF_FRAME_FALLBACK_US, 1000);
+      // Frames are decoded one at a time, so the timings accumulate as they are read rather
+      // than being computed up front by `frameTimings`; `frameDurationS` is the shared owner
+      // of the per-frame conversion, so both paths agree on a zero or missing duration.
+      const seconds = frameDurationS(image.duration);
       const sample = new VideoSample(image, {
         timestamp: timestampS,
-        duration: durationUs / 1e6,
+        duration: seconds,
       });
       await source.add(sample);
       sample.close();
       image.close();
-      timestampS += durationUs / 1e6;
+      timestampS += seconds;
       written += 1;
       progress(jobId, (i + 1) / frameCount);
     }

@@ -4,6 +4,7 @@ import { batchProgress, indeterminateRow, type UploadRow } from '../../src/trans
 import {
   artifactExt,
   buildUploadOp,
+  frameDurationS,
   frameTimings,
   imagePoolSize,
   isOversize,
@@ -199,4 +200,28 @@ test('GIF frame timings: a zero or missing duration falls back instead of collap
 test('GIF frame timings: uniform frames match the index multiplication it replaces', () => {
   const { timestamps } = frameTimings([200_000, 200_000, 200_000]);
   assert.deepEqual(timestamps, [0, 0.2, 0.4]);
+});
+
+test('frameDurationS: a zero duration is a missing one, not a valid 1ms frame', () => {
+  // The looping GIF's last frame reports 0. Keeping it (`??`) would put that frame on the same
+  // timestamp as its predecessor — the non-monotonic GOP the accumulation exists to prevent.
+  assert.equal(frameDurationS(0), 0.1);
+  assert.equal(frameDurationS(null), 0.1);
+  assert.equal(frameDurationS(undefined), 0.1);
+  // NaN is falsy, so it takes the fallback instead of poisoning the encoder config.
+  assert.equal(frameDurationS(NaN), 0.1);
+  // A real sub-millisecond duration is still clamped, not discarded.
+  assert.equal(frameDurationS(400), 0.001);
+  assert.equal(frameDurationS(500_000), 0.5);
+});
+
+test('frameTimings and frameDurationS agree on every duration a decoder can report', () => {
+  const reported = [100_000, 500_000, 0, null as unknown as number, NaN, 400, 200_000];
+  const { timestamps, durations } = frameTimings(reported);
+  // The video worker reads frames one at a time and accumulates locally; if that inline copy
+  // ever disagrees with this table the worker is the copy that is wrong.
+  assert.deepEqual(durations, reported.map(frameDurationS));
+  for (let i = 1; i < timestamps.length; i++) {
+    assert.ok(timestamps[i] > timestamps[i - 1], `frame ${i} does not advance`);
+  }
 });

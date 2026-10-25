@@ -137,14 +137,26 @@ export function parseGifLsdSize(bytes: Uint8Array): { width: number; height: num
 export const GIF_FRAME_FALLBACK_US = 100_000;
 
 /**
+ * One frame's duration in seconds, from the microseconds a decoder reports.
+ *
+ * `||` rather than `??` because a reported `0` is a missing duration, not a valid one: the last
+ * frame of a looping GIF reports 0, and `??` keeps it, which lands that frame on the same
+ * timestamp as its predecessor — the non-monotonic GOP `frameTimings` exists to prevent. `NaN`
+ * is falsy too, so a decoder that reports it also takes the fallback instead of propagating
+ * `NaN` into the encoder's config.
+ */
+export function frameDurationS(durationUs: number | null | undefined): number {
+  return Math.max(durationUs || GIF_FRAME_FALLBACK_US, 1000) / 1e6;
+}
+
+/**
  * Frame timestamps and durations for one animated source, in seconds, from the per-frame
  * durations a decoder reports (microseconds).
  *
  * Timestamps accumulate rather than being computed as `index * duration`: frame durations
  * differ in a real GIF, so multiplying the index by the *current* frame's duration walks
  * backwards whenever a short frame follows a long one — frame 2 landing before frame 1 — which
- * the video encoder rejects as a non-monotonic GOP. A missing duration and a reported zero are
- * both replaced by the fallback, because a zero-length frame is not a duration.
+ * the video encoder rejects as a non-monotonic GOP.
  */
 export function frameTimings(durationsUs: readonly number[]): {
   timestamps: number[];
@@ -154,7 +166,7 @@ export function frameTimings(durationsUs: readonly number[]): {
   const durations: number[] = [];
   let t = 0;
   for (const raw of durationsUs) {
-    const seconds = Math.max(raw || GIF_FRAME_FALLBACK_US, 1000) / 1e6;
+    const seconds = frameDurationS(raw);
     timestamps.push(t);
     durations.push(seconds);
     t += seconds;
