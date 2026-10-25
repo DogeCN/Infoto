@@ -18,6 +18,7 @@ import {
   openOplogDb,
   putPendingUpload,
   readPendingUploads,
+  type PendingUploadRecord,
 } from '../core/oplog';
 import { readArtifact, removeArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
@@ -187,24 +188,36 @@ function failJob(rec: JobRec, error: string): void {
   rec.error = error;
   // A transcode failure ends the job for good: there is no artifact to resume from, so the
   // record would only re-run a transcode that already failed. Only cancel removes the artifact.
-  if (db && !failedInUpload) {
-    void deletePendingUpload(db, rec.jobId).catch(() => undefined);
+  if (!failedInUpload) {
+    if (db) void deletePendingUpload(db, rec.jobId).catch(() => undefined);
+    // No card renders this job (see `rendersCard`), so nothing can press retry and the source
+    // Blob would otherwise sit in this worker until the record is pruned — up to the full file
+    // size for ten minutes. Editor jobs never reach here before `uploading`.
+    rec.file = EMPTY_BLOB;
+    notify(rec);
     return;
   }
   // An upload failure keeps its record, marked: the artifact is still on disk, so the card
   // survives a reload and the user can retry it by hand. Without the flag the reload would
   // resume the upload on its own, which is a retry nobody asked for.
-  if (db && rec.sha256 && rec.meta && rec.artifact) {
-    void putPendingUpload(db, {
-      jobId: rec.jobId,
-      fileName: rec.fileName,
-      sha256: rec.sha256,
-      meta: rec.meta,
-      artifactExt: rec.artifact.ext,
-      failed: true,
-    }).catch(() => undefined);
+  if (db) {
+    const record = resumeRecord(rec, true);
+    if (record) void putPendingUpload(db, record).catch(() => undefined);
   }
   notify(rec);
+}
+
+/** The resume record for a job whose stage 1 finished, or null while it has not. */
+function resumeRecord(rec: JobRec, failed = false): PendingUploadRecord | null {
+  if (!rec.sha256 || !rec.meta || !rec.artifact) return null;
+  return {
+    jobId: rec.jobId,
+    fileName: rec.fileName,
+    sha256: rec.sha256,
+    meta: rec.meta,
+    artifactExt: rec.artifact.ext,
+    ...(failed ? { failed: true, error: rec.error } : {}),
+  };
 }
 
 /** Measured byte progress. Missing totals and completed stages report no fraction; phase changes signal completion. */
@@ -354,15 +367,12 @@ async function afterStage1(rec: JobRec): Promise<void> {
   notify(rec, { fraction: 0 });
   // Remember the job: a reload kills this worker, but the artifact is on disk, so the
   // upload can be resumed instead of silently losing a photo the user already uploaded.
-  if (db && rec.sha256 && rec.meta && rec.artifact) {
-    if (rec.cancelled) return;
-    await putPendingUpload(db, {
-      jobId: rec.jobId,
-      fileName: rec.fileName,
-      sha256: rec.sha256,
-      meta: rec.meta,
-      artifactExt: rec.artifact.ext,
-    }).catch(() => undefined);
+  if (db) {
+    const record = resumeRecord(rec);
+    if (record) {
+      if (rec.cancelled) return;
+      await putPendingUpload(db, record).catch(() => undefined);
+    }
   }
   await runUpload(rec);
 }
@@ -637,7 +647,8 @@ async function resumePendingUploads(): Promise<void> {
       mime: '',
       file: EMPTY_BLOB,
       engine: 'image',
-      phase: 'uploading',
+      phase: r.failed ? 'failed' : 'uploading',
+      error: r.failed ? r.error : undefined,
       artifact: { ext: r.artifactExt, size: r.meta.size },
       sha256: r.sha256,
       meta: r.meta,
@@ -645,17 +656,15 @@ async function resumePendingUploads(): Promise<void> {
       editorResultAcked: false,
       cancelled: false,
     };
+    jobs.set(r.jobId, rec);
     // A record left behind by a failed upload leg is rebuilt as the failed card it was, not
-    // restarted: the artifact is on disk, so the card has its image back and a retry the user
-    // presses. Only a record whose upload was genuinely interrupted (no `failed` flag) resumes.
+    // restarted: the artifact is on disk, so the card has its image back and the retry is the
+    // user's to press. Only a record without the flag resumes — that is an upload interrupted
+    // mid-transfer, which nobody rejected.
     if (r.failed) {
-      rec.phase = 'failed';
-      rec.error = 'upload_interrupted';
-      jobs.set(r.jobId, rec);
       notify(rec);
       continue;
     }
-    jobs.set(r.jobId, rec);
     notify(rec, { fraction: 0 });
     void runUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));
   }

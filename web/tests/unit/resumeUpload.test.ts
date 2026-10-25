@@ -123,6 +123,8 @@ test('album upload resume: an upload failure keeps a marked record so the card s
   const [record] = await readPendingUploads(db);
   assert.equal(record?.jobId, 'job-fail');
   assert.equal(record?.failed, true);
+  // The reason travels with the record, so the reloaded card reports it instead of a generic one.
+  assert.equal(record?.error, 'timeout');
   assert.equal(
     port.sent.some((m) => m['t'] === 'jobStatus' && m['phase'] === 'failed'),
     true,

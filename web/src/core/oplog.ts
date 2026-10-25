@@ -23,6 +23,8 @@ export interface PendingUploadRecord {
    *  back after a reload — and this flag is what stops the reload from retrying the upload
    *  automatically: the record is rebuilt as a failed card the user can retry by hand. */
   failed?: boolean;
+  /** The failure code, so a reloaded card reports the original reason rather than a generic one. */
+  error?: string;
 }
 
 /** Open (or upgrade) the database. Factory injection keeps unit tests easy; a missing
