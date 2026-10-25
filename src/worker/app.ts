@@ -1,6 +1,7 @@
 // Hono app assembly and the runtime environment it is handed.
 
 import { Hono } from 'hono';
+import type { Translator } from '../shared/types.ts';
 import type { Db } from './db.ts';
 import { notFoundPage, serverErrorPage } from './errors.ts';
 import { syncHandler } from './routes/sync.ts';
@@ -19,6 +20,8 @@ export interface AppEnv {
   turnstileSiteKey?: string;
   /** Static file fallback (the ASSETS binding). */
   assets?: (req: Request) => Promise<Response>;
+  /** Admin translation drafts. Absent when the deployment has no Workers AI binding. */
+  translate?: Translator;
 }
 
 /** Endpoints answering JSON. Everything else gets the HTML error page, so a media
@@ -41,7 +44,13 @@ export function createApp(env: AppEnv): Hono {
       },
     });
   });
-  app.get('/l/:id36', mediaHandler(env));
+  // A shared link is often pasted with a trailing slash (`/l/19/`). The SPA fallback already
+  // normalizes trailing slashes for its own routes, so the media route accepts one too instead
+  // of answering a hard 404 for a link that names an existing photo. Both forms share one
+  // handler instance; a second slash is not produced by any path the app hands out.
+  const media = mediaHandler(env);
+  app.get('/l/:id36', media);
+  app.get('/l/:id36/', media);
   app.get('/admin/migrate', migrateExportHandler(env));
   app.post('/admin/migrate', migrateImportHandler(env));
   app.route('/admin', adminApp(env));

@@ -139,6 +139,23 @@ test('validates media origins, redirect targets, and response isolation', async 
   }
 });
 
+test('media route: a copied link resolves with or without its trailing slash', async () => {
+  // The SPA fallback normalizes trailing slashes for its own routes, so a link pasted as
+  // `/l/1/` must not answer a hard 404 for a photo that `/l/1` serves.
+  const app = mediaApp();
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('img', { headers: { 'Content-Type': 'image/webp' } });
+  try {
+    for (const path of ['/l/1', '/l/1/']) {
+      const response = await app.request(`http://localhost${path}`);
+      assert.equal(response.status, 200, path);
+      assert.equal(response.headers.get('Content-Type'), 'image/webp', path);
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 function mediaApp() {
   const { db, app } = makeApp();
   db.exec(`INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)

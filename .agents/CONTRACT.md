@@ -140,6 +140,11 @@ Back-filled from the commit history. Tagged sections are not yet written.
     slice/jitter only. Same layer stack, less capability.
   - The two 404 wordings differ on purpose: the SPA one is a route miss, the Worker's also
     covers a removed image — hence `spaNotFoundMessage` vs `workerNotFoundMessage`.
+- **A media link resolves with one trailing slash.** `GET /l/:id36` is registered under both
+  forms, because a copied link is often pasted as `/l/19/` and the SPA fallback already normalizes
+  trailing slashes for its own routes. Without it the Worker answered its own 404 for a link that
+  names an existing photo; the asset layer is not involved (`run_worker_first` already routes
+  `/l/*` here). A second slash is not handled — no path the app hands out produces one.
 - **Broken media shows a glitching 404.** A card whose media fails to load renders the same
   `GlitchText` the error page uses, over a `--color-card` surface, and still opens the Lightbox,
   which raises a failure toast of its own. The size is a container-query expression with a
