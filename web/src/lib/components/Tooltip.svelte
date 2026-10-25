@@ -6,12 +6,6 @@
    */
   let activeClose: (() => void) | null = null;
 
-  /** Touch gets no tooltip: the long-press copy blocked the view on phones, and the
-   *  labelled control itself is the touch affordance. */
-  function noHover(): boolean {
-    return typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches;
-  }
-
   /** True for keyboard-driven focus only — see `onFocusIn`. */
   function focusVisible(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return false;
@@ -29,6 +23,7 @@
   // Portaled above <body> so overflow clipping and transformed ancestors can't trap it; placement flips to the opposite side near a viewport edge.
   import { onDestroy, type Snippet } from 'svelte';
   import { portal } from '$base/lib/portal';
+  import { canHover } from '$base/lib/device.svelte';
 
   type Side = 'top' | 'bottom' | 'left' | 'right';
 
@@ -151,7 +146,9 @@
   }
 
   function onPointerOver(): void {
-    if (noHover()) return;
+    // Touch gets no tooltip: the long-press copy blocked the view on phones, and the
+    // labelled control itself is the touch affordance.
+    if (!canHover()) return;
     show();
   }
   function onPointerOut(): void {
@@ -168,7 +165,7 @@
    * land here". Touch is refused for the same reason it is refused on hover.
    */
   function onFocusIn(event: FocusEvent): void {
-    if (noHover() || !focusVisible(event.target)) return;
+    if (!canHover() || !focusVisible(event.target)) return;
     show(true);
   }
   function onFocusOut(): void {

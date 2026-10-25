@@ -5,6 +5,7 @@
   import { tick, type Snippet } from 'svelte';
   import * as ops from '../../core/ops';
   import { motionEase, motionMs } from '$base/lib/motion';
+  import { prefersReducedMotion } from '$base/lib/device.svelte';
 
   interface Props {
     /** Source order (from the store). Only re-ordered while a drag is in flight. */
@@ -48,10 +49,6 @@
     };
   }
 
-  function reducedMotion(): boolean {
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  }
-
   function captureRects(): Map<number, DOMRect> {
     const rects = new Map<number, DOMRect>();
     for (const [id, element] of cardElements) rects.set(id, element.getBoundingClientRect());
@@ -64,7 +61,7 @@
     if (token !== flipToken) return;
     // The dragged card moved in the document: rebase it first, then FLIP the others.
     rebaseDraggedCard();
-    if (reducedMotion()) return;
+    if (prefersReducedMotion()) return;
     for (const [id, element] of cardElements) {
       if (id === dragId) continue;
       const previous = first.get(id);
@@ -194,7 +191,7 @@
   function settleDraggedCard(): void {
     const element = draggedElement;
     if (!element) return;
-    if (reducedMotion()) element.style.transform = '';
+    if (prefersReducedMotion()) element.style.transform = '';
     else {
       const animation = element.animate(
         [{ transform: element.style.transform }, { transform: 'translate3d(0, 0, 0)' }],

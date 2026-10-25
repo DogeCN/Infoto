@@ -4,6 +4,7 @@
   import { copy } from '$lib/i18n.svelte';
   import { fmt, plural } from '$shared/copy';
   import { reflowFlipWindowMs } from '$base/lib/motion';
+  import { prefersReducedMotion } from '$base/lib/device.svelte';
   import TooltipIconButton from './TooltipIconButton.svelte';
   import GlitchText from './GlitchText.svelte';
   import type { GeomStamp } from '$base/lib/layout';
@@ -88,10 +89,7 @@
   // painted at its remembered old box first, gets the transition enabled, then retargets
   // to the new box — same glide as the cards that stayed mounted. The window comes from
   // `--duration-reflow` (see `reflowFlipWindowMs`) rather than a literal of its own.
-  const reducedMotion =
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reducedMotion = prefersReducedMotion();
   let fromBox: GeomStamp | null = $state(null);
   // Mount-time snapshot, on purpose. This sits outside every `$effect` in the component, so
   // no later prop update can retro-fire the flip — a remounting card either glides from the

@@ -222,6 +222,7 @@ When a significant architectural decision is made, create `.agents/adr/NNNN-titl
 | `web/src/base/lib/hover.svelte.ts`              | `createHoverIntent` — instant enter, debounced leave for hover-revealed surfaces                       |
 | `web/src/base/lib/clock.svelte.ts`              | `clockNow` / `holdClock` — the one shared 30-second tick behind every relative-time label              |
 | `web/src/base/lib/clipboard.ts`                 | `copyToClipboard` — success is a boolean so callers keep their own copy labels                         |
+| `web/src/base/lib/device.svelte.ts`             | `canHover` / `prefersReducedMotion` — the one source for the two behaviour-changing device queries     |
 | `web/src/lib/components/topbarFit.ts`           | Top-bar density resolution (measured widths, hysteresis)                                               |
 | `web/src/lib/components/UploadPanel.svelte`     | Sole upload overlay                                                                                    |
 | `web/src/lib/components/TimeLabel.svelte`       | Sole time display component                                                                            |

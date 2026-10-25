@@ -206,8 +206,9 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - The wrapper is `display: contents`, so it is never a containing block (an absolutely
     positioned trigger keeps its own positioning) and never changes a measured width: the
     top-bar probes measure their group **containers**, whose widths sum the same children.
-  - Touch deliberately gets nothing (`hover: none` short-circuits both `show` paths), so a
-    tooltip can never be the only way to learn what a control does — the `aria-label` is.
+  - Touch deliberately gets nothing: `canHover()` from `base/lib/device.svelte.ts` (the one
+    shared `(hover: hover)` signal) short-circuits both `show` paths, so a tooltip can never
+    be the only way to learn what a control does — the `aria-label` is.
   - **Only hover and keyboard focus raise a tooltip.** The focus path additionally requires
     `:focus-visible`, because focus lands on controls for reasons the user did not choose:
     the browser focuses a button on mousedown, an overlay's `focusFirst()` focuses its
@@ -946,7 +947,7 @@ while CI stayed green (`819bf06`). Copy the vendor's published value.
 
 **Resolved 2026-10-11.** Converting every native `title` to the custom Tooltip (`5fa4d3c`)
 made a latent trap visible in thirteen files at once: `Tooltip` showed on `focusin` with
-`show(true)` — immediately, with no hover, and past the `(hover: none)` guard that the
+`show(true)` — immediately, with no hover, and past the touch guard (`hover: none`) that the
 pointer path obeys. Focus lands on controls without the user asking: the browser focuses a
 button on mousedown, an overlay's `focusFirst()` focuses its `[data-autofocus]` node, and
 deactivating a layer restores focus to the trigger.
