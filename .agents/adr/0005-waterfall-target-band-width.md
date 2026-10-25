@@ -1,7 +1,7 @@
 # 0005: Waterfall Density Controlled by Target Band Width
 
 - **Date**: 2026-09-27
-- **Status**: Accepted
+- **Status**: Superseded by 0020
 - **Context**: The prior layout setting persisted a target pixel width. On a 320 CSS-pixel phone, the default 260px band produced one column, and the slider's 200px minimum could not reach a compact multi-column layout. A column-count preference fixed that responsive symptom but made the user's control indirect: the same count mapped to different card widths as the viewport changed. The user requested restoring the historical pixel-width control.
 - **Decision**: Persist `layout.band` as the target row height / column width in CSS pixels. Default remains 260px. The slider range is 100–800px, step 10 — the floor was lowered from 200 so a phone can reach a compact multi-column view without a viewport-specific default. The layout engine derives the resulting count from the measured cross size. Bump the settings version and drop v2 column-count blobs whole; do not reinterpret one unit as the other.
 - **Consequences**:

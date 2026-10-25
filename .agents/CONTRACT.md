@@ -264,6 +264,14 @@ Back-filled from the commit history. Tagged sections are not yet written.
     `count = max(1, round((cross + gap) / (band + gap)))`. The `sequential` strategies read
     `band` as a target thickness and justify a filled row to exactly fill `cross`. Zoom
     (0.5–2) multiplies both band and gap.
+  - **`layout.band` is `number | null`; `null` is the untouched default and follows the canvas**
+    (ADR 0020). It resolves per layout pass as
+    `autoBand(cross, gap) = clamp(MIN_BAND, DEFAULT_BAND, round((cross − gap) / 2))` — one
+    continuous mapping, not a minimum-column rule, so a phone opens at two columns and a wide
+    screen keeps the 260px density. A slider drag writes an explicit width and stops following.
+    `WaterfallLayout` publishes the resolved value through `state/canvasBand.svelte.ts` (the
+    `state/barHeight.svelte.ts` pattern), and the settings slider shows it as its default; it
+    must not be re-derived from a viewport the panel did not measure.
   - Canvas: `padX = clamp(8, 16, round(containerW × 0.02))`; `padTop = ceil(--bar-h)` with
     `TOP_GAP = 0`, falling back to the ramp value only before the bar has measured.
   - **Virtualization is a state-lifetime contract.** The window is

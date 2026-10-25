@@ -28,7 +28,7 @@
   } from '@lucide/svelte';
   import { cn } from '$base/lib/ui';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
-  import { MAX_BAND, MIN_BAND } from '$base/lib/band';
+  import { MAX_BAND, MIN_BAND, DEFAULT_BAND } from '$base/lib/band';
   import { onDestroy, type Component } from 'svelte';
   import type { LocaleCode, MediaType, Photo } from '$shared/types';
   import {
@@ -52,6 +52,7 @@
   import { toast } from 'svelte-sonner';
   import { copy } from '$lib/i18n.svelte';
   import LocaleToggle from './LocaleToggle.svelte';
+  import { autoBandPx } from '../../state/canvasBand.svelte';
 
   interface Props {
     onSettingsChange?: (settings: Settings) => void;
@@ -100,6 +101,12 @@
 
   /** Factory defaults for layout (drives non-default highlighting). */
   const LAYOUT_DEFAULTS = $derived(defaultSettings().layout);
+
+  /** The auto band resolved by the waterfall's own measurement; the reference width
+   *  is the fallback only until that measurement lands. */
+  const defaultBand = $derived(autoBandPx.value || DEFAULT_BAND);
+  /** What the band slider shows: the user's explicit width, or the resolved default. */
+  const bandValue = $derived(settings.layout.band ?? defaultBand);
 
   /** Whether the range section has no filterable items (no metadata or every
    *  range is min = max). */
@@ -425,8 +432,8 @@
           min={MIN_BAND}
           max={MAX_BAND}
           step={10}
-          value={settings.layout.band}
-          defaultValue={LAYOUT_DEFAULTS.band}
+          value={bandValue}
+          defaultValue={defaultBand}
           icon={Ruler}
           format={(v) => `${v}px`}
           onChange={setBand}

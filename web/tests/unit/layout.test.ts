@@ -6,7 +6,7 @@ import {
   windowIndices,
   type LayoutItem,
 } from '../../src/base/lib/layout.ts';
-import { DEFAULT_BAND, MIN_BAND } from '../../src/base/lib/band.ts';
+import { autoBand, DEFAULT_BAND, MIN_BAND } from '../../src/base/lib/band.ts';
 
 const items = (specs: [number, number][]): LayoutItem[] =>
   specs.map(([w, h], i) => ({ id: i + 1, w, h }));
@@ -147,4 +147,29 @@ test('lays out media and computes visible ranges', async () => {
     assert.equal(columns(DEFAULT_BAND), 4);
     assert.equal(columns(400), 3);
   }
+});
+
+test('layout: auto band follows the canvas and keeps phones at two columns', () => {
+  assert.equal(autoBand(304, 12), 146);
+  assert.equal(autoBand(374, 12), 181);
+  assert.equal(autoBand(1000, 12), DEFAULT_BAND);
+
+  const photos = Array.from({ length: 12 }, (_, id) => ({ id, w: 4, h: 3 }));
+  const columnsAt = (cross: number) =>
+    new Set(
+      computeLayout(photos, {
+        dir: 'v',
+        strategy: 'shortest',
+        cross,
+        band: autoBand(cross, 12),
+        gap: 12,
+      }).boxes.map((box) => Math.round(box.x)),
+    ).size;
+
+  assert.equal(columnsAt(304), 2);
+  assert.equal(columnsAt(344), 2);
+  assert.equal(columnsAt(374), 2);
+  assert.equal(columnsAt(738), 3);
+  assert.equal(columnsAt(1408), 5);
+  assert.equal(columnsAt(1888), 7);
 });

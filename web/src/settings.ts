@@ -1,7 +1,7 @@
 // Shared settings and filter logic for the panel and main page.
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
-import { DEFAULT_BAND, MAX_BAND, MIN_BAND } from '$base/lib/band';
+import { MAX_BAND, MIN_BAND } from '$base/lib/band';
 import { heat } from './core/gallery';
 import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
@@ -31,8 +31,8 @@ export interface FilterSettings {
 export interface LayoutSettings {
   dir: ScrollDir;
   strategy: FillStrategy;
-  /** Target row height / column width in CSS pixels. */
-  band: number;
+  /** Target row height / column width in CSS pixels; null follows the measured canvas (`autoBand`). */
+  band: number | null;
   gap: number;
 }
 
@@ -92,14 +92,14 @@ export function defaultFilterSettings(): FilterSettings {
 export function defaultSettings(): Settings {
   return {
     filters: defaultFilterSettings(),
-    layout: { dir: 'v', strategy: 'shortest', band: DEFAULT_BAND, gap: 12 },
+    layout: { dir: 'v', strategy: 'shortest', band: null, gap: 12 },
   };
 }
 
 const STORAGE_KEY = 'infoto-settings';
 
 /** Persisted settings schema version. Other versions reset to defaults. */
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 
 /** Persisted shape: a `Set` is not JSON-serializable, so media types are stored as an array. */
 interface StoredSettings {
@@ -119,7 +119,10 @@ export function loadSettings(storage?: Pick<Storage, 'getItem'>): Settings {
       filters: { ...parsed.filters, types: new Set(parsed.filters.types) },
       layout: {
         ...parsed.layout,
-        band: Math.min(MAX_BAND, Math.max(MIN_BAND, parsed.layout.band)),
+        band:
+          parsed.layout.band === null
+            ? null
+            : Math.min(MAX_BAND, Math.max(MIN_BAND, parsed.layout.band)),
         gap: Math.min(32, Math.max(0, parsed.layout.gap)),
       },
     };
@@ -134,7 +137,7 @@ function validStoredSettings(value: StoredSettings): boolean {
   if (
     !['v', 'h'].includes(layout.dir) ||
     !['sequential', 'shortest'].includes(layout.strategy) ||
-    !Number.isFinite(layout.band) ||
+    !(layout.band === null || Number.isFinite(layout.band)) ||
     !Number.isFinite(layout.gap)
   )
     return false;

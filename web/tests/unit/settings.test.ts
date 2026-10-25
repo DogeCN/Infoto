@@ -14,11 +14,12 @@ function fakeStorage(initial?: string): Pick<Storage, 'getItem' | 'setItem'> {
 }
 
 test('settings persistence: validates persisted settings and applies filters', async () => {
-  // Round-trips v3 pixel bands and drops anything else.
+  // Round-trips v4 settings: an explicit pixel band or null (auto).
   {
     const d = defaultSettings();
-    assert.equal(d.layout.band, DEFAULT_BAND);
+    assert.equal(d.layout.band, null);
     assert.equal('cols' in d.layout, false);
+    assert.equal(d.layout.gap, 12);
     assert.ok(DEFAULT_BAND >= MIN_BAND);
     assert.ok(DEFAULT_BAND <= MAX_BAND);
     assert.equal((MAX_BAND - MIN_BAND) % 10, 0);
@@ -31,6 +32,10 @@ test('settings persistence: validates persisted settings and applies filters', a
     const back = loadSettings(storage);
     assert.equal(back.layout.band, 340);
     assert.equal(back.layout.gap, 4);
+
+    const nullStorage = fakeStorage();
+    saveSettings(defaultSettings(), nullStorage);
+    assert.equal(loadSettings(nullStorage).layout.band, null);
 
     const legacy = JSON.stringify({
       v: 2,
@@ -45,13 +50,26 @@ test('settings persistence: validates persisted settings and applies filters', a
       layout: { dir: 'v', strategy: 'shortest', cols: 4, gap: 12 },
     });
     const dropped = loadSettings(fakeStorage(legacy));
-    assert.equal(dropped.layout.band, DEFAULT_BAND);
+    assert.equal(dropped.layout.band, null);
     assert.equal('cols' in dropped.layout, false);
-    assert.equal(loadSettings(fakeStorage()).layout.band, DEFAULT_BAND);
-    assert.equal(loadSettings(fakeStorage('not json')).layout.band, DEFAULT_BAND);
-    assert.equal(loadSettings(fakeStorage('{"v":3}')).layout.band, DEFAULT_BAND);
-    const low = JSON.stringify({
+    const previousVersion = JSON.stringify({
       v: 3,
+      filters: {
+        types: [0, 1, 2],
+        ownedByMe: 'off',
+        likedByMe: 'off',
+        dislikedByMe: 'off',
+        reportedByMe: 'off',
+        ranges: {},
+      },
+      layout: { dir: 'v', strategy: 'shortest', band: 260, gap: 12 },
+    });
+    assert.equal(loadSettings(fakeStorage(previousVersion)).layout.band, null);
+    assert.equal(loadSettings(fakeStorage()).layout.band, null);
+    assert.equal(loadSettings(fakeStorage('not json')).layout.band, null);
+    assert.equal(loadSettings(fakeStorage('{"v":4}')).layout.band, null);
+    const low = JSON.stringify({
+      v: 4,
       filters: {
         types: [0, 1, 2],
         ownedByMe: 'off',
@@ -71,7 +89,7 @@ test('settings persistence: validates persisted settings and applies filters', a
           throw new Error('blocked');
         },
       }).layout.band,
-      DEFAULT_BAND,
+      null,
     );
   }
 
