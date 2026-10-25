@@ -4,14 +4,11 @@
   import { CheckSquare, Eraser, GripVertical, Plus, Trash2 } from '@lucide/svelte';
   import { fmt, plural } from '$shared/copy';
   import { MAX_POLL_OPTIONS, type Poll, type Vote } from '$shared/types';
-  import { countHop, motionEase, motionMs } from '$base/lib/motion';
+  import { countHop, countHopOut, motionEase, motionMs } from '$base/lib/motion';
   import { prefersReducedMotion } from '$base/lib/device.svelte';
   import TriStateToggle from '$lib/components/TriStateToggle.svelte';
   import EditorDialog from '$lib/components/EditorDialog.svelte';
   import { copy } from '$lib/i18n.svelte';
-
-  /** The outgoing number leaves upward, mirroring `countHop`'s entry (as VoteBlock does). */
-  const countHopOut = { ...countHop, y: -countHop.y };
 
   interface DraftOption {
     id: number;

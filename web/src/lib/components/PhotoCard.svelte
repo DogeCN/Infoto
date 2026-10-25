@@ -9,6 +9,7 @@
   import GlitchText from './GlitchText.svelte';
   import type { GeomStamp } from '$base/lib/layout';
   import type { UploadOverlay } from '../../core/pending';
+  import { playbackVolume } from '../../state/playback.svelte';
   import {
     ThumbsUp,
     ThumbsDown,
@@ -36,6 +37,10 @@
     reflowAt?: number;
     /** Upload curtain overlay; see `UploadOverlay` in `core/pending`. */
     overlay?: UploadOverlay;
+    /** Whether the card is close enough to the viewport to hold decoded media. The
+     *  virtualizer's buffer band renders cards before they are visible; keeping their
+     *  images out of the DOM is what bounds decoded-image memory on a long album. */
+    mediaNear?: boolean;
     selected?: boolean;
     multiMode?: boolean;
     onClick?: () => void;
@@ -55,6 +60,7 @@
     motionMemory,
     reflowAt = 0,
     overlay,
+    mediaNear = true,
     selected = false,
     multiMode = false,
     onClick,
@@ -77,7 +83,6 @@
   );
   let volumeMuted = $state(true);
   let loadFailed = $state(false);
-  let cardEl: HTMLDivElement | undefined = $state(undefined);
   // The card sits at 0,0 and moves purely by transform; a CSS transition interpolates
   // between reflows and retargets mid-flight, so continuous reflows (a dragged slider)
   // glide instead of restart-jumping. `placed` gates the transition until the first box
@@ -160,11 +165,35 @@
     }
   });
 
-  // A media element that fails to load leaves a bare surface; the failure is reported by the
-  // Lightbox, which this card still opens into. The grid itself stays silent about it.
-  // type=1 (animated image without audio track) and type=2 (video with sound) are both
-  // video media — inside the card they always play muted and looping, no poster frame.
+  // Failed media renders the shared 404 glyph below; the Lightbox additionally toasts, since
+  // the card itself still opens into it. type=1 (animated image without an audio track) and
+  // type=2 (video with sound) are both video media — a card plays them muted and looping.
   let isVideo = $derived(photo.type !== 0);
+  /** The card's own `<video>`; its `volume` follows the shared playback level, and its
+   *  `muted` state stays component-local, so the slider never unmutes an autoplay element. */
+  let videoEl = $state<HTMLVideoElement | undefined>(undefined);
+  $effect(() => {
+    if (videoEl) videoEl.volume = playbackVolume.value;
+  });
+  /** Media is only in the DOM within the load band. Outside it the card keeps its box and
+   *  paints the skeleton, which is what releases the decoded bitmap: an `<img>` element left in
+   *  the document holds its full-resolution decode for as long as it exists. */
+  let showMedia = $derived(mediaNear && photo.url !== '');
+  // Leaving the band drops the media element, so the url it had loaded no longer describes
+  // anything on screen; clearing it makes the return paint a skeleton instead of a blank frame.
+  $effect(() => {
+    if (!showMedia) untrack(() => (loadedUrl = ''));
+  });
+  onDestroy(() => {
+    // A detached <video> can keep decoding; an <img> keeps its decode until it is collected.
+    // Detaching the source first tells the browser to let go of both.
+    const video = videoEl;
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
+  });
   /** Largest fraction the upload curtain may open to while the job is still running. */
   const CURTAIN_MAX_OPEN = 0.9;
 
@@ -224,7 +253,6 @@
      selected `border-2` would snap 1px while the colour cross-fades. Only colour moves. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  bind:this={cardEl}
   class="absolute left-0 top-0 overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border {selected
     ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
@@ -257,12 +285,13 @@
         size={width < 140 ? 'clamp(0.65rem, 14cqmin, 0.85rem)' : 'clamp(1.25rem, 22cqmin, 3.5rem)'}
       />
     </div>
-  {:else if photo.url}
+  {:else if showMedia}
     {#if loadedUrl !== photo.url}
       <div class="absolute inset-0 skeleton" aria-hidden="true"></div>
     {/if}
     {#if isVideo}
       <video
+        bind:this={videoEl}
         src={photo.url}
         class="h-full w-full object-cover transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loadedUrl ===
         photo.url
@@ -284,6 +313,7 @@
           ? 'opacity-100'
           : 'opacity-0'}"
         loading="lazy"
+        decoding="async"
         draggable="false"
         onload={() => (loadedUrl = photo.url)}
         onerror={handleMediaError}

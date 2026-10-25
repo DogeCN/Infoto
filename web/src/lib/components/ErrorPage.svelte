@@ -2,16 +2,13 @@
   import GlitchText from './GlitchText.svelte';
   import { copy } from '$lib/i18n.svelte';
 
-  interface Props {
-    code?: number;
-  }
-
-  let { code = 404 }: Props = $props();
+  // The SPA has exactly one error surface: a route miss. The 5xx wording belongs to the
+  // Worker's own error page, which cannot render a component.
 </script>
 
 <div class="flex min-h-screen items-center justify-center bg-background">
   <div class="flex flex-col items-center px-8 text-center">
-    <GlitchText text={String(code)} />
+    <GlitchText text="404" />
 
     <p class="mt-8 text-lg font-medium tracking-widest text-primary">
       {copy.errorPage.spaPageHeading}

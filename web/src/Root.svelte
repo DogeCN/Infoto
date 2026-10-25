@@ -21,5 +21,5 @@
 {:else if route === '/' || route === ''}
   <App />
 {:else}
-  <ErrorPage code={404} />
+  <ErrorPage />
 {/if}

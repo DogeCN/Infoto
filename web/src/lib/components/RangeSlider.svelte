@@ -12,7 +12,7 @@
     mapRangeValue,
     type RangeScale,
   } from '$base/lib/slider';
-  import { clamp01 } from '$base/lib/num';
+  import { clamp01, clamp } from '$base/lib/num';
   import SliderBubble from './SliderBubble.svelte';
   import { copy } from '$lib/i18n.svelte';
 
@@ -119,8 +119,8 @@
       if (which === 'lo') lo = hi - 1;
       else hi = lo + 1;
     }
-    lo = Math.min(Math.round(max), Math.max(Math.round(min), lo));
-    hi = Math.min(Math.round(max), Math.max(Math.round(min), hi));
+    lo = clamp(lo, Math.round(min), Math.round(max));
+    hi = clamp(hi, Math.round(min), Math.round(max));
 
     // Emit only on a real mapped value change: sub-unit jitter never triggers
     // an upstream recompute (waterfall reflows are the freeze source).

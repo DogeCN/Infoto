@@ -14,9 +14,18 @@
     onReshuffle?: () => void;
     /** Icon-only: the top bar hides the labels when the pill is actually squeezed. */
     hideLabel?: boolean;
+    /** Density report, forwarded from the shared pill measurement. */
+    onWidths?: (info: { shown: number; shownIsLabelled: boolean; labelDelta: number }) => void;
   }
 
-  let { sortKey = 'latest', dirs = {}, onChange, onReshuffle, hideLabel = false }: Props = $props();
+  let {
+    sortKey = 'latest',
+    dirs = {},
+    onChange,
+    onReshuffle,
+    hideLabel = false,
+    onWidths,
+  }: Props = $props();
 
   // Keys only — the labels come from `labelFor`, which reads `copy` per item so a
   // language switch re-renders them.
@@ -49,6 +58,7 @@
   value={sortKey}
   {hideLabel}
   ariaLabel={copy.sort.ariaLabel}
+  {onWidths}
   onChange={(k) => onChange?.(k)}
   onReselect={(k) => {
     // Re-clicking the active tab: random reshuffles, newest/hottest flip direction

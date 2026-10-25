@@ -7,9 +7,10 @@
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
   import { batchProgress, indeterminateRow, type UploadRow } from '../../transcode/pipeline';
-  import { countHop, motionMs } from '$base/lib/motion';
+  import { countHop, countHopOut, motionMs } from '$base/lib/motion';
   import { createHoverIntent } from '$base/lib/hover.svelte';
   import { canHover, prefersReducedMotion } from '$base/lib/device.svelte';
+  import { clamp } from '$base/lib/num';
   import TooltipIconButton from './TooltipIconButton.svelte';
 
   interface Props {
@@ -163,7 +164,7 @@
   function pct(task: UploadRow): number {
     const f = task.fraction;
     if (f == null || !Number.isFinite(f)) return 0;
-    return Math.min(100, Math.max(0, Math.round(f * 100)));
+    return Math.round(clamp(f, 0, 1) * 100);
   }
 </script>
 
@@ -199,7 +200,7 @@
       >
         <Clapperboard class="size-4 shrink-0 text-muted-foreground" />
         <span class="flex-1 text-xs text-muted-foreground">{title}</span>
-        {#if progress && progress.total > 0}
+        {#if progress.total > 0}
           <!-- Remaining count only, one big number that fade-hops when it ticks down
                (user call): the done/total pair read as clutter at header size. Both keyed
                spans share one grid cell so the cross-fade never reflows the header. -->
@@ -208,11 +209,7 @@
             class="inline-grid shrink-0 justify-items-end text-sm font-semibold tabular-nums text-foreground"
           >
             {#key remaining}
-              <span
-                class="col-start-1 row-start-1"
-                in:fly={countHop}
-                out:fly={{ ...countHop, y: -countHop.y }}
-              >
+              <span class="col-start-1 row-start-1" in:fly={countHop} out:fly={countHopOut}>
                 {remaining}
               </span>
             {/key}

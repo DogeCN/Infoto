@@ -24,6 +24,8 @@
     icon: Component;
     /** Value → display text. */
     format?: (v: number) => string;
+    /** Accessible name of the handle; the generic "Value" unless the row names its quantity. */
+    ariaLabel?: string;
     onChange?: (v: number) => void;
     onDragChange?: (dragging: boolean) => void;
   }
@@ -36,6 +38,7 @@
     defaultValue,
     icon: Icon,
     format = (v) => String(v),
+    ariaLabel = copy.settings.sliderValue,
     onChange,
     onDragChange,
   }: Props = $props();
@@ -162,7 +165,7 @@
       data-thumb="single"
       role="slider"
       tabindex="0"
-      aria-label={copy.settings.sliderValue}
+      aria-label={ariaLabel}
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={curVal}

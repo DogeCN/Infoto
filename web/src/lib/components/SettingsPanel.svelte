@@ -25,6 +25,7 @@
     HardDrive,
     LayoutGrid,
     Funnel,
+    Volume2,
   } from '@lucide/svelte';
   import { cn } from '$base/lib/ui';
   import type { ScrollDir, FillStrategy } from '$base/lib/layout';
@@ -223,6 +224,10 @@
   }
   function setGap(v: number) {
     settings = { ...settings, layout: { ...settings.layout, gap: v } };
+  }
+  /** The slider reads whole percent; the stored setting stays a 0…1 fraction. */
+  function setVolume(v: number) {
+    settings = { ...settings, playback: { ...settings.playback, volume: v / 100 } };
   }
 </script>
 
@@ -456,6 +461,21 @@
           format={(v) => `${v}px`}
           onChange={setGap}
           onDragChange={(dragging) => (previewing = dragging ? 'gap' : null)}
+        />
+      </div>
+      <!-- Playback level applies to every video on the site and changes nothing about the
+           layout, so it takes no part in the preview-transparency treatment. -->
+      <div>
+        <SingleSlider
+          min={0}
+          max={100}
+          step={5}
+          value={Math.round(settings.playback.volume * 100)}
+          defaultValue={100}
+          icon={Volume2}
+          ariaLabel={copy.settings.volume}
+          format={(v) => `${v}%`}
+          onChange={setVolume}
         />
       </div>
     </div>

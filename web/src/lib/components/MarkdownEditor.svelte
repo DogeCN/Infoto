@@ -20,11 +20,10 @@
   import type { UploadRow } from '../../transcode/pipeline';
 
   interface Props {
+    /** Two-way bound by the caller, which is the one place the draft text lives. */
     value: string;
-    placeholder?: string;
     /** Pick and upload a file; returns the hosted URL (via /upload proxy). */
     onPickFile?: () => Promise<string | null>;
-    onChange?: (v: string) => void;
     /** Current language's poll registry powers embedded live previews. */
     polls?: Poll[];
     selfId?: number;
@@ -41,9 +40,7 @@
 
   let {
     value = $bindable(''),
-    placeholder = '',
     onPickFile,
-    onChange,
     polls = [],
     selfId = -1,
     uploadTask = null,
@@ -85,7 +82,6 @@
 
   function applyTransform(transform: TextTransform): void {
     value = transform.value;
-    onChange?.(value);
     queueMicrotask(() => {
       if (!textareaEl) return;
       textareaEl.focus();
@@ -111,7 +107,6 @@
       pendingImageCaret = mapOffsetThroughEdit(pendingImageCaret, value, next);
     }
     value = next;
-    onChange?.(next);
   }
 
   /**
@@ -152,12 +147,11 @@
     await runUpload(pick);
   }
 
-  const TOOLS: Array<{
-    icon: typeof Bold;
-    title: string;
-    run: () => void;
-    uploads?: boolean;
-  }> = [
+  // Derived, not a constant: these labels are read from the reactive copy table, and a
+  // component-scope `const` would freeze them in whichever language was active at mount.
+  const TOOLS = $derived<
+    Array<{ icon: typeof Bold; title: string; run: () => void; uploads?: boolean }>
+  >([
     {
       icon: Bold,
       title: copy.editor.tools.bold,
@@ -187,7 +181,7 @@
       run: () => void pickFile(),
       uploads: true,
     },
-  ];
+  ]);
 </script>
 
 <div class="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
@@ -215,7 +209,6 @@
       bind:this={textareaEl}
       {value}
       oninput={handleInput}
-      {placeholder}
       rows={14}
       class={cn(
         'min-h-[12rem] w-full flex-1 resize-none rounded-md border border-input bg-muted px-3 py-2 text-sm leading-relaxed',

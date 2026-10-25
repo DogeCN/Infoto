@@ -52,7 +52,8 @@ export function barCssVars(barWidth: number): string {
   ].join(';');
 }
 
-export interface BarRequirements {
+/** Width each shape needs, per mode. */
+interface BarRequirements {
   /** One screen, sort labels visible. */
   full: number;
   /** One screen, sort labels hidden. */

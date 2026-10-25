@@ -11,7 +11,7 @@ export function fmt(template: string, vars?: Record<string, string | number>): s
 // ---- plurals ------------------------------------------------------------------
 
 /** CLDR plural categories. `other` is always present; the rest depend on the locale. */
-export type PluralKey = 'one' | 'two' | 'few' | 'many' | 'other';
+type PluralKey = 'one' | 'two' | 'few' | 'many' | 'other';
 
 /**
  * Message forms keyed by plural category. `other` is mandatory; the rest are optional
@@ -161,7 +161,6 @@ export const enUS = {
     reportedByMe: 'Reported by me',
     interfaceSection: 'Interface',
     resetLayout: 'Reset layout',
-    language: 'Language',
     switchToEnglish: 'Switch to English',
     switchToChinese: 'Switch to Chinese',
     switchToHorizontal: 'Switch to horizontal scrolling',
@@ -171,6 +170,8 @@ export const enUS = {
     rangeMin: 'Range minimum',
     rangeMax: 'Range maximum',
     sliderValue: 'Value',
+    /** Playback level for every video on the site; it never unmutes a video. */
+    volume: 'Volume',
   },
 
   sort: {
@@ -313,6 +314,9 @@ export const enUS = {
       searchAria: 'Search feedback',
       delete: 'Delete',
       deleteAria: 'Delete feedback',
+      copy: 'Copy content',
+      copyAria: 'Copy feedback content',
+      copied: 'Feedback copied',
       idLabel: 'ID',
     },
     poll: {
@@ -526,7 +530,6 @@ const zhCN: Copy = {
     reportedByMe: '我请求删除的',
     interfaceSection: '界面',
     resetLayout: '重置布局',
-    language: '语言',
     switchToEnglish: '切换为英文',
     switchToChinese: '切换为中文',
     switchToHorizontal: '切换为横向滚动',
@@ -536,6 +539,7 @@ const zhCN: Copy = {
     rangeMin: '范围下限',
     rangeMax: '范围上限',
     sliderValue: '数值',
+    volume: '音量',
   },
 
   sort: {
@@ -678,6 +682,9 @@ const zhCN: Copy = {
       searchAria: '搜索建议',
       delete: '删除',
       deleteAria: '删除建议',
+      copy: '复制内容',
+      copyAria: '复制建议内容',
+      copied: '建议内容已复制',
       idLabel: 'ID',
     },
     poll: {
@@ -818,7 +825,7 @@ export function otherLocale(code: LocaleCode): LocaleCode | null {
 }
 
 /** Where the page persists its language choice. `lib/i18n.svelte.ts` writes this key. */
-const LOCALE_STORAGE_KEY = 'infoto-locale';
+export const LOCALE_STORAGE_KEY = 'infoto-locale';
 
 /**
  * The locale the browser reports, then the persisted choice, then the default.

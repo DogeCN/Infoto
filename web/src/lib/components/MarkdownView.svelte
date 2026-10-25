@@ -4,6 +4,7 @@
   import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
   import { markdownImageRule } from '../../core/markdown';
+  import { playbackVolume } from '../../state/playback.svelte';
 
   // Two independent renderers: the default one blocks images (public sidebar
   // must not render arbitrary external image hosts); the trusted one allows them.
@@ -38,10 +39,12 @@
   }
 
   /** One delegated listener set covers every media element, including the ones a content
-   *  change inserts after mount. */
+   *  change inserts after mount. `volume` is a property, so the shared playback level is
+   *  written here as each video reports its metadata. */
   function mediaLifecycle(node: HTMLElement) {
     const onEvent = (event: Event) => {
       const target = event.target;
+      if (target instanceof HTMLVideoElement) target.volume = playbackVolume.value;
       if (target instanceof HTMLImageElement || target instanceof HTMLVideoElement) {
         settleMedia(target);
       }
@@ -82,6 +85,13 @@
   $effect(() => {
     if (!el) return;
     apply();
+  });
+  // The playback slider retunes the videos already on screen; a video rendered later picks
+  // the level up from the delegated load listener in `mediaLifecycle`.
+  $effect(() => {
+    const level = playbackVolume.value;
+    if (!el) return;
+    for (const video of el.querySelectorAll('video')) video.volume = level;
   });
   onDestroy(() => {
     if (el) el.innerHTML = '';

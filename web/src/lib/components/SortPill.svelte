@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Render the selected density and report the alternate label layout's width.
+  // The gallery's sort pill. It renders the density it is handed and forwards the measured
+  // widths, so the top bar resolves the bar mode from one measurement rather than two.
   import type { SortKey } from '../../core/gallery';
-  import { measurePillWidths, type PillWidths } from './pillMeasure';
   import SortTabs from './SortTabs.svelte';
 
   interface Props {
@@ -26,26 +26,8 @@
     showLabels,
     onWidths,
   }: Props = $props();
-
-  /** Dependency key for label text: the delta itself is measured from the DOM. */
-  function labelsKey(sortKey: SortKey, dirs: Partial<Record<SortKey, boolean>>): string {
-    return `${sortKey}:${JSON.stringify(dirs)}:${document.documentElement.lang}`;
-  }
-
-  // Refresh when the label text can change, not when showLabels flips. A density change is
-  // a consequence of the measurement and must not re-trigger it.
-  const measure = $derived.by(() => {
-    void labelsKey(sortKey, dirs);
-    return {
-      labelled: showLabels,
-      deps: labelsKey(sortKey, dirs),
-      onWidths: (info: PillWidths) => onWidths?.(info),
-    };
-  });
 </script>
 
 <div class="shrink-0">
-  <div use:measurePillWidths={measure}>
-    <SortTabs {sortKey} {dirs} {onChange} {onReshuffle} hideLabel={!showLabels} />
-  </div>
+  <SortTabs {sortKey} {dirs} {onChange} {onReshuffle} hideLabel={!showLabels} {onWidths} />
 </div>

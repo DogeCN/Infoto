@@ -20,11 +20,11 @@
   import { barHVar } from '../../state/barHeight.svelte';
   import { autoBandPx } from '../../state/canvasBand.svelte';
   import { autoBand } from '$base/lib/band';
+  import { clamp } from '$base/lib/num';
 
   interface Props {
+    /** Every card to lay out, hosted and pending together, already ordered and filtered. */
     photos: Photo[];
-    /** Pending upload entries (placed right after info cards, before other media; excluded from sorting/filtering). */
-    pending?: Photo[];
     /** Curtain overlays for pending entries; see `UploadOverlay` in `core/pending`. */
     overlays?: Map<number, UploadOverlay>;
     onRetryUpload?: (photo: Photo) => void;
@@ -45,7 +45,6 @@
     restBottomInset?: number;
     selfId?: number;
     multiMode?: boolean;
-    onMultiModeChange?: (v: boolean) => void;
     // All write operations are committed upstream as ops (op-log → /sync)
     onLike?: (photo: Photo) => void;
     onDislike?: (photo: Photo) => void;
@@ -62,7 +61,6 @@
 
   let {
     photos,
-    pending = [],
     overlays = new Map<number, UploadOverlay>(),
     onRetryUpload,
     onDismissUpload,
@@ -75,7 +73,6 @@
     restBottomInset = 0,
     selfId = -1,
     multiMode = $bindable(false),
-    onMultiModeChange,
     onLike,
     onDislike,
     onRequestDelete,
@@ -110,13 +107,19 @@
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 2;
 
+  /** How far beyond the viewport, as a fraction of one viewport, a card still keeps its media
+   *  element. Both edges get this much, so the band is `1 + 2 × lookahead` viewports tall: enough
+   *  that a card scrolls into view with its image already decoded, small enough that the album's
+   *  decoded-image memory does not scale with the virtualizer's buffer. */
+  const MEDIA_LOAD_LOOKAHEAD = 0.4;
+
   /** Extra breathing room below the last row, on top of an overlay's clearance. Two gaps
    *  scaled with zoom, never below 16px: the whitespace follows the user's spacing setting
    *  instead of introducing a fixed design value the slider cannot reach. */
   const bottomSlack = $derived(Math.max(16, Math.round(gap * zoom * 2)));
 
   function applyZoom(factor: number): void {
-    zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, factor));
+    zoom = clamp(factor, ZOOM_MIN, ZOOM_MAX);
   }
 
   /** Ctrl+wheel zoom needs passive:false to block browser page zoom, hence the action binding. */
@@ -198,8 +201,8 @@
     if (!multiMode && selected.size > 0) selected = new Set();
   });
 
-  // Layout items: pending entries first, the rest follow the sorted/filtered result
-  let allPhotos = $derived([...pending, ...photos]);
+  // Layout items: the ordered, filtered card list as the layout engine's input
+  let allPhotos = $derived(photos);
   let layoutItems = $derived(
     allPhotos.map((p) => ({ id: p.id, w: p.width || 1, h: p.height || 1 })),
   );
@@ -315,6 +318,22 @@
     const from = scrollPos - buffer;
     const to = scrollPos + viewportSize + buffer;
     const indices = windowIndices(boxes, order, dir, from, to, maxExtent);
+    // The render window is wide (it keeps scrolling smooth), but holding *media* across all of
+    // it multiplies the album's decoded-image memory by the buffer factor — the one thing that
+    // reliably kills a mobile tab on a long album. Only the viewport plus this much lookahead
+    // loads media; the rest of the window keeps its box and paints the skeleton, which is
+    // invisible until it enters this band.
+    const loadPad = viewportSize * MEDIA_LOAD_LOOKAHEAD;
+    const near = new Set(
+      windowIndices(
+        boxes,
+        order,
+        dir,
+        scrollPos - loadPad,
+        scrollPos + viewportSize + loadPad,
+        maxExtent,
+      ),
+    );
     // `boxes` is replaced on a debounce, while `allPhotos` changes the moment a /sync
     // snapshot lands, so for a frame a laid-out box can name a photo that is already gone.
     // Rendering one handed PhotoCard an undefined `photo`, and its media load/error handlers
@@ -322,7 +341,7 @@
     // `$$props.photo.url`. Dropping those boxes keeps the two structures in step.
     return indices
       .filter((i) => photoMap.has(boxes[i].id))
-      .map((i) => ({ box: boxes[i], index: i }));
+      .map((i) => ({ box: boxes[i], index: i, near: near.has(i) }));
   });
 
   // Marquee hits: computed inside onMove (marqueeRect is only used for rendering)
@@ -372,10 +391,7 @@
   });
 
   function handleLongPress(photo: Photo) {
-    if (!multiMode) {
-      multiMode = true;
-      onMultiModeChange?.(true);
-    }
+    if (!multiMode) multiMode = true;
     selected.add(photo.id);
     selected = new Set(selected);
   }
@@ -385,14 +401,14 @@
     if (next.has(id)) next.delete(id);
     else next.add(id);
     selected = next;
-    if (selected.size === 0 && multiMode) {
-      multiMode = false;
-      onMultiModeChange?.(false);
-    }
+    if (selected.size === 0 && multiMode) multiMode = false;
   }
 
+  /** Select every laid-out card, optimistic uploads included: selecting them is how a stuck
+   *  upload is batch-deleted. Only hosted photos contribute a size or a download (the bar
+   *  crosses `selected` against its own hosted-only `selectable`). */
   function selectAll() {
-    selected = new Set(allPhotos.map((p) => p.id));
+    selected = new Set(allPhotos.map((photo) => photo.id));
   }
 
   function deselectAll() {
@@ -581,12 +597,13 @@
         ? `${totalH}px`
         : `calc(100% - ${padTop + padX}px)`}"
     >
-      {#each visibleBoxes as { box } (box.id)}
+      {#each visibleBoxes as { box, near } (box.id)}
         {@const photo = photoMap.get(box.id)}
         {#if photo}
           <PhotoCard
             {photo}
             {selfId}
+            mediaNear={near}
             x={box.x}
             y={box.y}
             width={box.w}
@@ -639,10 +656,7 @@
       const ids = [...selected];
       onDeleteSelected?.(ids);
       selected = new Set();
-      if (multiMode) {
-        multiMode = false;
-        onMultiModeChange?.(false);
-      }
+      if (multiMode) multiMode = false;
     }}
   />
 </div>

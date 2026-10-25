@@ -43,7 +43,6 @@
   }: Props = $props();
   let title = $state(untrack(() => draft?.title ?? announcement?.title ?? ''));
   let contentMd = $state(untrack(() => draft?.contentMd ?? announcement?.contentMd ?? ''));
-  let titleInput: HTMLInputElement | undefined = $state(undefined);
   let fileInput: HTMLInputElement | undefined = $state(undefined);
   let uploadBusy = $state(false);
   /** Object URL for the picked file, so the live preview can show the real image (and its
@@ -173,7 +172,6 @@
       <div class="shrink-0">
         <input
           id="announcement-title"
-          bind:this={titleInput}
           bind:value={title}
           required
           type="text"

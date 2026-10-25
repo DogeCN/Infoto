@@ -1,14 +1,13 @@
 /** Reactive page locale and copy, initialized from the stored preference or browser languages. */
 import {
   isLocaleCode,
+  LOCALE_STORAGE_KEY,
   locales,
   pickLocale,
   setActiveLocale,
   type Copy,
   type LocaleCode,
 } from '$shared/copy';
-
-const STORAGE_KEY = 'infoto-locale';
 
 type Reader = Pick<Storage, 'getItem'>;
 type Writer = Pick<Storage, 'setItem'>;
@@ -20,7 +19,7 @@ function browserStorage(): Storage | undefined {
 /** The user's stored choice if it names a locale this build ships, else the browser default. */
 export function detectLocale(storage?: Reader): LocaleCode {
   try {
-    const raw = (storage ?? browserStorage())?.getItem(STORAGE_KEY);
+    const raw = (storage ?? browserStorage())?.getItem(LOCALE_STORAGE_KEY);
     if (isLocaleCode(raw)) return raw;
   } catch {
     // Use the browser locale when storage is unavailable.
@@ -58,7 +57,7 @@ export function setLocale(code: LocaleCode, storage?: Writer): void {
   Object.assign(copy, locales[code]);
   syncLang(code);
   try {
-    (storage ?? browserStorage())?.setItem(STORAGE_KEY, code);
+    (storage ?? browserStorage())?.setItem(LOCALE_STORAGE_KEY, code);
   } catch {
     // The locale remains active when persistence is unavailable.
   }

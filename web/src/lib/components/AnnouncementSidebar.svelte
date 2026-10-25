@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import type { Announcement, Poll } from '$shared/types';
   import { startPointerResize } from '$base/lib/pointer';
+  import { clamp } from '$base/lib/num';
   import { copy } from '$lib/i18n.svelte';
   import { ChevronDown, ChevronsUpDown, Eye, Pencil } from '@lucide/svelte';
   import PollReferences from './PollReferences.svelte';
@@ -23,10 +24,14 @@
 
   let feedbackText = $state('');
   let previewMode = $state(false);
-  // Textarea height (drag the top-right handle upward to enlarge)
+  /** Composer height bounds; the drag, the keyboard step and the rendered floor all read
+   *  this one pair, so the pointer and the arrow keys cannot stop at different limits. */
+  const TA_MIN = 120;
+  const TA_MAX = 480;
+  // Textarea height (drag the top-right handle upward to enlarge).
   // Default to the resize floor: the composer sits sticky over the content, so its
   // resting footprint stays as small as the handle allows (user call).
-  let taH = $state(120);
+  let taH = $state(TA_MIN);
   /** Ids of expanded announcements (empty = all collapsed, so long posts cannot fill the screen). */
   let expandedIds = $state<Set<number>>(new Set());
 
@@ -48,7 +53,7 @@
       axis: 'y',
       sign: -1,
       start: taH,
-      clamp: (value) => Math.min(480, Math.max(120, value)),
+      clamp: (value) => clamp(value, TA_MIN, TA_MAX),
       onMove: (value) => (taH = value),
     });
   }
@@ -128,7 +133,7 @@
       class="relative overflow-hidden rounded-[var(--radius-card)] border border-input bg-muted transition-colors duration-[var(--duration-exit)] ease-[var(--ease-exit)] focus-within:border-primary/50"
     >
       {#if previewMode}
-        <div class="min-h-[7.5rem] px-4 py-3" style="height: {taH}px">
+        <div class="px-4 py-3" style="height: {taH}px; min-height: {TA_MIN}px">
           {#if feedbackText.trim()}
             <MarkdownView content={feedbackText} />
           {:else}
@@ -154,7 +159,7 @@
           onkeydown={(event) => {
             if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
             event.preventDefault();
-            taH = Math.min(480, Math.max(120, taH + (event.key === 'ArrowUp' ? 16 : -16)));
+            taH = clamp(taH + (event.key === 'ArrowUp' ? 16 : -16), TA_MIN, TA_MAX);
           }}
         >
           <ChevronsUpDown class="size-3.5" />

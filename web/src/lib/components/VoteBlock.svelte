@@ -4,10 +4,7 @@
   import type { Vote } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { fmt, plural } from '$shared/copy';
-  import { countHop } from '$base/lib/motion';
-
-  /** The outgoing number leaves upward, mirroring `countHop`'s entry. */
-  const countHopOut = { ...countHop, y: -countHop.y };
+  import { countHop, countHopOut } from '$base/lib/motion';
 
   interface Props {
     options: string[];

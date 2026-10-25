@@ -27,6 +27,7 @@
   import { createAppStore } from './state/appStore.svelte';
   import { downloadOne, downloadZip } from './core/download';
   import { createUploadStore } from './state/uploadStore.svelte';
+  import { setPlaybackVolume } from './state/playback.svelte';
   import type { LocaleCode, Photo, SyncRequest } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import {
@@ -105,6 +106,9 @@
   const loadedSettings = loadSettings();
   let layout = $state<LayoutSettings>(loadedSettings.layout);
   let filters = $state<FilterSettings>(loadedSettings.filters);
+  // Publish the stored playback level before the first paint, so a video already on screen
+  // never plays one step louder than the settings say.
+  setPlaybackVolume(loadedSettings.playback.volume);
   let filterCount = $state(0);
 
   // Keep chronological and reaction sort directions independently.
@@ -181,7 +185,7 @@
   function shasOf(ids: number[]): string[] {
     const selected = new Set(ids);
     const shas = new Set<string>();
-    for (const photo of [...uploads.pendingPhotos, ...visiblePhotos]) {
+    for (const photo of visiblePhotos) {
       if (selected.has(photo.id)) shas.add(photo.sha256);
     }
     return [...shas];
@@ -211,10 +215,12 @@
     store.setMarkMany(shas, 'dislike', false);
     store.setMarkMany(shas, 'report', false);
   }
-  /** Download one photo or package the current selection. */
+  /** Download one photo or package the current selection.
+   *  Hosted photos only: a pending card's URL is a local preview, not a file the archive
+   *  should carry. */
   async function handleDownloadSelected(ids: number[]) {
     const selected = new Set(ids);
-    const picked = visiblePhotos.filter((photo) => selected.has(photo.id));
+    const picked = visiblePhotos.filter((photo) => photo.id >= 0 && selected.has(photo.id));
     if (picked.length === 0) return;
     try {
       if (picked.length === 1) await downloadOne(picked[0]!);
@@ -243,11 +249,29 @@
       previousFilterSettings = s.filters;
       filters = { ...s.filters, types: new Set(s.filters.types) };
     }
+    setPlaybackVolume(s.playback.volume);
   }
 
-  let visiblePhotos = $derived.by(() =>
-    sortPhotos(applyFilters(store.photos, filters, store.selfId), sortKey, sortDirs, randomOrder),
-  );
+  /**
+   * The optimistic upload cards, newest first. A card the user just created belongs at the
+   * very front of the grid, under every sort — it is the result of the action they just took,
+   * and its provisional timestamp must not send it to the far end of an ascending or random
+   * order. They also bypass the filters for the same reason: an active filter must not hide an
+   * upload that is still in flight (its row in the panel keeps reporting the progress).
+   */
+  let pendingFront = $derived([...uploads.pendingPhotos].sort((a, b) => b.createdAt - a.createdAt));
+  /** Every card the gallery can show: the optimistic ones, then the hosted photos in the
+   *  active order. */
+  let allPhotos = $derived([...pendingFront, ...store.photos]);
+  let visiblePhotos = $derived.by(() => [
+    ...pendingFront,
+    ...sortPhotos(
+      applyFilters(store.photos, filters, store.selfId),
+      sortKey,
+      sortDirs,
+      randomOrder,
+    ),
+  ]);
 
   function onSortChange(key: SortKey) {
     if (key === sortKey) {
@@ -260,6 +284,7 @@
   }
 
   function handleReshuffle() {
+    // The order covers the photos the sort applies to; optimistic cards are always in front.
     randomOrder = shuffle(store.photos.map((photo) => photo.id));
     sortKey = 'random';
   }
@@ -278,9 +303,6 @@
   }
   function handleMultiSelect() {
     multiMode = !multiMode;
-  }
-  function handleMultiModeChange(v: boolean) {
-    multiMode = v;
   }
   function handleUploadClick() {
     fileInputEl?.click();
@@ -398,17 +420,16 @@
         </div>
       {/if}
 
-      <!-- Keep upload cards visible while the gallery has no settled photos. -->
-      {#if visiblePhotos.length === 0 && uploads.pendingPhotos.length === 0}
+      <!-- Pending uploads are cards in `visiblePhotos`, so an empty list is empty. -->
+      {#if visiblePhotos.length === 0}
         <EmptyState
           icon={Upload}
-          text={store.photos.length === 0 ? copy.gallery.empty : copy.gallery.emptyFiltered}
-          hint={store.photos.length === 0 ? copy.gallery.emptyHint : copy.gallery.emptyFilteredHint}
+          text={allPhotos.length === 0 ? copy.gallery.empty : copy.gallery.emptyFiltered}
+          hint={allPhotos.length === 0 ? copy.gallery.emptyHint : copy.gallery.emptyFilteredHint}
         />
       {:else}
         <WaterfallLayout
           photos={visiblePhotos}
-          pending={uploads.pendingPhotos}
           overlays={uploads.overlays}
           onRetryUpload={uploads.retry}
           onDismissUpload={uploads.dismiss}
@@ -420,7 +441,6 @@
           bottomInset={uploadPanelAtLeftEdge ? uploadPanelHeight : 0}
           restBottomInset={uploadPanelAtLeftEdge ? uploadPanelRestHeight : 0}
           bind:multiMode
-          onMultiModeChange={handleMultiModeChange}
           onLike={handleLike}
           onDislike={handleDislike}
           onRequestDelete={handleRequestDelete}

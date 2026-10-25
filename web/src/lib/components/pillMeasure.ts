@@ -53,7 +53,8 @@ function widthOfLabelledShape(tablist: HTMLElement, labelled: boolean): number {
   return width;
 }
 
-export interface PillMeasureOptions {
+/** Inputs of the action; the caller builds one object from its own reactive state. */
+interface PillMeasureOptions {
   /** Whether the pill on screen is showing labels. */
   labelled: boolean;
   /** Values that change the labels or shape; a change re-measures. */

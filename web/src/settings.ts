@@ -2,6 +2,7 @@
 
 import type { FillStrategy, ScrollDir } from '$base/lib/layout';
 import { MAX_BAND, MIN_BAND } from '$base/lib/band';
+import { clamp } from '$base/lib/num';
 import { heat } from './core/gallery';
 import { MEDIA_TYPE, type MediaType, type Photo } from '$shared/types';
 
@@ -39,6 +40,13 @@ export interface LayoutSettings {
 export interface Settings {
   filters: FilterSettings;
   layout: LayoutSettings;
+  playback: PlaybackSettings;
+}
+
+/** Playback preferences; the level videos play at, independent of each element's mute state. */
+export interface PlaybackSettings {
+  /** 0…1; the `<video>` volume property, never a mute toggle. */
+  volume: number;
 }
 
 /** Return a photo's value for one range dimension. */
@@ -93,19 +101,21 @@ export function defaultSettings(): Settings {
   return {
     filters: defaultFilterSettings(),
     layout: { dir: 'v', strategy: 'shortest', band: null, gap: 12 },
+    playback: { volume: 1 },
   };
 }
 
 const STORAGE_KEY = 'infoto-settings';
 
 /** Persisted settings schema version. Other versions reset to defaults. */
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
 
 /** Persisted shape: a `Set` is not JSON-serializable, so media types are stored as an array. */
 interface StoredSettings {
   v: number;
   filters: Omit<FilterSettings, 'types'> & { types: MediaType[] };
   layout: LayoutSettings;
+  playback: PlaybackSettings;
 }
 
 /** Read and validate the complete stored shape; invalid settings reset to defaults. */
@@ -119,12 +129,10 @@ export function loadSettings(storage?: Pick<Storage, 'getItem'>): Settings {
       filters: { ...parsed.filters, types: new Set(parsed.filters.types) },
       layout: {
         ...parsed.layout,
-        band:
-          parsed.layout.band === null
-            ? null
-            : Math.min(MAX_BAND, Math.max(MIN_BAND, parsed.layout.band)),
-        gap: Math.min(32, Math.max(0, parsed.layout.gap)),
+        band: parsed.layout.band === null ? null : clamp(parsed.layout.band, MIN_BAND, MAX_BAND),
+        gap: clamp(parsed.layout.gap, 0, 32),
       },
+      playback: { volume: clamp(parsed.playback.volume, 0, 1) },
     };
   } catch {
     return defaultSettings();
@@ -132,8 +140,10 @@ export function loadSettings(storage?: Pick<Storage, 'getItem'>): Settings {
 }
 
 function validStoredSettings(value: StoredSettings): boolean {
-  if (!value || value.v !== SETTINGS_VERSION || !value.filters || !value.layout) return false;
-  const { filters, layout } = value;
+  if (!value || value.v !== SETTINGS_VERSION || !value.filters || !value.layout || !value.playback)
+    return false;
+  const { filters, layout, playback } = value;
+  if (!Number.isFinite(playback.volume)) return false;
   if (
     !['v', 'h'].includes(layout.dir) ||
     !['sequential', 'shortest'].includes(layout.strategy) ||
@@ -170,6 +180,7 @@ export function saveSettings(settings: Settings, storage?: Pick<Storage, 'setIte
     v: SETTINGS_VERSION,
     filters: { ...settings.filters, types: [...settings.filters.types] },
     layout: settings.layout,
+    playback: settings.playback,
   };
   try {
     (storage ?? localStorage).setItem(STORAGE_KEY, JSON.stringify(stored));

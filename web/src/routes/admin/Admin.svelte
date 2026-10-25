@@ -410,5 +410,5 @@
     <Toaster position="bottom-left" theme="dark" richColors expand {toastOptions} />
   </div>
 {:else if store.selfId >= 1}
-  <ErrorPage code={404} />
+  <ErrorPage />
 {/if}

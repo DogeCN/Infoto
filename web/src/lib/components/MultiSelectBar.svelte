@@ -32,13 +32,18 @@
     onDelete,
   }: Props = $props();
 
-  // Exclude optimistic uploads from selectable counts and download sizes.
+  // Every card is selectable — a pending upload has to be, or a stuck one cannot be batch-deleted.
+  // Only hosted photos contribute a size and a download, because a pending card's URL is a local
+  // preview with no hosted file behind it yet.
   let selectable = $derived(photos.filter((p) => p.id >= 0));
   let count = $derived(selected.size);
   let totalSize = $derived(
     selectable.filter((p) => selected.has(p.id)).reduce((sum, p) => sum + (p.size || 0), 0),
   );
-  let allSelected = $derived(count === selectable.length && selectable.length > 0);
+  // The control means "every card on screen is selected", so it compares against all cards, not
+  // against the hosted-only set its size math uses; crossing the two sets made it read "not all
+  // selected" whenever an upload was on screen, and click again re-selected instead of clearing.
+  let allSelected = $derived(count > 0 && count === photos.length);
 
   /** Whether selected photos contain a mark the current user can remove. */
   let hasAnyMark = $derived(
@@ -51,10 +56,13 @@
 </script>
 
 <div
-  class="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between border-t border-border bg-popover/95 px-4 py-3 backdrop-blur-xl backdrop-saturate-150 shadow-lift"
-  style="transform: translateY({visible ? '0' : '110%'}); visibility: {visible
-    ? 'visible'
-    : 'hidden'}; transition: transform var(--duration-spring) var(--ease-spring), visibility 0s"
+  class="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between border-t border-border bg-popover/95 px-4 py-3 backdrop-blur-xl backdrop-saturate-150 shadow-lift {visible
+    ? ''
+    : 'pointer-events-none'}"
+  inert={!visible}
+  style="transform: translateY({visible
+    ? '0'
+    : '110%'}); transition: transform var(--duration-spring) var(--ease-spring)"
 >
   <!-- Select all / clear selection + selected count -->
   <div class="flex items-center gap-1.5">
