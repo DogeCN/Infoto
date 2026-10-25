@@ -6,12 +6,13 @@ import { extOfType } from '$shared/media';
 import type { Op, Photo } from '$shared/types';
 import { getLocale } from '$lib/i18n.svelte';
 import { translateTaskError } from '$base/upload/pipeline';
-import { UploadPipeline, probeSourceSize, type PipelineTaskSnapshot } from '../transcode/pipeline';
+import { UploadPipeline, type PipelineTaskSnapshot } from '../transcode/pipeline';
 import { readArtifact } from '../transcode/opfs';
 import {
   pendingMediaUrl,
   pendingPhoto,
-  rendersCard as pendingRendersCard,
+  rendersCard,
+  type UploadOverlay,
   samePendingPhoto,
   type HostedReadiness,
 } from '../core/pending';
@@ -67,8 +68,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   // Deleting a pending photo reaches here through the app store: cancel the job (stops an
   // in-flight transfer before it can write its upload op) and drop the card.
   setPendingUploadCancelSink((sha) => cancelPendingBySha(sha));
-  /** Source dimensions probed at enqueue — failed transcodes keep the real aspect ratio. */
-  const probedSizeByJob = new SvelteMap<string, { width: number; height: number }>();
 
   /** Batch counters track observed jobs and count each resolved panel task once. */
   let batchTotal = $state(0);
@@ -93,20 +92,13 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     Array.from(uploadTasks.values()).filter((t) => PANEL_STAGES.has(t.phase)),
   );
 
-  /**
-   * Whether a task renders a card. A failure only does once it has reached the upload leg —
-   * it then has an artifact on disk to show and a retry that reuses it. A transcode failure
-   * leaves nothing behind, so it is a toast and no card. See `rendersCard` in `core/pending`.
-   */
-  const rendersCard = (t: PipelineTaskSnapshot): boolean => pendingRendersCard(t);
-
   /** The card's local preview: one object URL per job, owned by this store and released with
    *  the job. Read from the OPFS artifact — never from the picked file, which a card never
    *  needs (it appears only after stage 1) and which a GIF cannot even render, since its card
    *  is a `<video>`. */
   const previewUrls = new SvelteMap<string, string>();
 
-  /** Take a job's preview from the first source that has one; later sources are no-ops. */
+  /** Publish a job's local preview once; a second call for the same job is a no-op. */
   function setPreview(jobId: string, source: Blob): void {
     if (previewUrls.has(jobId)) return;
     previewUrls.set(jobId, URL.createObjectURL(source));
@@ -177,7 +169,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       tempIdByJob.delete(jobId);
       jobByTempId.delete(id);
     }
-    probedSizeByJob.delete(jobId);
     tempCreatedAt.delete(jobId);
     writeTempCreatedAt(tempCreatedAt);
     photoCache.delete(jobId);
@@ -193,20 +184,6 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     const next = new Map(uploadTasks);
     next.delete(jobId);
     uploadTasks = next;
-  }
-
-  // Probes run sequentially (one decode at a time) so a 20-photo pick never
-  // bursts the main thread with concurrent image decodes.
-  let probeChain = Promise.resolve();
-  function queueSizeProbe(jobId: string, file: File) {
-    probeChain = probeChain
-      .then(async () => {
-        if (destroyed || !uploadTasks.has(jobId)) return;
-        const size = await probeSourceSize(file);
-        if (destroyed) return;
-        if (size && uploadTasks.has(jobId)) probedSizeByJob.set(jobId, size);
-      })
-      .catch(() => undefined);
   }
 
   // ---- Optimistic upload entries ----
@@ -274,16 +251,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       // raced a dropTask (cancel / cleanup) instead of emitting id: undefined
       const id = tempIdByJob.get(t.jobId);
       if (id === undefined) continue;
-      // Failed transcodes have no meta: fall back to the probed source dimensions
-      // so the failure card keeps the real aspect ratio (placeholder 800×600 only
-      // when probing also failed)
-      const probed = probedSizeByJob.get(t.jobId);
-      const meta = t.meta ?? {
-        width: probed?.width ?? 800,
-        height: probed?.height ?? 600,
-        size: 0,
-        type: 0 as const,
-      };
+      // `rendersCard` only admits a failure that has an artifact, so every card has `meta`.
+      if (!t.meta) continue;
+      const meta = t.meta;
       const sha = t.sha256 ?? '';
       const marks = store.pendingMarksFor(sha);
       const hosted = t.url ?? '';
@@ -318,10 +288,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
 
   const uploadOverlays = $derived.by(() => {
     getLocale();
-    const m = new Map<
-      number,
-      { fraction?: number; failed?: boolean; error?: string; preview?: boolean }
-    >();
+    const m = new Map<number, UploadOverlay>();
     for (const t of uploadTasks.values()) {
       const id = tempIdByJob.get(t.jobId);
       if (id === undefined) continue;
@@ -463,14 +430,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       toastedFailures.clear();
       toastedDuplicates.clear();
     }
-    pipeline.addFiles(files, (jobId, file) => {
-      // The picked file is not the card's preview: a card only appears once stage 1 has
-      // finished, so the OPFS artifact is already on disk by then, and it is the bytes the
-      // album will actually hold. The pick would also be wrong for a GIF, which renders in a
-      // <video> (type 1) that cannot decode it — the card sat on its skeleton for the whole
-      // upload. `ensureArtifactPreview` reads the artifact back instead.
-      queueSizeProbe(jobId, file);
-    });
+    // Nothing is seeded per pick: a card appears only after stage 1, so its preview and its
+    // dimensions both come from the artifact (`ensureArtifactPreview` and the task's `meta`).
+    pipeline.addFiles(files);
   }
 
   onDestroy(() => {
