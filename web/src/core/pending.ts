@@ -6,6 +6,27 @@ import type { MarkSet } from './ops';
 /** How far the hosted copy of a pending card's media has got in this page. */
 export type HostedReadiness = 'pending' | 'ready' | 'failed';
 
+/** The subset of a task snapshot that decides whether it renders a card. */
+export interface CardStage {
+  phase: string;
+  url?: string;
+  meta?: unknown;
+}
+
+/**
+ * Whether a task renders a card in the waterfall.
+ *
+ * Uploading and done jobs do. A failure only does once it reached the upload leg — it then has
+ * an artifact on disk to preview and a retry that reuses it. A transcode failure leaves nothing
+ * behind (the encoder aborts its partial file) and its source is a Blob that died with the page,
+ * so it is a toast and no card: an empty card would be a hole in the grid whose retry starts the
+ * whole job over.
+ */
+export function rendersCard(task: CardStage): boolean {
+  if (task.phase === 'uploading' || task.phase === 'done') return true;
+  return task.phase === 'failed' && (!!task.url || !!task.meta);
+}
+
 /**
  * The URL a pending card should render.
  *

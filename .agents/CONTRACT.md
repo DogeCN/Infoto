@@ -271,11 +271,25 @@ Back-filled from the commit history. Tagged sections are not yet written.
     and nothing else. `border-color` and `opacity` stay on the exit pair — they are hover and
     selection state, not geometry. A card's start box comes from `WaterfallLayout`'s
     `geomMemory`, never from its own state.
+  - **Two failure kinds, two outcomes.** A **transcode** failure leaves no card at all: the
+    encoder aborts its partial artifact, the source is a Blob that died with the page, and the
+    job's resume record is deleted — so there is nothing to preview and nothing for a retry to
+    reuse. Its whole report is the error toast. An **upload** failure keeps its card: stage 1
+    already put an artifact in OPFS, so the card previews it, a retry skips transcoding, and
+    the resume record is kept (marked `failed`) so **the card survives a reload** instead of
+    vanishing into a toast nobody saw. `rendersCard` in `core/pending.ts` is the one rule, and
+    `sw.ts`'s `failJob` / `resumePendingUploads` mirror it on the worker side: a record with
+    `failed` is rebuilt as the failed card, while only a record without it resumes on its own
+    (that is an upload interrupted mid-transfer, not one the facade rejected).
   - Failed uploads are excluded from **preview** only. They are selectable like any other card —
     clicking one no longer opens the Lightbox (there is nothing to look at), but multi-select,
     long-press, marquee, `selectAll` and Ctrl+A all reach them, which is what makes the batch
     "delete" the way out of a stuck upload. The failure cover is `bg-black/55`, matching the
     uploading curtain's own weight: a failed card is still a card in the grid, not a hole in it.
+  - **A replayed card takes its preview from OPFS, not from the pick.** The object URL created
+    at enqueue is gone after a reload, so `ensureArtifactPreview` reads the artifact back; that
+    is what gives a resumed or replayed card its image. The first frame after a reload can still
+    be a skeleton, because the read is asynchronous — the alternative, a second upload, is worse.
   - **Nothing asserts any of this**, and `WaterfallLayout`'s `overlays` prop type is narrower
     than the value the store actually passes (`preview` is missing from the declared type).
 - **Lightbox.** The action sheet is a **bottom sheet**, not a dropdown — a dropdown's top-right
@@ -1164,6 +1178,7 @@ The parts of this contract that are asserted by `npm test`:
 | The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`           |
 | A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/pendingPhoto.test.ts`    |
 | A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/pendingPhoto.test.ts`    |
+| A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/pendingPhoto.test.ts`    |
 | A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`        |
 | Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`        |
 | The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`        |

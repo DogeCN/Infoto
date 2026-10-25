@@ -4,6 +4,7 @@ import { EMPTY_MARKS } from '../../src/core/ops';
 import {
   pendingMediaUrl,
   pendingPhoto,
+  rendersCard,
   samePendingPhoto,
   type PendingPhotoFields,
 } from '../../src/core/pending';
@@ -68,4 +69,23 @@ test('pending media url: the local preview holds until the hosted copy is render
   // No local preview (another tab, or the artifact read failed): use the hosted URL.
   assert.equal(pendingMediaUrl(hosted, '', 'pending'), hosted);
   assert.equal(pendingMediaUrl('', '', undefined), '');
+});
+
+test('pending card: a transcode failure renders no card, an upload failure does', () => {
+  // A transcode failure has no artifact and no surviving source; its only report is the toast.
+  assert.equal(rendersCard({ phase: 'failed' }), false);
+  assert.equal(rendersCard({ phase: 'failed', url: undefined, meta: undefined }), false);
+  // Reaching the upload leg is what proves an artifact exists on disk.
+  assert.equal(
+    rendersCard({ phase: 'failed', meta: { width: 1, height: 1, size: 1, type: 0 } }),
+    true,
+  );
+  assert.equal(rendersCard({ phase: 'failed', url: 'https://host/a.webp' }), true);
+  // The stages that always render one.
+  assert.equal(rendersCard({ phase: 'uploading', meta: {} }), true);
+  assert.equal(rendersCard({ phase: 'done' }), true);
+  // Stages that never do: panel rows and in-flight work.
+  for (const phase of ['queued', 'lease-wait', 'transcoding', 'hashing', 'duplicate']) {
+    assert.equal(rendersCard({ phase }), false, phase);
+  }
 });

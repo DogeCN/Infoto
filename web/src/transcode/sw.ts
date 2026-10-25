@@ -171,14 +171,39 @@ function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
   broadcast(message);
 }
 
-/** Mark a job failed with `error` and notify its holders; centralises the repeated terminal-failure assignment. */
+/**
+ * Mark a job failed with `error` and notify its holders; centralises the repeated
+ * terminal-failure assignment.
+ *
+ * The resume record is kept when the failure happened in the upload leg. `rec.phase` at the
+ * call is the stage that failed: `transcoding` means no artifact exists yet, so a resumed
+ * upload would have nothing to send, while `uploading` means the artifact is on disk and the
+ * record is what brings the card back after a reload. Keeping it is also what stops the card
+ * from vanishing on refresh — the page rebuilds the job from the record and replays it.
+ */
 function failJob(rec: JobRec, error: string): void {
+  const failedInUpload = rec.phase === 'uploading';
   rec.phase = 'failed';
   rec.error = error;
-  // A terminal failure ends the job: drop its resume record so a later page load cannot
-  // auto-resume it. The artifact stays in OPFS for a same-session manual retry — only
-  // cancel may remove it.
-  if (db) void deletePendingUpload(db, rec.jobId).catch(() => undefined);
+  // A transcode failure ends the job for good: there is no artifact to resume from, so the
+  // record would only re-run a transcode that already failed. Only cancel removes the artifact.
+  if (db && !failedInUpload) {
+    void deletePendingUpload(db, rec.jobId).catch(() => undefined);
+    return;
+  }
+  // An upload failure keeps its record, marked: the artifact is still on disk, so the card
+  // survives a reload and the user can retry it by hand. Without the flag the reload would
+  // resume the upload on its own, which is a retry nobody asked for.
+  if (db && rec.sha256 && rec.meta && rec.artifact) {
+    void putPendingUpload(db, {
+      jobId: rec.jobId,
+      fileName: rec.fileName,
+      sha256: rec.sha256,
+      meta: rec.meta,
+      artifactExt: rec.artifact.ext,
+      failed: true,
+    }).catch(() => undefined);
+  }
   notify(rec);
 }
 
@@ -620,6 +645,16 @@ async function resumePendingUploads(): Promise<void> {
       editorResultAcked: false,
       cancelled: false,
     };
+    // A record left behind by a failed upload leg is rebuilt as the failed card it was, not
+    // restarted: the artifact is on disk, so the card has its image back and a retry the user
+    // presses. Only a record whose upload was genuinely interrupted (no `failed` flag) resumes.
+    if (r.failed) {
+      rec.phase = 'failed';
+      rec.error = 'upload_interrupted';
+      jobs.set(r.jobId, rec);
+      notify(rec);
+      continue;
+    }
     jobs.set(r.jobId, rec);
     notify(rec, { fraction: 0 });
     void runUpload(rec).catch((e) => failJob(rec, String((e as Error)?.message ?? e)));

@@ -1,5 +1,7 @@
-// A terminal album-upload failure must drop its resume record, so a later page load
-// cannot rebuild the job and re-run /upload (retryJob stays the only retry path).
+// An upload-leg failure keeps its resume record, marked `failed`: the artifact is still in
+// OPFS, so the card comes back after a reload with its image and a retry the user presses.
+// The mark is what keeps the reload from re-running /upload on its own — a resume is for a
+// transfer interrupted mid-flight, not for one the facade rejected.
 import 'fake-indexeddb/auto';
 import { afterEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
@@ -60,7 +62,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test('album upload resume: a failed attempt drops its pending record so a later load cannot re-run it', async () => {
+test('album upload resume: an upload failure keeps a marked record so the card survives a reload', async () => {
   // Only the sweep intervals are faked; fake-indexeddb keeps scheduling real tasks.
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   h.transcodeImage.mockResolvedValue({
@@ -112,8 +114,15 @@ test('album upload resume: a failed attempt drops its pending record so a later 
 
   releaseUpload!({ ok: false, error: 'timeout' });
 
-  // The terminal failure must delete it; otherwise resumePendingUploads rebuilds the job.
-  await until(async () => (await readPendingUploads(db)).length === 0, 'the record to be dropped');
+  // The record stays, marked, so `resumePendingUploads` rebuilds a failed card instead of
+  // re-running the upload the facade just rejected.
+  await until(
+    async () => (await readPendingUploads(db))[0]?.failed === true,
+    'the record to be marked failed',
+  );
+  const [record] = await readPendingUploads(db);
+  assert.equal(record?.jobId, 'job-fail');
+  assert.equal(record?.failed, true);
   assert.equal(
     port.sent.some((m) => m['t'] === 'jobStatus' && m['phase'] === 'failed'),
     true,

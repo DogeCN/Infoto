@@ -19,6 +19,10 @@ export interface PendingUploadRecord {
   sha256: string;
   meta: { width: number; height: number; size: number; type: 0 | 1 | 2 };
   artifactExt: 'webp' | 'webm';
+  /** Set when the upload leg failed. The record is kept anyway — it is what brings the card
+   *  back after a reload — and this flag is what stops the reload from retrying the upload
+   *  automatically: the record is rebuilt as a failed card the user can retry by hand. */
+  failed?: boolean;
 }
 
 /** Open (or upgrade) the database. Factory injection keeps unit tests easy; a missing

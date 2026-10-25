@@ -11,6 +11,7 @@ import { readArtifact } from '../transcode/opfs';
 import {
   pendingMediaUrl,
   pendingPhoto,
+  rendersCard as pendingRendersCard,
   samePendingPhoto,
   type HostedReadiness,
 } from '../core/pending';
@@ -91,6 +92,13 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   const panelRows = $derived(
     Array.from(uploadTasks.values()).filter((t) => PANEL_STAGES.has(t.phase)),
   );
+
+  /**
+   * Whether a task renders a card. A failure only does once it has reached the upload leg —
+   * it then has an artifact on disk to show and a retry that reuses it. A transcode failure
+   * leaves nothing behind, so it is a toast and no card. See `rendersCard` in `core/pending`.
+   */
+  const rendersCard = (t: PipelineTaskSnapshot): boolean => pendingRendersCard(t);
 
   /** The card's local preview: one object URL per job, owned by this store and released with
    *  the job. Seeded from the picked file at enqueue, or — for a job restored without one —
@@ -258,8 +266,8 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     // cleanup $effect is still scheduled.
     const landedShas = new Set(store.photos.map((p) => p.sha256));
     for (const t of uploadTasks.values()) {
-      // Create optimistic cards for uploading, completed, and failed jobs.
-      if (!['uploading', 'done', 'failed'].includes(t.phase)) continue;
+      // Cards cover the upload stage, plus a failure that reached it (see `rendersCard`).
+      if (!rendersCard(t)) continue;
       if (t.phase === 'done' && t.sha256 && landedShas.has(t.sha256)) continue;
       // tempId is assigned uniformly in the onTask callback; skip anything that
       // raced a dropTask (cancel / cleanup) instead of emitting id: undefined
@@ -389,7 +397,10 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       observeJob(t.jobId);
       // Count panel work as resolved when the task moves to a card or terminates.
       if (!PANEL_STAGES.has(t.phase)) countResolved(t.jobId);
-      // Card preview comes from the transcoded artifact, not the picked File.
+      // Card preview comes from the transcoded artifact, not the picked File — a Blob URL from
+      // the pick dies with the page, while the artifact is on disk and survives a reload. The
+      // read is a no-op when the pick already seeded one, and it is what gives a replayed job
+      // (`replayJobs`) its image back after a refresh.
       if (t.meta && (t.phase === 'uploading' || t.phase === 'failed')) {
         void ensureArtifactPreview(t.jobId, t.meta.type);
       }
@@ -427,8 +438,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
         );
       }
       // Optimistic tempIds are assigned here — both pendingPhotos and uploadOverlays
-      // deriveds read them; callbacks run before any derived evaluates, so order is safe
-      if (['uploading', 'done', 'failed'].includes(t.phase) && !tempIdByJob.has(t.jobId)) {
+      // deriveds read them; callbacks run before any derived evaluates, so order is safe.
+      // The condition mirrors `pendingPhotos`, so a job that renders no card takes no id.
+      if (rendersCard(t) && !tempIdByJob.has(t.jobId)) {
         const id = nextTempId--;
         tempIdByJob.set(t.jobId, id);
         jobByTempId.set(id, t.jobId);
