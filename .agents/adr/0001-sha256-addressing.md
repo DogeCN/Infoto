@@ -1,7 +1,7 @@
 # 0001: sha256 Addresses Photos, Not Sequential IDs
 
 - **Date**: 2026-09-27
-- **Status**: Accepted
+- **Status**: Accepted (implementation note superseded by 0023: the sha lookup is now the statement's own `WHERE sha256 = ?`, not a helper)
 - **Context**: Photos originally had a numeric autoincrement `id`, used as the index for every in-site read and write. This coupled three unrelated concerns: the DB primary key, the external short link (`/l/{id36}`), and client-side identity of a photo. It also meant an op-log replay after a re-import could point at a different row than intended.
 - **Decision**: `sha256` is the **only** index for in-site requests. `Op.targetSha` addresses every photo op; `Op.target` is reserved for announcements (vote/react, which have no content hash). The server's `sync.ts#resolvePhotoId` looks up by sha only — no match means skip, never a fallback lookup by id. `id` survives solely as the external-link index that `/l/{id36}` decodes.
 - **Consequences**:

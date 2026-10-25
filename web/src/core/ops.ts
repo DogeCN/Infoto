@@ -95,9 +95,9 @@ export function applyMarkToSet(
  * The dimension an op writes, used to supersede a queued op of the same dimension — null for
  * ops that must keep their place in the log.
  *
- * The server's marks, votes and reactions are all last-write-wins per dimension: `setMark` is
- * a set add/remove that also clears the opposite attitude, `vote` replaces the voter's whole
- * option set, `react` is an upsert. Two queued ops on one dimension therefore collapse to the
+ * The server's marks, votes and reactions are all last-write-wins per dimension: a mark is one
+ * `UPDATE` that adds or removes the user in its own column and clears the opposite attitude,
+ * `vote` replaces the voter's whole option set, `react` is an upsert. Two queued ops on one dimension therefore collapse to the
  * newest without changing the outcome — a like and a dislike share one key precisely because
  * the server clears the opposite column when either is added, so the newest op states the
  * whole intent. A report is a separate dimension and may coexist with either.

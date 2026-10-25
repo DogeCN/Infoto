@@ -1,5 +1,5 @@
 // A photo op must follow the upload op that creates its row: /sync applies a batch in array
-// order, so a mark sent first is a no-op on an unknown sha (`resolvePhotoId` -> null) and is
+// order, so a mark sent first is a no-op on an unknown sha (its statement matches no row) and is
 // then cleared as confirmed — the mark is silently lost. The store defers such ops until the
 // upload op lands, and drops them when the card is gone for good.
 import 'fake-indexeddb/auto';

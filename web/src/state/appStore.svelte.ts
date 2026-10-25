@@ -473,10 +473,10 @@ class AppState {
   /**
    * Submit one mark, dropping it while the row it targets does not exist yet. Marks are the
    * ops that *need* the row: a photo op is addressed by sha256 and /sync applies a batch in
-   * array order, so a mark sent before its upload is a no-op on an unknown sha
-   * (`resolvePhotoId` → null) and is then cleared as confirmed — the mark would be lost. The
-   * mark itself is already recorded in `pendingMarks`, and `photoOpQueued` states it as an op
-   * once the row exists.
+   * array order, so a mark sent before its upload is a no-op on an unknown sha (its own
+   * `WHERE sha256 = ?` matches no row) and is then cleared as confirmed — the mark would be
+   * lost. The mark itself is already recorded in `pendingMarks`, and `photoOpQueued` states it
+   * as an op once the row exists.
    *
    * A delete is the opposite case and does not come through here: deleting an unknown sha is a
    * harmless no-op on the server, and the tombstone that withdraws a pending photo depends on

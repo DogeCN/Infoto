@@ -67,6 +67,10 @@ imports business-layer code.
 
 Web-only: `npm run e2e -w infoto-web` (Playwright, local and manual).
 
+The full command list — seeding, resetting the local database, and `npm run release`, which
+preflights, bumps both manifests and the lockfile, tags, and pushes — is owned by
+[AGENTS.md §6](AGENTS.md#6-commands).
+
 Local development reads `.dev.vars` — copy the tracked template once:
 
 ```sh
@@ -233,6 +237,9 @@ dist/              Vite 构建产物（wrangler [assets] 托管）
 | `npm run gen-schema` | 从 `schema.sql` 重新生成 `src/worker/schema-ddl.ts`    |
 
 web 子包专用：`npm run e2e -w infoto-web`（Playwright，本地手动）。
+
+完整命令表——灌库、重置本地库、以及 `npm run release`（预检、升两个 manifest 和 lockfile、
+打 tag 并推送）——以 [AGENTS.md §6](AGENTS.md#6-commands) 为准。
 
 本地开发读 `.dev.vars`，从追踪的模板复制一次即可：
 
