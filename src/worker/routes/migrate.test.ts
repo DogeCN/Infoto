@@ -1,70 +1,34 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import type { LocalDb } from '../../testing/localDb.ts';
-import {
-  type TestApp,
-  cookieFrom,
-  makeApp,
-  stubSiteverify,
-  sync,
-  syncNew,
-} from '../../testing/app.ts';
+import { makeApp, stubSiteverify } from '../../testing/app.ts';
 
 import { MIGRATE_TABLES, parseSqlStatements, restoreOldTables } from './migrate.ts';
 
 stubSiteverify();
 
-async function rootCookie(app: TestApp): Promise<string> {
-  const res = await sync(app, {
-    turnstileToken: 'ok',
-    ops: [
-      {
-        type: 'upload',
-        payload: {
-          sha256: 'aa',
-          url: 'https://h/a.webp',
-          width: 1,
-          height: 1,
-          size: 2,
-          type: 0,
-          createdAt: 1_700_000_000_000,
-        },
-      },
-    ],
-  });
-  const cookie = cookieFrom(res);
-  const created = await app.request('http://localhost/admin/announcements', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({
-      title: 't',
-      contentMd: `md\\slash --- ; /* c */ it's`,
-      locale: 'en-US',
-    }),
-  });
-  assert.equal(created.status, 200);
-  const pollResponse = await app.request('http://localhost/admin/polls', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({
-      options: ['A', 'B'],
-      allowMultiple: false,
-      locale: 'en-US',
-    }),
-  });
-  const pollId = ((await pollResponse.json()) as { poll: { id: number } }).poll.id;
-  await sync(
-    app,
-    {
-      ops: [
-        { type: 'react', target: 1, payload: { emoji: '🔥' } },
-        { type: 'vote', target: pollId, payload: { options: [1] } },
-        { type: 'fb_create', payload: { contentMd: 'fb', locale: 'en-US' } },
-      ],
-    },
-    cookie,
-  );
-  return cookie;
+const ROOT_COOKIE = 'uuid=root-test';
+
+/**
+ * Seed the album with one row per migrated table, owned by the root identity (users.id 0).
+ * Identity and album mutations are WebSocket ops now, so there is no HTTP write route for
+ * a test to drive — the fixture inserts the rows directly, and every later assertion reads
+ * them back through the migrate round-trip.
+ */
+function seedAlbum(db: LocalDb): void {
+  db.exec(`
+    INSERT INTO users (id, uuid, created_at) VALUES (0, 'root-test', 1);
+    INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
+      VALUES ('aa', 'https://h/a.webp', 0, 1, 1, 2, 1700000000000, 0);
+    INSERT INTO announcements (id, title, content_md, locale, sort, updated_at)
+      VALUES (1, 't', 'md\\slash --- ; /* c */ it''s', 'en-US', 0, 1);
+    INSERT INTO reactions (ann_id, user_id, emoji) VALUES (1, 0, '🔥');
+    INSERT INTO polls (id, options, allow_multiple, locale, sort, updated_at)
+      VALUES (1, '["A","B"]', 0, 'en-US', 0, 1);
+    INSERT INTO votes (poll_id, user_id, option) VALUES (1, 0, 1);
+    INSERT INTO feedback (id, user_id, content_md, created_at, locale, sort)
+      VALUES (1, 0, 'fb', 1, 'en-US', 0);
+  `);
 }
 
 async function counts(db: LocalDb) {
@@ -102,7 +66,8 @@ test('parseSqlStatements is quote-aware: ; -- /* and quotes inside literals surv
 
 test('export → import round-trip restores rows', async () => {
   const { db, app } = makeApp();
-  const cookie = await rootCookie(app);
+  seedAlbum(db);
+  const cookie = ROOT_COOKIE;
   const before = await counts(db);
   assert.equal(before.users, 1);
   assert.equal(before.photos, 1);
@@ -153,7 +118,8 @@ test('export → import round-trip restores rows', async () => {
 
 test('bad INSERT returns exact statement and leaves all tables intact', async () => {
   const { db, app } = makeApp();
-  const cookie = await rootCookie(app);
+  seedAlbum(db);
+  const cookie = ROOT_COOKIE;
   const before = await counts(db);
   const dump = await (
     await app.request('http://localhost/admin/migrate', { headers: { Cookie: cookie } })
@@ -209,7 +175,8 @@ test('restoreOldTables only swaps tables that have _old copies', async () => {
 
 test('a second round-trip over an already-swapped database still restores rows', async () => {
   const { db, app } = makeApp();
-  const cookie = await rootCookie(app);
+  seedAlbum(db);
+  const cookie = ROOT_COOKIE;
   const dump = await (
     await app.request('http://localhost/admin/migrate', { headers: { Cookie: cookie } })
   ).text();
@@ -224,8 +191,9 @@ test('a second round-trip over an already-swapped database still restores rows',
 });
 
 test('empty import is 400', async () => {
-  const { app } = makeApp();
-  const cookie = await rootCookie(app);
+  const { db, app } = makeApp();
+  seedAlbum(db);
+  const cookie = ROOT_COOKIE;
   const empty = await app.request('http://localhost/admin/migrate', {
     method: 'POST',
     headers: { Cookie: cookie },
@@ -236,8 +204,9 @@ test('empty import is 400', async () => {
 });
 
 test('a script without any INSERT is 400', async () => {
-  const { app } = makeApp();
-  const cookie = await rootCookie(app);
+  const { db, app } = makeApp();
+  seedAlbum(db);
+  const cookie = ROOT_COOKIE;
   const res = await app.request('http://localhost/admin/migrate', {
     method: 'POST',
     headers: { Cookie: cookie },
@@ -248,8 +217,9 @@ test('a script without any INSERT is 400', async () => {
 });
 
 test('a declared body over the cap is refused before it is read', async () => {
-  const { app } = makeApp();
-  const cookie = await rootCookie(app);
+  const { db, app } = makeApp();
+  seedAlbum(db);
+  const cookie = ROOT_COOKIE;
   const res = await app.request('http://localhost/admin/migrate', {
     method: 'POST',
     headers: { Cookie: cookie, 'Content-Length': String(64 * 1024 * 1024) },
@@ -260,9 +230,10 @@ test('a declared body over the cap is refused before it is read', async () => {
 });
 
 test('non-root export and import are 403', async () => {
-  const { app } = makeApp();
-  cookieFrom(await syncNew(app));
-  const guest = cookieFrom(await syncNew(app));
+  const { db, app } = makeApp();
+  // A non-root identity: any user whose id is not 0.
+  await db.prepare("INSERT INTO users (id, uuid, created_at) VALUES (1, 'guest-test', 1)").run();
+  const guest = 'uuid=guest-test';
   for (const method of ['GET', 'POST'] as const) {
     const res = await app.request('http://localhost/admin/migrate', {
       method,

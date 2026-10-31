@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import type { Translator } from '../shared/types.ts';
 import type { Db } from './db.ts';
 import { notFoundPage, serverErrorPage } from './errors.ts';
-import { syncHandler } from './routes/sync.ts';
+
 import { mediaHandler } from './routes/media.ts';
 import { migrateExportHandler, migrateImportHandler } from './routes/migrate.ts';
 import { adminApp } from './routes/admin.ts';
@@ -31,7 +31,6 @@ const JSON_ROUTE = /^\/(?:sync|admin)(?:\/|$)/;
 export function createApp(env: AppEnv): Hono {
   const app = new Hono();
 
-  app.post('/sync', syncHandler(env));
   // A real robots policy: the SPA fallback would otherwise answer /robots.txt with the
   // HTML shell (a soft-200 that crawlers — e.g. the Google Lens URL fetcher — read as
   // noise instead of a policy).
