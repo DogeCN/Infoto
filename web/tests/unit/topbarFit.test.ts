@@ -16,7 +16,7 @@ import {
   type BarMode,
 } from '../../src/lib/components/topbarFit';
 
-const REQ = { full: 485, compact: 377, paged: 293 };
+const REQ = { full: 485, compact: 377, icon: 330, paged: 293 };
 const H = BAR_HYSTERESIS_PX;
 const S = BAR_MIN_SLACK_PX;
 
@@ -31,7 +31,11 @@ test('top bar fit: tightens with slack, loosens only after hysteresis, and does 
   assert.equal(resolveBarMode(REQ.full + S - 1, REQ, 'full'), 'compact');
   assert.equal(resolveBarMode(REQ.full, REQ, 'full'), 'compact');
   assert.equal(resolveBarMode(REQ.compact + S, REQ, 'compact'), 'compact');
-  assert.equal(resolveBarMode(REQ.compact + S - 1, REQ, 'compact'), 'paged');
+  // The pill's third fold (icons only, one screen, no arrow) lands on `icon`, not `paged`:
+  // compact stops fitting but the icon-only single screen still does.
+  assert.equal(resolveBarMode(REQ.compact + S - 1, REQ, 'compact'), 'icon');
+  // The arrow (paged) only appears once even the icon-only single screen will not fit.
+  assert.equal(resolveBarMode(REQ.icon + S - 1, REQ, 'icon'), 'paged');
   assert.equal(resolveBarMode(0, REQ, 'paged'), 'full');
   assert.equal(resolveBarMode(-1, REQ, 'paged'), 'full');
   assert.equal(resolveBarMode(NaN, REQ, 'paged'), 'full');
@@ -41,20 +45,25 @@ test('top bar fit: tightens with slack, loosens only after hysteresis, and does 
   assert.equal(resolveBarMode(REQ.compact + H, REQ, 'paged'), 'compact');
   assert.equal(resolveBarMode(REQ.full + H, REQ, 'paged'), 'full');
   assert.equal(resolveBarMode(REQ.full + S, REQ, 'compact'), 'compact');
-  assert.equal(resolveBarMode(REQ.compact + S, REQ, 'paged'), 'paged');
+  // From paged, climbing past a fitting `icon` stage stops there, not at compact/paged.
+  assert.equal(resolveBarMode(REQ.compact + S, REQ, 'paged'), 'icon');
 
+  // The icon-only single screen is reached as a distinct stage between compact and paged.
+  for (const start of ['full', 'compact'] as const) {
+    assert.equal(resolveBarMode(360, REQ, start), 'icon');
+  }
   assert.deepEqual(trace([700, 500, 400, 300]), ['full', 'full', 'compact', 'paged']);
   assert.equal(trace([300, 400, 500, 700], 'paged').at(-1), 'full');
   const down = trace(Array.from({ length: 600 }, (_, i) => 600 - i));
   assert.deepEqual(
     down.filter((m, i) => i > 0 && m !== down[i - 1]),
-    ['compact', 'paged'],
+    ['compact', 'icon', 'paged'],
   );
   for (const start of ['full', 'compact'] as const) {
     assert.equal(new Set(trace([483, 482, 481, 480, 479, 478], start)).size, 1);
   }
   for (let w = 200; w <= 700; w += 7) {
-    for (const start of ['full', 'compact', 'paged'] as const) {
+    for (const start of ['full', 'compact', 'icon', 'paged'] as const) {
       const once = resolveBarMode(w, REQ, start);
       assert.equal(resolveBarMode(w, REQ, once), once);
     }

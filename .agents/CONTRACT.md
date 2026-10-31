@@ -171,9 +171,12 @@ Back-filled from the commit history. Tagged sections are not yet written.
   not a headline. **A failed card must never be a bare surface** — whatever replaces the
   media has to say something.
 - **Segmented sort pill.** The pill never decides its own shape — it renders `labelMode`
-  as handed to it, and the **top bar** decides via `resolveBarMode`. Three modes: `full`
-  (one screen, every item labelled), `compact` (one screen, only the current item labelled),
-  `paged` (two screens, whose first screen is _always_ icon-only regardless of mode).
+  as handed to it, and the **top bar** decides via `resolveBarMode`. Four modes, widest
+  first: `full` (one screen, every item labelled), `compact` (one screen, only the current
+  item labelled), `icon` (one screen, icon-only — the pill's third fold, no arrow), and
+  `paged` (two screens, whose first screen is _always_ icon-only regardless of mode). The
+  arrow is the **last** fold, not the second: a single icon-only screen is preferred over
+  a two-screen paged layout.
   - One markup, three shapes, via `labelMode: 'all' | 'current' | 'none'`. A hidden label
     span is `absolute left-0 top-full invisible whitespace-nowrap` with `aria-hidden="true"`,
     and the button then carries `aria-label={label}` — every mode that can hide a label names
@@ -183,23 +186,24 @@ Back-filled from the commit history. Tagged sections are not yet written.
     Indicator: `absolute bottom-1 left-0 top-1 rounded-full bg-primary`, transitioned on
     `--duration-enter`/`--ease-enter`, positioned from `offsetLeft`/`offsetWidth` observed per
     button.
-  - Thresholds live in `topbarFit.ts` only: `BAR_PAD = 12`, `BAR_MIN_SLACK_PX = 12`,
-    `BAR_HYSTERESIS_PX = 24`. Climb while the candidate fits with 24px spare; drop while the
-    current mode has under 12px slack; otherwise keep. `available <= 0` or non-finite → `full`.
+  - Thresholds live in `topbarFit.ts` only: `BAR_PAD = 12`, `BAR_MIN_SLACK_PX = 6`,
+    `BAR_HYSTERESIS_PX = 14`. Climb while the candidate fits with 14px spare; drop while the
+    current mode has under 6px slack; otherwise keep. `available <= 0` or non-finite → `full`.
     Hysteresis must stay asymmetric (§ `MEMORY.md` Responsive Layout).
-  - Structural gap counts are written down and must track the markup: **3 / 3 / 2** for
-    single, paged-first, paged-second. The gap itself is _measured_
-    (`getComputedStyle(rowEl).columnGap`), never assumed.
+  - Structural gap counts are written down and must track the markup: **2 / 3 / 2** for
+    single, paged-first, paged-second. The single screen has two intervals because the
+    action groups are pushed right by an `ml-auto` margin, not by a spacer element. The gap
+    itself is _measured_ (`getComputedStyle(rowEl).columnGap`), never assumed.
   - Measurement contract: `pillMeasure` reports `shown` (the live tablist rect) plus all three
     shape widths — `labelled`, `current` (active item labelled), `icon` — so the bar resolves
-    the full three-level density from one pass, with `compact` requiring the `current` shape,
-    not the icon-only one. Each width comes from a `cloneNode(true)` re-shaped into normal
-    flow at `width: max-content`, appended to `document.body` — never inside the header,
-    where an absolute twin becomes the containing block for the paged track and drags both
-    screens off-screen. Every span is stripped and rebuilt from the button's `data-label`,
-    which is the only lossless copy of the label text. It is a data attribute, **not
-    `title`**: the tabs' tooltips are the custom component now, and a measurement must not
-    depend on a tooltip's attribute to work.
+    the full four-level density from one pass, with `compact` requiring the `current` shape
+    and `icon` the icon-only one. Each width comes from a `cloneNode(true)` re-shaped into
+    normal flow at `width: max-content`, appended to `document.body` — never inside the
+    header, where an absolute twin becomes the containing block for the paged track and
+    drags both screens off-screen. Every span is stripped and rebuilt from the button's
+    `data-label`, which is the only lossless copy of the label text. It is a data attribute,
+    **not `title`**: the tabs' tooltips are the custom component now, and a measurement must
+    not depend on a tooltip's attribute to work.
   - Re-measure triggers: mount, a `ResizeObserver` on the observed node (rAF-coalesced to one
     measurement per frame), and `update()`. `TopBar.remeasure()` bails unless _every_ measured
     width is non-zero, and also runs from the header observer, `window.resize` and a 250ms
@@ -1467,7 +1471,8 @@ Known gaps, in the order they should be closed:
 2. **No screenshot baseline exists anywhere.** Appearance is the one thing with zero
    regression net, and it is the only category this contract cannot express as an assertion.
 3. `pillMeasure.ts` has no unit coverage; `topbarFit.ts` has three cases including one for
-   flapping, which is why it is the one that did not regress. The waterfall reflow has exactly
+   flapping (and the four-density climb, `icon` included), which is why it is the one that
+   did not regress. The waterfall reflow has exactly
    one assertion — that the flip window brackets its own animation — and none at all for the
    layout itself, because that is DOM timing and belongs in the e2e suite.
 4. **Two people can edit this file at once.** A parallel session rewrote §3's error-page entry

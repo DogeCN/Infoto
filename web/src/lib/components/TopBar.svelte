@@ -110,9 +110,11 @@
   }
 
   /**
-   * Pill widths per label shape, measured by the shared clone probe. The three-level
-   * density resolves from these: `full` fits the all-labelled pill, `compact` fits the
-   * current-item-labelled pill, `paged` lays the icon-only pill across two screens.
+   * Pill widths per label shape, measured by the shared clone probe. The density resolves
+   * from these across four stages: `full` fits the all-labelled pill, `compact` fits the
+   * current-item-labelled pill, `icon` fits the icon-only pill on one screen (the pill's
+   * third fold, no arrow), and `paged` lays that same icon-only pill across two screens
+   * with an arrow — reached only once even the icon-only single screen will not fit.
    */
   let labelledPillW = $state(0);
   let currentPillW = $state(0);
@@ -174,8 +176,9 @@
 
     const padX = 2 * BAR_PAD;
     const gap = parseFloat(getComputedStyle(rowEl).columnGap) || 0;
-    // Spacing intervals: three on the single and first paged screens, two on the second.
-    const singleGaps = 3;
+    // Spacing intervals: two on the single screen (pill↔left, left↔right, the latter via
+    // ml-auto), three on the first paged screen, two on the second.
+    const singleGaps = 2;
     const pagedFirstGaps = 3;
     const pagedSecondGaps = 2;
     const single = (pill: number): number =>
@@ -188,8 +191,14 @@
     const next = resolveBarMode(
       width,
       // Compact density shows the current item's label only, so its requirement is the
-      // mixed-shape pill width, not the icon-only one.
-      { full: single(labelledPillW), compact: single(currentPillW), paged: pagedNeed },
+      // mixed-shape pill width, not the icon-only one. `icon` is the icon-only pill on a
+      // single screen; `paged` is that same pill split across two screens with an arrow.
+      {
+        full: single(labelledPillW),
+        compact: single(currentPillW),
+        icon: single(iconPillW),
+        paged: pagedNeed,
+      },
       mode,
     );
     if (next === mode) return;
@@ -485,8 +494,9 @@
   {:else if variant === 'admin'}
     <div use:row class="flex h-full items-center gap-1" style={rowStyle}>
       {@render adminNavGroup()}
-      <div class="flex-1"></div>
-      {@render adminActionGroup()}
+      <div class="ml-auto flex shrink-0 items-center gap-1">
+        {@render adminActionGroup()}
+      </div>
     </div>
   {:else}
     <div use:row class="flex h-full items-center gap-1" style={rowStyle}>
@@ -499,8 +509,7 @@
         onWidths={onPillWidths}
       />
       {@render leftGroup()}
-      <div class="flex-1"></div>
-      <div class="flex shrink-0 items-center gap-1">
+      <div class="ml-auto flex shrink-0 items-center gap-1">
         {@render homeRightGroup()}
       </div>
     </div>
