@@ -36,11 +36,17 @@
     101), so the client mirrors `welcome.uuid` into a JS-set cookie — the next handshake
     re-issues it as HttpOnly, self-healing after one reconnect. The admin routes' root gate
     keeps reading the same cookie.
-- **Amendment (same day): the admin mutation routes stay HTTP.** The prototype had deleted
-  `/admin/announcements|polls|feedback` together with `/sync`, which broke the admin CRUD the
-  client still drives over those routes. AGENTS.md §8.12 already carves them out — admin
-  mutations are immediate user-initiated writes, not sync — so they are restored verbatim and
-  listed in `run_worker_first` again. The WebSocket carries the visitor op path only.
+- **Amendment (same day): the admin mutation routes move into the WebSocket after all.**
+  The first revision restored the HTTP admin routes because the client still drove them;
+  the consolidated spec overrules that — admin CRUD queues as ops (`ann_create`,
+  `ann_update`, `ann_delete`, `ann_reorder`, `poll_create`, `poll_update`,
+  `poll_delete`, `poll_reorder`, `fb_delete`, `fb_reorder`), root-gated in the
+  Durable Object's applier. `run_worker_first` slims back to `/ws`, `/l/*`,
+  `/robots.txt`, `/admin/migrate`, `/admin/translate`. `/admin/translate` stays HTTP
+  (stateless), `/admin/migrate` stays HTTP (50 MB bodies); migrate export flushes the DO
+  into D1 first and import rehydrates the DO afterwards. This supersedes the §8.12
+  carve-out for the admin mutations: they are still immediate user-initiated writes, just
+  carried by the socket.
 - **Consequences**: The page knows "connected vs offline" as first-class state, and the
   queue's cost model is one frame per flush instead of one request per batch. The uuid
   cookie is client-settable for fresh identities, which weakens HttpOnly until the next

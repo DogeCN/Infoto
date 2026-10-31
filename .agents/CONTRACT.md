@@ -969,14 +969,19 @@ before deadline` / `no response before deadline`).
   server applies ops to D1 and answers with the same `SyncResponse` the HTTP route returned, so
   every store below this line is transport-blind.
   - **The sync button hides while the socket is open and authenticated, and shows whenever it
-    is not** — offline, dropped, or still negotiating. A broken connection is retried only by
-    that button, never in the background (ADR 0008's triggers stand: page open, page exit,
-    explicit request).
-  - **Every op the client commits carries its own `ts`.** Offline, the queue grows in
-    IndexedDB with those real timestamps; browsing and operating work unchanged. On reconnect
-    the whole backlog leaves in **one** `sync` frame (chunked only past `MAX_SYNC_OPS`), and
-    the server clamps each op's `ts` to its own clock, falling back to arrival time when the
-    field is absent (ops queued before the field existed).
+    is not** — offline, dropped, kicked by a newer connection of the same user, or still
+    negotiating. A broken connection is retried only by that button, never in the background
+    (ADR 0008's triggers stand: page open, page exit, explicit request).
+  - **Timestamps are server-authoritative.** The Durable Object stamps every op's `ts` at
+    ingest; the client's commit time rides `ct` and display times take `min(ct, ts)` — an
+    offline-written moment survives, a skewed clock cannot move state into the future.
+  - **One WebSocket per browser, not per tab** (ADR 0026 §8): `sync/coordinator.ts` runs in a
+    SharedWorker and owns hello/lastSeq catch-up, the backlog flush, and ack bookkeeping
+    (confirmed ops leave the shared oplog by client nonce; a superseded op changes nonce, so
+    a stale echo can never delete its replacement). Tabs queue into the shared IndexedDB
+    oplog and apply broadcast ops live — foreign marks/votes/uploads appear in every open
+    tab without a snapshot round trip. The server kicks a user's older connection (4001);
+    the kicked tab drops to the offline state.
   - **A connected commit flushes within one animation frame**, and a burst of commits — even
     ones an `await` splits across tasks — coalesces into one frame; each frame costs a full
     snapshot on the way back, which is why the debounce exists. The page-exit trigger starts
