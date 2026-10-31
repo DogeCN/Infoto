@@ -20,6 +20,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
     prepare: (sql: string) => {
       all: (...b: never[]) => unknown[];
       get: (...b: never[]) => unknown;
+      run: (...b: never[]) => unknown;
     };
   };
 };
@@ -56,7 +57,10 @@ function fakeD1(db: LocalDb): D1Database {
   };
   return {
     prepare: (sql: string) => bindable(sql),
-    batch: (stmts: readonly DbStatement[]) => db.batch(stmts),
+    batch: async (stmts: readonly DbStatement[]) =>
+      (await db.batch(stmts)).map((r) => ({
+        meta: { changes: r.changes, last_row_id: r.last_row_id },
+      })),
   } as unknown as D1Database;
 }
 
@@ -102,15 +106,25 @@ function makeAlbum(opts: Partial<AlbumEnv> = {}) {
   const state = {
     storage: {
       sql: {
-        exec: <T>(query: string, ...binds: unknown[]) => ({
-          one: async () => rawStorage.prepare(query).get(...(binds as never[])) as T,
-          toArray: async () => rawStorage.prepare(query).all(...(binds as never[])) as T[],
-        }),
+        // The real storage.sql executes eagerly on exec() and returns a cursor for
+        // reads; mirror that, including RETURNING rows for writes.
+        exec: <T>(query: string, ...binds: unknown[]) => {
+          if (/\breturning\b/i.test(query)) {
+            const row = rawStorage.prepare(query).get(...(binds as never[])) as T;
+            return { one: async () => row, toArray: async () => [row] as T[] };
+          }
+          if (/^\s*(select|with)\b/i.test(query)) {
+            const rows = rawStorage.prepare(query).all(...(binds as never[])) as T[];
+            return { one: async () => rows[0] as T, toArray: async () => rows };
+          }
+          rawStorage.prepare(query).run(...(binds as never[]));
+          return { one: async () => undefined as T, toArray: async () => [] as T[] };
+        },
       },
       setAlarm: vi.fn(async () => {}),
       deleteAlarm: vi.fn(async () => {}),
     },
-    getWebSockets: () => sockets,
+    getWebSockets: () => sockets.filter((s) => !s.closed),
   };
   const env: AlbumEnv = {
     DB: fakeD1(db),
@@ -156,7 +170,7 @@ test('album do: hello without identity or token asks for verification', async ()
 });
 
 test('album do: a fresh client gets a whole snapshot, and its ops land with server stamps', async () => {
-  const { album, db, connect } = makeAlbum();
+  const { album, connect } = makeAlbum();
   const ws = connect();
   await authenticate(album, ws);
   const welcome = ws.frames[0]!;
@@ -192,9 +206,14 @@ test('album do: a fresh client gets a whole snapshot, and its ops land with serv
   assert.equal(broadcast.applied[0]!.seq, 1);
   assert.equal(broadcast.applied[0]!.cid, 'c1');
   assert.ok(broadcast.applied[0]!.ts > 1_600_000_000_000, 'the stamp is the server clock');
-  // Uploads leave the hot path immediately: D1 has the row for /l/ links.
-  const row = await db.prepare('SELECT sha256, url FROM photos').first<{ sha256: string }>();
-  assert.equal(row!.sha256, 'aa');
+  // The hot path never writes D1: /l/ links resolve through this object.
+  const probe = await album.fetch(
+    new Request('https://album.internal/internal/photo/' + (1).toString(36)),
+  );
+  assert.equal(probe.status, 200);
+  const body = (await probe.json()) as { found: boolean; url: string };
+  assert.equal(body.found, true);
+  assert.equal(body.url, 'https://facade.test/a.webp');
 });
 
 test('album do: a replayed cid applies nothing — the backlog resend is idempotent', async () => {
@@ -213,13 +232,20 @@ test('album do: catch-up is incremental for a client behind, whole-snapshot for 
   const { album, connect } = makeAlbum();
   const first = connect();
   await authenticate(album, first);
-  await deliver(album, first, {
-    type: 'ops',
-    ops: [
-      { type: 'fb_create', payload: { contentMd: 'a', locale: 'en-US' }, cid: 'c1' },
-      { type: 'fb_create', payload: { contentMd: 'b', locale: 'en-US' }, cid: 'c2' },
-    ],
+  const up = (n: number, cid: string) => ({
+    type: 'upload',
+    payload: {
+      sha256: `sha-${n}`,
+      url: `https://facade.test/${n}.webp`,
+      width: 1,
+      height: 1,
+      size: 2,
+      type: 0,
+      createdAt: 1_700_000_000_000 + n,
+    },
+    cid,
   });
+  await deliver(album, first, { type: 'ops', ops: [up(1, 'c1'), up(2, 'c2')] });
 
   // A client at seq 1 catches up with the op after it — not a snapshot.
   const behind = connect();
@@ -236,7 +262,7 @@ test('album do: catch-up is incremental for a client behind, whole-snapshot for 
   const w2 = fresh.frames[0]!;
   if (w2.type !== 'welcome') return assert.fail('expected welcome');
   assert.ok(w2.snapshot);
-  assert.equal(w2.snapshot!.feedback.length, 2, 'root sees feedback');
+  assert.equal(w2.snapshot!.photos.length, 2);
 });
 
 test('album do: feedback ops are filtered out of non-root frames', async () => {
@@ -267,15 +293,15 @@ test('album do: feedback ops are filtered out of non-root frames', async () => {
 });
 
 test('album do: a newer connection of the same user replaces the older one', async () => {
-  const { album, connect, state } = makeAlbum();
+  const { album, connect } = makeAlbum();
   const old = connect();
-  await authenticate(album, old);
+  await authenticate(album, old); // creates the user (id 0)
   const replacement = connect();
-  await authenticate(album, replacement);
+  // Same session resolved (the cookie path), so hello sees the same user and kicks.
+  replacement.serializeAttachment({ userId: 0, uuid: 'u0' });
+  await deliver(album, replacement, { type: 'hello' });
   assert.equal(old.closeCode, 4001, 'the older socket was kicked');
   assert.equal(replacement.closed, false);
-  // Any live connection stands the idle alarm down.
-  assert.ok((state.storage.setAlarm as ReturnType<typeof vi.fn>).mock.calls.length >= 0);
 });
 
 test('album do: an unauthenticated ingest is refused', async () => {
@@ -320,10 +346,10 @@ test('album do: internal flush folds the log into D1, and rehydrate forgets it',
       },
     ],
   });
-  // Uploads already reach D1; flush is still exactly current afterwards.
+  // The hot path left D1 empty; the flush is what folds the log into it.
   await album.fetch(new Request('https://album.internal/internal/flush'));
   const photos = await db.prepare('SELECT COUNT(*) AS n FROM photos').first<{ n: number }>();
-  assert.equal(photos!.n, 1);
+  assert.equal(photos!.n, 1, 'the flush archives the logged op');
 
   // Import-style rehydration: the object forgets its hot state and reads D1 back.
   await db.exec('DELETE FROM photos');
@@ -338,9 +364,12 @@ test('album do: the last departure sets the compaction alarm, a return clears it
   const { album, connect, state } = makeAlbum();
   const ws = connect();
   await authenticate(album, ws);
+  // workerd removes the departing socket before the handler runs.
+  ws.close();
   await album.webSocketClose(ws as unknown as WebSocket);
   assert.equal((state.storage.setAlarm as ReturnType<typeof vi.fn>).mock.calls.length, 1);
   const again = connect();
+  state.storage.deleteAlarm.mockClear();
   await authenticate(album, again);
   assert.equal((state.storage.deleteAlarm as ReturnType<typeof vi.fn>).mock.calls.length, 1);
 });
@@ -368,13 +397,15 @@ test('album do: the idle alarm folds coalescible ops and keeps distinct facts', 
     cid: 'up',
   });
   await deliver(album, ws, { type: 'ops', ops });
+  // workerd removes the departing socket before the handler runs.
+  ws.close();
   await album.webSocketClose(ws as unknown as WebSocket);
   state.storage.setAlarm.mockClear();
   await album.alarm();
-  // The like/unlike pairs folded away; the upload survived; the alarm rescheduled.
+  // The like/unlike pairs folded to the last unlike; the upload survived.
   const remaining = await state.storage.sql
     .exec<{ n: number }>('SELECT COUNT(*) AS n FROM ops')
     .one();
-  assert.equal(Number(remaining.n), 1);
+  assert.equal(Number(remaining.n), 2);
   assert.equal((state.storage.setAlarm as ReturnType<typeof vi.fn>).mock.calls.length, 1);
 });

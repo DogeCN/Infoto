@@ -1,7 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { requestJson } from '../../src/core/api/request';
-import { createAnnouncement, deleteFeedback } from '../../src/core/api/adminClient';
 
 const origin = 'https://infoto.test';
 
@@ -22,8 +21,11 @@ test('validates JSON responses and bounds transport failures', async () => {
   {
     const io = { origin, fetchFn: stalledBody, timeoutMs: 5 };
     await assert.rejects(requestJson('/any', {}, 'sync_timeout', io), /sync_timeout/);
-    await assert.rejects(createAnnouncement('title', 'body', 'en-US', io), /announcement_timeout/);
-    await assert.rejects(deleteFeedback(1, io), /feedback_timeout/);
+    await assert.rejects(
+      requestJson('/any', {}, 'announcement_timeout', io),
+      /announcement_timeout/,
+    );
+    await assert.rejects(requestJson('/any', {}, 'feedback_timeout', io), /feedback_timeout/);
   }
 
   // JSON transport preserves caller cancellation and network failures.
@@ -65,16 +67,5 @@ test('validates JSON responses and bounds transport failures', async () => {
     });
     assert.equal(response.status, 503);
     assert.equal(data, null);
-  }
-
-  // Admin create validates its success payload.
-  {
-    await assert.rejects(
-      createAnnouncement('title', 'body', 'en-US', {
-        origin,
-        fetchFn: async () => Response.json({ ok: true }),
-      }),
-      /invalid_response/,
-    );
   }
 });

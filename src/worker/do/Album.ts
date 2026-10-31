@@ -140,9 +140,10 @@ export class Album {
   }
 
   private toApplied(row: StoredOp): AppliedOp {
+    // The stored JSON is the whole op (the payload column holds it, stamp included).
     return {
       seq: row.seq,
-      op: { type: row.type, ...(row.payload ? (JSON.parse(row.payload) as object) : {}) } as Op,
+      op: (row.payload ? JSON.parse(row.payload) : { type: row.type }) as Op,
       actor: row.actor,
       ts: row.ts,
       ...(row.cid ? { cid: row.cid } : {}),
@@ -399,12 +400,14 @@ export class Album {
       } catch (e) {
         console.error('[album] op dropped', op?.type, e);
       }
+      // The WHOLE op is persisted (type, target/targetSha, payload, cid, ct): marks and
+      // reactions carry their target at the op level, and the replay must see it.
       const result = await this.state.storage.sql
         .exec<{ seq: number }>(
           'INSERT INTO ops (cid, type, payload, actor, ts, ct) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq',
           cid,
           String(op?.type ?? ''),
-          op?.payload === undefined || op?.payload === null ? null : JSON.stringify(op.payload),
+          JSON.stringify(op),
           info.userId,
           ts,
           typeof op?.ct === 'number' ? op.ct : null,
@@ -422,12 +425,9 @@ export class Album {
     }
     if (applied.length === 0) return;
 
-    // Uploads leave the hot path immediately: /l/:id36 links must resolve before any
-    // compaction would touch D1.
-    const uploads = applied.filter((a) => a.op.type === 'upload');
-    if (uploads.length > 0) await flushToD1(d1Db(this.env.DB), snap, uploads);
-
     // One frame for the whole batch, to every connection. Feedback ops stay root-only.
+    // The hot path never writes D1 — /l/:id36 resolves through this object (the media
+    // proxy queries it before D1), and compaction archives everything in due time.
     const broadcast = JSON.stringify({
       type: 'ops',
       applied,

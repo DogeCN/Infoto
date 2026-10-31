@@ -1,35 +1,46 @@
-// The sync engine over the /ws transport (ADR 0026): connection state, the offline
-// queue's one-frame flush, client timestamps, the Turnstile hello, and the page-exit
-// hand-off. The oplog semantics underneath are exercised by their own suites; these
-// cases drive the engine through a scripted socket.
+// The per-tab sync engine over the coordinator transport (ADR 0026): op stamping
+// (cid + ct), the own-echo skip, foreign-op application, the dropped-op rollback, the
+// Turnstile pass-through, and the sync button's connect-or-flush behavior. The
+// coordinator's protocol core has its own suite; the oplog semantics underneath are
+// exercised by their own suites.
 
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { MAX_SYNC_OPS, type Op, type SyncResponse } from '$shared/types';
+import type { AlbumSnapshot, AppliedOp, Op, SyncResponse } from '$shared/types';
 import { clearOps, openOplogDb, readOps } from '../../src/core/oplog';
 import { SyncEngine } from '../../src/core/engine';
-import { autoServer, deadSocketFactory, FakeWebSocket, type WsStub } from './wsMock';
+import { applied, FakeTransport } from './transportFake';
 
-const op = (target: number): Op => ({ type: 'react', target, payload: { emoji: '👍' } });
+const op = (target: number): Op => ({ type: 'react', target, payload: { emoji: 'U+1F44D' } });
 
-const snapshot = (announcements: SyncResponse['announcements'] = []): SyncResponse => ({
-  ok: true,
+const welcomeFrame = (selfId = 0, withSnapshot = true) => ({
+  type: 'welcome' as const,
+  selfId,
+  uuid: 'uuid-test',
   serverTime: 1_000,
-  selfId: 0,
   mediaHostUrl: 'https://facade.test',
-  photos: [],
-  announcements,
-  polls: [],
-  feedback: [],
+  seq: 0,
+  ...(withSnapshot
+    ? {
+        snapshot: {
+          photos: [],
+          announcements: [],
+          polls: [],
+          feedback: [],
+        } satisfies AlbumSnapshot,
+      }
+    : {}),
 });
 
 let db: IDBDatabase;
+let transport: FakeTransport;
 
 beforeEach(async () => {
   db = await openOplogDb();
   await clearOps(db);
+  transport = new FakeTransport();
 });
 
 afterEach(async () => {
@@ -40,293 +51,154 @@ afterEach(async () => {
   }
 });
 
-/** Drain the timers and microtasks a connect → welcome → flush round needs. */
-const settle = async (): Promise<void> => {
-  for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-};
+const engine = () => new SyncEngine({ db, transport });
 
-const loggedCount = async (): Promise<number> => (await readOps(db)).length;
+const logged = async () => (await readOps(db)).map((entry) => entry.op);
 
-const syncFrames = (server: WsStub): Array<Record<string, unknown> & { type: string }> =>
-  server.frames.filter((f) => f.type === 'sync');
-
-test('SyncEngine: a commit while offline only queues, and stays put', async () => {
-  const engine = new SyncEngine({
-    db,
-    wsFactory: deadSocketFactory(),
-    wsUrl: 'ws://album.test/ws',
-  });
-  await engine.addOp(op(1));
-  await engine.addOp(op(2));
-  await settle();
-  assert.equal(engine.state.connected, false);
-  assert.equal(await loggedCount(), 2);
-  assert.deepEqual(engine.state, { syncing: false, pending: 2, connected: false });
+test('SyncEngine: an op is queued with a client nonce and commit time', async () => {
+  const e = engine();
+  await e.addOp(op(1));
+  const ops = await logged();
+  assert.equal(ops.length, 1);
+  assert.equal(typeof ops[0]!.cid, 'string', 'the ack correlation nonce is stamped');
+  assert.equal(typeof ops[0]!.ct, 'number', 'the client commit time is stamped');
 });
 
-test('SyncEngine: welcome marks connected, and the backlog leaves in one frame', async () => {
-  const server = autoServer(snapshot());
-  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
-  const states: Array<Record<string, unknown>> = [];
-  engine.onState((s) => states.push({ ...s }));
+test('SyncEngine: a superseded op keeps its old nonce so its echo never applies', async () => {
+  const e = engine();
+  await e.addOp(op(1));
+  const first = (await logged())[0]!;
+  const firstCid = first.cid!;
+  await e.addOp(op(1));
+  const ops = await logged();
+  assert.equal(ops.length, 1, 'replaced in place');
+  assert.notEqual(ops[0]!.cid, firstCid, 'the replacement carries a fresh nonce');
+  // The old nonce's echo must be skipped as own, never applied as foreign.
+  let foreignSeen = 0;
+  let ownSeen = 0;
+  e.rebind({
+    onServerOps: () => foreignSeen++,
+    onOwnEcho: () => ownSeen++,
+  });
+  transport.serverSend({
+    type: 'ops',
+    applied: [applied(1, { ...first, payload: { emoji: 'old' } }, 0)],
+  });
+  assert.equal(ownSeen, 1, 'the stale echo routes to the own path');
+  assert.equal(foreignSeen, 0, 'and never overwrites the optimistic state');
+});
+
+test('SyncEngine: welcome hands the snapshot to the store', async () => {
+  const e = engine();
   const onSyncResponse = vi.fn();
-  engine.rebind({ onSyncResponse });
+  e.rebind({ onSyncResponse });
+  await e.init();
+  transport.serverSend(welcomeFrame(3));
+  await vi.waitFor(() => assert.equal(onSyncResponse.mock.calls.length, 1));
+  const response = onSyncResponse.mock.calls[0]![0] as SyncResponse;
+  assert.equal(response.selfId, 3);
+  assert.equal(response.mediaHostUrl, 'https://facade.test');
+});
 
-  // Two commits while offline: queued, stamped, never flushed (nothing is connected).
-  await engine.addOp(op(1));
-  await engine.addOp(op(2));
-  assert.equal(await loggedCount(), 2);
-  await settle();
-  assert.equal(syncFrames(server).length, 0, 'the offline queue stays put');
+test('SyncEngine: a foreign broadcast applies, and an own echo routes to onOwnEcho', async () => {
+  const e = engine();
+  const onServerOps = vi.fn();
+  const onOwnEcho = vi.fn();
+  e.rebind({ onServerOps, onOwnEcho });
+  await e.addOp(op(1));
+  const mine = (await logged())[0]!;
 
-  // Page open: init connects, the welcome flips the state, and the whole backlog —
-  // both ops, one frame.
-  await engine.init();
-  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
-  const frames = syncFrames(server);
-  assert.equal(frames.length, 1, 'the accumulated log leaves in one frame, never one per op');
-  const ops = frames[0]!.ops as Op[];
+  // Someone else's op: applied live.
+  transport.serverSend({ type: 'ops', applied: [applied(9, op(2), 42)] });
+  assert.equal(onServerOps.mock.calls.length, 1);
   assert.deepEqual(
-    ops.map((o) => o.target),
-    [1, 2],
+    onServerOps.mock.calls[0]![0]!.map((a: AppliedOp) => a.op.target),
+    [2],
   );
-  for (const o of ops) {
-    assert.equal(typeof o.ts, 'number', 'the client stamps the real commit time');
-    assert.ok(Math.abs((o.ts as number) - Date.now()) < 60_000);
-  }
-  assert.equal(await loggedCount(), 0, 'confirmed ops are cleared');
-  assert.equal(onSyncResponse.mock.calls.length, 1, 'the snapshot reached the store');
-  assert.deepEqual(states.at(-1), { syncing: false, pending: 0, connected: true });
+
+  // My own echo (the coordinator confirmed my queue entry): not re-applied.
+  transport.serverSend({ type: 'ops', applied: [applied(10, mine, 7)] });
+  assert.equal(onServerOps.mock.calls.length, 1, 'the own echo never applies');
+  assert.equal(onOwnEcho.mock.calls.length, 1);
+  assert.equal(onOwnEcho.mock.calls[0]![0]!.cid, mine.cid);
 });
 
-test('SyncEngine: a connected commit flushes promptly, and a burst coalesces into one frame', async () => {
-  const server = autoServer(snapshot());
-  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
-  await engine.init();
-  await vi.waitFor(() => assert.ok(engine.state.connected));
-  server.frames.length = 0;
-
-  await engine.addOp(op(1));
-  await engine.addOp(op(2));
-  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
-  const frames = syncFrames(server);
-  assert.equal(frames.length, 1, 'the burst rides one frame');
-  assert.equal((frames[0]!.ops as Op[]).length, 2);
-});
-
-test('SyncEngine: a failed connection reports offline and keeps the queue', async () => {
-  const engine = new SyncEngine({
-    db,
-    wsFactory: deadSocketFactory(),
-    wsUrl: 'ws://album.test/ws',
-  });
-  const errors: Array<{ phase: string; message: string }> = [];
-  engine.rebind({
-    onError: (phase, error) => errors.push({ phase, message: (error as Error).message }),
-  });
-  await engine.addOp(op(1));
-  await settle();
-  assert.equal(engine.state.connected, false);
-  const attempt = await engine.sync();
-  assert.equal(attempt.ok, false, 'the button click fails honestly');
-  assert.ok(
-    errors.some((e) => e.phase === 'connect'),
-    'the transport failure is reported',
+test('SyncEngine: a dropped op rolls back through onOpDropped', async () => {
+  const e = engine();
+  const onOpDropped = vi.fn();
+  e.rebind({ onOpDropped });
+  await e.addOp(op(1));
+  const mine = (await logged())[0]!;
+  transport.serverDrop(mine.cid!);
+  assert.deepEqual(
+    onOpDropped.mock.calls.map((c) => c[0]),
+    [mine.cid],
   );
-  assert.equal(await loggedCount(), 1, 'the op stays queued');
-  assert.equal(engine.state.pending, 1);
 });
 
-test('SyncEngine: the button flow reconnects a dropped engine and flushes', async () => {
-  // A factory whose sockets fail until the test flips the switch — the user fixes the
-  // network, then clicks sync.
-  let alive = false;
-  const server = autoServer(snapshot());
-  const factory = (url: string) => (alive ? server.factory(url) : deadSocketFactory()(url));
-  const engine = new SyncEngine({ db, wsFactory: factory, wsUrl: 'ws://album.test/ws' });
-  await engine.addOp(op(7));
-  const first = await engine.sync();
-  assert.equal(first.ok, false);
-  assert.equal(await loggedCount(), 1, 'still queued while offline');
-
-  alive = true;
-  const second = await engine.sync();
-  assert.equal(second.ok, true);
-  assert.equal(await loggedCount(), 0, 'the backlog lands on reconnect');
-  assert.equal(engine.state.connected, true);
-});
-
-test('SyncEngine: a dropped socket unmarks reserved ops and flips to offline', async () => {
-  const server = autoServer(snapshot());
-  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
-  await engine.init();
-  await vi.waitFor(() => assert.ok(engine.state.connected));
-
-  // The welcome already carried the empty-queue snapshot request; forget it.
-  server.frames.length = 0;
-  // The network dies right after the welcome: reserved-but-unconfirmed ops must unmark,
-  // or every later flush would skip them.
-  server.sockets[0]!.close();
-  await settle();
-  assert.equal(engine.state.connected, false);
-  await engine.addOp(op(3));
-  await settle();
-  assert.equal(syncFrames(server).length, 0, 'a dead socket carries nothing');
-  assert.equal(await loggedCount(), 1);
-});
-
-test('SyncEngine: hello without a token asks for verification, and the token rides the next hello', async () => {
-  const frames: Array<Record<string, unknown> & { type: string }> = [];
-  const factory = (url: string) => {
-    const ws = new FakeWebSocket(url);
-    ws.onSend = (frame) => {
-      frames.push(frame);
-      if (frame.type === 'hello') {
-        if (frame.turnstileToken === 'tok') {
-          ws.serverSend({
-            type: 'welcome',
-            selfId: 3,
-            uuid: 'uuid-3',
-            serverTime: 1,
-            mediaHostUrl: 'https://facade.test',
-          });
-        } else {
-          ws.serverSend({
-            type: 'error',
-            error: 'turnstile_required',
-            turnstileSiteKey: 'site-key-1',
-          });
-        }
-      }
-      if (frame.type === 'sync') ws.serverSend({ type: 'synced', response: snapshot() });
-    };
-    setTimeout(() => ws.serverOpen(), 0);
-    return ws;
-  };
-  const engine = new SyncEngine({ db, wsFactory: factory, wsUrl: 'ws://album.test/ws' });
+test('SyncEngine: the turnstile error rides to the widget, and verify passes the token on', async () => {
+  const e = engine();
   const onTurnstileRequired = vi.fn();
-  engine.rebind({ onTurnstileRequired });
-
-  await engine.init();
-  await vi.waitFor(() => assert.equal(onTurnstileRequired.mock.calls.length, 1));
-  assert.deepEqual(onTurnstileRequired.mock.calls[0], ['site-key-1']);
-  assert.equal(engine.state.connected, false, 'an unauthenticated session is not connected');
-
-  engine.verify('tok');
-  await vi.waitFor(() => assert.ok(engine.state.connected));
-  const hellos = frames.filter((f) => f.type === 'hello');
-  assert.equal(hellos[0]!.turnstileToken, undefined, 'the first hello carries no token');
-  assert.equal(hellos[1]!.turnstileToken, 'tok', 'the verified hello carries the token');
-  await vi.waitFor(() =>
-    assert.equal(
-      frames.filter((f) => f.type === 'sync').length,
-      1,
-      'the flush follows the welcome',
-    ),
+  e.rebind({ onTurnstileRequired });
+  transport.serverSend({ type: 'error', error: 'turnstile_required', turnstileSiteKey: 'k1' });
+  assert.deepEqual(
+    onTurnstileRequired.mock.calls.map((c) => c[0]),
+    ['k1'],
   );
+  e.verify('tok');
+  assert.deepEqual(transport.tokens, ['tok']);
 });
 
-test('SyncEngine: a refused token re-asks, and the last known site key rides along', async () => {
-  const factory = (url: string) => {
-    const ws = new FakeWebSocket(url);
-    ws.onSend = (frame) => {
-      if (frame.type === 'hello') {
-        if (frame.turnstileToken === 'good') {
-          ws.serverSend({ type: 'welcome', selfId: 1, uuid: 'u', serverTime: 1, mediaHostUrl: '' });
-        } else if (frame.turnstileToken === undefined) {
-          // The first refusal carries the public key the widget renders with.
-          ws.serverSend({
-            type: 'error',
-            error: 'turnstile_required',
-            turnstileSiteKey: 'site-key-1',
-          });
-        } else {
-          // A failed check carries no key; the engine must still be able to re-render
-          // the widget from the key the first refusal supplied.
-          ws.serverSend({ type: 'error', error: 'turnstile_failed' });
-        }
-      }
-    };
-    setTimeout(() => ws.serverOpen(), 0);
-    return ws;
-  };
-  const engine = new SyncEngine({ db, wsFactory: factory, wsUrl: 'ws://album.test/ws' });
-  const onTurnstileRequired = vi.fn();
-  engine.rebind({ onTurnstileRequired });
-
-  await engine.init();
-  await vi.waitFor(() => assert.deepEqual(onTurnstileRequired.mock.calls[0], ['site-key-1']));
-  engine.verify('bad');
-  await vi.waitFor(() => assert.equal(onTurnstileRequired.mock.calls.length, 2));
-  assert.deepEqual(onTurnstileRequired.mock.calls[1], ['site-key-1'], 'the cached key is reused');
-  engine.verify('good');
-  await vi.waitFor(() => assert.ok(engine.state.connected));
+test('SyncEngine: the sync button connects when offline and flushes when online', async () => {
+  const e = engine();
+  transport.setState(false);
+  const attempt = e.sync();
+  assert.equal(transport.connectCalls, 1, 'the click opens the shared connection');
+  // The welcome arrives: connected flips, the promise resolves ok.
+  transport.serverSend(welcomeFrame());
+  transport.setState(true);
+  assert.deepEqual(await attempt, { ok: true });
+  assert.equal(transport.flushCalls, 1, 'and the coordinator flushes');
 });
 
-test('SyncEngine: a backlog larger than MAX_SYNC_OPS chunks into several frames', async () => {
-  const server = autoServer(snapshot());
-  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
-  for (let i = 0; i < MAX_SYNC_OPS + 1; i++) await engine.addOp(op(i));
-  await engine.init();
-  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
-  const frames = syncFrames(server);
-  assert.equal(frames.length, 2, 'one frame per MAX_SYNC_OPS chunk, never one per op');
-  assert.equal((frames[0]!.ops as Op[]).length, MAX_SYNC_OPS);
-  assert.equal((frames[1]!.ops as Op[]).length, 1);
+test('SyncEngine: the sync button resolves ok immediately while connected', async () => {
+  const e = engine();
+  transport.setState(true);
+  assert.deepEqual(await e.sync(), { ok: true });
+  assert.equal(transport.flushCalls, 1);
+  assert.equal(transport.connectCalls, 0, 'no reconnect is attempted');
 });
 
-test('SyncEngine: pagehide hands the queue to an open socket, and stays silent offline', async () => {
-  class StubWindow {
-    private listeners = new Map<string, Array<() => void>>();
-    addEventListener(type: string, listener: () => void): void {
-      this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-    }
-    dispatch(type: string): void {
+test('SyncEngine: pagehide flushes through the transport, once per install', async () => {
+  const e = engine();
+  const win = {
+    listeners: new Map<string, Array<() => void>>(),
+    addEventListener(type: string, l: () => void) {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), l]);
+    },
+    dispatch(type: string) {
       for (const l of this.listeners.get(type) ?? []) l();
-    }
-  }
-  const win = new StubWindow();
-
-  // Offline: nothing is sent, the ops wait for the next session.
-  const offline = new SyncEngine({
-    db,
-    wsFactory: deadSocketFactory(),
-    wsUrl: 'ws://album.test/ws',
-  });
-  offline.install(win as unknown as Window);
-  await offline.addOp(op(1));
+    },
+  };
+  e.install(win as unknown as Window);
+  e.install(win as unknown as Window);
   win.dispatch('pagehide');
-  await settle();
-  assert.equal(await loggedCount(), 1, 'an offline pagehide keeps the queue');
-
-  // Connected: the page-exit trigger starts the same exchange a commit would.
-  const server = autoServer(snapshot());
-  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
-  engine.install(win as unknown as Window);
-  await engine.init();
-  await vi.waitFor(() => assert.ok(engine.state.connected));
-  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
-  server.frames.length = 0;
-  await engine.addOp(op(9));
-  win.dispatch('pagehide');
-  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
-  const dumps = syncFrames(server);
-  assert.equal(dumps.length, 1, 'one exchange, never a pagehide dump beside the flush');
-  assert.deepEqual(
-    (dumps[0]!.ops as Op[]).map((o) => o.target),
-    [9],
-  );
+  assert.equal(transport.flushCalls, 1, 'double install does not double the flush');
 });
 
-test('SyncEngine: an op superseded in place stays one entry and rides one flush', async () => {
-  const server = autoServer(snapshot());
-  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
-  await engine.addOp(op(1));
-  await engine.addOp(op(1));
-  assert.equal(await loggedCount(), 1, 'the second reaction replaced the first');
-  await engine.init();
-  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
-  const frames = syncFrames(server);
-  assert.equal(frames.length, 1);
-  assert.equal((frames[0]!.ops as Op[]).length, 1);
+test('SyncEngine: the cached snapshot paints before the first exchange', async () => {
+  // Seed the cache through a first welcome.
+  const first = engine();
+  const onSyncResponse = vi.fn();
+  first.rebind({ onSyncResponse });
+  await first.init();
+  transport.serverSend(welcomeFrame());
+  await vi.waitFor(() => assert.equal(onSyncResponse.mock.calls.length, 1));
+  const response = onSyncResponse.mock.calls[0]![0] as SyncResponse;
+
+  const onCached = vi.fn();
+  const second = new SyncEngine({ db, transport, onCachedSnapshot: onCached });
+  await second.init();
+  assert.equal(onCached.mock.calls.length, 1);
+  assert.equal((onCached.mock.calls[0]![0] as SyncResponse).selfId, response.selfId);
 });

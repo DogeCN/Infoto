@@ -25,6 +25,9 @@
   let syncErrorToastAt = 0;
   const engine = getEngine({
     onSyncResponse: (response, context) => store.applySync(response, context),
+    onServerOps: (applied) => store.applyServerOps(applied),
+    onOwnEcho: (applied) => store.onOwnEcho(applied),
+    onOpDropped: (cid) => store.onOpDropped(cid),
     // Paint the persisted snapshot before the first exchange completes; the sync then
     // replaces it. Without it the admin tabs are empty for one round trip, and stay
     // empty entirely when the server cannot be reached.

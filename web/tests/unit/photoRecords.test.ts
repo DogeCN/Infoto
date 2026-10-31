@@ -17,7 +17,7 @@ import path from 'node:path';
 import type { Photo, SyncResponse, UploadPayload } from '$shared/types';
 import { buildUploadOp } from '../../src/base/upload/pipeline';
 import { SyncEngine } from '../../src/core/engine';
-import { autoServer, deadSocketFactory } from './wsMock';
+import { FakeTransport } from './transportFake';
 import { EMPTY_MARKS } from '../../src/core/ops';
 import {
   appendUpload,
@@ -295,10 +295,11 @@ test('a hosted photo still reads as a card after a failed sync', async () => {
   await hosted('a');
   await hosted('b');
 
-  // The failure the report saw: the socket never opens.
-  const engine = new SyncEngine({ db, wsFactory: deadSocketFactory() });
-  const attempt = await engine.sync();
-  assert.equal(attempt.ok, false, 'nothing was confirmed');
+  // The failure the report saw: the socket never opens, so the queue is never confirmed.
+  // The engine no longer awaits a response — "not confirmed" is simply the state of the
+  // queue while offline, and the records must survive it.
+  const engine = new SyncEngine({ db, transport: new FakeTransport() });
+  assert.equal(engine.state.connected, false, 'nothing was confirmed');
 
   // Both halves of the pair survive a failed attempt: the ops the server never applied, and the
   // records the page draws from.
@@ -319,14 +320,33 @@ test('a confirmed sync retires both the ops and the records', async () => {
   await hosted('a');
   await hosted('b');
 
-  const engine = new SyncEngine({
-    db,
-    wsFactory: autoServer(snapshot([photo(1, 'a'), photo(2, 'b')])).factory,
+  // Confirmation is the welcome snapshot replacing local state: the records retire
+  // against it (the coordinator clears the oplog entries; this asserts the page half).
+  const transport = new FakeTransport();
+  const engine = new SyncEngine({ db, transport });
+  await engine.init();
+  transport.serverSend({
+    type: 'welcome',
+    selfId: 0,
+    uuid: 'u',
+    serverTime: 1_000,
+    mediaHostUrl: 'https://facade.test',
+    seq: 1,
+    snapshot: {
+      photos: [photo(1, 'a'), photo(2, 'b')],
+      announcements: [],
+      polls: [],
+      feedback: [],
+    },
   });
-  await engine.sync();
+  transport.setState(true);
+  await vi.waitFor(() => assert.equal(engine.state.connected, true));
+  // The snapshot's retire pass is async and runs after the connected flip.
+  await vi.waitFor(async () => assert.deepEqual(await readPhotoRecords(db), []));
 
-  assert.equal(await loggedCount(), 0, 'confirmed keys are cleared');
-  assert.deepEqual(await readPhotoRecords(db), [], 'and their records go with them');
+  // The oplog entries are cleared by the coordinator's ack bookkeeping (by cid), not by
+  // the engine — this page half asserts what the page owns: the records retire.
+  assert.equal(await loggedCount(), 2, 'the queue entries await the coordinator');
   assert.deepEqual(await cards(engine), [], 'so there is no card left to draw');
 });
 

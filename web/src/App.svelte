@@ -46,6 +46,15 @@
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
     },
+    onServerOps: (applied) => {
+      store.applyServerOps(applied);
+    },
+    onOwnEcho: (applied) => {
+      store.onOwnEcho(applied);
+    },
+    onOpDropped: (cid) => {
+      store.onOpDropped(cid);
+    },
     // Render the persisted snapshot before the first exchange completes; the sync that
     // follows replaces it with the authoritative one moments later.
     onCachedSnapshot: (r) => {

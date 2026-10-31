@@ -264,6 +264,8 @@ export interface WsErrorFrame {
   error: string;
   /** Public Turnstile site key, carried by `turnstile_required`. */
   turnstileSiteKey?: string | null;
+  /** The refused op's client nonce, carried by `op_dropped`. */
+  cid?: string;
 }
 export interface WsOpsBroadcastFrame {
   type: 'ops';

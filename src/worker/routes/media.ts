@@ -3,6 +3,7 @@
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';
+import { globalAlbumId } from '../app.ts';
 import { fromId36, isLoopbackOrigin, isStorableMediaUrl } from '../../shared/media.ts';
 import { MEDIA_TYPE } from '../../shared/types.ts';
 import { notFoundPage, serverErrorPage } from '../errors.ts';
@@ -46,10 +47,30 @@ export function mediaHandler(env: AppEnv) {
     const id = fromId36(id36);
     if (id === null) return notFoundPage(c.req.raw);
 
-    const row = await env.db.prepare('SELECT url, type FROM photos WHERE id = ?').bind(id).first<{
-      url: string;
-      type: number;
-    }>();
+    // The op log is the hot store and D1 only catches up at the edges, so the DO is
+    // asked first and D1 is the fallback (a cold object hydrates on demand).
+    let row: { url: string; type: number } | null = null;
+    if (env.album) {
+      try {
+        const probe = await env.album
+          .get(env.album.idFromName(globalAlbumId))
+          .fetch(new Request(`https://album.internal/internal/photo/${id36}`));
+        if (probe.ok) {
+          const body = (await probe.json()) as { found: boolean; url?: string; type?: number };
+          if (body.found && body.url && body.type !== undefined) {
+            row = { url: body.url, type: body.type };
+          }
+        }
+      } catch {
+        // The object is unreachable — fall through to D1.
+      }
+    }
+    if (!row) {
+      row = await env.db
+        .prepare('SELECT url, type FROM photos WHERE id = ?')
+        .bind(id)
+        .first<{ url: string; type: number }>();
+    }
     if (!row || !MIME_BY_TYPE[row.type]) return notFoundPage(c.req.raw);
 
     let upstream: Response;
