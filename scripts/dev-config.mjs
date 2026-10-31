@@ -59,10 +59,10 @@ export function devVar(name) {
 
 /**
  * The port `MEDIA_HOST_URL` names, so a script binds exactly the origin the Worker will
- * publish in /sync. An https URL without an explicit port means 443; anything else
+ * publish in the `welcome` frame. An https URL without an explicit port means 443; anything else
  * without one means 80. `URL` has already validated the port is in range, and a
  * malformed value is a loud failure rather than a silent fallback to a port nobody
- * chose — that mismatch is how a stand-in ends up somewhere /sync never points at.
+ * chose — that mismatch is how a stand-in ends up somewhere the page never points at.
  * @param {number} [fallback]
  * @returns {number}
  */

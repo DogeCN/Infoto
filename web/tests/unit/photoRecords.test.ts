@@ -1,7 +1,7 @@
 // One photo record, end to end: the pure projection, the durable record, the page's read of
 // it, and the source-level wiring of the upload store that no unit test can reach.
 //
-// The regression these guard: a batch whose /sync timed out left the photos hosted and
+// The regression these guard: a batch whose sync timed out left the photos hosted and
 // invisible, because the card showing them lived in the upload store's memory. The record is
 // the durable half — the worker writes `uploading`, the page turns it into `hosted` in the
 // same transaction that appends the upload op, and only a confirmed sync retires it.

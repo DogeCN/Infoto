@@ -11,7 +11,8 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { locales } from '../../../src/shared/copy';
-import type { Photo, SyncResponse } from '../../../src/shared/types';
+import { mountAlbum } from './albumSocket';
+import type { Photo } from '../../../src/shared/types';
 
 const enCopy = locales['en-US'];
 const unmuteName = enCopy.lightbox.unmute;
@@ -34,20 +35,10 @@ const photos: Photo[] = Array.from({ length: 2 }, (_, index) => ({
 
 async function mockAlbum(page: Page) {
   await page.addInitScript(() => localStorage.setItem('infoto-locale', 'en-US'));
-  await page.route('**/sync', (route) =>
-    route.fulfill({
-      json: {
-        ok: true,
-        selfId: 7,
-        serverTime: Date.now(),
-        mediaHostUrl: 'https://facade.test',
-        photos,
-        announcements: [],
-        polls: [],
-        feedback: [],
-      } satisfies SyncResponse,
-    }),
-  );
+  await mountAlbum(page, {
+    selfId: 7,
+    snapshot: { photos, announcements: [], polls: [], feedback: [] },
+  });
   // Never fulfilled: see the header comment.
   await page.route('https://media.test/**', () => {});
 }

@@ -117,8 +117,8 @@ export interface PoolHintRequest {
 }
 
 /**
- * Upload target from the /sync response. The SW is shared across tabs and outlives any one
- * page, so it cannot call /sync itself; whichever page connects last sets the target.
+ * Upload target from the `welcome` frame. The SW is shared across tabs and outlives any one
+ * page, so it cannot sync itself; whichever page connects last sets the target.
  */
 export interface MediaHostRequest {
   t: 'mediaHost';
@@ -160,7 +160,7 @@ export interface JobStatusMessage {
   /** Artifact sha256 when done / duplicate (for the op payload and dedupe registry). */
   sha256?: string;
   /** When the facade returned the URL (ms epoch). Carried so the upload op records the
-   *  moment the photo actually landed, not the moment a later /sync request ran. */
+   *  moment the photo actually landed, not the moment a later sync ran. */
   createdAt?: number;
 }
 

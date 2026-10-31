@@ -45,7 +45,7 @@
     restBottomInset?: number;
     selfId?: number;
     multiMode?: boolean;
-    // All write operations are committed upstream as ops (op-log → /sync)
+    // All write operations are committed upstream as ops (op-log → /ws)
     onLike?: (photo: Photo) => void;
     onDislike?: (photo: Photo) => void;
     onRequestDelete?: (photo: Photo) => void;
@@ -379,7 +379,7 @@
         maxExtent,
       ),
     );
-    // `boxes` is replaced on a debounce, while `allPhotos` changes the moment a /sync
+    // `boxes` is replaced on a debounce, while `allPhotos` changes the moment a sync
     // snapshot lands, so for a frame a laid-out box can name a photo that is already gone.
     // Rendering one handed PhotoCard an undefined `photo`, and its media load/error handlers
     // are dispatched against the recorded handler even after teardown -- that read threw on
@@ -423,7 +423,7 @@
     lightboxOpen = true;
   }
 
-  // The preview list can shrink underneath an open Lightbox (/sync drops a
+  // The preview list can shrink underneath an open Lightbox (a sync drops a
   // duplicate, a photo gets deleted): clamp instead of leaving a dead index.
   $effect(() => {
     if (lightboxPhotos.length === 0) {

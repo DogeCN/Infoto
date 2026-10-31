@@ -47,8 +47,18 @@ const idList = (json: string): number[] => {
 const nextId = (rows: Array<{ id: number }>): number =>
   rows.reduce((m, r) => Math.max(m, r.id), 0) + 1;
 
-/** Which ops a non-root actor may apply; everything admin-shaped is root-only. */
-function authorized(op: Op, userId: number): boolean {
+/** Write the server-allocated id back onto the create op's payload. The op that is
+ *  persisted and broadcast is this same object, so the id travels with it and every
+ *  client's optimistic row can be replaced by the real one. */
+function stampId(op: Op, id: number): void {
+  const payload = isRecord(op.payload) ? op.payload : {};
+  (payload as Record<string, unknown>).id = id;
+}
+
+/** Which ops a non-root actor may apply; everything admin-shaped is root-only. Ops that
+ *  never apply are never stored — the Durable Object refuses them before the log, or they
+ *  would reach D1 on the next archive. */
+export function authorized(op: Op, userId: number): boolean {
   switch (op.type) {
     case 'ann_create':
     case 'ann_update':
@@ -160,14 +170,16 @@ export function applySnapshotOp(
       if (!contentMd || !locale) return false;
       const inLocale = snap.feedback.filter((f) => f.locale === locale);
       const sort = inLocale.length > 0 ? Math.min(...inLocale.map((f) => f.sort)) - 1 : 0;
+      const id = nextId(snap.feedback);
       snap.feedback.push({
-        id: nextId(snap.feedback),
+        id,
         userId: user.id,
         contentMd,
         createdAt: shown,
         sort,
         locale,
       });
+      stampId(op, id);
       return true;
     }
     case 'fb_delete': {
@@ -193,8 +205,9 @@ export function applySnapshotOp(
       const draft = readAnnouncementDraft(record(op.payload));
       if (!draft) return false;
       const inLocale = snap.announcements.filter((a) => a.locale === draft.locale);
+      const id = nextId(snap.announcements);
       snap.announcements.push({
-        id: nextId(snap.announcements),
+        id,
         title: draft.title,
         contentMd: draft.contentMd,
         locale: draft.locale,
@@ -202,6 +215,9 @@ export function applySnapshotOp(
         updatedAt: ts,
         reactions: [],
       });
+      // The allocated id rides back on the op: the broadcasting DO persists and fans out
+      // this same object, and every client turns its optimistic row into the real one from it.
+      stampId(op, id);
       return true;
     }
     case 'ann_update': {
@@ -233,8 +249,9 @@ export function applySnapshotOp(
       const draft = readPollDraft(record(op.payload), false);
       if (!draft) return false;
       const inLocale = snap.polls.filter((p) => p.locale === draft.locale);
+      const id = nextId(snap.polls);
       snap.polls.push({
-        id: nextId(snap.polls),
+        id,
         options: draft.options,
         allowMultiple: draft.allowMultiple,
         locale: draft.locale,
@@ -242,6 +259,7 @@ export function applySnapshotOp(
         updatedAt: ts,
         votes: [],
       });
+      stampId(op, id);
       return true;
     }
     case 'poll_update': {
@@ -336,6 +354,19 @@ interface AnnouncementDraft {
   title: string;
   contentMd: string;
   locale: LocaleCode;
+}
+
+/** Announcement text beyond the stored limit. The Durable Object refuses such an op before
+ *  the log rather than storing one that can never apply — the client is told and rolls back. */
+export function isOversizedAnnouncementOp(op: Op): boolean {
+  if (op.type !== 'ann_create' && op.type !== 'ann_update') return false;
+  const p = record(op.payload);
+  const title = p.title;
+  const contentMd = p.contentMd;
+  return (
+    (typeof title === 'string' && title.length > MAX_TEXT_LENGTH) ||
+    (typeof contentMd === 'string' && contentMd.length > MAX_TEXT_LENGTH)
+  );
 }
 
 function readAnnouncementDraft(p: Record<string, unknown>): AnnouncementDraft | null {

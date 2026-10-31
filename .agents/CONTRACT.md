@@ -954,8 +954,11 @@ before deadline` / `no response before deadline`).
     are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTIONS` / `MAX_POLL_OPTION_CHARS` in
     `shared/types.ts`; `shared/poll.ts#parsePollOptions` is the one poll-option rule and
     `POLL_REFERENCE` the one `::poll:` pattern, used by both the renderer and the segmenter, and
-    the announcement **write** path answers the same `413` as the translate endpoint — an
-    overlong card can neither be stored nor be left permanently untranslatable.
+    the announcement **write** path refuses the same over-length text the translate endpoint
+    answers `413` for — the limit is enforced before the op reaches the log, so an overlong
+    card can neither be stored nor be left permanently untranslatable. Because the write is a
+    WebSocket op now (ADR 0026), the refusal arrives as `{ error: 'op_dropped', cid }` and the
+    editor rolls the optimistic row back, rather than as an HTTP status.
   - **Each feedback row copies its Markdown in one click, and confirms in place.** A copy
     icon-button sits to the left of delete in the row's top-right cluster and writes `contentMd`
     through `copyToClipboard`. Success raises **no toast**: the glyph cross-fades to a check inside
@@ -965,9 +968,19 @@ before deadline` / `no response before deadline`).
     toast (`lightbox.copyFailed`) — a second copy of that string is exactly the drift the copy
     table exists to prevent.
 - **Sync rides the `/ws` WebSocket (ADR 0026).** Frames (`shared/types.ts`): `hello` →
-  `welcome` | `error`; `sync` {ops} → `synced` {the full snapshot}; `ping` → `pong`. The
-  server applies ops to D1 and answers with the same `SyncResponse` the HTTP route returned, so
-  every store below this line is transport-blind.
+  `welcome` | `error`; `ops` {ops} → `ops` {applied} plus `welcome` on connect; `ping` → `pong`.
+  The Durable Object is the album's single sequential writer — it appends each op to its own
+  SQLite log, folds it into the in-memory snapshot, and broadcasts the applied batch — and D1 is
+  the cold snapshot store, written only at the edges (a migrate export flush, the compaction
+  alarm). Every store below this line is transport-blind.
+  - **An op the actor may never apply is refused before the log.** A non-root `delete`,
+    `ann_*`/`poll_*`/`fb_delete`/`fb_reorder`, or an announcement too long to store, is
+    answered with `{ error: 'op_dropped', cid }` and neither appended nor broadcast — otherwise
+    the next archive would write it into D1, where a refused `delete` is a real `DELETE`. The
+    owning tab rolls its optimistic state back on that cid.
+  - **A create op carries the id the server allocated.** The applied op's payload is stamped
+    with the id before it is persisted and broadcast, which is how every client replaces its
+    optimistic row (a negative temp id) with the real one — locally echoed and in other tabs.
   - **The sync button hides while the socket is open and authenticated, and shows whenever it
     is not** — offline, dropped, kicked by a newer connection of the same user, or still
     negotiating. A broken connection is retried only by that button, never in the background
@@ -987,8 +1000,12 @@ before deadline` / `no response before deadline`).
     snapshot on the way back, which is why the debounce exists. The page-exit trigger starts
     the same coalesced exchange, never a parallel dump: two frames carrying the same op would
     double-apply a `fb_create`.
-  - **A malformed `synced` snapshot is refused before the oplog is acknowledged** — the HTTP
+  - **A malformed `welcome` snapshot is refused before the oplog is acknowledged** — the HTTP
     client used to assert the response shape, and the frame handler owns that check now.
+  - **Catch-up is a snapshot whenever the client's `lastSeq` cannot be explained by this
+    object** — fresh (`0`), behind the retained window, or _ahead of_ `maxSeq`, which is what a
+    migrate import leaves behind after it resets the log beneath a connected client. An empty
+    incremental frame would silently strand that tab on a stale album forever.
 - **Service worker (production only).** `main.ts` registers `/sw.js` behind
   `import.meta.env.PROD` — in dev the worker would cache Vite's unhashed module URLs and pin
   stale code against HMR. Navigations serve the cached SPA shell, so the album opens offline
@@ -1425,8 +1442,11 @@ The parts of this contract that are asserted by `npm test`:
 | One open sound per page; surface hand-off keeps grid and viewer in step (§3)         | `web/tests/unit/playbackAudio.test.ts`  |
 | A failed media card shows the grey site mark, never a bare surface (§3)              | `web/tests/unit/photoCard.test.ts`      |
 | Every registered copy key is read by a source file (§10)                             | `src/shared/copy.test.ts`               |
-| An overlong announcement is refused on write, and a create takes no votes            | `src/worker/routes/admin.test.ts`       |
-| A locale change joins the target locale's order instead of duplicating an index      | `src/worker/routes/admin.test.ts`       |
+| An overlong announcement is refused on write, and a create takes no votes            | `src/worker/do/album.test.ts`           |
+| A locale change joins the target locale's order instead of duplicating an index      | `src/worker/album-ops.test.ts`          |
+| An op the actor may never apply is refused before the log, so D1 keeps its row       | `src/worker/do/album.test.ts`           |
+| A create op carries the id the server allocated                                      | `src/worker/do/album.test.ts`           |
+| A client past `maxSeq` gets a snapshot instead of an empty increment                 | `src/worker/do/album.test.ts`           |
 | A translation the album would refuse is rejected, never returned as a draft          | `src/worker/translate.test.ts`          |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on

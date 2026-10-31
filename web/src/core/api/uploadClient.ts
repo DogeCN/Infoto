@@ -20,7 +20,7 @@ export interface UploadResultErr {
 export type UploadResult = UploadResultOk | UploadResultErr;
 
 export interface UploadCallIo {
-  /** Facade base URL from the /sync response. Required: the server names the facade and
+  /** Facade base URL from the `welcome` frame. Required: the server names the facade and
    *  there is no default, so a missing one is a configuration error, not a reason to
    *  guess a host. */
   mediaHostUrl: string;
@@ -39,7 +39,7 @@ export interface UploadCallIo {
   xhrFactory?: () => XMLHttpRequest;
 }
 
-/** Facade endpoint. The base URL comes from /sync; nothing here knows where the host is. */
+/** Facade endpoint. The base URL arrives with the `welcome` frame; nothing here knows where the host is. */
 function uploadEndpoint(mediaHostUrl: string): string {
   return `${mediaHostUrl}/upload`;
 }

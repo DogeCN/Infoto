@@ -18,7 +18,7 @@ export interface AppEnv {
   mediaHostUrl?: string;
   /** Cloudflare Turnstile secret key. */
   turnstileSecret?: string;
-  /** Public Turnstile site key — delivered in the /sync 401 `turnstile_required` body. */
+  /** Public Turnstile site key — delivered in the `turnstile_required` error frame. */
   turnstileSiteKey?: string;
   /** Static file fallback (the ASSETS binding). */
   assets?: (req: Request) => Promise<Response>;

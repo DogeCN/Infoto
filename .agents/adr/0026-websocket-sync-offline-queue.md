@@ -10,6 +10,9 @@
   day offline. And the page-exit flush needed a `keepalive` fetch hack sized against the
   browser's 64 KiB body cap.
 - **Decision**:
+  - ⚠️ **Superseded in part by the Amendment below** (the DO became a sequential op store,
+    so "the DO is stateless", the `sync`→`synced` frame names and the "server falls back to
+    arrival time" rule below no longer describe the code). The Amendment is normative.
   - The write entry is the `/ws` WebSocket, served by the `Album` Durable Object. Frames
     (`shared/types.ts`): `hello` → `welcome` | `error`; `sync` {ops} → `synced` {response};
     `ping` → `pong`. A `synced` response is the same `SyncResponse` the HTTP route returned,
@@ -53,9 +56,11 @@
   reconnect re-issues it — accepted, because the uuid only carries the power the page
   already has (post content, place marks). There is still no cross-client push: two
   browsers converge only when each next syncs; the stateless DO was chosen so that adding
-  a per-connection op log and fan-out later is an addition, not a rewrite. The e2e suite's
-  `page.route('**/sync')` mocks still speak HTTP and need a `routeWebSocket` rework
-  (tracked in memory; e2e is manual-only and outside CI).
+  a per-connection op log and fan-out later is an addition, not a rewrite. The e2e suite
+  was reworked onto the socket in the same migration: `web/tests/e2e/albumSocket.ts`
+  stands in for the sync SharedWorker (an in-page port, because the socket lives inside
+  that worker and `page.routeWebSocket` cannot intercept it) and drives `/ws` frames, with
+  a `LiveAlbum` real-client variant for integration specs. (e2e stays manual-only.)
 - **Alternatives considered**: Keeping HTTP /sync with a beacon — keeps every assumption the
   request overturns. Server-sent events for push — one-way only, and the client would still
   need HTTP writes. DO storage as the canonical album (prototype) — duplicates D1, made

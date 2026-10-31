@@ -15,7 +15,14 @@
 
 import type { AlbumSnapshot, AppliedOp, Op, WsServerFrame } from '../../shared/types.ts';
 import { MAX_SYNC_OPS } from '../../shared/types.ts';
-import { applySnapshotOp, flushToD1, foldOps, hydrateSnapshot } from '../album-ops.ts';
+import {
+  applySnapshotOp,
+  authorized,
+  flushToD1,
+  foldOps,
+  hydrateSnapshot,
+  isOversizedAnnouncementOp,
+} from '../album-ops.ts';
 import { createUser, resolveUser } from '../identity.ts';
 import { d1Db } from '../db-d1.ts';
 import { verifyTurnstile } from '../turnstile.ts';
@@ -99,9 +106,12 @@ export class Album {
   }
 
   private async readMeta(): Promise<{ snapshot: AlbumSnapshot | null; compactedSeq: number }> {
-    const row = await this.state.storage.sql
+    // `.toArray()` rather than `.one()`: a cold object has no meta row yet, and `.one()`
+    // throws when the query returns nothing instead of yielding null.
+    const rows = await this.state.storage.sql
       .exec<MetaRow>('SELECT snapshot, compactedSeq FROM meta WHERE key = ?', 'main')
-      .one();
+      .toArray();
+    const row = rows[0];
     if (!row || row.snapshot === null || row.snapshot === undefined) {
       return { snapshot: null, compactedSeq: 0 };
     }
@@ -237,7 +247,7 @@ export class Album {
     const pair = new WebSocketPair();
     this.state.acceptWebSocket(pair[1]);
     // The uuid cookie rides the handshake; a returning visitor is resolved before hello
-    // and the HttpOnly cookie is re-issued here — the sliding window /sync used to own.
+    // and the HttpOnly cookie is re-issued here — the sliding window the sync write used to own.
     const db = d1Db(this.env.DB);
     const user = await resolveUser(db, request.headers.get('cookie'));
     if (user) {
@@ -330,9 +340,11 @@ export class Album {
         : 0;
     const compacted = await this.readMeta();
     const maxSeq = await this.maxSeq();
-    // Behind the retained window (or fresh): the whole snapshot. Incremental: the ops
-    // after the client's lastSeq — feedback ops filtered out for non-root viewers.
-    const fullSnapshot = lastSeq === 0 || lastSeq < compacted.compactedSeq;
+    // Behind the retained window (or fresh): the whole snapshot. A client that claims a
+    // seq this object has never issued (a migrate import reset the log beneath it, or a
+    // stale localStorage value) is further ahead than the server can explain, so its
+    // whole view is stale: it gets the snapshot too, never a silently empty increment.
+    const fullSnapshot = lastSeq === 0 || lastSeq < compacted.compactedSeq || lastSeq > maxSeq;
     const filteredOps = fullSnapshot
       ? []
       : (await this.readStoredOps())
@@ -383,14 +395,23 @@ export class Album {
     const applied: AppliedOp[] = [];
     for (const raw of ops) {
       const op = raw as Op;
-      const ts = Date.now();
       const cid = typeof op?.cid === 'string' && op.cid ? op.cid : null;
+      // An op this actor may never apply is refused before the log: it is neither stored
+      // nor broadcast, and the owning client rolls its optimistic state back. Storing it
+      // would let the next archive write it into D1 (a non-root delete is a real DELETE).
+      // The same applies to an announcement too long to store: the write limits answer it.
+      if (!authorized(op, info.userId) || isOversizedAnnouncementOp(op)) {
+        this.send(ws, { type: 'error', error: 'op_dropped', ...(cid ? { cid } : {}) });
+        continue;
+      }
+      const ts = Date.now();
       if (cid) {
-        // Idempotent ingest: a backlog re-sent after a lost ack applies once.
+        // Idempotent ingest: a backlog re-sent after a lost ack applies once. `.toArray()`
+        // because `.one()` throws when this cid has not been seen yet — the common case.
         const seen = await this.state.storage.sql
           .exec<{ seq: number }>('SELECT seq FROM ops WHERE cid = ?', cid)
-          .one();
-        if (seen) continue;
+          .toArray();
+        if (seen.length > 0) continue;
       }
       let changed = false;
       try {

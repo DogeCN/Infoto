@@ -107,7 +107,9 @@ function makeAlbum(opts: Partial<AlbumEnv> = {}) {
     storage: {
       sql: {
         // The real storage.sql executes eagerly on exec() and returns a cursor for
-        // reads; mirror that, including RETURNING rows for writes.
+        // reads; mirror that, including RETURNING rows for writes. `.one()` throws when a
+        // query returns no row — that contract is what `.toArray()` callers rely on, and
+        // a harness that answered `undefined` instead hid a cold-object crash.
         exec: <T>(query: string, ...binds: unknown[]) => {
           if (/\breturning\b/i.test(query)) {
             const row = rawStorage.prepare(query).get(...(binds as never[])) as T;
@@ -115,7 +117,16 @@ function makeAlbum(opts: Partial<AlbumEnv> = {}) {
           }
           if (/^\s*(select|with)\b/i.test(query)) {
             const rows = rawStorage.prepare(query).all(...(binds as never[])) as T[];
-            return { one: async () => rows[0] as T, toArray: async () => rows };
+            return {
+              one: async () => {
+                if (rows.length !== 1)
+                  throw new Error(
+                    'Expected exactly one result from SQL query, but got no results.',
+                  );
+                return rows[0] as T;
+              },
+              toArray: async () => rows,
+            };
           }
           rawStorage.prepare(query).run(...(binds as never[]));
           return { one: async () => undefined as T, toArray: async () => [] as T[] };
@@ -408,4 +419,137 @@ test('album do: the idle alarm folds coalescible ops and keeps distinct facts', 
     .one();
   assert.equal(Number(remaining.n), 2);
   assert.equal((state.storage.setAlarm as ReturnType<typeof vi.fn>).mock.calls.length, 1);
+});
+
+test('album do: an op this actor may never apply is refused before the log', async () => {
+  const { album, db, connect } = makeAlbum();
+  db.exec("INSERT INTO users (id, uuid, created_at) VALUES (0, 'root', 1);");
+  db.exec("INSERT INTO users (id, uuid, created_at) VALUES (1, 'guest', 2);");
+
+  const root = connect();
+  root.serializeAttachment({ userId: 0, uuid: 'root' });
+  await authenticate(album, root);
+  await deliver(album, root, {
+    type: 'ops',
+    ops: [
+      {
+        type: 'upload',
+        cid: 'u1',
+        payload: {
+          sha256: 'victim',
+          url: 'https://facade.test/v.webp',
+          width: 1,
+          height: 1,
+          size: 2,
+          type: 0,
+          createdAt: 1_700_000_000_000,
+        },
+      },
+    ],
+  });
+  // Archive it first, so a stray delete would really reach D1.
+  await album.fetch(new Request('https://album.internal/internal/flush'));
+  const before = await db.prepare('SELECT COUNT(*) AS n FROM photos').first<{ n: number }>();
+  assert.equal(before!.n, 1, 'the photo is archived before the refused write');
+
+  // A non-root guest sends a root-only delete: refused, not stored, not broadcast.
+  const guest = connect();
+  guest.serializeAttachment({ userId: 1, uuid: 'guest' });
+  await authenticate(album, guest);
+  guest.frames.length = 0;
+  await deliver(album, guest, {
+    type: 'ops',
+    ops: [{ type: 'delete', cid: 'd1', targetSha: 'victim' }],
+  });
+  assert.deepEqual(guest.frames, [{ type: 'error', error: 'op_dropped', cid: 'd1' }]);
+
+  const logged = await album['state'].storage.sql
+    .exec<{ n: number }>('SELECT COUNT(*) AS n FROM ops')
+    .one();
+  assert.equal(Number(logged.n), 0, 'a refused op is never written to the log');
+
+  await album.fetch(new Request('https://album.internal/internal/flush'));
+  const after = await db.prepare('SELECT COUNT(*) AS n FROM photos').first<{ n: number }>();
+  assert.equal(after!.n, 1, 'the refused delete never reaches D1');
+});
+
+test('album do: an announcement too long to store is refused before the log', async () => {
+  const { album, db, connect } = makeAlbum();
+  db.exec("INSERT INTO users (id, uuid, created_at) VALUES (0, 'root', 1);");
+  const root = connect();
+  root.serializeAttachment({ userId: 0, uuid: 'root' });
+  await authenticate(album, root);
+  root.frames.length = 0;
+  const { MAX_TEXT_LENGTH } = await import('../../shared/types.ts');
+  await deliver(album, root, {
+    type: 'ops',
+    ops: [
+      {
+        type: 'ann_create',
+        cid: 'a1',
+        payload: { title: 't', contentMd: 'x'.repeat(MAX_TEXT_LENGTH + 1), locale: 'en-US' },
+      },
+    ],
+  });
+  assert.deepEqual(root.frames, [{ type: 'error', error: 'op_dropped', cid: 'a1' }]);
+  const logged = await album['state'].storage.sql
+    .exec<{ n: number }>('SELECT COUNT(*) AS n FROM ops')
+    .one();
+  assert.equal(Number(logged.n), 0, 'an unstorable announcement is never written to the log');
+});
+
+test('album do: a client ahead of the log gets a whole snapshot after a rehydrate', async () => {
+  const { album, connect } = makeAlbum();
+  const up = (n: number, cid: string) => ({
+    type: 'upload',
+    cid,
+    payload: {
+      sha256: `sha-${n}`,
+      url: `https://facade.test/${n}.webp`,
+      width: 1,
+      height: 1,
+      size: 2,
+      type: 0,
+      createdAt: 1_700_000_000_000 + n,
+    },
+  });
+  const ws = connect();
+  ws.serializeAttachment({ userId: 0, uuid: 'root' });
+  await deliver(album, ws, { type: 'hello', turnstileToken: 'tok' });
+  await deliver(album, ws, { type: 'ops', ops: [up(1, 'c1'), up(2, 'c2')] });
+  const frames = ws.frames.filter((f) => f.type === 'ops');
+  const lastSeq = frames
+    .flatMap((f) => (f.type === 'ops' ? f.applied : []))
+    .reduce((m, a) => Math.max(m, a.seq), 0);
+
+  // A migrate import replaced D1 and told the object to forget everything.
+  await album.fetch(new Request('https://album.internal/internal/rehydrate'));
+
+  // The same client reconnects claiming the seq it still holds. The server has issued no
+  // such seq any more, so it must hand over the snapshot rather than an empty increment.
+  const again = connect();
+  again.serializeAttachment({ userId: 0, uuid: 'root' });
+  await deliver(album, again, { type: 'hello', lastSeq });
+  const welcome = again.frames[0]!;
+  assert.equal(welcome.type, 'welcome');
+  assert.ok(welcome.type === 'welcome' && welcome.snapshot, 'a client past maxSeq gets a snapshot');
+});
+
+test('album do: a create op carries the id the server allocated', async () => {
+  const { album, db, connect } = makeAlbum();
+  db.exec("INSERT INTO users (id, uuid, created_at) VALUES (0, 'root', 1);");
+  const root = connect();
+  root.serializeAttachment({ userId: 0, uuid: 'root' });
+  await authenticate(album, root);
+  root.frames.length = 0;
+  await deliver(album, root, {
+    type: 'ops',
+    ops: [
+      { type: 'ann_create', cid: 'a1', payload: { title: 't', contentMd: 'md', locale: 'en-US' } },
+    ],
+  });
+  const broadcast = root.frames.find((f) => f.type === 'ops');
+  assert.ok(broadcast && broadcast.type === 'ops', 'the create was broadcast');
+  const payload = (broadcast.applied[0]!.op as { payload?: { id?: number } }).payload!;
+  assert.equal(payload.id, 1, 'the allocated id rides on the broadcast op');
 });

@@ -157,7 +157,7 @@
   });
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
   // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
-  // every /sync keeps the loaded image visible; the browser caches decoding by URL itself.
+  // every sync keeps the loaded image visible; the browser caches decoding by URL itself.
   let loadedUrl = $state('');
   let observedUrl = '';
 
@@ -218,7 +218,9 @@
       video.load();
     }
     // An unmounted card cannot keep the sound open; another surface's sound is untouched.
-    releaseAudio(photo.url, 'grid');
+    // `photo` is re-read from the each scope at teardown: when the card unmounts because
+    // its photo left the map (a removed upload), the scope already reads undefined.
+    releaseAudio(photo?.url ?? '', 'grid');
   });
   /** Largest fraction the upload curtain may open to while the job is still running. */
   const CURTAIN_MAX_OPEN = 0.9;

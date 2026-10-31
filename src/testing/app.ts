@@ -3,7 +3,7 @@
 // installs the stub itself (vitest isolates per file).
 //
 // Identity and album mutations are WebSocket ops via the Durable Object now, so there is
-// no HTTP /sync to drive in tests — fixtures that need rows insert them directly.
+// no HTTP write route to drive in tests — fixtures that need rows insert them directly.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';

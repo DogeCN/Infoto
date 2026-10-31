@@ -16,7 +16,8 @@ binding = "ASSETS"
 #     invoking the Worker, so a copied /l/<id36> link came back as the SPA shell and the
 #     SPA (which knows only `/` and `/admin`) rendered its own 404;
 #   - a non-GET/HEAD request gets a bare 405 with an empty body, so every API write failed
-#     while GETs kept working — /sync, /admin/announcements, /admin/polls, /admin/feedback.
+#     while GETs kept working — every API write, the old /sync among them
+#     (that route is gone; the remaining writes are /admin/migrate).
 #
 # A curl without the Sec-Fetch-* headers is not a navigation and skipped the first path, and
 # wrangler dev routes everything to the Worker, so neither reproduces locally.
@@ -47,9 +48,12 @@ database_id = "00000000-0000-0000-0000-000000000000"
 name = "Album"
 class_name = "Album"
 
+# The op log is DO SQLite (`state.storage.sql`), so the class must be created as a
+# SQLite-backed object. `new_classes` would create a KV-backed one whose `.sql` accessor
+# throws at runtime, and the storage backend cannot be changed once a class is deployed.
 [[migrations]]
 tag = "v1"
-new_classes = ["Album"]
+new_sqlite_classes = ["Album"]
 
 # Admin draft translation (POST /admin/translate). Workers AI has no local
 # simulation, so the binding is explicitly remote; this only silences the

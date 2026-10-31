@@ -7,7 +7,7 @@
 //   - Media proxy (/l/:id36) -> network-first; media responses already carry
 //     Cache-Control: immutable from the Worker, so the browser's HTTP cache serves them
 //     offline once loaded. No SW buffering of large bodies.
-//   - API requests (/sync, /admin/*) -> network-only, no caching. Offline, queued ops stay
+//   - API requests (/ws, /l/*, /admin/*) -> network-only, no caching. Offline, queued ops stay
 //     in IndexedDB until the next online sync; no SW buffering of dynamic bodies.
 const SHELL = '/index.html';
 const ASSET_CACHE = 'infoto-assets-v1';

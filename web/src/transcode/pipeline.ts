@@ -29,7 +29,7 @@ export interface PipelineTaskSnapshot {
   url?: string;
   error?: string;
   meta?: JobMeta;
-  /** Stage-1 artifact hash (drives optimistic-entry cleanup after /sync). */
+  /** Stage-1 artifact hash (drives optimistic-entry cleanup after a sync). */
   sha256?: string;
 }
 
@@ -269,7 +269,7 @@ export class UploadPipeline {
   }
 
   /**
-   * Point the SharedWorker at the upload facade named by /sync. The SW is shared and
+   * Point the SharedWorker at the upload facade named by the `welcome` frame. The SW is shared and
    * outlives this page, so it cannot discover the target itself; called on every sync so
    * a reconfigured facade takes effect without a reload.
    */
@@ -377,7 +377,7 @@ export class UploadPipeline {
   ): Promise<void> {
     // `uploader` stays server-authoritative. `createdAt` is the instant the host returned the
     // URL, reported by this client and bounded by the server clock — the server's own clock is
-    // read once per /sync request, which would collapse a whole batch onto one timestamp.
+    // read once per sync batch, which would collapse a whole batch onto one timestamp.
     const payload: UploadPayload = {
       sha256,
       url,

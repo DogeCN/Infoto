@@ -81,6 +81,8 @@ export class CoordinatorCore {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private welcome: Deferred<void> | null = null;
   private pendingToken: string | null = null;
+  /** The socket opened, but a hello exchange was refused; the next `connect()` redials. */
+  private helloFailed = false;
   readonly state = { connected: false, syncing: false, pending: 0 };
 
   constructor(io: CoordinatorIo) {
@@ -139,6 +141,10 @@ export class CoordinatorCore {
       return;
     }
     this.welcome ??= deferred();
+    // The socket can still be open after the hello exchange failed (a refused Turnstile
+    // token, an unauthenticated frame). `WsClient.connect()` is a no-op on an open socket,
+    // so a retry would silently do nothing — drop it and let the dial carry a fresh hello.
+    if (this.ws.connected && this.helloFailed) this.ws.close();
     this.ws.connect();
   }
 
@@ -172,6 +178,8 @@ export class CoordinatorCore {
     this.stopPing();
     this.connected = false;
     this.syncing = false;
+    // A closed socket needs no special redial handling: `connect()` dials it again.
+    this.helloFailed = false;
     if (this.flushTimer !== null) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
@@ -188,6 +196,7 @@ export class CoordinatorCore {
     switch (frame.type) {
       case 'welcome': {
         this.pendingToken = null;
+        this.helloFailed = false;
         this.connected = true;
         this.selfId = frame.selfId;
         this.startPing();
@@ -218,6 +227,16 @@ export class CoordinatorCore {
             void this.dropByCid(frame.cid);
           }
           return;
+        }
+        // A refused hello (`turnstile_required`, `turnstile_failed`, `unauthenticated`)
+        // leaves the socket open with no identity. Remember it so the sync button's retry
+        // redials instead of hitting a no-op on the already-open socket.
+        if (
+          frame.error === 'turnstile_required' ||
+          frame.error === 'turnstile_failed' ||
+          frame.error === 'unauthenticated'
+        ) {
+          this.helloFailed = true;
         }
         this.io.onFrame(frame);
         return;

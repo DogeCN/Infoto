@@ -110,7 +110,8 @@ jobs:
       - name: Patch wrangler.toml
         run: |
           # Patch only the Worker-level `name` (first occurrence), plus D1 name/id. The DO
-          # binding name (`AlbumRoom`) must stay fixed so `env.AlbumRoom` keeps resolving.
+          # binding's `name`/`class_name` (`Album`) must keep its value so `env.Album` and
+          # the exported class still resolve; only the first `^name =` line is rewritten.
           sed -i '0,/^name = .*/s//name = "'"$DEPLOY_NAME"'"/' wrangler.toml
           sed -i "s/^database_name = .*/database_name = \"$DEPLOY_NAME\"/" wrangler.toml
           sed -i "s/^database_id = .*/database_id = \"$DB_ID\"/" wrangler.toml

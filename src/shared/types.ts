@@ -31,7 +31,7 @@ export const MEDIA_TYPE = {
 } as const;
 export type MediaType = (typeof MEDIA_TYPE)[keyof typeof MEDIA_TYPE];
 
-/** Full photo metadata, downloaded wholesale via /sync. */
+/** Full photo metadata, downloaded wholesale with the `welcome` snapshot. */
 export interface Photo {
   /** Autoincrement numeric id; externally represented base-36 (`id.toString(36)`). */
   id: number;

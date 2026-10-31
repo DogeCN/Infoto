@@ -87,13 +87,13 @@ const config = {
       ignored: ['**/.tmp-*', '**/*.out', '**/.chk*', '**/.shot*', '**/test-results/**'],
     },
     proxy: {
-      '/sync': proxy(),
+      // The album's write entry: a WebSocket upgrade, so the dev proxy must pass it
+      // through to the Worker (the browser dials same-origin /ws, never 8787 directly).
+      '/ws': proxy({ ws: true }),
       '/l': proxy({ cookieDomainRewrite: false }),
-      // Proxy admin API endpoints while retaining the SPA fallback for /admin.
+      // Proxy the remaining HTTP admin API while retaining the SPA fallback for /admin.
+      // Announcement / poll / feedback CRUD is WebSocket ops now (ADR 0026).
       '/admin/migrate': proxy(),
-      '/admin/announcements': proxy(),
-      '/admin/polls': proxy(),
-      '/admin/feedback': proxy(),
       '/admin/translate': proxy(),
     },
   },

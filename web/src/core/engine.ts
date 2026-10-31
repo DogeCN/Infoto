@@ -253,7 +253,9 @@ export class SyncEngine {
    *  the stale value over the replacement's optimistic state. */
   async addOp(op: Op): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
-    const stamped: Op = { ...op, cid: crypto.randomUUID(), ct: Date.now() };
+    // A caller that already assigned a nonce keeps it: the store registers its ack handlers
+    // by that cid, so regenerating one here would strand the optimistic row forever.
+    const stamped: Op = { ...op, cid: op.cid ?? crypto.randomUUID(), ct: op.ct ?? Date.now() };
     const superseded = await this.queuedKeyFor(stamped);
     this.recentCids.add(stamped.cid!);
     if (superseded !== null) {
@@ -290,7 +292,9 @@ export class SyncEngine {
    */
   async addUploadOp(op: Op, record: PhotoRecord): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
-    const stamped: Op = { ...op, cid: crypto.randomUUID(), ct: Date.now() };
+    // A caller that already assigned a nonce keeps it: the store registers its ack handlers
+    // by that cid, so regenerating one here would strand the optimistic row forever.
+    const stamped: Op = { ...op, cid: op.cid ?? crypto.randomUUID(), ct: op.ct ?? Date.now() };
     const key = await appendUpload(this.db, stamped, record);
     this.recentCids.add(stamped.cid!);
     this.pending += 1;

@@ -24,7 +24,7 @@ const MIME_BY_TYPE: Record<number, string> = {
  * loopback origin. A deployed worker's facade is a real HTTPS host (the deploy workflow
  * exits 1 without one), so it never matches and always gets the strict rule.
  *
- * Both the write path (`/sync` upload ops) and the read proxy (`/l/:id36`) must use this,
+ * Both the write path (upload ops arriving over `/ws`) and the read proxy (`/l/:id36`) must use this,
  * or a locally uploaded photo is stored and then refused, or silently dropped on arrival.
  * Compare parsed origins, never string prefixes: "http://127.0.0.1:8788.evil.example"
  * shares a prefix with the origin but is an unrelated host.
