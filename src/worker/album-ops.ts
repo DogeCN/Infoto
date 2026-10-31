@@ -1,11 +1,12 @@
-// Album write path shared by the /ws Durable Object: per-op statement planning, batched
-// application, and the full snapshot. Extracted from the deleted HTTP /sync route (ADR 0026);
-// the semantics it owned live here — validation in JS so a malformed op cannot roll back its
-// neighbours, photos addressed by sha256 so order never needs a lookup, and one fixed handful
-// of transactions per batch instead of a round trip per op.
+// The album state machine (ADR 0026): pure appliers that fold one op into the in-memory
+// snapshot the Durable Object serves, plus the D1 edge — hydration on a cold object and
+// incremental upserts when ops leave the hot path. The DO's op log is the hot store; D1
+// stays snapshot-shaped and is only touched at these edges.
 
 import type {
+  AlbumSnapshot,
   Announcement,
+  AppliedOp,
   Feedback,
   LocaleCode,
   MediaType,
@@ -22,8 +23,417 @@ import { isAllowedMediaUrl } from './routes/media.ts';
 
 /** Longest emoji an anonymous op may carry. */
 const MAX_EMOJI_LENGTH = 16;
+
 /** Mark column holding the user ids that applied a mark. */
 type MarkColumn = 'likes' | 'dislikes' | 'reports';
+
+// ---------- shared validation helpers ----------
+
+const record = (p: Op['payload']): Record<string, unknown> => (isRecord(p) ? p : {});
+/** Non-empty string within `max` characters, or null. */
+const text = (v: unknown, max = MAX_TEXT_LENGTH): string | null =>
+  typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
+/** Non-negative integer, or null. */
+const count = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
+const mediaType = (v: unknown): MediaType | null =>
+  v === MEDIA_TYPE.IMAGE || v === MEDIA_TYPE.ANIMATED || v === MEDIA_TYPE.VIDEO ? v : null;
+const idList = (json: string): number[] => {
+  const v = safeJsonParse<unknown>(json, []);
+  return Array.isArray(v) ? v.filter((n): n is number => typeof n === 'number') : [];
+};
+
+/** The next free integer id of an id-keyed collection (1-based, D1-compatible). */
+const nextId = (rows: Array<{ id: number }>): number =>
+  rows.reduce((m, r) => Math.max(m, r.id), 0) + 1;
+
+/** Which ops a non-root actor may apply; everything admin-shaped is root-only. */
+function authorized(op: Op, userId: number): boolean {
+  switch (op.type) {
+    case 'ann_create':
+    case 'ann_update':
+    case 'ann_delete':
+    case 'ann_reorder':
+    case 'poll_create':
+    case 'poll_update':
+    case 'poll_delete':
+    case 'poll_reorder':
+    case 'fb_delete':
+    case 'fb_reorder':
+    case 'delete':
+      return userId === ROOT_ID;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Fold one op into the snapshot, in place.
+ *
+ * Validation happens here so a malformed op contributes nothing; an unauthorized op is
+ * dropped the same way. Ids and display order are allocated from the snapshot itself —
+ * the Durable Object is the single writer, so no read-back is needed. The op's `ts` is
+ * the authoritative server stamp; `ct` (the client's commit time, when it carries one)
+ * only ever pulls a display time backwards, never into the future.
+ *
+ * Returns true when the op changed the snapshot, false when it was dropped (unknown
+ * target, malformed payload, unauthorized) — a dropped op is still broadcast with its
+ * seq, so ordering stays dense for every client.
+ */
+export function applySnapshotOp(
+  snap: AlbumSnapshot,
+  user: { id: number },
+  op: Op,
+  ts: number,
+  ctx: { mediaHostUrl?: string } = {},
+): boolean {
+  if (!op || typeof op.type !== 'string' || !authorized(op, user.id)) return false;
+  const shown =
+    typeof op.ct === 'number' && Number.isFinite(op.ct) && op.ct > 0 ? Math.min(op.ct, ts) : ts;
+  switch (op.type) {
+    case 'upload': {
+      const p = record(op.payload);
+      const sha256 = text(p.sha256, 128);
+      const url = text(p.url, 2048);
+      const width = count(p.width);
+      const height = count(p.height);
+      const size = count(p.size);
+      const type = mediaType(p.type);
+      const createdAt = count(p.createdAt);
+      if (!sha256 || !url || width === null || height === null || size === null) return false;
+      if (type === null || createdAt === null || createdAt === 0) return false;
+      // Keep upload URL validation consistent with the read proxy.
+      if (!isAllowedMediaUrl(ctx, url)) return false;
+      if (snap.photos.some((photo) => photo.sha256 === sha256)) return false;
+      snap.photos.push({
+        id: nextId(snap.photos),
+        sha256,
+        url,
+        uploader: user.id,
+        width,
+        height,
+        size,
+        // Bounded by the server stamp: a skewed or forged clock cannot pin a photo into
+        // the future, and an offline capture keeps its real moment.
+        createdAt: Math.min(createdAt, ts),
+        type,
+        likes: [],
+        dislikes: [],
+        reports: [],
+      });
+      return true;
+    }
+    case 'like':
+    case 'unlike':
+    case 'dislike':
+    case 'undislike':
+    case 'report':
+    case 'unreport':
+      return applyMark(snap, user.id, op);
+    case 'delete': {
+      if (!op.targetSha) return false;
+      const before = snap.photos.length;
+      snap.photos = snap.photos.filter((photo) => photo.sha256 !== op.targetSha);
+      return snap.photos.length !== before;
+    }
+    case 'vote': {
+      const poll = snap.polls.find((p) => p.id === op.target);
+      if (!poll) return false;
+      const rawOptions = record(op.payload).options;
+      if (!Array.isArray(rawOptions) || rawOptions.length > MAX_POLL_OPTIONS) return false;
+      const options: number[] = [];
+      for (const raw of rawOptions) {
+        const option = count(raw);
+        if (option === null || option >= poll.options.length) return false;
+        options.push(option);
+      }
+      if (new Set(options).size !== options.length) return false;
+      if (!poll.allowMultiple && options.length > 1) return false;
+      poll.votes = poll.votes.filter((v) => v.userId !== user.id);
+      for (const option of options) poll.votes.push({ userId: user.id, option });
+      return true;
+    }
+    case 'fb_create': {
+      const payload = record(op.payload);
+      const contentMd = text(payload.contentMd);
+      const locale = isLocaleCode(payload.locale) ? payload.locale : null;
+      if (!contentMd || !locale) return false;
+      const inLocale = snap.feedback.filter((f) => f.locale === locale);
+      const sort = inLocale.length > 0 ? Math.min(...inLocale.map((f) => f.sort)) - 1 : 0;
+      snap.feedback.push({
+        id: nextId(snap.feedback),
+        userId: user.id,
+        contentMd,
+        createdAt: shown,
+        sort,
+        locale,
+      });
+      return true;
+    }
+    case 'fb_delete': {
+      const id = count(op.target);
+      if (id === null) return false;
+      const before = snap.feedback.length;
+      snap.feedback = snap.feedback.filter((f) => f.id !== id);
+      return snap.feedback.length !== before;
+    }
+    case 'fb_reorder':
+      return applyReorder(snap.feedback, op, (f) => f.locale);
+    case 'react': {
+      const annId = op.target;
+      if (annId == null) return false;
+      const announcement = snap.announcements.find((a) => a.id === annId);
+      if (!announcement) return false;
+      const emoji = text(record(op.payload).emoji, MAX_EMOJI_LENGTH);
+      announcement.reactions = announcement.reactions.filter((r) => r.userId !== user.id);
+      if (emoji) announcement.reactions.push({ userId: user.id, emoji });
+      return true;
+    }
+    case 'ann_create': {
+      const draft = readAnnouncementDraft(record(op.payload));
+      if (!draft) return false;
+      const inLocale = snap.announcements.filter((a) => a.locale === draft.locale);
+      snap.announcements.push({
+        id: nextId(snap.announcements),
+        title: draft.title,
+        contentMd: draft.contentMd,
+        locale: draft.locale,
+        sort: inLocale.length > 0 ? Math.max(...inLocale.map((a) => a.sort)) + 1 : 0,
+        updatedAt: ts,
+        reactions: [],
+      });
+      return true;
+    }
+    case 'ann_update': {
+      const id = count(op.target);
+      const draft = id === null ? null : readAnnouncementDraft(record(op.payload));
+      if (!draft) return false;
+      const row = snap.announcements.find((a) => a.id === id);
+      if (!row) return false;
+      // A row that changes locale joins the target locale's order at its end; keeping the
+      // old sort would leave two rows on one index, which the snapshot cannot order.
+      const inLocale = snap.announcements.filter((a) => a.locale === draft.locale && a.id !== id);
+      row.title = draft.title;
+      row.contentMd = draft.contentMd;
+      row.locale = draft.locale;
+      row.sort = inLocale.length > 0 ? Math.max(...inLocale.map((a) => a.sort)) + 1 : 0;
+      row.updatedAt = ts;
+      return true;
+    }
+    case 'ann_delete': {
+      const id = count(op.target);
+      if (id === null) return false;
+      const before = snap.announcements.length;
+      snap.announcements = snap.announcements.filter((a) => a.id !== id);
+      return snap.announcements.length !== before;
+    }
+    case 'ann_reorder':
+      return applyReorder(snap.announcements, op, (a) => a.locale);
+    case 'poll_create': {
+      const draft = readPollDraft(record(op.payload), false);
+      if (!draft) return false;
+      const inLocale = snap.polls.filter((p) => p.locale === draft.locale);
+      snap.polls.push({
+        id: nextId(snap.polls),
+        options: draft.options,
+        allowMultiple: draft.allowMultiple,
+        locale: draft.locale,
+        sort: inLocale.length > 0 ? Math.max(...inLocale.map((p) => p.sort)) + 1 : 0,
+        updatedAt: ts,
+        votes: [],
+      });
+      return true;
+    }
+    case 'poll_update': {
+      const id = count(op.target);
+      const draft = id === null ? null : readPollDraft(record(op.payload), true);
+      if (!draft) return false;
+      const row = snap.polls.find((p) => p.id === id);
+      if (!row) return false;
+      // The admin supplies the whole poll: every vote already addresses an option in the
+      // new list, and a single-choice poll keeps at most one vote per user.
+      const voters = new Set<number>();
+      for (const vote of draft.votes) {
+        if (vote.option >= draft.options.length) return false;
+        if (!draft.allowMultiple && voters.has(vote.userId)) return false;
+        voters.add(vote.userId);
+      }
+      const inLocale = snap.polls.filter((p) => p.locale === draft.locale && p.id !== id);
+      row.options = draft.options;
+      row.allowMultiple = draft.allowMultiple;
+      row.locale = draft.locale;
+      row.sort = inLocale.length > 0 ? Math.max(...inLocale.map((p) => p.sort)) + 1 : 0;
+      row.updatedAt = ts;
+      row.votes = draft.votes;
+      return true;
+    }
+    case 'poll_delete': {
+      const id = count(op.target);
+      if (id === null) return false;
+      const before = snap.polls.length;
+      snap.polls = snap.polls.filter((p) => p.id !== id);
+      return snap.polls.length !== before;
+    }
+    case 'poll_reorder':
+      return applyReorder(snap.polls, op, (p) => p.locale);
+    default:
+      // An op type this deployment does not know — a page newer than the server — writes nothing.
+      return false;
+  }
+}
+
+function applyMark(snap: AlbumSnapshot, userId: number, op: Op): boolean {
+  if (!op.targetSha) return false;
+  const photo = snap.photos.find((p) => p.sha256 === op.targetSha);
+  if (!photo) return false;
+  const add = op.type === 'like' || op.type === 'dislike' || op.type === 'report';
+  const column: MarkColumn =
+    op.type === 'like' || op.type === 'unlike'
+      ? 'likes'
+      : op.type === 'dislike' || op.type === 'undislike'
+        ? 'dislikes'
+        : 'reports';
+  const list = photo[column];
+  const has = list.includes(userId);
+  if (add && !has) list.push(userId);
+  if (!add && has) photo[column] = list.filter((id) => id !== userId);
+  // The two attitudes are one choice: adding either clears the other in the same step,
+  // a server guarantee rather than a client convention. Reports stand alone.
+  const opposite: MarkColumn | undefined =
+    add && column === 'likes' ? 'dislikes' : add && column === 'dislikes' ? 'likes' : undefined;
+  if (opposite) photo[opposite] = photo[opposite].filter((id) => id !== userId);
+  return true;
+}
+
+/** Place submitted ids first in their order, keep omitted rows after, renumber 0..n-1 —
+ *  the exact semantics the HTTP reorder endpoint owned. */
+function applyReorder<T extends { id: number; sort: number; locale: LocaleCode }>(
+  rows: T[],
+  op: Op,
+  localeOf: (row: T) => LocaleCode,
+): boolean {
+  const body = record(op.payload);
+  const locale = isLocaleCode(body.locale) ? body.locale : null;
+  const rawIds = body.ids;
+  if (!locale || !Array.isArray(rawIds)) return false;
+  const ids = [
+    ...new Set(
+      rawIds.filter((n): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0),
+    ),
+  ];
+  if (ids.length === 0) return false;
+  const rank = new Map(ids.map((id, i) => [id, i]));
+  const rest = ids.length;
+  const ordered = rows
+    .filter((r) => localeOf(r) === locale)
+    .sort((a, b) => a.sort - b.sort)
+    .sort((a, b) => (rank.get(a.id) ?? rest) - (rank.get(b.id) ?? rest));
+  ordered.forEach((row, i) => (row.sort = i));
+  return true;
+}
+
+interface AnnouncementDraft {
+  title: string;
+  contentMd: string;
+  locale: LocaleCode;
+}
+
+function readAnnouncementDraft(p: Record<string, unknown>): AnnouncementDraft | null {
+  const title = text(p.title);
+  const contentMd = text(p.contentMd);
+  const locale = isLocaleCode(p.locale) ? p.locale : null;
+  return title && contentMd && locale ? { title, contentMd, locale } : null;
+}
+
+interface PollDraft {
+  options: string[];
+  allowMultiple: boolean;
+  locale: LocaleCode;
+  votes: Array<{ userId: number; option: number }>;
+}
+
+/** A poll draft; `withVotes` reads the complete vote set an overwrite carries. */
+function readPollDraft(p: Record<string, unknown>, withVotes: boolean): PollDraft | null {
+  const rawOptions = p.options;
+  if (!Array.isArray(rawOptions) || rawOptions.length === 0 || rawOptions.length > MAX_POLL_OPTIONS)
+    return null;
+  const options: string[] = [];
+  for (const raw of rawOptions) {
+    const option = typeof raw === 'string' ? raw.trim() : '';
+    if (!option || option.length > 200) return null;
+    options.push(option);
+  }
+  const locale = isLocaleCode(p.locale) ? p.locale : null;
+  if (typeof p.allowMultiple !== 'boolean' || !locale) return null;
+  const votes: Array<{ userId: number; option: number }> = [];
+  if (withVotes) {
+    const rawVotes = p.votes;
+    if (!Array.isArray(rawVotes)) return null;
+    for (const raw of rawVotes) {
+      if (!isRecord(raw)) return null;
+      const userId = count(raw.userId);
+      const option = count(raw.option);
+      if (userId === null || option === null) return null;
+      votes.push({ userId, option });
+    }
+  }
+  return { options, allowMultiple: p.allowMultiple, locale, votes };
+}
+
+// ---------- log-level compaction ----------
+
+/** The coalescing dimension of an op, or null when it can never be superseded. Ops in
+ *  one dimension collapse to the last value; a cancelling pair (like → unlike) folds into
+ *  the surviving op, which is a no-op on its own — dropping it is never required for
+ *  correctness, so sequence numbers stay untouched for the clients referencing them. */
+export function coalesceDimension(op: Op): string | null {
+  switch (op.type) {
+    case 'like':
+    case 'unlike':
+    case 'dislike':
+    case 'undislike':
+      return op.targetSha ? `attitude:${op.targetSha}` : null;
+    case 'report':
+    case 'unreport':
+      return op.targetSha ? `report:${op.targetSha}` : null;
+    case 'vote':
+      return op.target != null ? `vote:${op.target}` : null;
+    case 'react':
+      return op.target != null ? `react:${op.target}` : null;
+    case 'ann_update':
+      return op.target != null ? `ann:${op.target}` : null;
+    case 'poll_update':
+      return op.target != null ? `poll:${op.target}` : null;
+    case 'ann_reorder':
+    case 'poll_reorder':
+    case 'fb_reorder': {
+      const locale = record(op.payload).locale;
+      return typeof locale === 'string' ? `reorder:${op.type}:${locale}` : null;
+    }
+    default:
+      // upload / delete / fb_create / fb_delete / ann_create / ann_delete / poll_create /
+      // poll_delete never supersede: each one is a distinct fact.
+      return null;
+  }
+}
+
+/**
+ * Log-level compaction: within each (dimension, actor) only the last op survives, in
+ * their original order. Returns the ops to keep.
+ */
+export function foldOps<T extends { op: Op; actor: number }>(ops: T[]): T[] {
+  const lastByDimension = new Map<string, T>();
+  for (const entry of ops) {
+    const dimension = coalesceDimension(entry.op);
+    if (dimension !== null) lastByDimension.set(`${dimension}:${entry.actor}`, entry);
+  }
+  return ops.filter((entry) => {
+    const dimension = coalesceDimension(entry.op);
+    return dimension === null || lastByDimension.get(`${dimension}:${entry.actor}`) === entry;
+  });
+}
+
+// ---------- D1 hydration and incremental upserts ----------
 
 interface PhotoRow {
   id: number;
@@ -74,300 +484,14 @@ interface VoteRow {
   option: number;
 }
 
-/** User ids out of a JSON mark column; a malformed column reads as an empty list. */
-const idList = (json: string): number[] => {
-  const v = safeJsonParse<unknown>(json, []);
-  return Array.isArray(v) ? v.filter((n): n is number => typeof n === 'number') : [];
-};
-
-const record = (p: Op['payload']): Record<string, unknown> => (isRecord(p) ? p : {});
-/** Non-empty string within `max` characters, or null. */
-const text = (v: unknown, max = MAX_TEXT_LENGTH): string | null =>
-  typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
-/** Non-negative integer, or null. */
-const count = (v: unknown): number | null =>
-  typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
-const mediaType = (v: unknown): MediaType | null =>
-  v === MEDIA_TYPE.IMAGE || v === MEDIA_TYPE.ANIMATED || v === MEDIA_TYPE.VIDEO ? v : null;
-
-/** Statements per `db.batch` call. One call is one round trip, and every op below becomes a
- *  fixed one or two statements, so a batch's cost is a small multiple of this constant
- *  instead of a round trip per op — the difference between a 200-photo backlog finishing
- *  and the page giving up on it. */
-const MAX_BATCH_STATEMENTS = 100;
-
-/** The column an attitude's opposite writes: a like and a dislike are one choice, never both. */
-const OPPOSITE_MARK: Partial<Record<MarkColumn, MarkColumn>> = {
-  likes: 'dislikes',
-  dislikes: 'likes',
-};
-
-/** `col = col ∪ {userId}`, without a duplicate entry. */
-const addMarkSql = (col: MarkColumn): string => `${col} = CASE
-    WHEN EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?) THEN ${col}
-    ELSE json_insert(${col}, '$[#]', ?) END`;
-
-/** `col = col ∖ {userId}`, a no-op when the user is not in it. */
-const removeMarkSql = (col: MarkColumn): string => `${col} = CASE
-    WHEN NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?) THEN ${col}
-    ELSE (SELECT json_group_array(value) FROM json_each(${col}) WHERE value <> ?) END`;
-
-/**
- * Add or remove `userId` in one mark column, as one statement addressed by sha256 — the
- * membership test and the write travel together, so two concurrent marks on one photo cannot
- * drop each other, and no lookup of the photo's row is needed first.
- *
- * Adding a like or a dislike also clears the opposite column in that same statement. The two
- * are one choice, and the server owns that invariant instead of trusting every client to send
- * the paired removal, so a client can state a switch with one op. Reports stand alone and may
- * coexist with either.
- */
-function markStatement(userId: number, col: MarkColumn, add: boolean, sha256: string): DbStatement {
-  const sets = [add ? addMarkSql(col) : removeMarkSql(col)];
-  const opposite = add ? OPPOSITE_MARK[col] : undefined;
-  if (opposite) sets.push(removeMarkSql(opposite));
-  return {
-    sql: `UPDATE photos SET ${sets.join(', ')} WHERE sha256 = ?`,
-    binds: [...sets.flatMap(() => [userId, userId]), sha256],
-  };
-}
-
-/** The mark statements for one op, or none when it carries no hash to address. */
-function markOp(userId: number, col: MarkColumn, add: boolean, op: Op): DbStatement[] {
-  return op.targetSha ? [markStatement(userId, col, add, op.targetSha)] : [];
-}
-
-interface PollDefinition {
-  options: string;
-  allow_multiple: number;
-}
-
-/** D1's per-query cap on bound parameters is 100 (`d1/platform/limits`). `MAX_SYNC_OPS` lets one
- *  frame vote on more distinct polls than that, so this read is sliced rather than built whole. */
-const MAX_BOUND_PARAMS = 100;
-
-/**
- * The poll rows a batch votes on, read before any write.
- *
- * A poll is created by the admin endpoints and never by a sync op, so this answer cannot be
- * changed by the ops that consume it — which is what lets every vote in the batch validate
- * against it up front and contribute statements to a single batch instead of a read of its own.
- */
-async function loadPolls(db: Db, ops: Op[]): Promise<Map<number, PollDefinition>> {
-  const ids = new Set<number>();
-  for (const op of ops) {
-    if (op?.type === 'vote' && typeof op.target === 'number') ids.add(op.target);
-  }
-  const list = [...ids];
-  const out = new Map<number, PollDefinition>();
-  for (let offset = 0; offset < list.length; offset += MAX_BOUND_PARAMS) {
-    const slice = list.slice(offset, offset + MAX_BOUND_PARAMS);
-    const rows = await db
-      .prepare(
-        `SELECT id, options, allow_multiple FROM polls WHERE id IN (${slice.map(() => '?').join(', ')})`,
-      )
-      .bind(...slice)
-      .all<PollDefinition & { id: number }>();
-    for (const row of rows.results) out.set(row.id, row);
+function groupBy<T>(rows: T[], key: (row: T) => number): Map<number, T[]> {
+  const out = new Map<number, T[]>();
+  for (const row of rows) {
+    const list = out.get(key(row));
+    if (list) list.push(row);
+    else out.set(key(row), [row]);
   }
   return out;
-}
-
-/**
- * The statements one op contributes, in the album's own order.
- *
- * Validation happens here, in JS, so a malformed op contributes nothing and cannot roll back
- * the writes of the ops beside it. Photo ops address their photo by sha256 — the stable unique
- * index — so no op needs a lookup of its own first, and an op that arrives after the upload
- * which creates its row still applies: the statements keep the order the ops arrived in.
- */
-function planOp(
-  env: OpsEnv,
-  user: { id: number },
-  op: Op,
-  opTime: number,
-  polls: Map<number, PollDefinition>,
-): DbStatement[] {
-  const isRoot = user.id === ROOT_ID;
-  switch (op.type) {
-    case 'upload': {
-      const p = record(op.payload);
-      const sha256 = text(p.sha256, 128);
-      const url = text(p.url, 2048);
-      const width = count(p.width);
-      const height = count(p.height);
-      const size = count(p.size);
-      const type = mediaType(p.type);
-      // The client reports when the facade returned the URL. It is the only source of a
-      // per-photo timestamp: the batch's arrival time is read once for the whole frame, so a
-      // backlog of uploads would otherwise share one millisecond and "latest" could not order
-      // them. Bounded by the op's own (already server-clamped) commit time; `uploader` stays
-      // server-authoritative.
-      const createdAt = count(p.createdAt);
-      if (!sha256 || !url || width === null || height === null || size === null) return [];
-      if (type === null || createdAt === null || createdAt === 0) return [];
-      // Keep upload URL validation consistent with the read proxy.
-      if (!isAllowedMediaUrl(env, url)) return [];
-      // The duplicate check travels inside the insert: a hash already in the album — including
-      // one an earlier op of this same batch just inserted — writes nothing, so a re-sent batch
-      // stays silent and no unique violation can reach the transaction.
-      return [
-        {
-          sql: `INSERT INTO photos (sha256, url, uploader, width, height, size, created_at, type)
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?
-                WHERE NOT EXISTS (SELECT 1 FROM photos WHERE sha256 = ?)`,
-          binds: [
-            sha256,
-            url,
-            user.id,
-            width,
-            height,
-            size,
-            Math.min(createdAt, opTime),
-            type,
-            sha256,
-          ],
-        },
-      ];
-    }
-    case 'like':
-      return markOp(user.id, 'likes', true, op);
-    case 'unlike':
-      return markOp(user.id, 'likes', false, op);
-    case 'dislike':
-      return markOp(user.id, 'dislikes', true, op);
-    case 'undislike':
-      return markOp(user.id, 'dislikes', false, op);
-    case 'report':
-      return markOp(user.id, 'reports', true, op);
-    case 'unreport':
-      return markOp(user.id, 'reports', false, op);
-    case 'delete':
-      // Root-only, and addressable by hash like every other photo op.
-      return isRoot && op.targetSha
-        ? [{ sql: 'DELETE FROM photos WHERE sha256 = ?', binds: [op.targetSha] }]
-        : [];
-    case 'fb_create': {
-      const payload = record(op.payload);
-      const contentMd = text(payload.contentMd);
-      const locale = isLocaleCode(payload.locale) ? payload.locale : null;
-      if (!contentMd || !locale) return [];
-      // One below this locale's current minimum, so the newest row sorts first. The row's
-      // timestamp is the op's own commit time: a suggestion written offline lands with the
-      // moment it was written, not the moment the socket came back (ADR 0026).
-      return [
-        {
-          sql: `INSERT INTO feedback (user_id, content_md, created_at, locale, sort)
-                VALUES (?, ?, ?, ?, (SELECT COALESCE(MIN(sort), 0) - 1 FROM feedback WHERE locale = ?))`,
-          binds: [user.id, contentMd, opTime, locale, locale],
-        },
-      ];
-    }
-    case 'react': {
-      const annId = op.target;
-      if (annId == null) return [];
-      const emoji = text(record(op.payload).emoji, MAX_EMOJI_LENGTH);
-      // An emoji only lands on an announcement that exists: the test travels inside the
-      // insert, so neither a lookup nor an orphan row is possible.
-      if (emoji)
-        return [
-          {
-            sql: `INSERT OR REPLACE INTO reactions (ann_id, user_id, emoji)
-                  SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM announcements WHERE id = ?)`,
-            binds: [annId, user.id, emoji, annId],
-          },
-        ];
-      // Clearing a reaction needs no existence test: a delete only ever matches rows that exist.
-      return [
-        {
-          sql: 'DELETE FROM reactions WHERE ann_id = ? AND user_id = ?',
-          binds: [annId, user.id],
-        },
-      ];
-    }
-    case 'vote': {
-      const pollId = op.target;
-      if (pollId == null) return [];
-      const poll = polls.get(pollId);
-      if (!poll) return [];
-      let optionCount: number;
-      try {
-        const options: unknown = JSON.parse(poll.options);
-        if (!Array.isArray(options)) return [];
-        optionCount = options.length;
-      } catch {
-        return [];
-      }
-      const rawOptions = record(op.payload).options;
-      if (!Array.isArray(rawOptions) || rawOptions.length > MAX_POLL_OPTIONS) return [];
-      const options: number[] = [];
-      for (const raw of rawOptions) {
-        const option = count(raw);
-        if (option === null || option >= optionCount) return [];
-        options.push(option);
-      }
-      if (new Set(options).size !== options.length || (!poll.allow_multiple && options.length > 1))
-        return [];
-      return [
-        { sql: 'DELETE FROM votes WHERE poll_id = ? AND user_id = ?', binds: [pollId, user.id] },
-        ...options.map((option) => ({
-          sql: 'INSERT INTO votes (poll_id, user_id, option) VALUES (?, ?, ?)',
-          binds: [pollId, user.id, option],
-        })),
-      ];
-    }
-    default:
-      // An op type this deployment does not know — a page newer than the server — writes nothing.
-      return [];
-  }
-}
-
-/** The op's client-stamped commit time, clamped to the server clock; an op queued before
- *  the field existed falls back to the frame's arrival time. */
-function effectiveOpTime(op: Op, now: number): number {
-  const ts = op.ts;
-  return typeof ts === 'number' && Number.isFinite(ts) && ts > 0 ? Math.min(ts, now) : now;
-}
-
-/** The database environment the write path runs against. */
-export interface OpsEnv {
-  db: Db;
-  /** External image-host facade; upload ops accept only URLs it names. */
-  mediaHostUrl?: string;
-}
-
-/**
- * Plan every op, then write the plan in a fixed handful of transactions.
- *
- * Each op below is one or two statements, so what a frame costs is the statement count
- * divided by `MAX_BATCH_STATEMENTS` — not a round trip per op. A chunk is one transaction and
- * its ops are independent, so a chunk that fails is dropped on its own, leaving the others
- * applied. `now` is the frame's arrival time; an op without its own `ts` rides it.
- */
-export async function applyOps(
-  env: OpsEnv,
-  user: { id: number },
-  ops: Op[],
-  now: number,
-): Promise<void> {
-  const polls = await loadPolls(env.db, ops);
-  const statements: DbStatement[] = [];
-  for (const op of ops) {
-    if (!op || typeof op.type !== 'string') continue;
-    try {
-      statements.push(...planOp(env, user, op, effectiveOpTime(op, now), polls));
-    } catch (e) {
-      console.error('[album] op dropped', op.type, e);
-    }
-  }
-  for (let offset = 0; offset < statements.length; offset += MAX_BATCH_STATEMENTS) {
-    const chunk = statements.slice(offset, offset + MAX_BATCH_STATEMENTS);
-    try {
-      await env.db.batch(chunk);
-    } catch (e) {
-      console.error('[album] ops dropped', chunk.length, e);
-    }
-  }
 }
 
 const rowToPhoto = (r: PhotoRow): Photo => ({
@@ -385,38 +509,19 @@ const rowToPhoto = (r: PhotoRow): Photo => ({
   reports: idList(r.reports),
 });
 
-/** Group rows by their owning entity ID, preserving the query order. */
-function groupById<T>(rows: T[], key: (row: T) => number): Map<number, T[]> {
-  const out = new Map<number, T[]>();
-  for (const row of rows) {
-    const id = key(row);
-    const list = out.get(id);
-    if (list) list.push(row);
-    else out.set(id, [row]);
-  }
-  return out;
-}
-
-/** Every locale's content rows: the client filters by its content locale, so a language
- *  switch is a local re-render rather than another round trip. Photos are locale-neutral. */
-export async function snapshot(
-  db: Db,
-  selfId: number,
-): Promise<{
-  photos: Photo[];
-  announcements: Announcement[];
-  polls: Poll[];
-  feedback: Feedback[];
-}> {
-  const [photoRows, annRows, pollRows, reactRows, voteRows] = await Promise.all([
+/** Read the whole album out of D1 — the cold path (a fresh object, or a snapshot the
+ *  object has not built yet). */
+export async function hydrateSnapshot(db: Db): Promise<AlbumSnapshot> {
+  const [photoRows, annRows, pollRows, reactRows, voteRows, fbRows] = await Promise.all([
     db.prepare('SELECT * FROM photos ORDER BY id ASC').all<PhotoRow>(),
     db.prepare('SELECT * FROM announcements ORDER BY sort ASC').all<AnnRow>(),
     db.prepare('SELECT * FROM polls ORDER BY sort ASC').all<PollRow>(),
     db.prepare('SELECT ann_id, user_id, emoji FROM reactions').all<ReactRow>(),
     db.prepare('SELECT poll_id, user_id, option FROM votes').all<VoteRow>(),
+    db.prepare('SELECT * FROM feedback ORDER BY sort ASC').all<FbRow>(),
   ]);
-  const reactions = groupById(reactRows.results, (r) => r.ann_id);
-  const votes = groupById(voteRows.results, (r) => r.poll_id);
+  const reactions = groupBy(reactRows.results, (r) => r.ann_id);
+  const votes = groupBy(voteRows.results, (r) => r.poll_id);
   const announcements: Announcement[] = annRows.results.map((r) => ({
     id: r.id,
     title: r.title,
@@ -445,17 +550,229 @@ export async function snapshot(
       votes: (votes.get(r.id) ?? []).map((x) => ({ userId: x.user_id, option: x.option })),
     };
   });
-  let feedback: Feedback[] = [];
-  if (selfId === ROOT_ID) {
-    const rows = await db.prepare('SELECT * FROM feedback ORDER BY sort ASC').all<FbRow>();
-    feedback = rows.results.map((r) => ({
-      id: r.id,
-      userId: r.user_id,
-      contentMd: r.content_md,
-      createdAt: r.created_at,
-      sort: r.sort,
-      locale: r.locale,
-    }));
-  }
+  const feedback: Feedback[] = fbRows.results.map((r) => ({
+    id: r.id,
+    userId: r.user_id,
+    contentMd: r.content_md,
+    createdAt: r.created_at,
+    sort: r.sort,
+    locale: r.locale,
+  }));
   return { photos: photoRows.results.map(rowToPhoto), announcements, polls, feedback };
+}
+
+const marksJson = (photo: Photo, column: MarkColumn): string => JSON.stringify(photo[column]);
+
+/** Upsert the rows one applied op touched, or delete them. The snapshot is the source of
+ *  a row's full state (marks and votes live inside their owners), so a flush is a
+ *  whole-row write keyed by the row's stable id/sha. */
+export function statementsForOp(applied: AppliedOp, snap: AlbumSnapshot): DbStatement[] {
+  const { op, actor } = applied;
+  switch (op.type) {
+    case 'upload': {
+      const sha = op.targetSha ?? text(record(op.payload).sha256, 128);
+      const photo = snap.photos.find((p) => p.sha256 === sha);
+      if (!photo) return [];
+      return [
+        {
+          sql: `INSERT INTO photos (id, sha256, url, uploader, width, height, size, created_at, type, likes, dislikes, reports)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (sha256) DO UPDATE SET url=excluded.url, uploader=excluded.uploader,
+                  width=excluded.width, height=excluded.height, size=excluded.size,
+                  created_at=excluded.created_at, type=excluded.type`,
+          binds: [
+            photo.id,
+            photo.sha256,
+            photo.url,
+            photo.uploader,
+            photo.width,
+            photo.height,
+            photo.size,
+            photo.createdAt,
+            photo.type,
+            marksJson(photo, 'likes'),
+            marksJson(photo, 'dislikes'),
+            marksJson(photo, 'reports'),
+          ],
+        },
+      ];
+    }
+    case 'like':
+    case 'unlike':
+    case 'dislike':
+    case 'undislike':
+    case 'report':
+    case 'unreport': {
+      const photo = snap.photos.find((p) => p.sha256 === op.targetSha);
+      if (!photo) return [];
+      return [
+        {
+          sql: 'UPDATE photos SET likes = ?, dislikes = ?, reports = ? WHERE sha256 = ?',
+          binds: [
+            marksJson(photo, 'likes'),
+            marksJson(photo, 'dislikes'),
+            marksJson(photo, 'reports'),
+            photo.sha256,
+          ],
+        },
+      ];
+    }
+    case 'delete': {
+      if (!op.targetSha) return [];
+      return [{ sql: 'DELETE FROM photos WHERE sha256 = ?', binds: [op.targetSha] }];
+    }
+    case 'fb_create': {
+      // The applier pushed exactly one row for this op at `ts`; match on writer + stamp
+      // so a replayed op never inserts a second row.
+      const fb = snap.feedback.find((f) => f.userId === actor && f.createdAt === applied.ts);
+      if (!fb) return [];
+      return [
+        {
+          sql: `INSERT INTO feedback (id, user_id, content_md, created_at, locale, sort)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET content_md=excluded.content_md,
+                  created_at=excluded.created_at, sort=excluded.sort`,
+          binds: [fb.id, fb.userId, fb.contentMd, fb.createdAt, fb.locale, fb.sort],
+        },
+      ];
+    }
+    case 'fb_delete': {
+      const id = count(op.target);
+      return id === null ? [] : [{ sql: 'DELETE FROM feedback WHERE id = ?', binds: [id] }];
+    }
+    case 'fb_reorder': {
+      const locale = isLocaleCode(record(op.payload).locale) ? record(op.payload).locale : null;
+      if (!locale) return [];
+      return snap.feedback
+        .filter((f) => f.locale === locale)
+        .map((f) => ({ sql: 'UPDATE feedback SET sort = ? WHERE id = ?', binds: [f.sort, f.id] }));
+    }
+    case 'react': {
+      const annId = op.target;
+      if (annId == null) return [];
+      const announcement = snap.announcements.find((a) => a.id === annId);
+      if (!announcement) return [];
+      const mine = announcement.reactions.filter((r) => r.userId === actor);
+      const emoji = mine.length > 0 ? mine[mine.length - 1]!.emoji : null;
+      if (emoji === null)
+        return [
+          { sql: 'DELETE FROM reactions WHERE ann_id = ? AND user_id = ?', binds: [annId, actor] },
+        ];
+      return [
+        {
+          sql: `INSERT INTO reactions (ann_id, user_id, emoji) VALUES (?, ?, ?)
+                ON CONFLICT (ann_id, user_id) DO UPDATE SET emoji = excluded.emoji`,
+          binds: [annId, actor, emoji],
+        },
+      ];
+    }
+    case 'ann_create':
+    case 'ann_update': {
+      const id =
+        count(op.target) ??
+        (snap.announcements.length > 0 ? Math.max(...snap.announcements.map((a) => a.id)) : 0);
+      const row = snap.announcements.find((a) => a.id === id);
+      if (!row) return [];
+      return [
+        {
+          sql: `INSERT INTO announcements (id, title, content_md, locale, sort, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET title=excluded.title, content_md=excluded.content_md,
+                  locale=excluded.locale, sort=excluded.sort, updated_at=excluded.updated_at`,
+          binds: [row.id, row.title, row.contentMd, row.locale, row.sort, row.updatedAt],
+        },
+      ];
+    }
+    case 'ann_delete': {
+      const id = count(op.target);
+      return id === null
+        ? []
+        : [
+            { sql: 'DELETE FROM announcements WHERE id = ?', binds: [id] },
+            { sql: 'DELETE FROM reactions WHERE ann_id = ?', binds: [id] },
+          ];
+    }
+    case 'ann_reorder': {
+      const locale = isLocaleCode(record(op.payload).locale) ? record(op.payload).locale : null;
+      if (!locale) return [];
+      return snap.announcements
+        .filter((a) => a.locale === locale)
+        .map((a) => ({
+          sql: 'UPDATE announcements SET sort = ? WHERE id = ?',
+          binds: [a.sort, a.id],
+        }));
+    }
+    case 'poll_create':
+    case 'poll_update': {
+      const id =
+        count(op.target) ?? (snap.polls.length > 0 ? Math.max(...snap.polls.map((p) => p.id)) : 0);
+      const row = snap.polls.find((p) => p.id === id);
+      if (!row) return [];
+      return [
+        {
+          sql: `INSERT INTO polls (id, options, allow_multiple, locale, sort, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET options=excluded.options,
+                  allow_multiple=excluded.allow_multiple, locale=excluded.locale,
+                  sort=excluded.sort, updated_at=excluded.updated_at`,
+          binds: [
+            row.id,
+            JSON.stringify(row.options),
+            row.allowMultiple ? 1 : 0,
+            row.locale,
+            row.sort,
+            row.updatedAt,
+          ],
+        },
+        // A save overwrites the whole vote set (ADR 0022): delete-then-insert in one batch.
+        { sql: 'DELETE FROM votes WHERE poll_id = ?', binds: [row.id] },
+        ...row.votes.map((vote) => ({
+          sql: 'INSERT INTO votes (poll_id, user_id, option) VALUES (?, ?, ?)',
+          binds: [row.id, vote.userId, vote.option],
+        })),
+      ];
+    }
+    case 'poll_delete': {
+      const id = count(op.target);
+      return id === null
+        ? []
+        : [
+            { sql: 'DELETE FROM polls WHERE id = ?', binds: [id] },
+            { sql: 'DELETE FROM votes WHERE poll_id = ?', binds: [id] },
+          ];
+    }
+    case 'poll_reorder': {
+      const locale = isLocaleCode(record(op.payload).locale) ? record(op.payload).locale : null;
+      if (!locale) return [];
+      return snap.polls
+        .filter((p) => p.locale === locale)
+        .map((p) => ({ sql: 'UPDATE polls SET sort = ? WHERE id = ?', binds: [p.sort, p.id] }));
+    }
+    default:
+      return [];
+  }
+}
+
+/** D1's per-query cap on bound parameters is 100; chunk accordingly. */
+export const MAX_BATCH_STATEMENTS = 100;
+
+/** Flush applied ops to D1: per-op upserts, chunked into transactions. A chunk that
+ *  fails is dropped on its own, leaving the others applied. */
+export async function flushToD1(db: Db, snap: AlbumSnapshot, applied: AppliedOp[]): Promise<void> {
+  const statements: DbStatement[] = [];
+  for (const appliedOp of applied) {
+    try {
+      statements.push(...statementsForOp(appliedOp, snap));
+    } catch (e) {
+      console.error('[album] flush statement failed', appliedOp.op.type, e);
+    }
+  }
+  for (let offset = 0; offset < statements.length; offset += MAX_BATCH_STATEMENTS) {
+    const chunk = statements.slice(offset, offset + MAX_BATCH_STATEMENTS);
+    try {
+      await db.batch(chunk);
+    } catch (e) {
+      console.error('[album] flush chunk dropped', chunk.length, e);
+    }
+  }
 }

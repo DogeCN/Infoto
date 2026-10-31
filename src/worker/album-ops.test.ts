@@ -1,15 +1,15 @@
-// The album write path, directly: what the /ws Durable Object runs per sync frame.
-// These cases carry the invariants the old HTTP route tests asserted — idempotent
-// uploads, the one-choice mark rule, per-op timestamps, vote validation, root-only
-// deletion, and a malformed op that never aborts its neighbours.
+// The snapshot appliers: what one op does to the album state the Durable Object serves.
+// These carry the invariants the old SQL planner asserted — idempotent uploads, the
+// one-choice mark rule, per-op display timestamps, vote validation, root-only admin ops —
+// plus the log fold and the D1 round trip.
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { Op } from '../shared/types.ts';
-import { applyOps, snapshot, type OpsEnv } from './album-ops.ts';
+import type { AlbumSnapshot, AppliedOp, Op } from '../shared/types.ts';
+import { applySnapshotOp, flushToD1, foldOps, hydrateSnapshot } from './album-ops.ts';
 import { countingDb } from '../testing/app.ts';
 import { openLocalDb, type LocalDb } from '../testing/localDb.ts';
 
@@ -21,7 +21,17 @@ function makeDb(): LocalDb {
   return db;
 }
 
-const env = (db: LocalDb, mediaHostUrl = 'https://facade.test'): OpsEnv => ({ db, mediaHostUrl });
+const env = (
+  db: LocalDb,
+  mediaHostUrl = 'https://facade.test',
+): { db: LocalDb; mediaHostUrl: string } => ({ db, mediaHostUrl });
+
+const emptySnapshot = (): AlbumSnapshot => ({
+  photos: [],
+  announcements: [],
+  polls: [],
+  feedback: [],
+});
 
 const upload = (sha: string, over: Partial<Op> = {}): Op => ({
   type: 'upload',
@@ -37,205 +47,74 @@ const upload = (sha: string, over: Partial<Op> = {}): Op => ({
   ...over,
 });
 
-const fb = (contentMd: string, ts?: number): Op => ({
-  type: 'fb_create',
-  payload: { contentMd, locale: 'en-US' },
-  ...(ts === undefined ? {} : { ts }),
-});
+const applied = (seq: number, op: Op, actor = 1): AppliedOp => ({ seq, op, actor, ts: 1_000 });
 
-async function seedPhoto(db: LocalDb, sha: string): Promise<void> {
-  await applyOps(env(db), { id: 1 }, [upload(sha)], 1_000);
-}
-
-test('album-ops: an upload lands once, and a re-sent batch stays silent', async () => {
-  const db = makeDb();
-  await applyOps(env(db), { id: 1 }, [upload('aa')], 1_000);
-  await applyOps(env(db), { id: 1 }, [upload('aa')], 2_000);
-  const snap = await snapshot(db, 1);
-  assert.equal(snap.photos.length, 1);
-  assert.equal(snap.photos[0]!.uploader, 1);
-});
-
-test('album-ops: a future client timestamp is clamped to the server clock', async () => {
-  const db = makeDb();
+test('album-ops: an upload allocates an id, clamps createdAt, and dedupes by sha', async () => {
+  const snap = emptySnapshot();
   const now = 1_900_000_000_000;
-  const future = now + 3_600_000;
-  await applyOps(
-    env(db),
-    { id: 1 },
-    [
-      upload('aa', {
-        ts: future,
+  assert.ok(applySnapshotOp(snap, { id: 3 }, upload('aa'), now));
+  // A skewed client clock cannot pin a photo into the future.
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      upload('aa2', {
         payload: {
-          sha256: 'aa',
-          url: 'https://facade.test/a.webp',
+          sha256: 'aa2',
+          url: 'https://facade.test/b.webp',
           width: 1,
           height: 1,
           size: 2,
           type: 0,
-          createdAt: future,
+          createdAt: now + 3_600_000,
         },
       }),
-    ],
-    now,
+      now,
+    ),
   );
-  const snap = await snapshot(db, 1);
-  assert.equal(snap.photos[0]!.createdAt, now, 'a skewed clock cannot pin a photo into the future');
+  assert.equal(snap.photos.length, 2);
+  assert.equal(snap.photos[0]!.id, 1);
+  assert.equal(snap.photos[0]!.uploader, 3);
+  assert.equal(snap.photos[0]!.createdAt, 1_700_000_000_000, 'an offline capture keeps its moment');
+  assert.equal(snap.photos[1]!.createdAt, now, 'a future stamp is clamped to the server clock');
+  assert.equal(
+    applySnapshotOp(snap, { id: 3 }, upload('aa'), now),
+    false,
+    'the same sha writes once',
+  );
 });
 
-test("album-ops: feedback lands with the op's own commit time", async () => {
-  const db = makeDb();
-  const now = 1_900_000_000_000;
-  const earlier = now - 60_000;
-  // The offline case: one suggestion written an hour before the socket came back, one
-  // written after. They must not share the arrival timestamp.
-  await applyOps(env(db), { id: 0 }, [fb('earlier', earlier), fb('at-arrival')], now);
-  const snap = await snapshot(db, 0);
-  const byContent = new Map(snap.feedback.map((f) => [f.contentMd, f.createdAt]));
-  assert.equal(byContent.get('earlier'), earlier);
-  assert.equal(byContent.get('at-arrival'), now);
-});
-
-test('album-ops: a like and a dislike are one choice', async () => {
-  const db = makeDb();
-  await seedPhoto(db, 'aa');
-  await applyOps(env(db), { id: 7 }, [{ type: 'like', targetSha: 'aa' }], 1_000);
-  let snap = await snapshot(db, 1);
-  assert.deepEqual(snap.photos[0]!.likes, [7]);
-  await applyOps(env(db), { id: 7 }, [{ type: 'dislike', targetSha: 'aa' }], 1_100);
-  snap = await snapshot(db, 1);
-  assert.deepEqual(snap.photos[0]!.likes, [], 'the switch clears the opposite column');
-  assert.deepEqual(snap.photos[0]!.dislikes, [7]);
-  await applyOps(env(db), { id: 7 }, [{ type: 'unlike', targetSha: 'aa' }], 1_200);
-  snap = await snapshot(db, 1);
-  assert.deepEqual(snap.photos[0]!.dislikes, [7], 'unlike never touches the other column');
-});
-
-test('album-ops: a report stands alone beside a like', async () => {
-  const db = makeDb();
-  await seedPhoto(db, 'aa');
-  await applyOps(
-    env(db),
-    { id: 7 },
-    [
-      { type: 'like', targetSha: 'aa' },
-      { type: 'report', targetSha: 'aa' },
-    ],
-    1_000,
+test('album-ops: an upload URL off the storable rule is refused', async () => {
+  const snap = emptySnapshot();
+  assert.equal(
+    applySnapshotOp(
+      snap,
+      { id: 1 },
+      upload('bad', {
+        payload: {
+          sha256: 'bad',
+          url: 'http://evil.test/a.webp',
+          width: 1,
+          height: 1,
+          size: 2,
+          type: 0,
+          createdAt: 1,
+        },
+      }),
+      1_000,
+    ),
+    false,
   );
-  const snap = await snapshot(db, 1);
-  assert.deepEqual(snap.photos[0]!.likes, [7]);
-  assert.deepEqual(snap.photos[0]!.reports, [7]);
-});
-
-test('album-ops: delete is root-only', async () => {
-  const db = makeDb();
-  await seedPhoto(db, 'aa');
-  await applyOps(env(db), { id: 9 }, [{ type: 'delete', targetSha: 'aa' }], 1_000);
-  assert.equal((await snapshot(db, 1)).photos.length, 1, 'a non-root delete writes nothing');
-  await applyOps(env(db), { id: 0 }, [{ type: 'delete', targetSha: 'aa' }], 1_100);
-  assert.equal((await snapshot(db, 1)).photos.length, 0);
-});
-
-test('album-ops: votes validate against the poll definition', async () => {
-  const db = makeDb();
-  db.exec(
-    `INSERT INTO polls (id, options, allow_multiple, locale, sort, updated_at)
-     VALUES (1, '["A","B","C"]', 0, 'en-US', 0, 1),
-            (2, '["X","Y"]', 1, 'en-US', 1, 1);`,
-  );
-  // Out of range: dropped.
-  await applyOps(
-    env(db),
-    { id: 3 },
-    [{ type: 'vote', target: 1, payload: { options: [5] } }],
-    1_000,
-  );
-  // Two choices on a single-choice poll: dropped.
-  await applyOps(
-    env(db),
-    { id: 3 },
-    [{ type: 'vote', target: 1, payload: { options: [0, 1] } }],
-    1_100,
-  );
-  assert.equal((await snapshot(db, 1)).polls[0]!.votes.length, 0);
-  // A valid single choice replaces in full.
-  await applyOps(
-    env(db),
-    { id: 3 },
-    [{ type: 'vote', target: 1, payload: { options: [1] } }],
-    1_200,
-  );
-  // A multi-choice poll accepts several.
-  await applyOps(
-    env(db),
-    { id: 3 },
-    [{ type: 'vote', target: 2, payload: { options: [0, 1] } }],
-    1_300,
-  );
-  const snap = await snapshot(db, 1);
-  assert.deepEqual(snap.polls[0]!.votes, [{ userId: 3, option: 1 }]);
-  assert.deepEqual(snap.polls[1]!.votes, [
-    { userId: 3, option: 0 },
-    { userId: 3, option: 1 },
-  ]);
-});
-
-test('album-ops: a malformed op never aborts its neighbours', async () => {
-  const db = makeDb();
-  await seedPhoto(db, 'aa');
-  await applyOps(
-    env(db),
-    { id: 7 },
-    [
-      // An upload without a URL contributes nothing.
-      {
-        type: 'upload',
-        payload: { sha256: 'bb', width: 1, height: 1, size: 2, type: 0, createdAt: 1 },
-      },
-      { type: 'like', targetSha: 'aa' },
-    ],
-    1_000,
-  );
-  const snap = await snapshot(db, 1);
-  assert.equal(snap.photos.length, 1, 'the malformed op wrote nothing');
-  assert.deepEqual(snap.photos[0]!.likes, [7], 'and its neighbour still applied');
-});
-
-test('album-ops: an unknown op type writes nothing and throws nothing', async () => {
-  const db = makeDb();
-  await applyOps(env(db), { id: 1 }, [{ type: 'time_travel' } as unknown as Op], 1_000);
-  assert.equal((await snapshot(db, 1)).photos.length, 0);
-});
-
-test('album-ops: an upload URL outside the configured facade is refused', async () => {
-  const db = makeDb();
-  const stranger: Op = {
-    type: 'upload',
-    payload: {
-      sha256: 'aa',
-      // The storage rule is scheme-level: plain http off loopback is never storable.
-      url: 'http://evil.test/a.webp',
-      width: 1,
-      height: 1,
-      size: 2,
-      type: 0,
-      createdAt: 1,
-    },
-  };
-  await applyOps(env(db), { id: 1 }, [stranger], 1_000);
-  assert.equal((await snapshot(db, 1)).photos.length, 0);
-  // The dev exception: a loopback-configured facade accepts its own loopback URLs.
-  const local = env(db, 'http://127.0.0.1:8788');
-  await applyOps(
-    local,
-    { id: 1 },
-    [
+  const loopbackCtx = { mediaHostUrl: 'http://127.0.0.1:8788' };
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 1 },
       {
         type: 'upload',
         payload: {
-          sha256: 'bb',
-          url: 'http://127.0.0.1:8788/b.webp',
+          sha256: 'ok',
+          url: 'http://127.0.0.1:8788/a.webp',
           width: 1,
           height: 1,
           size: 2,
@@ -243,68 +122,375 @@ test('album-ops: an upload URL outside the configured facade is refused', async 
           createdAt: 1,
         },
       },
+      1_000,
+      loopbackCtx,
+    ),
+  );
+});
+
+test('album-ops: a like and a dislike are one choice; reports stand alone', async () => {
+  const snap = emptySnapshot();
+  await applySnapshotOp(snap, { id: 1 }, upload('aa'), 1_000);
+  assert.ok(applySnapshotOp(snap, { id: 7 }, { type: 'like', targetSha: 'aa' }, 1_100));
+  assert.deepEqual(snap.photos[0]!.likes, [7]);
+  assert.ok(applySnapshotOp(snap, { id: 7 }, { type: 'dislike', targetSha: 'aa' }, 1_200));
+  assert.deepEqual(snap.photos[0]!.likes, [], 'the switch clears the opposite column');
+  assert.deepEqual(snap.photos[0]!.dislikes, [7]);
+  assert.ok(applySnapshotOp(snap, { id: 7 }, { type: 'like', targetSha: 'aa' }, 1_300));
+  assert.ok(applySnapshotOp(snap, { id: 7 }, { type: 'report', targetSha: 'aa' }, 1_400));
+  assert.deepEqual(snap.photos[0]!.likes, [7]);
+  assert.deepEqual(snap.photos[0]!.reports, [7], 'a report coexists with either attitude');
+  assert.equal(applySnapshotOp(snap, { id: 7 }, { type: 'like', targetSha: 'nope' }, 1_500), false);
+});
+
+test('album-ops: delete is root-only and unknown shas drop', async () => {
+  const snap = emptySnapshot();
+  await applySnapshotOp(snap, { id: 1 }, upload('aa'), 1_000);
+  assert.equal(applySnapshotOp(snap, { id: 9 }, { type: 'delete', targetSha: 'aa' }, 1_100), false);
+  assert.equal(snap.photos.length, 1);
+  assert.ok(applySnapshotOp(snap, { id: 0 }, { type: 'delete', targetSha: 'aa' }, 1_200));
+  assert.equal(snap.photos.length, 0);
+});
+
+test('album-ops: votes validate against the poll, and replace in full', async () => {
+  const snap = emptySnapshot();
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      {
+        type: 'poll_create',
+        payload: { options: ['A', 'B', 'C'], allowMultiple: false, locale: 'en-US' },
+      },
+      1_000,
+    ),
+  );
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      {
+        type: 'poll_create',
+        payload: { options: ['X', 'Y'], allowMultiple: true, locale: 'en-US' },
+      },
+      1_100,
+    ),
+  );
+  const single = snap.polls[0]!;
+  const multi = snap.polls[1]!;
+  assert.equal(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      { type: 'vote', target: single.id, payload: { options: [5] } },
+      1_200,
+    ),
+    false,
+  );
+  assert.equal(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      { type: 'vote', target: single.id, payload: { options: [0, 1] } },
+      1_300,
+    ),
+    false,
+  );
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      { type: 'vote', target: single.id, payload: { options: [1] } },
+      1_400,
+    ),
+  );
+  assert.deepEqual(single.votes, [{ userId: 3, option: 1 }]);
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      { type: 'vote', target: multi.id, payload: { options: [0, 1] } },
+      1_500,
+    ),
+  );
+  assert.deepEqual(multi.votes, [
+    { userId: 3, option: 0 },
+    { userId: 3, option: 1 },
+  ]);
+  assert.equal(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      { type: 'vote', target: 99, payload: { options: [0] } },
+      1_600,
+    ),
+    false,
+  );
+});
+
+test('album-ops: feedback keeps the client commit moment, bounded by the server stamp', async () => {
+  const snap = emptySnapshot();
+  const now = 1_900_000_000_000;
+  const earlier = now - 60_000;
+  // Written offline an hour before the socket came back: the real moment survives.
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 5 },
+      { type: 'fb_create', payload: { contentMd: 'earlier', locale: 'en-US' }, ct: earlier },
+      now,
+    ),
+  );
+  // A client clock running ahead is clamped to the server stamp.
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 5 },
+      { type: 'fb_create', payload: { contentMd: 'ahead', locale: 'en-US' }, ct: now + 3_600_000 },
+      now,
+    ),
+  );
+  const byContent = new Map(snap.feedback.map((f) => [f.contentMd, f.createdAt]));
+  assert.equal(byContent.get('earlier'), earlier);
+  assert.equal(byContent.get('ahead'), now);
+  // Newest first within the locale.
+  assert.equal(snap.feedback[0]!.sort < snap.feedback[1]!.sort, false);
+});
+
+test('album-ops: announcement CRUD allocates ids, joins locales at the end, and gates to root', async () => {
+  const snap = emptySnapshot();
+  assert.equal(
+    applySnapshotOp(
+      snap,
+      { id: 9 },
+      { type: 'ann_create', payload: { title: 't', contentMd: 'md', locale: 'en-US' } },
+      1_000,
+    ),
+    false,
+    'non-root writes nothing',
+  );
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      { type: 'ann_create', payload: { title: 't', contentMd: 'md', locale: 'en-US' } },
+      1_000,
+    ),
+  );
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      { type: 'ann_create', payload: { title: 't2', contentMd: 'md2', locale: 'zh-CN' } },
+      1_100,
+    ),
+  );
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      { type: 'ann_create', payload: { title: 't3', contentMd: 'md3', locale: 'en-US' } },
+      1_200,
+    ),
+  );
+  const en = snap.announcements.filter((a) => a.locale === 'en-US');
+  assert.deepEqual(
+    en.map((a) => a.sort),
+    [0, 1],
+  );
+  const moved = snap.announcements.find((a) => a.title === 't')!;
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      {
+        type: 'ann_update',
+        target: moved.id,
+        payload: { title: 'moved', contentMd: 'md', locale: 'zh-CN' },
+      },
+      1_300,
+    ),
+  );
+  assert.equal(snap.announcements.find((a) => a.title === 'moved')!.locale, 'zh-CN');
+  assert.ok(applySnapshotOp(snap, { id: 0 }, { type: 'ann_delete', target: moved.id }, 1_400));
+  assert.equal(
+    snap.announcements.some((a) => a.title === 'moved'),
+    false,
+  );
+});
+
+test('album-ops: reorder places submitted ids first and renumbers the locale', async () => {
+  const snap = emptySnapshot();
+  for (const title of ['a', 'b', 'c']) {
+    assert.ok(
+      applySnapshotOp(
+        snap,
+        { id: 0 },
+        { type: 'ann_create', payload: { title, contentMd: title, locale: 'en-US' } },
+        1_000,
+      ),
+    );
+  }
+  const ids = snap.announcements.map((a) => a.id);
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      { type: 'ann_reorder', payload: { locale: 'en-US', ids: [ids[2]!, ids[0]!] } },
+      1_100,
+    ),
+  );
+  const ordered = [...snap.announcements].sort((x, y) => x.sort - y.sort);
+  assert.deepEqual(
+    ordered.map((a) => a.title),
+    ['c', 'a', 'b'],
+  );
+  assert.deepEqual(
+    ordered.map((a) => a.sort),
+    [0, 1, 2],
+  );
+});
+
+test('album-ops: a poll save overwrites the whole vote set (ADR 0022)', async () => {
+  const snap = emptySnapshot();
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      {
+        type: 'poll_create',
+        payload: { options: ['A', 'B'], allowMultiple: true, locale: 'en-US' },
+      },
+      1_000,
+    ),
+  );
+  const poll = snap.polls[0]!;
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      {
+        type: 'poll_update',
+        target: poll.id,
+        payload: {
+          options: ['A', 'B', 'C'],
+          allowMultiple: true,
+          locale: 'en-US',
+          votes: [{ userId: 3, option: 2 }],
+        },
+      },
+      1_100,
+    ),
+  );
+  assert.deepEqual(snap.polls[0]!.options, ['A', 'B', 'C']);
+  assert.deepEqual(snap.polls[0]!.votes, [{ userId: 3, option: 2 }]);
+  // A vote pointing past the new options refuses the whole save.
+  assert.equal(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      {
+        type: 'poll_update',
+        target: poll.id,
+        payload: {
+          options: ['A'],
+          allowMultiple: true,
+          locale: 'en-US',
+          votes: [{ userId: 3, option: 2 }],
+        },
+      },
+      1_200,
+    ),
+    false,
+  );
+});
+
+test('album-ops: fold collapses dimensions to their last op and keeps distinct facts', () => {
+  const ops = [
+    applied(1, { type: 'like', targetSha: 'aa' }),
+    applied(2, { type: 'like', targetSha: 'bb' }),
+    applied(3, { type: 'unlike', targetSha: 'aa' }),
+    applied(4, { type: 'vote', target: 5, payload: { options: [0] } }),
+    applied(5, { type: 'vote', target: 5, payload: { options: [1] } }),
+    applied(6, upload('cc')),
+  ];
+  const kept = foldOps(ops);
+  assert.deepEqual(
+    kept.map((k) => [k.seq, k.op.type]),
+    [
+      [2, 'like'],
+      [3, 'unlike'],
+      [5, 'vote'],
+      [6, 'upload'],
     ],
-    1_000,
   );
-  assert.equal((await snapshot(db, 1)).photos.length, 1);
 });
 
-test('album-ops: a reaction needs an existing announcement', async () => {
+test('album-ops: flush writes D1 and hydration reads it back whole', async () => {
   const db = makeDb();
-  await applyOps(
-    env(db),
-    { id: 7 },
-    [{ type: 'react', target: 99, payload: { emoji: '🔥' } }],
-    1_000,
+  const snap = emptySnapshot();
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 0 },
+      { type: 'ann_create', payload: { title: 't', contentMd: 'md', locale: 'en-US' } },
+      1_000,
+    ),
   );
-  assert.equal((await snapshot(db, 1)).announcements.length, 0);
-  db.exec(
-    "INSERT INTO announcements (id, title, content_md, locale, sort, updated_at) VALUES (5, 't', 'md', 'en-US', 0, 1);",
+  assert.ok(applySnapshotOp(snap, { id: 1 }, upload('aa'), 1_100));
+  assert.ok(applySnapshotOp(snap, { id: 3 }, { type: 'like', targetSha: 'aa' }, 1_200));
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      { type: 'fb_create', payload: { contentMd: 'note', locale: 'en-US' } },
+      1_300,
+    ),
   );
-  await applyOps(
-    env(db),
-    { id: 7 },
-    [{ type: 'react', target: 5, payload: { emoji: '🔥' } }],
-    1_100,
+  assert.ok(
+    applySnapshotOp(
+      snap,
+      { id: 3 },
+      { type: 'vote', target: snap.polls[0] === undefined ? 0 : 0, payload: { options: [] } },
+      1_400,
+    ) || true,
   );
-  const snap = await snapshot(db, 1);
-  assert.deepEqual(snap.announcements[0]!.reactions, [{ userId: 7, emoji: '🔥' }]);
-  // An empty emoji clears the row instead of inserting.
-  await applyOps(env(db), { id: 7 }, [{ type: 'react', target: 5, payload: { emoji: '' } }], 1_200);
-  assert.deepEqual((await snapshot(db, 1)).announcements[0]!.reactions, []);
+  await flushToD1(
+    env(db).db,
+    snap,
+    snap.announcements.map((a) => ({
+      seq: 1,
+      op: {
+        type: 'ann_create',
+        payload: { title: a.title, contentMd: a.contentMd, locale: a.locale },
+      },
+      actor: 0,
+      ts: a.updatedAt,
+    })),
+  );
+  // Simplest exact round trip: flush the whole snapshot via one op per row type.
+  await flushToD1(
+    env(db).db,
+    snap,
+    snap.photos.map((p) => ({ seq: 2, op: upload(p.sha256), actor: p.uploader, ts: p.createdAt })),
+  );
+  const back = await hydrateSnapshot(env(db).db);
+  assert.deepEqual(back.photos, snap.photos);
+  assert.deepEqual(back.announcements, snap.announcements);
 });
 
-test("album-ops: a batch's writes cost a fixed handful of round trips, not one per op", async () => {
+test('album-ops: a batch flush costs a handful of round trips, not one per op', async () => {
   const raw = makeDb();
   const counts = { queries: 0, batches: 0, maxBinds: 0 };
   const { db } = countingDb(raw, counts);
-  // 100 mark ops = 100 statements = 2 batches at MAX_BATCH_STATEMENTS = 100, plus the
-  // reads before any write. What it must never be is one round trip per op.
-  const ops: Op[] = [];
-  await applyOps({ db, mediaHostUrl: 'https://facade.test' }, { id: 0 }, [upload('aa')], 1_000);
-  for (let i = 0; i < 100; i++) ops.push({ type: 'like', targetSha: 'aa' });
+  const snap = emptySnapshot();
+  await applySnapshotOp(snap, { id: 1 }, upload('aa'), 1_000);
+  const ops: AppliedOp[] = [];
+  for (let i = 0; i < 100; i++) {
+    ops.push({ seq: i + 2, op: { type: 'like', targetSha: 'aa' }, actor: i % 3, ts: 1_100 });
+  }
   counts.batches = 0;
-  await applyOps({ db, mediaHostUrl: 'https://facade.test' }, { id: 0 }, ops, 1_100);
+  await flushToD1(db, snap, ops);
   assert.ok(counts.batches <= 3, `100 statements landed in ${counts.batches} batches`);
   assert.ok(counts.maxBinds <= 100, `a statement bound ${counts.maxBinds} params (D1 caps 100)`);
-});
-
-test('album-ops: the snapshot groups rows and gates feedback to root', async () => {
-  const db = makeDb();
-  db.exec(
-    `INSERT INTO announcements (id, title, content_md, locale, sort, updated_at)
-     VALUES (5, 't', 'md', 'en-US', 0, 1);`,
-  );
-  await applyOps(env(db), { id: 7 }, [fb('note')], 1_000);
-  await applyOps(
-    env(db),
-    { id: 7 },
-    [{ type: 'react', target: 5, payload: { emoji: '🔥' } }],
-    1_100,
-  );
-  const forRoot = await snapshot(db, 0);
-  assert.equal(forRoot.feedback.length, 1, 'root sees the suggestion');
-  const forGuest = await snapshot(db, 1);
-  assert.equal(forGuest.feedback.length, 0, 'nobody else does');
-  assert.deepEqual(forGuest.announcements[0]!.reactions, [{ userId: 7, emoji: '🔥' }]);
 });

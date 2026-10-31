@@ -11,6 +11,8 @@ import { adminApp } from './routes/admin.ts';
 
 export interface AppEnv {
   db: Db;
+  /** The single album Durable Object ("global") — migrate flushes/rehydrates through it. */
+  album?: DurableObjectNamespace;
   /** External image-host facade the browser uploads to (contract: README §Media host facade).
    *  Delivered in the /ws welcome frame; defaults to the local simulated host in dev. */
   mediaHostUrl?: string;
@@ -23,6 +25,9 @@ export interface AppEnv {
   /** Admin translation drafts. Absent when neither the AI binding nor the dev REST runner exists. */
   translate?: Translator;
 }
+
+/** The one album object; there are no other albums. */
+export const globalAlbumId = 'global';
 
 /** Endpoints answering JSON. Everything else gets the HTML error page, so a media
  *  proxy or static request never has to parse an error body. */

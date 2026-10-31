@@ -34,6 +34,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/ws') {
+      // WebSocket upgrades only: the DO's internal endpoints stay reachable exclusively
+      // through the binding, never from the public route.
+      if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+        return new Response('Expected WebSocket', { status: 426 });
+      }
       const id = env.Album.idFromName('global');
       const stub = env.Album.get(id);
       return stub.fetch(request);
@@ -63,6 +68,7 @@ export default {
       const runner = restRunner ?? bindingRunner;
       const appEnv: AppEnv = {
         db: d1Db(env.DB),
+        album: env.Album,
         mediaHostUrl: env.MEDIA_HOST_URL,
         turnstileSecret: env.TURNSTILE_SECRET_KEY,
         turnstileSiteKey: env.TURNSTILE_SITE_KEY,

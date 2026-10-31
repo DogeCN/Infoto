@@ -4,6 +4,7 @@ import type { Context } from 'hono';
 import { MAX_IMPORT_BYTES } from '../../shared/types.ts';
 import type { AppEnv } from '../app.ts';
 import type { Db } from '../db.ts';
+import { globalAlbumId } from '../app.ts';
 import { badRequest, forbidden, requireRoot } from '../http.ts';
 import { CREATE_TABLE_SQL, SCHEMA_SQL } from '../schema-ddl.ts';
 
@@ -135,6 +136,11 @@ const strip = (sql: string): string => sql.replace(/;$/, '');
 export function migrateExportHandler(env: AppEnv) {
   return async (c: Context): Promise<Response> => {
     if (!(await requireRoot(env.db, c))) return forbidden(c);
+    // The op log is the hot store; D1 only catches up at the edges. A dump must be
+    // exactly current, so the Durable Object folds every logged op into D1 first.
+    await env.album
+      ?.get(env.album.idFromName(globalAlbumId))
+      .fetch('https://album.internal/internal/flush');
     const parts = ['-- Infoto Export\n', SCHEMA_SQL.trim(), ''];
     for (const [table, columns] of Object.entries(EXPORT_COLUMNS)) {
       parts.push('\n', await dumpTable(env.db, table, columns));
@@ -202,6 +208,11 @@ export function migrateImportHandler(env: AppEnv) {
 
       for (const t of MIGRATE_TABLES) {
         await env.db.prepare(`DROP TABLE IF EXISTS ${t}_old`).run();
+        // The import wrote D1 directly, behind the op log's back: the Durable Object must drop
+        // its snapshot and rehydrate from D1, or its hot state and D1 disagree forever.
+        await env.album
+          ?.get(env.album.idFromName(globalAlbumId))
+          .fetch('https://album.internal/internal/rehydrate');
       }
       return c.json({ ok: true, imported: stmts.length });
     } catch (e) {
