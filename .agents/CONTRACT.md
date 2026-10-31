@@ -158,26 +158,27 @@ Back-filled from the commit history. Tagged sections are not yet written.
   trailing slashes for its own routes. Without it the Worker answered its own 404 for a link that
   names an existing photo; the asset layer is not involved (`run_worker_first` already routes
   `/l/*` here). A second slash is not handled — no path the app hands out produces one.
-- **Broken media shows a glitching 404.** A card whose media fails to load renders the same
-  `GlitchText` the error page uses, over a `--color-card` surface, and still opens the Lightbox,
-  which raises a failure toast of its own. The size is a container-query expression with a
-  breakpoint at 140px card width: `clamp(0.65rem, 14cqmin, 0.85rem)` below it,
-  `clamp(1.25rem, 22cqmin, 3.5rem)` above. **The number is a label, not a measured status** —
-  media is fetched cross-origin, where an `<img>`/`<video>` error event carries no HTTP status
-  and `fetch()` can only return an opaque response. It is read as "this file cannot be shown".
-  This fallback was removed on 2026-10-04 (in a commit about reflow motion, which is why the
-  deletion and the contract entry describing it were easy to miss) and restored on 2026-10-19:
-  a failed card with no marker is indistinguishable from one that has not loaded yet, and the
-  silent version shipped alongside a transcode defect that blanked every uploaded GIF — with
-  nothing in the grid to say so. Removing it again needs a replacement indicator, not deletion.
-- **Segmented sort pill.** The pill never decides its own shape — it renders `showLabels`
+- **Broken media shows the site mark in muted grey.** A card whose media fails to load
+  renders `SiteIcon` — the inline site mark at `text-muted-foreground/50` — over a
+  `--color-card` surface, sized to the card (24px below a 140px card width, 40px above), and
+  still opens the Lightbox, which raises a failure toast of its own. Media is fetched
+  cross-origin, where an `<img>`/`<video>` error event carries no HTTP status and `fetch()`
+  can only return an opaque response, so the mark reads as "this file cannot be shown" —
+  never as a status code. The earlier glitching-404 glyph (the error page's `GlitchText`)
+  was removed on 2026-10-04, restored on 2026-10-19 after a transcode defect blanked every
+  uploaded GIF with nothing in the grid to say so, and replaced by the quiet mark on
+  2026-10-31: the animated 404 was the loudest element on a broken card, and a failure is
+  not a headline. **A failed card must never be a bare surface** — whatever replaces the
+  media has to say something.
+- **Segmented sort pill.** The pill never decides its own shape — it renders `labelMode`
   as handed to it, and the **top bar** decides via `resolveBarMode`. Three modes: `full`
-  (one screen, labels), `compact` (one screen, icons), `paged` (two screens, whose first
-  screen is _always_ icon-only regardless of mode).
-  - Two shapes, one markup. Labelled: label `<span>` is `relative`. Icon-only: the span is
-    `absolute left-0 top-full invisible whitespace-nowrap` with `aria-hidden="true"`, and the
-    button carries `aria-label={label}`. **The span is kept, not removed** — that is the
-    measurement trap in ⚠️ §4.3, not an oversight.
+  (one screen, every item labelled), `compact` (one screen, only the current item labelled),
+  `paged` (two screens, whose first screen is _always_ icon-only regardless of mode).
+  - One markup, three shapes, via `labelMode: 'all' | 'current' | 'none'`. A hidden label
+    span is `absolute left-0 top-full invisible whitespace-nowrap` with `aria-hidden="true"`,
+    and the button then carries `aria-label={label}` — every mode that can hide a label names
+    its buttons explicitly; 'all' is the only one named by visible content. **The span is
+    kept, not removed** — that is the measurement trap in ⚠️ §4.3, not an oversight.
   - Shell: `relative flex items-center gap-1 rounded-full border border-border bg-card/80 p-1`.
     Indicator: `absolute bottom-1 left-0 top-1 rounded-full bg-primary`, transitioned on
     `--duration-enter`/`--ease-enter`, positioned from `offsetLeft`/`offsetWidth` observed per
@@ -189,14 +190,16 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - Structural gap counts are written down and must track the markup: **3 / 3 / 2** for
     single, paged-first, paged-second. The gap itself is _measured_
     (`getComputedStyle(rowEl).columnGap`), never assumed.
-  - Measurement contract: `pillMeasure` reports `shown` (the live tablist rect), and
-    `labelDelta` = width of the _opposite_ shape − `shown`. The opposite shape is a
-    `cloneNode(true)` re-shaped into normal flow at `width: max-content`, appended to
-    `document.body` — never inside the header, where an absolute twin becomes the containing
-    block for the paged track and drags both screens off-screen. Every span is stripped and
-    rebuilt from the button's `data-label`, which is the only lossless copy of the label text.
-    It is a data attribute, **not `title`**: the tabs' tooltips are the custom component now,
-    and a measurement must not depend on a tooltip's attribute to work.
+  - Measurement contract: `pillMeasure` reports `shown` (the live tablist rect) plus all three
+    shape widths — `labelled`, `current` (active item labelled), `icon` — so the bar resolves
+    the full three-level density from one pass, with `compact` requiring the `current` shape,
+    not the icon-only one. Each width comes from a `cloneNode(true)` re-shaped into normal
+    flow at `width: max-content`, appended to `document.body` — never inside the header,
+    where an absolute twin becomes the containing block for the paged track and drags both
+    screens off-screen. Every span is stripped and rebuilt from the button's `data-label`,
+    which is the only lossless copy of the label text. It is a data attribute, **not
+    `title`**: the tabs' tooltips are the custom component now, and a measurement must not
+    depend on a tooltip's attribute to work.
   - Re-measure triggers: mount, a `ResizeObserver` on the observed node (rAF-coalesced to one
     measurement per frame), and `update()`. `TopBar.remeasure()` bails unless _every_ measured
     width is non-zero, and also runs from the header observer, `window.resize` and a 250ms
@@ -208,6 +211,11 @@ Back-filled from the commit history. Tagged sections are not yet written.
     action. A wrapper that measured on its own account as well would append two clone probes to
     `<body>` and discard one result — the work is not halved by sharing the action, it is
     duplicated by not sharing it.
+- **Double-tap on the top bar scrolls the gallery to top.** The gesture rides
+  `onpointerdowncapture` on the bar and ignores taps landing on a button or link; two taps
+  within 300ms call the gallery's scroll-to-top, which `WaterfallLayout` registers once its
+  container mounts (`onScrollToTopReady` → `App`). One tap never scrolls, and the bar's own
+  pager drag — a `pointerdown` on the same element — is unaffected.
 - **Tooltips are always the custom component.** Every hover hint is `Tooltip.svelte`, or
   `TooltipIconButton.svelte` when the trigger is an icon button (it takes the text once, as
   both tooltip and `aria-label`; `ariaLabel` overrides when the spoken name is longer, and
@@ -244,6 +252,13 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - The tooltip follows its trigger while open (scroll, resize, sidebar drag) and flips to the
     opposite side when the preferred one has no room; placement is fixed-positioned above
     `<body>` via `portal`, so overflow clipping and transformed ancestors cannot trap it.
+- **One open sound per page.** `state/playback.svelte.ts` owns a single `{ url, surface }` —
+  the one media whose audio is open and the surface (grid card, Lightbox, Markdown) holding
+  it. Unmuting anywhere closes whatever else was open; the same photo reads the same state in
+  the grid and in the viewer, and `surface` is what keeps a card and the viewer behind it
+  from playing the same audio twice, out of phase. Opening the viewer takes the card's sound
+  over, closing hands it back to the grid, and a surface that unmounts releases only its own
+  sound. The playback slider stays a level; it is never a mute control.
 - **Waterfall card.** The card positions itself at `0,0` and moves purely by transform; its
   box arrives entirely as props.
   - `tight` = `width < 140 || height < 64`. There are exactly two density shapes and no third.
@@ -273,9 +288,9 @@ Back-filled from the commit history. Tagged sections are not yet written.
     `bg-black/55 text-white/75 backdrop-blur-sm` and are **display only**: the card reports the
     counts (`role="img"` with a plural `{count} like(s)` label) and every mark is made from the
     Lightbox, where the control is a real button. There is no hover state to promise a click.
-  - The volume button exists only for `photo.type === 2 && !loadFailed`. Its size is an inline
-    style (1.25rem / 1.9rem), and `volumeMuted` is component-local, starts `true`, and is
-    neither persisted nor sent anywhere.
+  - The volume button exists only for `photo.type === 2 && !loadFailed`, and refuses an empty
+    `photo.url` — an upload still in flight has no media to open. Its size is an inline style
+    (1.25rem / 1.9rem), and its state is the page's one open sound, never component-local.
   - **Density:** only the `shortest` strategies turn band into a count —
     `count = max(1, round((cross + gap) / (band + gap)))`. The `sequential` strategies read
     `band` as a target thickness and justify a filled row to exactly fill `cross`. Zoom
@@ -292,10 +307,14 @@ Back-filled from the commit history. Tagged sections are not yet written.
     `TOP_GAP = 0`, falling back to the ramp value only before the bar has measured.
   - **Virtualization is a state-lifetime contract.** The window is
     `[scroll − viewport×2, scroll + viewport×3]` (`bufferScreens = 2`) and the `{#each}` is keyed
-    by `box.id`, so cards are **destroyed** on scroll-out. Per-instance state (`loadedUrl`,
-    `volumeMuted`) is therefore lost and the fade-in replays on return — intended for the
-    former, a real loss for the latter. Geometry is deliberately carried across the unmount;
-    ⚠️ §4.4 is the model, and it is the reason a remount can glide at all.
+    by `box.id`, so cards are **destroyed** on scroll-out. Per-instance state (`loadedUrl`) is
+    therefore lost and the fade-in replays on a true return — intended. Within one mount,
+    though, `loadedUrl` survives a media-band exit, so a card that scrolls back paints its
+    media straight into the fresh element from the browser's HTTP cache instead of flashing
+    the skeleton (the element still unmounts, releasing the decode). The mute state is not
+    per-instance at all: it is the page's one open sound, which an unmount releases through
+    `releaseAudio` only when that surface owned it. Geometry is deliberately carried across
+    the unmount; ⚠️ §4.4 is the model, and it is the reason a remount can glide at all.
   - **Media is loaded in a narrower band than the render window.** A card renders its `<img>` /
     `<video>` only while its box sits within the viewport plus `MEDIA_LOAD_LOOKAHEAD = 0.4` of a
     viewport on each side; the rest of the buffer band paints the skeleton with the media element
@@ -303,8 +322,16 @@ Back-filled from the commit history. Tagged sections are not yet written.
     media across all of it multiplies decoded-image memory by the buffer factor, and that is what
     makes a long album kill a mobile tab. Because the band is wider than the viewport, a card
     enters it before it is visible, so the skeleton is normally painted off-screen. Leaving the
-    band **removes** the element — `loadedUrl` is cleared with it, so a return paints a skeleton
-    instead of a blank frame — and a destroyed card's video is paused and detached from its source.
+    band **removes** the element — `loadedUrl` survives the exit within one mount, so a return
+    paints its media from the HTTP cache instead of flashing a skeleton — and a destroyed
+    card's video is paused and detached from its source.
+  - **Only the viewport's top row autoplays.** `autoplayBoxIds` is derived against the live
+    scroll offset: the topmost visual row whose top edge sits fully below the bar and inside
+    the viewport may play (a card partly covered by the bar counts as outside); every other
+    near card keeps its source and freezes on the frame it reached — the band is a playback
+    cap, not a source cap, so the grid never flashes blank as rows cross it. A muted card
+    re-entering the band is started explicitly, because the `autoplay` attribute is only
+    honoured on load, and the open-sound holder always keeps its player, scrolling or not.
   - **The residual risk is a single very large original.** A waterfall card decodes at the
     photo's natural size; there is no rendition service in this deployment, so a 12-megapixel
     photo costs ~48 MB of decoded bitmap wherever it is shown. The band bounds _how many_ are
@@ -371,7 +398,11 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - **Swipe and `ArrowLeft`/`ArrowRight` are not paging.** They set a mark (like/dislike) and
     auto-advance after 200ms. Marks made by gesture are one-way — repeating does not cancel;
     only the top-bar buttons toggle. `ArrowUp` opens the menu, `ArrowDown` downloads, `Space`
-    toggles volume for video only.
+    toggles volume for video only. The viewer plays no sound of its own: it takes over the
+    open sound of the photo it shows, closes a sound that belongs to another media (a hidden
+    card must not keep playing behind the overlay), and hands the sound back to the grid card
+    when it closes. Its `<video>` rides `preload="metadata"` — playback still starts at once,
+    but the whole file is no longer buffered up front.
   - Swipe thresholds are viewport-scaled from a 768px reference: 60px to trigger, 10px to show
     the direction hint.
   - Zoom is `Ctrl` + left-drag (mouse only, inside the media box) and pinch/two-finger on touch;
@@ -647,8 +678,9 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
   volume.
   - **The volume slider is the site's playback level, never a mute control.** It spans 0–100 %
     in steps of 5 and writes the `<video>` `volume` property on every surface that plays one — a
-    waterfall card, the Lightbox video, video rendered by Markdown. Each element keeps its own
-    mute state, autoplay stays muted, and 0 % is silence rather than an accidental unmute.
+    waterfall card, the Lightbox video, video rendered by Markdown. Mute/sound is the page's
+    one open sound, not per-element state; autoplay stays muted, and 0 % is silence rather
+    than an accidental unmute.
   - `state/playback.svelte.ts` owns the live level; `App` publishes the stored value before the
     first paint and keeps it in step with the settings callback. No component keeps a copy.
   - It takes no part in the layout-preview transparency: changing the level moves no geometry.
@@ -812,8 +844,10 @@ before deadline` / `no response before deadline`).
       - `mdSafe` keeps images disabled for public content: the rule is installed on `mdFull`
         only.
     - Video is muted for autoplay (`autoplay loop muted playsinline`) — the only autoplay browsers
-      allow — and one delegated click listener on the container toggles the sound. Audio is a
-      full-width `<audio controls>` with no aspect-ratio holder: a player is a bar, not a picture.
+      allow. Clicking the picture does nothing; each rendered video gets the same corner volume
+      button as the waterfall card and Lightbox, built into the sanitized holder and wired to
+      the page's one open sound. Audio is a full-width `<audio controls>` with no aspect-ratio
+      holder: a player is a bar, not a picture.
     - The toolbar button is **File**, not Image.
     - **No alt text.** The file name used to be the alt, and the browser paints alt as
       broken-image text while the image decodes — it read as an ugly caption over the
@@ -931,6 +965,13 @@ before deadline` / `no response before deadline`).
     to the copy glyph. The confirmation belongs where the click landed. Failure is the one generic
     toast (`lightbox.copyFailed`) — a second copy of that string is exactly the drift the copy
     table exists to prevent.
+- **Service worker (production only).** `main.ts` registers `/sw.js` behind
+  `import.meta.env.PROD` — in dev the worker would cache Vite's unhashed module URLs and pin
+  stale code against HMR. Navigations serve the cached SPA shell, so the album opens offline
+  and hydrates from its IndexedDB snapshot; content-hashed static assets (`/assets/`,
+  extension-matched) are cache-first; media and API requests stay network-only, and queued
+  ops remain in IndexedDB until the next online sync — no background retry. A new version
+  `skipWaiting()`s, claims clients, and prunes old caches in `activate`.
 
 ---
 
@@ -1289,6 +1330,22 @@ asserts the list against `createApp()`'s own route table, so adding a route with
 `npm test`. The two-`curl` comparison above is still the only check that the _production_ layer
 agrees with the list.
 
+### 4.16 An autoplay cap that never re-measured left every other card a skeleton
+
+**What happened:** the first cut of the autoplay band keyed each card's `<video>` with
+`src={inBand ? url : undefined}` and `preload="none"`, and derived the band once — its
+dependencies did not include the scroll offset, so the band froze on the first rendered top
+row. Every other near video card was left with a source that could never load and a
+`loadedUrl` that could never arrive: the grid filled with permanent skeletons, and no amount
+of scrolling brought another row into the rule.
+
+**Now:** the band is derived against the live scroll offset, and the cap is a **playback**
+cap, not a source cap — out-of-band cards keep their source and freeze on the frame they
+reached (`pause()` when the band moves off), a muted card re-entering the band is started
+explicitly, and the open-sound holder is exempt so scrolling cannot kill audio the page says
+is on. The lesson generalises: a cap that removes a resource must still leave the surface
+renderable, and any band computed from the viewport must read the scroll offset that moves it.
+
 ---
 
 ## 5. Executable gates
@@ -1340,6 +1397,8 @@ The parts of this contract that are asserted by `npm test`:
 | The font race cancels the losers, and a failed source removes only itself            | `src/shared/fonts.test.ts`              |
 | The error page's CSP hash equals the race script it authorises                       | `src/shared/fonts.test.ts`              |
 | The playback level is a setting: v5 round-trips, clamps, and a bad one resets (§3)   | `web/tests/unit/settings.test.ts`       |
+| One open sound per page; surface hand-off keeps grid and viewer in step (§3)         | `web/tests/unit/playbackAudio.test.ts`  |
+| A failed media card shows the grey site mark, never a bare surface (§3)              | `web/tests/unit/photoCard.test.ts`      |
 | Every registered copy key is read by a source file (§10)                             | `src/shared/copy.test.ts`               |
 | An overlong announcement is refused on write, and a create takes no votes            | `src/worker/routes/admin.test.ts`       |
 | A locale change joins the target locale's order instead of duplicating an index      | `src/worker/routes/admin.test.ts`       |

@@ -3,6 +3,7 @@
   import { Clock4, Clock10, Flame, Snowflake, Shuffle } from '@lucide/svelte';
   import SegmentedControl from '$lib/components/SegmentedControl.svelte';
   import type { SegmentedItem } from '$lib/components/SegmentedControl.svelte';
+  import type { PillWidths } from '$lib/components/pillMeasure';
   import { copy } from '$lib/i18n.svelte';
   import type { SortKey } from '../../core/gallery';
 
@@ -12,10 +13,10 @@
     dirs?: Partial<Record<SortKey, boolean>>;
     onChange?: (key: SortKey) => void;
     onReshuffle?: () => void;
-    /** Icon-only: the top bar hides the labels when the pill is actually squeezed. */
-    hideLabel?: boolean;
+    /** Label density contract passed from the top bar: 'all' | 'current' | 'none'. */
+    labelMode?: 'all' | 'current' | 'none';
     /** Density report, forwarded from the shared pill measurement. */
-    onWidths?: (info: { shown: number; shownIsLabelled: boolean; labelDelta: number }) => void;
+    onWidths?: (widths: PillWidths) => void;
   }
 
   let {
@@ -23,7 +24,7 @@
     dirs = {},
     onChange,
     onReshuffle,
-    hideLabel = false,
+    labelMode = 'all',
     onWidths,
   }: Props = $props();
 
@@ -56,7 +57,7 @@
 <SegmentedControl
   {items}
   value={sortKey}
-  {hideLabel}
+  {labelMode}
   ariaLabel={copy.sort.ariaLabel}
   {onWidths}
   onChange={(k) => onChange?.(k)}

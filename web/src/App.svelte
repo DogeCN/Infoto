@@ -72,6 +72,9 @@
   let rightOpen = $state(false);
   let layoutPreview = $state<LayoutPreviewControl>(null);
   let multiMode = $state(false);
+  /** Gallery scroll-to-top, registered by WaterfallLayout once its container mounts.
+   *  Always callable (a no-op until registration) so the template needs no null dance. */
+  let scrollToTop: () => void = () => {};
 
   /** Measured upload-panel geometry. A stable callback preserves the panel's observer
    *  subscription; the edge and heights come from the panel's own ResizeObserver, so
@@ -403,6 +406,7 @@
       settingsActive={leftOpen}
       announcementActive={rightOpen}
       multiSelectActive={multiMode}
+      onScrollToTop={() => scrollToTop()}
     />
 
     <main class="relative flex-1 overflow-hidden">
@@ -449,6 +453,7 @@
           onDownloadSelected={handleDownloadSelected}
           onUnmarkSelected={handleUnmarkSelected}
           onDownload={handleDownload}
+          onScrollToTopReady={(fn) => (scrollToTop = fn)}
         />
       {/if}
     </main>

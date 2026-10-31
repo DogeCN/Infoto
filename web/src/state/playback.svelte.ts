@@ -1,9 +1,8 @@
-// The site-wide playback level for every `<video>`, shared by the settings slider and
-// the three surfaces that render video (a waterfall card, the Lightbox, rendered Markdown).
+// The site-wide playback level for every `<video>`, shared by the settings slider and the
+// three surfaces that render video (a waterfall card, the Lightbox, rendered Markdown).
 //
 // The level is a preference, not element state: it never unmutes anything, because a
-// muted autoplay element is the only kind browsers will start. Each component therefore
-// keeps its own mute toggle and reads this one value for `volume`.
+// muted autoplay element is the only kind browsers will start.
 
 import { clamp } from '$base/lib/num';
 
@@ -14,4 +13,52 @@ export const playbackVolume = $state({ value: 1 });
 export function setPlaybackVolume(value: number): void {
   if (!Number.isFinite(value)) return;
   playbackVolume.value = clamp(value, 0, 1);
+}
+
+/** The surfaces that can render a video. Only one of them may sound at a time. */
+export type AudioSurface = 'grid' | 'lightbox' | 'markdown';
+
+/**
+ * The media whose sound is **open**, and the surface currently rendering it.
+ *
+ * One owner for the whole page, not one flag per element: unmuting anywhere closes whatever
+ * else was open, and the same photo therefore reads the same state in the waterfall and in the
+ * Lightbox. The `surface` is not redundant with the URL — the same media can be rendered twice
+ * at once (the grid card behind an open viewer), and only the surface holding the sound may
+ * unmute its element, or the same audio would play twice, out of phase.
+ */
+export const audio = $state<{ url: string | null; surface: AudioSurface | null }>({
+  url: null,
+  surface: null,
+});
+
+/** True when `url` is the open media and `surface` is the one playing it. */
+export function isAudioOpen(url: string | null | undefined, surface: AudioSurface): boolean {
+  return url != null && audio.url === url && audio.surface === surface;
+}
+
+/** Open `url` on `surface`, or close it when that same element already holds the sound. */
+export function toggleAudio(url: string, surface: AudioSurface): void {
+  if (audio.url === url && audio.surface === surface) {
+    closeAudio();
+    return;
+  }
+  audio.url = url;
+  audio.surface = surface;
+}
+
+/** Move the open sound to another surface (the viewer taking it over, or handing it back). */
+export function claimAudio(surface: AudioSurface): void {
+  if (audio.url !== null) audio.surface = surface;
+}
+
+/** Close whatever is open. */
+export function closeAudio(): void {
+  audio.url = null;
+  audio.surface = null;
+}
+
+/** A surface that unmounts gives up its own sound; another surface's sound is untouched. */
+export function releaseAudio(url: string, surface: AudioSurface): void {
+  if (audio.url === url && audio.surface === surface) closeAudio();
 }

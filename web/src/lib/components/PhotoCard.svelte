@@ -6,10 +6,15 @@
   import { reflowFlipWindowMs } from '$base/lib/motion';
   import { prefersReducedMotion } from '$base/lib/device.svelte';
   import TooltipIconButton from './TooltipIconButton.svelte';
-  import GlitchText from './GlitchText.svelte';
+  import SiteIcon from './SiteIcon.svelte';
   import type { GeomStamp } from '$base/lib/layout';
   import type { UploadOverlay } from '../../core/pending';
-  import { playbackVolume } from '../../state/playback.svelte';
+  import {
+    playbackVolume,
+    isAudioOpen,
+    releaseAudio,
+    toggleAudio,
+  } from '../../state/playback.svelte';
   import {
     ThumbsUp,
     ThumbsDown,
@@ -41,6 +46,9 @@
      *  virtualizer's buffer band renders cards before they are visible; keeping their
      *  images out of the DOM is what bounds decoded-image memory on a long album. */
     mediaNear?: boolean;
+    /** Whether this card is in the autoplay band (the viewport's visible top row); the
+     *  open-sound holder always keeps its player regardless of the band. */
+    autoplay?: boolean;
     selected?: boolean;
     multiMode?: boolean;
     onClick?: () => void;
@@ -61,6 +69,7 @@
     reflowAt = 0,
     overlay,
     mediaNear = true,
+    autoplay: autoplayProp = true,
     selected = false,
     multiMode = false,
     onClick,
@@ -81,18 +90,14 @@
       ? 'flex items-center gap-0.5 rounded-full bg-black/55 px-1 py-px text-[10px] font-medium text-white/75 backdrop-blur-sm'
       : 'flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm',
   );
-  let volumeMuted = $state(true);
+  /** The shared open-sound state: this card is the player only while it holds the sound. */
+  let volumeMuted = $derived(!isAudioOpen(photo.url, 'grid'));
   let loadFailed = $state(false);
   // The card sits at 0,0 and moves purely by transform; a CSS transition interpolates
   // between reflows and retargets mid-flight, so continuous reflows (a dragged slider)
   // glide instead of restart-jumping. `placed` gates the transition until the first box
   // has landed, so a mount never slides in from the origin.
   let placed = $state(false);
-  // The virtualizer unmounts cards outside the scroll window, so on a reflow those cards
-  // would remount straight at the new box. Within the flip window a remounting card is
-  // painted at its remembered old box first, gets the transition enabled, then retargets
-  // to the new box — same glide as the cards that stayed mounted. The window comes from
-  // `--duration-reflow` (see `reflowFlipWindowMs`) rather than a literal of its own.
   const reducedMotion = prefersReducedMotion();
   let fromBox: GeomStamp | null = $state(null);
   // Mount-time snapshot, on purpose. This sits outside every `$effect` in the component, so
@@ -165,25 +170,44 @@
     }
   });
 
-  // Failed media renders the shared 404 glyph below; the Lightbox additionally toasts, since
+  // Failed media renders the shared site mark below; the Lightbox additionally toasts, since
   // the card itself still opens into it. type=1 (animated image without an audio track) and
   // type=2 (video with sound) are both video media — a card plays them muted and looping.
   let isVideo = $derived(photo.type !== 0);
-  /** The card's own `<video>`; its `volume` follows the shared playback level, and its
-   *  `muted` state stays component-local, so the slider never unmutes an autoplay element. */
+  /** The card's own `<video>`; its `volume` follows the shared playback level and its `muted`
+   *  the shared open-sound state, so the slider never unmutes an autoplay element. */
   let videoEl = $state<HTMLVideoElement | undefined>(undefined);
   $effect(() => {
     if (videoEl) videoEl.volume = playbackVolume.value;
+  });
+  /** Band membership plus the sound exemption: a card holding the open sound keeps its
+   *  player even after the band moves on — the page says its audio is open, and scrolling
+   *  must not kill it. */
+  let playsHere = $derived(autoplayProp || isAudioOpen(photo.url, 'grid'));
+  // The band is a playback cap, not a source cap: a card outside it keeps its source and
+  // freezes on the frame it reached, so the grid never flashes blank as the band moves.
+  $effect(() => {
+    if (!videoEl) return;
+    if (!playsHere && !videoEl.paused) videoEl.pause();
+    if (playsHere && videoEl.paused && volumeMuted) {
+      // The `autoplay` attribute is only honoured on load, so a muted card that re-enters
+      // the band (or mounts into it after a reflow) must be started explicitly.
+      void videoEl.play().catch(() => undefined);
+    }
+  });
+  // Opening the sound is a user gesture; the explicit play() lets a card outside the band
+  // (or one whose element mounted after the state flipped) actually start rolling.
+  $effect(() => {
+    if (videoEl && isAudioOpen(photo.url, 'grid')) void videoEl.play().catch(() => undefined);
   });
   /** Media is only in the DOM within the load band. Outside it the card keeps its box and
    *  paints the skeleton, which is what releases the decoded bitmap: an `<img>` element left in
    *  the document holds its full-resolution decode for as long as it exists. */
   let showMedia = $derived(mediaNear && photo.url !== '');
-  // Leaving the band drops the media element, so the url it had loaded no longer describes
-  // anything on screen; clearing it makes the return paint a skeleton instead of a blank frame.
-  $effect(() => {
-    if (!showMedia) untrack(() => (loadedUrl = ''));
-  });
+  // Keep `loadedUrl` across band exits so a card that scrolls back in paints its media
+  // immediately instead of flashing a skeleton. The media element itself still unmounts
+  // (releasing the decode), and `loadedUrl === photo.url` makes the return paint straight
+  // into the <video> — the browser re-fetches from its HTTP cache, no spinner.
   onDestroy(() => {
     // A detached <video> can keep decoding; an <img> keeps its decode until it is collected.
     // Detaching the source first tells the browser to let go of both.
@@ -193,6 +217,8 @@
       video.removeAttribute('src');
       video.load();
     }
+    // An unmounted card cannot keep the sound open; another surface's sound is untouched.
+    releaseAudio(photo.url, 'grid');
   });
   /** Largest fraction the upload curtain may open to while the job is still running. */
   const CURTAIN_MAX_OPEN = 0.9;
@@ -225,11 +251,9 @@
     cancelLongPress();
   });
 
-  // A card whose media will not load reads as "404" — the same glyph the not-found page uses.
-  // The number is a label, not a measured status: media is fetched cross-origin, where an
-  // <img>/<video> error event carries no HTTP status and fetch() can only return an opaque
-  // response. It says "this file cannot be shown", which is the only thing the card knows.
-  const failStatus = '404';
+  // A card whose media will not load reads as "cannot be shown". Media is fetched
+  // cross-origin, where an <img>/<video> error event carries no HTTP status and fetch()
+  // can only return an opaque response — that is the only thing the card knows.
 
   /**
    * A media element that cannot load its source. A local preview is a stand-in for bytes the
@@ -274,36 +298,35 @@
     onClick?.();
   }}
 >
-  <!-- Media: on load failure render a glitching error code. The failure is also reported by the
-       Lightbox toast, which the card still opens; the grid shows this glyph instead of silence.
-       Empty URL (upload still in flight) keeps the skeleton instead of an <img>
+  <!-- Media: on load failure render the site mark in muted grey. The failure is also reported
+       by the Lightbox toast, which the card still opens; the grid shows this mark instead of
+       silence. Empty URL (upload still in flight) keeps the skeleton instead of an <img>
        whose instant error would flip the card to the fallback. -->
   {#if loadFailed}
-    <div class="flex h-full w-full items-center justify-center bg-card [container-type:size]">
-      <GlitchText
-        text={failStatus}
-        size={width < 140 ? 'clamp(0.65rem, 14cqmin, 0.85rem)' : 'clamp(1.25rem, 22cqmin, 3.5rem)'}
-      />
+    <div class="flex h-full w-full items-center justify-center bg-card text-muted-foreground/50">
+      <SiteIcon size={width < 140 ? 24 : 40} />
     </div>
   {:else if showMedia}
     {#if loadedUrl !== photo.url}
       <div class="absolute inset-0 skeleton" aria-hidden="true"></div>
     {/if}
     {#if isVideo}
-      <video
-        bind:this={videoEl}
-        src={photo.url}
-        class="h-full w-full object-cover transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loadedUrl ===
-        photo.url
-          ? 'opacity-100'
-          : 'opacity-0'}"
-        muted={volumeMuted}
-        loop
-        autoplay
-        playsinline
-        onloadeddata={() => (loadedUrl = photo.url)}
-        onerror={handleMediaError}
-      ></video>
+      <div class="absolute inset-0 overflow-hidden rounded-[var(--radius-card)]">
+        <video
+          bind:this={videoEl}
+          src={autoplayProp ? photo.url : undefined}
+          class="h-full w-full object-cover rounded-[var(--radius-card)] transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loadedUrl ===
+          photo.url
+            ? 'opacity-100'
+            : 'opacity-0'}"
+          muted={volumeMuted}
+          loop
+          autoplay={playsHere}
+          playsinline
+          onloadeddata={() => (loadedUrl = photo.url)}
+          onerror={handleMediaError}
+        ></video>
+      </div>
     {:else}
       <img
         src={photo.url}
@@ -475,7 +498,9 @@
       style="width: {tight ? '1.25rem' : '1.9rem'}; height: {tight ? '1.25rem' : '1.9rem'}"
       onclick={(e) => {
         e.stopPropagation();
-        volumeMuted = !volumeMuted;
+        // A card whose upload is still in flight has no media URL yet; there is nothing to open.
+        if (!photo.url) return;
+        toggleAudio(photo.url, 'grid');
       }}
     >
       {#if volumeMuted}

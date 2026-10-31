@@ -26,11 +26,12 @@ function failedBranch(): string {
   return card.slice(start, end);
 }
 
-test('photo card: a failed media card shows the glitch 404 rather than a blank surface', () => {
+test('photo card: a failed media card shows the grey site mark rather than a blank surface', () => {
   const branch = failedBranch();
-  assert.match(branch, /<GlitchText/, 'the failed branch renders no glyph');
-  assert.match(branch, /text=\{failStatus\}/, 'the glyph does not take the failure status');
-  assert.match(card, /const failStatus = '404'/, 'failStatus is not 404');
+  // The failure glyph is the site mark in muted grey — quiet, non-glowing, non-animated.
+  assert.match(branch, /<SiteIcon/, 'the failed branch renders no site mark');
+  assert.match(branch, /text-muted-foreground/, 'the mark is not muted grey');
+  assert.doesNotMatch(branch, /GlitchText/, 'the failed branch still renders the glitch 404');
   // The regression this test exists for: a bare surface with nothing to say.
   assert.equal(
     branch.replace(/\s+/g, ' ').includes('<div class="h-full w-full bg-card"></div>'),
@@ -40,9 +41,8 @@ test('photo card: a failed media card shows the glitch 404 rather than a blank s
 
 test('photo card: the failure glyph is sized for the card it sits in', () => {
   const branch = failedBranch();
-  // Container units, not viewport ones: a 90px card and a 400px card are on the same screen.
-  assert.match(branch, /cqmin/);
-  assert.match(branch, /\[container-type:size\]/);
+  // Card width, not viewport width: a 90px card and a 400px card are on the same screen.
+  assert.match(branch, /size=\{width < 140 \? 24 : 40\}/);
 });
 
 test('photo card: no overlay control lets its click reach the card', () => {

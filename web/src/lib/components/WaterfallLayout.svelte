@@ -57,6 +57,8 @@
     onUnmarkSelected?: (ids: number[]) => void;
     /** Single-photo download (Lightbox swipe-down gesture). */
     onDownload?: (photo: Photo) => void;
+    /** Register a gallery-level scroll-to-top callback (wired from the top bar double-tap). */
+    onScrollToTopReady?: (fn: () => void) => void;
   }
 
   let {
@@ -81,6 +83,7 @@
     onDownloadSelected,
     onUnmarkSelected,
     onDownload,
+    onScrollToTopReady,
   }: Props = $props();
 
   let containerEl: HTMLDivElement | undefined = $state(undefined);
@@ -88,7 +91,49 @@
   let scrollLeftPos = $state(0);
   let viewportH = $state(0);
   let containerW = $state(0);
-  /** Canvas inset: the scroll container is full-width (scrollbar at the viewport edge), whitespace comes from the canvas margin. */
+  /** Ids of the topmost row of cards that sit fully inside the viewport — a card partly
+   *  covered by the top bar counts as outside. Only these may autoplay; every other card
+   *  keeps its first frame frozen, so the hardware decoder pool is never exhausted by a
+   *  full screen of simultaneous video. The window is read in content coordinates against
+   *  the live scroll offset, so the rule tracks the visible top band instead of freezing
+   *  the first one, and the row is whatever the current column count produces — never a
+   *  hardcoded card cap. */
+  let autoplayBoxIds = $derived.by(() => {
+    if (!layoutReady || boxes.length === 0) return new Set<number>();
+    const barH = Math.ceil(barHVar() || barHeight(containerW));
+    const windowTop = scrollTop + barH;
+    const windowBottom = scrollTop + viewportH;
+    let minY = Infinity;
+    let topH = 0;
+    const candidates: LayoutBox[] = [];
+    for (const box of boxes) {
+      // Top edge at or below the bar bottom (not obscured) and starting inside the viewport.
+      if (box.y >= windowTop - 1 && box.y < windowBottom) {
+        candidates.push(box);
+        if (box.y < minY) {
+          minY = box.y;
+          topH = box.h;
+        }
+      }
+    }
+    // Same visual row = top edge within the upper half of the topmost card. Masonry
+    // columns drift apart further down, but the top band is what the rule names.
+    const band = minY + topH * 0.5;
+    const ids = new Set<number>();
+    for (const box of candidates) {
+      if (box.y <= band) ids.add(box.id);
+    }
+    return ids;
+  });
+
+  /** Expose a scroll-to-top so the top bar can wire a double-tap gesture to it. */
+  $effect(() => {
+    if (containerEl && onScrollToTopReady) {
+      const el = containerEl;
+      const fn = () => el.scrollTo({ top: 0, behavior: 'smooth' });
+      onScrollToTopReady(fn);
+    }
+  });
   let padX = $derived(Math.max(8, Math.min(16, Math.round(containerW * 0.02))));
   /** Extra breathing room above the first row, on top of the bar's own height.
    *
@@ -604,6 +649,7 @@
             {photo}
             {selfId}
             mediaNear={near}
+            autoplay={near && autoplayBoxIds.has(box.id)}
             x={box.x}
             y={box.y}
             width={box.w}

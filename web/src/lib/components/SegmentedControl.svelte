@@ -19,13 +19,17 @@
     onChange?: (value: T) => void;
     /** Fired when the already-active item is clicked again (e.g. "random" reshuffle). */
     onReselect?: (value: T) => void;
-    /** Show icons without labels when the parent selects compact density; the tooltip and
-     *  `data-label` retain the name (the label text is a measurement input, so it is a data
-     *  attribute — `pillMeasure` rebuilds the labelled clone from it). */
-    hideLabel?: boolean;
+    /**
+     * Label density contract shared with the top bar:
+     * - 'all'   every item shows icon + label
+     * - 'current' only the active item shows icon + label, others show icon only
+     * - 'none'  every item shows icon only
+     * The tooltip / `data-label` always retain the name.
+     */
+    labelMode?: 'all' | 'current' | 'none';
     size?: 'sm' | 'md';
     ariaLabel?: string;
-    onWidths?: (info: { shown: number; shownIsLabelled: boolean; labelDelta: number }) => void;
+    onWidths?: (widths: PillWidths) => void;
   }
 
   let {
@@ -33,7 +37,7 @@
     value,
     onChange,
     onReselect,
-    hideLabel = false,
+    labelMode = 'all',
     size = 'md',
     ariaLabel,
     onWidths,
@@ -69,11 +73,10 @@
   const measure = $derived.by(() => {
     void value;
     void items;
-    void hideLabel;
+    void labelMode;
     void size;
     return {
-      labelled: !hideLabel,
-      deps: JSON.stringify([items, value, hideLabel, size, document.documentElement.lang]),
+      deps: JSON.stringify([items, value, labelMode, size, document.documentElement.lang]),
       onWidths: (info: PillWidths) => onWidths?.(info),
     };
   });
@@ -82,6 +85,16 @@
     void measure;
     if (value !== undefined) syncIndicator(value);
   });
+
+  // Label hidden for every item when the density contract hides labels entirely; per-item
+  // override when only the current item keeps its label. A hidden span is aria-hidden, so
+  // every mode that can hide a label also names its button via aria-label — 'all' is the
+  // only mode whose buttons are named by their visible content alone.
+  function labelHidden(active: boolean): boolean {
+    if (labelMode === 'none') return true;
+    if (labelMode === 'current') return !active;
+    return false;
+  }
 
   function onKeydown(event: KeyboardEvent, index: number) {
     let next: number;
@@ -147,14 +160,16 @@
           active ? 'text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
         )}
         data-label={item.label}
-        aria-label={hideLabel ? item.label : undefined}
+        aria-label={labelMode === 'all' ? undefined : item.label}
         onclick={() => pick(item.value)}
       >
         {#if Icon}<Icon class="size-[var(--bar-badge)]" />{/if}
         <span
           data-tab-label
-          aria-hidden={hideLabel}
-          class={hideLabel ? 'absolute left-0 top-full invisible whitespace-nowrap' : 'relative'}
+          aria-hidden={labelHidden(active)}
+          class={labelHidden(active)
+            ? 'absolute left-0 top-full invisible whitespace-nowrap'
+            : 'relative'}
         >
           {item.label}
         </span>

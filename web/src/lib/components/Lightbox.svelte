@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { overlay } from '$base/lib/overlay';
   // Full-screen media viewer with swipe actions, pinch and wheel zoom, drag panning, and keyboard controls.
   import { MEDIA_TYPE, type Photo } from '$shared/types';
@@ -25,7 +26,14 @@
   import { humanSize } from '$base/lib/format';
   import { copyToClipboard } from '$base/lib/clipboard';
   import { motionEase, motionMs } from '$base/lib/motion';
-  import { playbackVolume } from '../../state/playback.svelte';
+  import {
+    playbackVolume,
+    audio,
+    isAudioOpen,
+    claimAudio,
+    closeAudio,
+    toggleAudio,
+  } from '../../state/playback.svelte';
   import ActionSheet from './ActionSheet.svelte';
   import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
@@ -85,9 +93,8 @@
   /** Zoom bounds are imported from the lightbox engine (MIN_SCALE / MAX_SCALE). */
 
   let showMenu = $state(false);
-  let volumeMuted = $state(true);
   /** The displayed `<video>` (present for every non-image type). `volume` is a property, so it
-   *  is written from the shared playback level; `muted` stays this component's own state. */
+   *  is written from the shared playback level; `muted` follows the shared open-sound state. */
   let mediaVideoEl = $state<HTMLVideoElement | undefined>(undefined);
   $effect(() => {
     if (mediaVideoEl) mediaVideoEl.volume = playbackVolume.value;
@@ -103,6 +110,8 @@
   const failToastSeen = new Set<string>();
 
   let photo = $derived(photos[currentIndex]);
+  /** The shared open-sound state; the viewer is the player only while it holds the sound. */
+  let volumeMuted = $derived(!isAudioOpen(photo?.url, 'lightbox'));
   let isLiked = $derived(photo?.likes.includes(selfId) ?? false);
   let isDisliked = $derived(photo?.dislikes.includes(selfId) ?? false);
   let isReported = $derived(photo?.reports.includes(selfId) ?? false);
@@ -754,13 +763,19 @@
         break;
       case ' ':
         e.preventDefault();
-        if (photo?.type === 2) volumeMuted = !volumeMuted;
+        toggleVolume();
         break;
     }
   }
 
   function handleKeyUp(e: KeyboardEvent) {
     if (e.key === 'Control') ctrlPressed = false;
+  }
+
+  /** Toggle the shared sound for the photo on show; only type 2 has an audio track. */
+  function toggleVolume(): void {
+    if (!photo || photo.type !== 2) return;
+    toggleAudio(photo.url, 'lightbox');
   }
 
   // Wrap-around: first and last photos are connected.
@@ -821,14 +836,13 @@
     else goNext();
   }
 
-  // On switch: reset transforms and mute (wrap may be unmounted; the effect
-  // after mount covers it).
+  // On switch: reset transforms and close the sound of the photo just left (the viewer never
+  // carries one photo's audio over to another; see the sound-ownership effect below).
   $effect(() => {
     void currentIndex;
     // A photo switch is another consumed interaction: an armed media click describes the
     // photo we just left, so it must not pair with a click on the one that replaced it.
     lastMediaClick = null;
-    volumeMuted = true;
     gestureDir = null;
     gestureRatio = 0;
     scale = 1;
@@ -838,6 +852,32 @@
     // Reset load errors on photo changes while keeping the URL-based decoded-media cache.
     loadFailed = false;
     if (wrapEl) applyWrap();
+  });
+
+  // The viewer is the only surface allowed to sound while it is open. It takes over the sound
+  // already open for this photo (so the grid and the viewer agree) and closes anything that
+  // belongs to another media — a hidden card must not keep playing behind the overlay.
+  $effect(() => {
+    if (!open || !photo) return;
+    if (audio.url === photo.url) {
+      if (audio.surface !== 'lightbox') claimAudio('lightbox');
+    } else if (audio.url !== null) {
+      closeAudio();
+    }
+  });
+
+  // Closing the viewer hands its sound back to the grid card behind it. This is what keeps the
+  // two surfaces on one state: unmute here, close, and the card is open too (and vice versa).
+  // It is not a cleanup, on purpose — an unmounted gallery has no card to hand off to.
+  let viewerWasOpen = false;
+  $effect(() => {
+    const wasOpen = viewerWasOpen;
+    viewerWasOpen = open;
+    if (wasOpen && !open && audio.surface === 'lightbox') claimAudio('grid');
+  });
+
+  onDestroy(() => {
+    if (audio.surface === 'lightbox') closeAudio();
   });
 
   // Preload adjacent still images while open. Video buffering is owned by the displayed media element.
@@ -1035,7 +1075,7 @@
             loop
             autoplay
             playsinline
-            preload="auto"
+            preload="metadata"
             onloadeddata={() => (loadedUrl = photo.url)}
             onerror={() => {
               loadFailed = true;
@@ -1070,7 +1110,7 @@
                 style="width: 1.9rem; height: 1.9rem"
                 onpointerdown={(e) => e.stopPropagation()}
                 ondblclick={(e) => e.stopPropagation()}
-                onclick={() => (volumeMuted = !volumeMuted)}
+                onclick={toggleVolume}
               >
                 {#if volumeMuted}
                   <VolumeX class="size-4 text-warning" />

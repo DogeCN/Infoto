@@ -11,6 +11,7 @@
   import LocaleToggle from './LocaleToggle.svelte';
   import type { SortDirections, SortKey } from '../../core/gallery';
   import { BAR_PAD, barCssVars, barHeight, resolveBarMode, type BarMode } from './topbarFit';
+  import type { PillWidths } from './pillMeasure';
   import { scroll } from '../../state/scroll.svelte';
   import { barHeightPx } from '../../state/barHeight.svelte';
   import { copy } from '$lib/i18n.svelte';
@@ -41,6 +42,8 @@
     adminCreateActive?: boolean;
     onAdminCreateClick?: () => void;
     adminActions?: Snippet;
+    /** Double-tap on the bar's non-control area scrolls the gallery to the top. */
+    onScrollToTop?: () => void;
   }
 
   let {
@@ -68,6 +71,7 @@
     adminCreateActive = false,
     onAdminCreateClick,
     adminActions,
+    onScrollToTop,
   }: Props = $props();
 
   // Home is immersive; the admin header stays frosted because its document scrolls behind it.
@@ -87,21 +91,33 @@
     return { destroy: () => {} };
   }
 
+  /** Double-tap on the bar's non-control area scrolls the gallery to the top. */
+  let lastBarTap = 0;
+  const BAR_DOUBLE_TAP_MS = 300;
+  function onBarPointerDown(event: PointerEvent): void {
+    // Ignore taps on interactive controls; they have their own handlers.
+    if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement)
+      return;
+    const now = Date.now();
+    if (now - lastBarTap <= BAR_DOUBLE_TAP_MS && onScrollToTop) {
+      onScrollToTop();
+    }
+    lastBarTap = now;
+  }
+
   /**
-   * Natural width of the labelled pill: the on-screen variant plus the label delta.
-   * A hidden copy reports the containing block, not content width, so the delta is
-   * measured from the visible pill (or admin tabs) instead.
+   * Pill widths per label shape, measured by the shared clone probe. The three-level
+   * density resolves from these: `full` fits the all-labelled pill, `compact` fits the
+   * current-item-labelled pill, `paged` lays the icon-only pill across two screens.
    */
   let labelledPillW = $state(0);
+  let currentPillW = $state(0);
   let iconPillW = $state(0);
-  function onPillWidths(info: {
-    shown: number;
-    shownIsLabelled: boolean;
-    labelDelta: number;
-  }): void {
+  function onPillWidths(info: PillWidths): void {
     if (!info.shown) return;
-    labelledPillW = info.shownIsLabelled ? info.shown : info.shown + info.labelDelta;
-    iconPillW = info.shownIsLabelled ? info.shown - info.labelDelta : info.shown;
+    labelledPillW = info.labelled;
+    currentPillW = info.current;
+    iconPillW = info.icon;
     // Re-evaluate the density here rather than waiting for the header observer. Switching
     // language changes the pill labels, which resizes the pill but not the header, so
     // nothing else would re-run the fit calculation and the bar kept a mode chosen for
@@ -148,7 +164,8 @@
   function remeasure(): void {
     const width = barW;
     const isAdmin = variant === 'admin';
-    if (!width || !labelledPillW || !iconPillW || !rightBtnsW || !arrowW || !rowEl) return;
+    if (!width || !labelledPillW || !currentPillW || !iconPillW || !rightBtnsW || !arrowW || !rowEl)
+      return;
     if (isAdmin ? !localeW : !leftExtraW) return;
 
     const padX = 2 * BAR_PAD;
@@ -166,7 +183,9 @@
 
     const next = resolveBarMode(
       width,
-      { full: single(labelledPillW), compact: single(iconPillW), paged: pagedNeed },
+      // Compact density shows the current item's label only, so its requirement is the
+      // mixed-shape pill width, not the icon-only one.
+      { full: single(labelledPillW), compact: single(currentPillW), paged: pagedNeed },
       mode,
     );
     if (next === mode) return;
@@ -346,7 +365,7 @@
     items={adminItems}
     value={adminValue}
     onChange={onAdminChange}
-    hideLabel={mode !== 'full'}
+    labelMode={mode === 'full' ? 'all' : mode === 'compact' ? 'current' : 'none'}
     size="sm"
     ariaLabel={copy.admin.sectionLabel}
     onWidths={onPillWidths}
@@ -413,6 +432,7 @@
   role="region"
   aria-label={variant === 'admin' ? copy.admin.toolbarLabel : copy.topbar.controlsLabel}
   onpointerdown={onPagerPointerDown}
+  onpointerdowncapture={onBarPointerDown}
   onclickcapture={suppressSwipedClick}
 >
   {#if paged}
@@ -440,7 +460,7 @@
             dirs={sortDirs}
             onChange={onSortChange}
             onReshuffle={onSortReshuffle}
-            showLabels={false}
+            labelMode={mode === 'full' ? 'all' : mode === 'compact' ? 'current' : 'none'}
             onWidths={onPillWidths}
           />
           {@render leftGroup()}
@@ -469,7 +489,7 @@
         dirs={sortDirs}
         onChange={onSortChange}
         onReshuffle={onSortReshuffle}
-        showLabels={mode === 'full'}
+        labelMode={mode === 'full' ? 'all' : mode === 'compact' ? 'current' : 'none'}
         onWidths={onPillWidths}
       />
       {@render leftGroup()}

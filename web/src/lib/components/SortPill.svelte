@@ -3,19 +3,17 @@
   // widths, so the top bar resolves the bar mode from one measurement rather than two.
   import type { SortKey } from '../../core/gallery';
   import SortTabs from './SortTabs.svelte';
+  import type { PillWidths } from './pillMeasure';
 
   interface Props {
     sortKey?: SortKey;
     dirs?: Partial<Record<SortKey, boolean>>;
     onChange?: (key: SortKey) => void;
     onReshuffle?: () => void;
-    /** Which variant is in the flow. */
-    showLabels: boolean;
-    /**
-     * Natural widths of both variants. `shown` is measured live; the other is
-     * `shown ± labelDelta`. The parent decides density from these.
-     */
-    onWidths?: (info: { shown: number; shownIsLabelled: boolean; labelDelta: number }) => void;
+    /** Label density contract passed from the top bar: 'all' | 'current' | 'none'. */
+    labelMode?: 'all' | 'current' | 'none';
+    /** Density report, forwarded from the shared pill measurement. */
+    onWidths?: (widths: PillWidths) => void;
   }
 
   let {
@@ -23,11 +21,11 @@
     dirs = {},
     onChange,
     onReshuffle,
-    showLabels,
+    labelMode = 'all',
     onWidths,
   }: Props = $props();
 </script>
 
 <div class="shrink-0">
-  <SortTabs {sortKey} {dirs} {onChange} {onReshuffle} hideLabel={!showLabels} {onWidths} />
+  <SortTabs {sortKey} {dirs} {onChange} {onReshuffle} {labelMode} {onWidths} />
 </div>
