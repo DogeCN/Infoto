@@ -17,18 +17,12 @@
   import { toastOptions } from '$base/lib/ui';
   import { getEngine } from './core/engine';
   import { shuffle, sortPhotos, type SortDirections, type SortKey } from './core/gallery';
-  import {
-    ensureIdentity,
-    renderTurnstile,
-    disposeTurnstile,
-    TURNSTILE_DISPOSE_DELAY_MS,
-  } from './core/identity';
-  import { postSync, type SyncClientIo, type SyncCallResult } from './core/api/syncClient';
+  import { renderTurnstile, disposeTurnstile, TURNSTILE_DISPOSE_DELAY_MS } from './core/turnstile';
   import { createAppStore } from './state/appStore.svelte';
   import { downloadOne, downloadZip } from './core/download';
   import { createUploadStore } from './state/uploadStore.svelte';
   import { setPlaybackVolume } from './state/playback.svelte';
-  import type { LocaleCode, Photo, SyncRequest } from '$shared/types';
+  import type { LocaleCode, Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import {
     type FilterSettings,
@@ -49,18 +43,22 @@
 
   const store = createAppStore();
   const engine = getEngine({
-    postSyncFn: syncWithIdentity,
     onSyncResponse: (r, context) => {
       store.applySync(r, context);
     },
-    // Render the persisted snapshot before the first request resolves; the sync below
-    // replaces it with the authoritative one moments later.
+    // Render the persisted snapshot before the first exchange completes; the sync that
+    // follows replaces it with the authoritative one moments later.
     onCachedSnapshot: (r) => {
       store.applySync(r);
     },
     onError: (phase, e) => {
       console.error('[sync]', phase, e);
       notifySyncFailure();
+    },
+    // The server wants a Turnstile token before this device gets an identity; the
+    // overlay renders the widget and rides the answer on the next hello (ADR 0026).
+    onTurnstileRequired: (siteKey) => {
+      void beginVerification(siteKey);
     },
   });
   store.bindEngine(engine);
@@ -132,37 +130,31 @@
   let verifyState = $state<VerifyState>('idle');
   let turnstileEl = $state<HTMLDivElement | undefined>(undefined);
 
-  /** Retry a sync request with an identity token when required. */
-  async function syncWithIdentity(
-    request: SyncRequest,
-    io?: SyncClientIo,
-  ): Promise<SyncCallResult> {
+  /** Render the Turnstile widget and hand the token to the engine's next hello. */
+  async function beginVerification(siteKey: string | null): Promise<void> {
     try {
-      const { response, firstEntry } = await ensureIdentity(request.ops, {
-        postSyncFn: (body) => postSync(body, io),
-        requestToken: async (siteKey) => {
-          if (destroyed) throw new Error('page_closed');
-          verifyState = 'loading';
-          await tick();
-          const el = turnstileEl;
-          if (!el || destroyed) throw new Error('turnstile container missing');
-          return renderTurnstile(siteKey, el);
-        },
-      });
-      if (firstEntry && !destroyed) {
-        verifyState = 'done';
-        verificationTimer = setTimeout(() => {
-          void disposeTurnstile().finally(() => {
-            if (!destroyed) verifyState = 'idle';
-          });
-        }, TURNSTILE_DISPOSE_DELAY_MS);
-      }
-      return { response, status: 200 };
+      if (destroyed) return;
+      // The server owns the key (it sends it in the error frame); a missing one is a
+      // configuration error and must fail loudly, never be papered over by a build-time key.
+      if (!siteKey) throw new Error('turnstile_required but no site key');
+      verifyState = 'loading';
+      await tick();
+      const el = turnstileEl;
+      if (!el || destroyed) throw new Error('turnstile container missing');
+      const token = await renderTurnstile(siteKey, el);
+      if (destroyed) return;
+      verifyState = 'done';
+      engine.verify(token);
+      verificationTimer = setTimeout(() => {
+        void disposeTurnstile().finally(() => {
+          if (!destroyed) verifyState = 'idle';
+        });
+      }, TURNSTILE_DISPOSE_DELAY_MS);
     } catch (error) {
+      console.error('[sync] turnstile', error);
       clearTimeout(verificationTimer);
       void disposeTurnstile();
       if (!destroyed) verifyState = 'idle';
-      throw error;
     }
   }
 
@@ -403,6 +395,7 @@
       pendingCount={store.engineState.pending}
       {filterCount}
       isSyncing={store.engineState.syncing}
+      connected={store.engineState.connected}
       settingsActive={leftOpen}
       announcementActive={rightOpen}
       multiSelectActive={multiMode}

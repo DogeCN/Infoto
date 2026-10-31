@@ -17,6 +17,7 @@ import path from 'node:path';
 import type { Photo, SyncResponse, UploadPayload } from '$shared/types';
 import { buildUploadOp } from '../../src/base/upload/pipeline';
 import { SyncEngine } from '../../src/core/engine';
+import { autoServer, deadSocketFactory } from './wsMock';
 import { EMPTY_MARKS } from '../../src/core/ops';
 import {
   appendUpload,
@@ -294,14 +295,10 @@ test('a hosted photo still reads as a card after a failed sync', async () => {
   await hosted('a');
   await hosted('b');
 
-  const engine = new SyncEngine({
-    db,
-    // The failure the report saw: the request never comes back in time.
-    postSyncFn: () => Promise.reject(new Error('sync_timeout')),
-  });
+  // The failure the report saw: the socket never opens.
+  const engine = new SyncEngine({ db, wsFactory: deadSocketFactory() });
   const attempt = await engine.sync();
-  assert.equal(attempt.ok, false);
-  assert.equal(attempt.confirmedThroughVersion, 0, 'nothing was confirmed');
+  assert.equal(attempt.ok, false, 'nothing was confirmed');
 
   // Both halves of the pair survive a failed attempt: the ops the server never applied, and the
   // records the page draws from.
@@ -324,8 +321,7 @@ test('a confirmed sync retires both the ops and the records', async () => {
 
   const engine = new SyncEngine({
     db,
-    postSyncFn: () =>
-      Promise.resolve({ response: snapshot([photo(1, 'a'), photo(2, 'b')]), status: 200 }),
+    wsFactory: autoServer(snapshot([photo(1, 'a'), photo(2, 'b')])).factory,
   });
   await engine.sync();
 

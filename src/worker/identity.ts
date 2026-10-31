@@ -59,9 +59,9 @@ async function findUserByUuid(db: Db, uuid: string | undefined): Promise<UserRow
 /** Identity for the request's `uuid` cookie, or null. */
 export async function resolveUser(
   db: Db,
-  cookieHeader: string | undefined,
+  cookieHeader: string | null | undefined,
 ): Promise<UserRow | null> {
-  return findUserByUuid(db, parseCookies(cookieHeader)[COOKIE_NAME]);
+  return findUserByUuid(db, parseCookies(cookieHeader ?? undefined)[COOKIE_NAME]);
 }
 
 /** Insert a user with the next integer ID and retrieve the row by UUID. */

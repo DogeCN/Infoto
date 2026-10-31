@@ -1,6 +1,6 @@
 // Svelte 5 runes store: binds the Svelte-free core (engine / oplog / ops) to reactive
-// state. Every write goes op-log → /sync: mutate local state optimistically, append the
-// op, let the engine submit.
+// state. Every write goes op-log → sync frame: mutate local state optimistically, append
+// the op, let the engine flush.
 
 import type {
   Announcement,
@@ -297,7 +297,7 @@ function keepLocalOnly<T extends { id: number; sort: number }>(server: T[], loca
 }
 
 class AppState {
-  engineState = $state<EngineState>({ syncing: false, pending: 0 });
+  engineState = $state<EngineState>({ syncing: false, pending: 0, connected: false });
   selfId = $state<number>(readCachedSelfId());
   photos = $state<Photo[]>([]);
   contentLocale = $state<LocaleCode>(activeLocale());
@@ -309,7 +309,7 @@ class AppState {
   announcements = $derived(localeSlice(this.allAnnouncements, this.contentLocale));
   polls = $derived(localeSlice(this.allPolls, this.contentLocale));
   feedback = $derived(localeSlice(this.allFeedback, this.contentLocale));
-  /** Upload facade from the last /sync response. */
+  /** Upload facade from the last welcome / synced frame. */
   mediaHostUrl = $state<string>('');
 
   private engineUnsubscribe: (() => void) | null = null;

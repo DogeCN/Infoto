@@ -12,7 +12,7 @@ import { adminApp } from './routes/admin.ts';
 export interface AppEnv {
   db: Db;
   /** External image-host facade the browser uploads to (contract: README §Media host facade).
-   *  Delivered in the /sync response; defaults to the local simulated host in dev. */
+   *  Delivered in the /ws welcome frame; defaults to the local simulated host in dev. */
   mediaHostUrl?: string;
   /** Cloudflare Turnstile secret key. */
   turnstileSecret?: string;
@@ -26,7 +26,7 @@ export interface AppEnv {
 
 /** Endpoints answering JSON. Everything else gets the HTML error page, so a media
  *  proxy or static request never has to parse an error body. */
-const JSON_ROUTE = /^\/(?:sync|admin)(?:\/|$)/;
+const JSON_ROUTE = /^\/admin(?:\/|$)/;
 
 export function createApp(env: AppEnv): Hono {
   const app = new Hono();
@@ -35,7 +35,7 @@ export function createApp(env: AppEnv): Hono {
   // HTML shell (a soft-200 that crawlers — e.g. the Google Lens URL fetcher — read as
   // noise instead of a policy).
   app.get('/robots.txt', () => {
-    const body = 'User-agent: *\nDisallow: /admin\nDisallow: /sync\n';
+    const body = 'User-agent: *\nDisallow: /admin\nDisallow: /ws\n';
     return new Response(body, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',

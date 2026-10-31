@@ -1,260 +1,191 @@
-// Global single-instance Durable Object room. Owns op ordering, server-side
-// stamping, real-time broadcast, and idle compaction/archival.
+// /ws Durable Object — the WebSocket endpoint for album sync (ADR 0026).
+//
+// The object exists because only a Durable Object can hold a WebSocket, and because one room
+// is where per-connection session state and any future fan-out belong. It is deliberately
+// stateless: identity rows, op application and snapshots all live in D1 through
+// `../album-ops.ts`, so a restart or a hibernation wake loses nothing and there is no op
+// log to compact. The upgrade request's uuid cookie resolves a returning visitor;
+// `hello` only carries a Turnstile token when the visitor has no identity yet.
+//
+// A `sync` frame is answered to its sender only — there is no cross-client push yet.
 
-import type { Op } from '../../shared/types.ts';
+import type { Op, SyncResponse, WsServerFrame } from '../../shared/types.ts';
+import { MAX_SYNC_OPS } from '../../shared/types.ts';
+import { applyOps, snapshot } from '../album-ops.ts';
+import { createUser, resolveUser } from '../identity.ts';
+import { d1Db } from '../db-d1.ts';
+import { verifyTurnstile } from '../turnstile.ts';
 
-interface Env {
+export interface AlbumEnv {
   DB: D1Database;
   MEDIA_HOST_URL?: string;
+  TURNSTILE_SECRET_KEY?: string;
+  TURNSTILE_SITE_KEY?: string;
 }
 
-interface OpRow {
-  seq: number;
-  type: string;
-  payload: string | null;
-  actor: number;
-  ts: number;
-  [key: string]: SqlStorageValue;
-}
-
-interface MetaRow {
-  snapshot: string | null;
-  version: number;
-  compactedSeq: number;
-  [key: string]: SqlStorageValue;
-}
-
-interface ConnectionMeta {
+/** Per-connection session state, serialized so a hibernation wake keeps the identity. */
+interface ConnInfo {
+  /** Resolved user id, or -1 until hello authenticates. */
   userId: number;
-  lastSeq: number;
+  uuid: string | null;
 }
 
-const COMPACTION_ALARM_MS = 60 * 60 * 1000; // 1 hour
-const ARCHIVE_THRESHOLD = 256;
+const UNAUTHENTICATED: ConnInfo = { userId: -1, uuid: null };
+
+/** The connection's session, or unauthenticated when hello has not run. Attachments
+ *  survive hibernation, so the Maps a live object would keep are neither needed nor used. */
+function connInfo(ws: WebSocket): ConnInfo {
+  try {
+    const info = ws.deserializeAttachment() as ConnInfo | undefined;
+    if (info && typeof info.userId === 'number' && info.userId >= 0) return info;
+  } catch {
+    // No attachment set yet — hello has not authenticated this socket.
+  }
+  return UNAUTHENTICATED;
+}
 
 export class Album {
-  private state: DurableObjectState;
-  private env: Env;
-  private connections = new Map<WebSocket, ConnectionMeta>();
-  private userSockets = new Map<number, WebSocket>();
-
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
-  }
+  constructor(
+    private state: DurableObjectState,
+    private env: AlbumEnv,
+  ) {}
 
   async fetch(request: Request): Promise<Response> {
-    const upgrade = request.headers.get('Upgrade');
-    if (upgrade !== 'websocket') {
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('Expected WebSocket', { status: 426 });
     }
     const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
-    this.state.acceptWebSocket(server);
-    this.connections.set(server, { userId: 0, lastSeq: 0 });
-    // If this is the first connection after idle, cancel pending alarm.
-    if (this.connections.size === 1) {
-      await this.state.storage.deleteAlarm();
+    this.state.acceptWebSocket(pair[1]);
+    // The uuid cookie rides the handshake (same-origin WebSockets carry credentials), so a
+    // returning visitor is authenticated before hello and the HttpOnly cookie is re-issued
+    // here — the sliding window /sync used to own. A fresh identity is created during hello,
+    // after this response is gone; the client mirrors welcome.uuid into a JS-set cookie and
+    // the next handshake re-issues it as HttpOnly (ADR 0026).
+    const db = d1Db(this.env.DB);
+    const user = await resolveUser(db, request.headers.get('cookie'));
+    if (user) {
+      pair[1].serializeAttachment({ userId: user.id, uuid: user.uuid } satisfies ConnInfo);
+      return new Response(null, {
+        status: 101,
+        webSocket: pair[0],
+        headers: {
+          'Set-Cookie': `uuid=${encodeURIComponent(user.uuid)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000`,
+        },
+      });
     }
-    return new Response(null, { status: 101, webSocket: client });
+    return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    let msg: Record<string, unknown>;
+    let frame: Record<string, unknown>;
     try {
-      msg = JSON.parse(
+      frame = JSON.parse(
         typeof message === 'string' ? message : new TextDecoder().decode(message),
       ) as Record<string, unknown>;
     } catch {
-      ws.send(JSON.stringify({ type: 'error', error: 'bad_json' }));
+      this.send(ws, { type: 'error', error: 'bad_json' });
       return;
     }
-
-    if (msg?.type === 'hello') {
-      const lastSeq = typeof msg.lastSeq === 'number' ? msg.lastSeq : 0;
-      // Identity resolution simplified: userId from token or 0 for anonymous.
-      const userId = typeof msg.userId === 'number' ? msg.userId : 0;
-      const meta = this.connections.get(ws);
-      if (meta) {
-        meta.userId = userId;
-        meta.lastSeq = lastSeq;
+    try {
+      switch (frame.type) {
+        case 'hello':
+          await this.hello(ws, frame);
+          return;
+        case 'sync':
+          await this.sync(ws, frame);
+          return;
+        case 'ping':
+          this.send(ws, { type: 'pong', serverTime: Date.now() });
+          return;
+        default:
+          this.send(ws, { type: 'error', error: 'bad_request' });
       }
-      // Dedup: kick older socket for same user.
-      const old = this.userSockets.get(userId);
-      if (old && old !== ws) {
-        try {
-          old.close(4001, 'replaced');
-        } catch {
-          /* ignore */
-        }
-        this.connections.delete(old);
-      }
-      this.userSockets.set(userId, ws);
-
-      // Catch-up ops.
-      const rows = await this.state.storage.sql
-        .exec<OpRow>(
-          'SELECT seq, type, payload, actor, ts FROM ops WHERE seq > ? ORDER BY seq ASC',
-          lastSeq,
-        )
-        .toArray();
-      const ops = rows.map((r) => ({
-        seq: r.seq,
-        op: { type: r.type, ...(r.payload ? JSON.parse(r.payload) : {}) },
-        actor: r.actor,
-        ts: r.ts,
-      }));
-
-      // Snapshot if needed (lastSeq === 0 or big gap).
-      let snapshot: unknown = null;
-      const metaRow = await this.state.storage.sql
-        .exec<MetaRow>('SELECT snapshot, version, compactedSeq FROM meta WHERE key = ?', 'main')
-        .one();
-      const compactedSeq = metaRow?.compactedSeq ?? 0;
-      if (lastSeq === 0 || lastSeq < compactedSeq) {
-        // Try DO meta snapshot first.
-        if (metaRow?.snapshot) {
-          try {
-            snapshot = JSON.parse(metaRow.snapshot);
-          } catch {
-            snapshot = null;
-          }
-        }
-        if (!snapshot) {
-          // Fall back to D1 canonical read (simplified: empty; real impl reads tables).
-          snapshot = { photos: [], announcements: [], polls: [], feedback: [] };
-        }
-      }
-
-      ws.send(
-        JSON.stringify({
-          type: 'welcome',
-          selfId: userId,
-          mediaHostUrl: this.env.MEDIA_HOST_URL ?? '',
-          serverTime: Date.now(),
-          compactedSeq,
-          ops,
-          snapshot,
-        }),
-      );
-      return;
-    }
-
-    if (msg?.type === 'op') {
-      const op = msg.op as Op;
-      if (!op || typeof op.type !== 'string') {
-        ws.send(JSON.stringify({ type: 'error', error: 'bad_op' }));
-        return;
-      }
-      const meta = this.connections.get(ws);
-      const actor = meta?.userId ?? 0;
-      const ts = Date.now();
-      // Append to ops table with auto-increment seq.
-      const result = await this.state.storage.sql
-        .exec<{ seq: number }>(
-          'INSERT INTO ops (type, payload, actor, ts) VALUES (?, ?, ?, ?) RETURNING seq',
-          op.type,
-          JSON.stringify(op.payload ?? null),
-          actor,
-          ts,
-        )
-        .one();
-      const seq = result?.seq ?? 0;
-      // Broadcast to all connections.
-      const broadcast = JSON.stringify({ type: 'op', seq, op, actor, ts });
-      for (const [sock] of this.connections) {
-        try {
-          sock.send(broadcast);
-        } catch {
-          /* ignore */
-        }
-      }
-      return;
-    }
-
-    if (msg?.type === 'ping') {
-      ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
-      return;
+    } catch (e) {
+      console.error('[ws] frame failed', frame.type, e);
+      this.send(ws, { type: 'error', error: 'internal' });
     }
   }
 
-  async webSocketClose(
-    ws: WebSocket,
-    _code: number,
-    _reason: string,
-    _wasClean: boolean,
-  ): Promise<void> {
-    const meta = this.connections.get(ws);
-    if (meta) {
-      if (this.userSockets.get(meta.userId) === ws) {
-        this.userSockets.delete(meta.userId);
-      }
-      this.connections.delete(ws);
-    }
-    // If no connections left, set 1-hour alarm.
-    if (this.connections.size === 0) {
-      await this.state.storage.setAlarm(Date.now() + COMPACTION_ALARM_MS);
-    }
-  }
-
-  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
-    await this.webSocketClose(ws, 1011, 'error', false);
-  }
-
-  async alarm(): Promise<void> {
-    if (this.connections.size > 0) {
-      // Someone connected; reschedule.
-      await this.state.storage.setAlarm(Date.now() + COMPACTION_ALARM_MS);
+  /** Authenticate a connection. A cookie-resolved socket re-welcomes; otherwise a
+   *  Turnstile token is required and a fresh identity row is created. The socket stays
+   *  open on refusal so the retry rides the same connection. */
+  private async hello(ws: WebSocket, frame: Record<string, unknown>): Promise<void> {
+    const known = connInfo(ws);
+    if (known.userId >= 0) {
+      this.welcome(ws, known);
       return;
     }
-    // Inner compaction: read all ops, coalesce by (type, targetSha/target), keep latest per dimension.
-    const rows = await this.state.storage.sql
-      .exec<OpRow>('SELECT seq, type, payload, actor, ts FROM ops ORDER BY seq ASC')
-      .toArray();
-    // Simple compaction: if ops count <= 256, just rebuild snapshot in meta and clear ops.
-    // Otherwise archive to D1 first.
-    const ops = rows.map((r) => ({
-      seq: r.seq,
-      type: r.type,
-      payload: r.payload,
-      actor: r.actor,
-      ts: r.ts,
-    }));
-
-    // Build snapshot from meta or D1.
-    const metaRow = await this.state.storage.sql
-      .exec<MetaRow>('SELECT snapshot, version, compactedSeq FROM meta WHERE key = ?', 'main')
-      .one();
-    const snapshot: unknown = metaRow?.snapshot
-      ? JSON.parse(String(metaRow.snapshot))
-      : { photos: [], announcements: [], polls: [], feedback: [] };
-    // Apply ops to snapshot (simplified: just store ops count; real impl applies).
-    // For now, store compacted state.
-    const newCompactedSeq = ops.length > 0 ? ops[ops.length - 1].seq : (metaRow?.compactedSeq ?? 0);
-    const newVersion = (metaRow?.version ?? 0) + 1;
-
-    // If still > 256 ops after compaction, archive snapshot to D1.
-    if (ops.length > ARCHIVE_THRESHOLD) {
-      try {
-        await this.env.DB.prepare(
-          'INSERT OR REPLACE INTO album_snapshots (album_id, version, snapshot, compacted_at) VALUES (?, ?, ?, ?)',
-        )
-          .bind('global', newVersion, JSON.stringify(snapshot), Date.now())
-          .run();
-      } catch (e) {
-        console.error('[Album] D1 archive failed', e);
-      }
+    const token = typeof frame.turnstileToken === 'string' ? frame.turnstileToken : '';
+    if (!token) {
+      this.send(ws, {
+        type: 'error',
+        error: 'turnstile_required',
+        turnstileSiteKey: this.env.TURNSTILE_SITE_KEY ?? null,
+      });
+      return;
     }
+    const passed = await verifyTurnstile(token, this.env.TURNSTILE_SECRET_KEY);
+    if (!passed) {
+      this.send(ws, { type: 'error', error: 'turnstile_failed' });
+      return;
+    }
+    const user = await createUser(d1Db(this.env.DB));
+    const info: ConnInfo = { userId: user.id, uuid: user.uuid };
+    ws.serializeAttachment(info);
+    this.welcome(ws, info);
+  }
 
-    // Clear ops, update meta.
-    await this.state.storage.sql.exec('DELETE FROM ops');
-    await this.state.storage.sql.exec(
-      'INSERT OR REPLACE INTO meta (key, snapshot, version, compactedSeq) VALUES (?, ?, ?, ?)',
-      'main',
-      JSON.stringify(snapshot),
-      newVersion,
-      newCompactedSeq,
+  private welcome(ws: WebSocket, info: ConnInfo): void {
+    this.send(ws, {
+      type: 'welcome',
+      selfId: info.userId,
+      uuid: info.uuid ?? '',
+      serverTime: Date.now(),
+      mediaHostUrl: this.env.MEDIA_HOST_URL ?? '',
+    });
+  }
+
+  /** Apply one sync frame's ops to D1 in array order, then answer the sender with the
+   *  full snapshot — the exact contract POST /sync had, over a frame. */
+  private async sync(ws: WebSocket, frame: Record<string, unknown>): Promise<void> {
+    const info = connInfo(ws);
+    if (info.userId < 0) {
+      this.send(ws, { type: 'error', error: 'unauthenticated' });
+      return;
+    }
+    const ops = frame.ops;
+    if (!Array.isArray(ops)) {
+      this.send(ws, { type: 'error', error: 'bad_request' });
+      return;
+    }
+    if (ops.length > MAX_SYNC_OPS) {
+      this.send(ws, { type: 'error', error: 'too_many_ops' });
+      return;
+    }
+    const db = d1Db(this.env.DB);
+    const serverTime = Date.now();
+    await applyOps(
+      { db, mediaHostUrl: this.env.MEDIA_HOST_URL },
+      { id: info.userId },
+      ops as Op[],
+      serverTime,
     );
+    const snap = await snapshot(db, info.userId);
+    const response: SyncResponse = {
+      ok: true,
+      serverTime,
+      selfId: info.userId,
+      mediaHostUrl: this.env.MEDIA_HOST_URL ?? '',
+      ...snap,
+    };
+    this.send(ws, { type: 'synced', response });
+  }
+
+  private send(ws: WebSocket, frame: WsServerFrame): void {
+    try {
+      ws.send(JSON.stringify(frame));
+    } catch {
+      // A socket that is closing drops the frame; the client's queue stays intact.
+    }
   }
 }

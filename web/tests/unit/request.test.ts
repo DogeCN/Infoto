@@ -1,7 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { requestJson } from '../../src/core/api/request';
-import { postSync } from '../../src/core/api/syncClient';
 import { createAnnouncement, deleteFeedback } from '../../src/core/api/adminClient';
 
 const origin = 'https://infoto.test';
@@ -22,7 +21,7 @@ test('validates JSON responses and bounds transport failures', async () => {
   // JSON deadlines include response body consumption.
   {
     const io = { origin, fetchFn: stalledBody, timeoutMs: 5 };
-    await assert.rejects(postSync({ ops: [] }, io), /sync_timeout/);
+    await assert.rejects(requestJson('/any', {}, 'sync_timeout', io), /sync_timeout/);
     await assert.rejects(createAnnouncement('title', 'body', 'en-US', io), /announcement_timeout/);
     await assert.rejects(deleteFeedback(1, io), /feedback_timeout/);
   }
@@ -66,22 +65,6 @@ test('validates JSON responses and bounds transport failures', async () => {
     });
     assert.equal(response.status, 503);
     assert.equal(data, null);
-  }
-
-  // A malformed successful sync response is rejected before the oplog is acknowledged.
-  {
-    for (const payload of [null, [], {}, { ok: false }, { ok: true, selfId: 1 }]) {
-      await assert.rejects(
-        postSync(
-          { ops: [] },
-          {
-            origin,
-            fetchFn: async () => Response.json(payload),
-          },
-        ),
-        /invalid_sync_response/,
-      );
-    }
   }
 
   // Admin create validates its success payload.

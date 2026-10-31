@@ -56,9 +56,15 @@ test('run_worker_first: every Worker route reaches the Worker', () => {
 
 test('run_worker_first: the API collections are covered bare and by sub-path', () => {
   const patterns = runWorkerFirst();
-  // Announcement / poll / feedback mutations are now WebSocket ops via the Durable Object,
-  // not HTTP routes, so they need no run_worker_first entries. The remaining write surface
-  // is /admin/migrate and /admin/translate, both listed above.
+  // Admin mutations stay immediate user-initiated HTTP writes (AGENTS.md §8.12, ADR 0026's
+  // amendment) — the WebSocket carries the visitor op path only.
+  for (const base of ['/admin/announcements', '/admin/polls', '/admin/feedback']) {
+    assert.ok(patterns.includes(base), `run_worker_first is missing the bare ${base}`);
+    assert.ok(
+      patterns.includes(`${base}/*`),
+      `run_worker_first is missing ${base}/* (sub-resources such as ${base}/:id)`,
+    );
+  }
   assert.ok(patterns.includes('/admin/migrate'), 'run_worker_first is missing /admin/migrate');
   assert.ok(patterns.includes('/admin/translate'), 'run_worker_first is missing /admin/translate');
 });

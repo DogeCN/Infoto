@@ -265,7 +265,7 @@ Back-filled from the commit history. Tagged sections are not yet written.
     Tight shrinks badge padding, font size and icon, the checkbox, the volume button and the
     badge row's gaps and offsets.
   - Media UI is _derived_ from `loadedUrl === photo.url`, never from an object-identity
-    comparison, so a `/sync` swap cannot blank a loaded image.
+    comparison, so a sync swap cannot blank a loaded image.
   - Overlay states: `undefined` renders nothing; `{ fraction }` draws a `bg-black/70` veil whose
     height is `(1 - min(fraction, 0.9)) × 100%` on `--duration-exit`/`--ease-exit`, plus a
     dismiss control top-right; `{ failed: true }` covers with `bg-black/55`, a centred retry and
@@ -688,7 +688,7 @@ item. Fenced code was unaffected because the plugin already resets `pre code`to`
     whole blob and the defaults apply; an out-of-range value is clamped. Same rule as `gap`, and
     no per-field migration (red line 1).
 - **Upload overlay.** `UploadPanel.svelte` is the only upload overlay.
-  - **The facade address is configuration, never a constant.** `/sync` names the host in
+  - **The facade address is configuration, never a constant.** The `welcome` frame names the host in
     `mediaHostUrl`; the Worker reads `MEDIA_HOST_URL` and the page forwards it to the
     SharedWorker. There is no default host in either runtime: an unset value produces an
     empty `mediaHostUrl` and the SW fails the job with `media_host_unset`, because guessing a
@@ -866,19 +866,18 @@ before deadline` / `no response before deadline`).
       survives only for media whose dimensions arrive late or never.
     - `isImageFile` gates the preview on MIME **or** file name, because a Windows pick with an
       empty MIME must still preview.
-  - **A photo's `createdAt` is the moment its upload URL arrived, not the moment /sync ran.**
-    `serverTime` is read once per request, so a batch of uploads would otherwise share one
-    timestamp and "latest" could not order them. The SharedWorker stamps `Date.now()` when the
-    facade returns the URL, carries it in the job-status message, and the page writes it into the
-    upload op. The server keeps that value but **clamps it to its own clock**
-    (`Math.min(createdAt, serverTime)`) so a skewed or forged client cannot pin a photo into the
-    future; `uploader` stays server-authoritative. An upload payload with no `createdAt` is
-    dropped, like any other payload missing a required field. `sortPhotos('latest')` breaks
-    equal timestamps by id, so a same-millisecond pair still keeps upload order.
+  - **A photo's `createdAt` is the moment its upload URL arrived, not the moment the op
+    landed.** The SharedWorker stamps `Date.now()` when the facade returns the URL, carries it in
+    the job-status message, and the page writes it into the upload op; the op itself also carries
+    its commit-time `ts` (ADR 0026), and the server clamps both to its own clock so a skewed or
+    forged client cannot pin a photo into the future. `uploader` stays server-authoritative. An
+    upload payload with no `createdAt` is dropped, like any other payload missing a required
+    field. `sortPhotos('latest')` breaks equal timestamps by id, so a same-millisecond pair
+    still keeps upload order.
   - **A returning visitor renders the persisted snapshot before the network answers.** The last
-    `/sync` response is stored whole in `metaCache` (under the reserved key `snapshot`, which a
+    synced response is stored whole in `metaCache` (under the reserved key `snapshot`, which a
     64-hex album hash can never collide with) and `engine.init` hands it to the store before the
-    first request; the sync then replaces it with the authoritative one. **Every surface that
+    first exchange; the sync then replaces it with the authoritative one. **Every surface that
     reads the store must wire `onCachedSnapshot`** — `App.svelte` and `Admin.svelte` both do.
     Wiring only the gallery left the admin tabs blank for a round trip, and blank forever with no
     server; that gap is why this sentence names both call sites. The same page-open pass also
@@ -905,7 +904,7 @@ before deadline` / `no response before deadline`).
     delete glue itself is untested (`createUploadStore` needs a component context);
     `withdrawPhoto` is (oplog + engine suites), and the deferral below is
     (`photoRecords.test.ts`). - **A photo op must follow the upload op that creates its row.** A mark whose sha the snapshot
-    does not carry is not written to the log at all: `/sync` applies a batch in array order, so
+    does not carry is not written to the log at all: the write path applies a batch in array order, so
     it would be a no-op on an unknown sha (its `UPDATE … WHERE sha256 = ?` matches no row) and then cleared as
     confirmed — the mark silently lost. The mark itself is the state (on the photo record, durable),
     and `photoOpQueued` states it as ops — awaited by the upload store when the upload op lands,
@@ -965,6 +964,26 @@ before deadline` / `no response before deadline`).
     to the copy glyph. The confirmation belongs where the click landed. Failure is the one generic
     toast (`lightbox.copyFailed`) — a second copy of that string is exactly the drift the copy
     table exists to prevent.
+- **Sync rides the `/ws` WebSocket (ADR 0026).** Frames (`shared/types.ts`): `hello` →
+  `welcome` | `error`; `sync` {ops} → `synced` {the full snapshot}; `ping` → `pong`. The
+  server applies ops to D1 and answers with the same `SyncResponse` the HTTP route returned, so
+  every store below this line is transport-blind.
+  - **The sync button hides while the socket is open and authenticated, and shows whenever it
+    is not** — offline, dropped, or still negotiating. A broken connection is retried only by
+    that button, never in the background (ADR 0008's triggers stand: page open, page exit,
+    explicit request).
+  - **Every op the client commits carries its own `ts`.** Offline, the queue grows in
+    IndexedDB with those real timestamps; browsing and operating work unchanged. On reconnect
+    the whole backlog leaves in **one** `sync` frame (chunked only past `MAX_SYNC_OPS`), and
+    the server clamps each op's `ts` to its own clock, falling back to arrival time when the
+    field is absent (ops queued before the field existed).
+  - **A connected commit flushes within one animation frame**, and a burst of commits — even
+    ones an `await` splits across tasks — coalesces into one frame; each frame costs a full
+    snapshot on the way back, which is why the debounce exists. The page-exit trigger starts
+    the same coalesced exchange, never a parallel dump: two frames carrying the same op would
+    double-apply a `fb_create`.
+  - **A malformed `synced` snapshot is refused before the oplog is acknowledged** — the HTTP
+    client used to assert the response shape, and the frame handler owns that check now.
 - **Service worker (production only).** `main.ts` registers `/sw.js` behind
   `import.meta.env.PROD` — in dev the worker would cache Vite's unhashed module URLs and pin
   stale code against HMR. Navigations serve the cached SPA shell, so the album opens offline
@@ -1369,7 +1388,8 @@ The parts of this contract that are asserted by `npm test`:
 | The local fold clears the opposite attitude, as the server does                      | `web/tests/unit/frontend.test.ts`       |
 | A queued op is superseded in place, and an in-flight one never is                    | `web/tests/unit/syncEngine.test.ts`     |
 | A photo op waits for the upload op that creates its row                              | `web/tests/unit/photoRecords.test.ts`   |
-| The server clears the opposite attitude when either is added                         | `src/worker/routes/sync.test.ts`        |
+| The server clears the opposite attitude when either is added                         | `src/worker/album-ops.test.ts`          |
+| A sync frame over the op cap is refused whole, and unauthenticated writes answer     | `src/worker/do/album.test.ts`           |
 | A translation request writes no row, and only root may ask                           | `src/worker/routes/admin.test.ts`       |
 | The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`          |
 | A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/photoRecords.test.ts`   |
@@ -1379,7 +1399,7 @@ The parts of this contract that are asserted by `npm test`:
 | A hosted photo record still renders a card after a failed sync                       | `web/tests/unit/photoRecords.test.ts`   |
 | A confirmed sync retires those records, and a landed/live sha never double-draws     | `web/tests/unit/photoRecords.test.ts`   |
 | An upload op and its photo record are written together, and withdrawn together       | `web/tests/unit/oplog.test.ts`          |
-| A 200-op `/sync` costs a fixed handful of round trips, not one per op                | `src/worker/routes/sync.test.ts`        |
+| A batch's writes cost a fixed handful of round trips, not one per op                 | `src/worker/album-ops.test.ts`          |
 | A GIF frame duration is read through the one owner, never re-derived in the worker   | `web/tests/unit/gifFrameTiming.test.ts` |
 | A GIF's timestamps accumulate; no frame lands before its predecessor                 | `web/tests/unit/gifFrameTiming.test.ts` |
 | A zero GIF frame duration is treated as missing, not as an instant frame             | `web/tests/unit/pipeline.test.ts`       |

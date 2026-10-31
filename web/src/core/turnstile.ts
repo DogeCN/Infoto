@@ -1,16 +1,9 @@
-// Resolve the server session and acquire a Turnstile token when verification is required.
-
-import { TurnstileRequiredError, postSync } from './api/syncClient';
-import type { Op, SyncResponse } from '$shared/types';
+// Turnstile widget plumbing: script loader and explicit rendering. The sync engine
+// decides *when* verification is needed (a `turnstile_required` error frame) and hands
+// the public site key to the app, which renders the widget here and calls engine.verify()
+// with the token.
 
 const TURNSTILE_SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-
-export interface TurnstileFlowDeps {
-  /** Injected for unit tests and E2E. */
-  postSyncFn?: typeof postSync;
-  /** Token acquisition strategy. The default owns an overlay; the application supplies its gallery-mounted widget. */
-  requestToken?: (siteKey: string) => Promise<string>;
-}
 
 interface TurnstileRenderOptions {
   sitekey: string;
@@ -51,9 +44,8 @@ function loadTurnstile(): Promise<TurnstileApi> {
       reject(new Error(message));
     };
     s.onload = () => {
-      if (!w.turnstile) return fail('turnstile api missing');
-      cleanup();
-      resolve(w.turnstile);
+      if (w.turnstile) return resolve(w.turnstile);
+      fail('turnstile api missing');
     };
     s.onerror = () => fail('turnstile script load failed');
     document.head.appendChild(s);
@@ -83,7 +75,7 @@ export async function disposeTurnstile(): Promise<void> {
 }
 
 /** Fallback timeout when Turnstile gives no callback: a stuck widget must not stall first-run onboarding. */
-const TURNSTILE_TIMEOUT_MS = 15_000;
+export const TURNSTILE_TIMEOUT_MS = 15_000;
 
 /** Delay disposal until the Turnstile iframe's final handshake completes. */
 export const TURNSTILE_DISPOSE_DELAY_MS = 800;
@@ -119,57 +111,4 @@ export async function renderTurnstile(
       'timeout-callback': () => finish(reject, new Error('turnstile_timeout')),
     });
   });
-}
-
-/** Default token acquisition overlay for callers without an existing UI mount point. */
-async function overlayRequestToken(siteKey: string): Promise<string> {
-  const container = document.createElement('div');
-  container.id = 'infoto-turnstile';
-  container.style.position = 'fixed';
-  container.style.inset = '0';
-  container.style.display = 'grid';
-  container.style.placeItems = 'center';
-  container.style.zIndex = '9999';
-  container.style.background = 'var(--color-background)';
-  document.body.appendChild(container);
-  try {
-    return await renderTurnstile(siteKey, container);
-  } finally {
-    // Hide the overlay at once (no needless black screen), then dispose the widget and drop the node
-    container.style.display = 'none';
-    setTimeout(() => {
-      void disposeTurnstile().finally(() => container.remove());
-    }, TURNSTILE_DISPOSE_DELAY_MS);
-  }
-}
-
-export interface IdentityBootstrapResult {
-  response: SyncResponse;
-  /** Whether verification created a new identity. */
-  firstEntry: boolean;
-}
-
-/** Probe the server session, request verification on turnstile_required, and return the authenticated snapshot. */
-export async function ensureIdentity(
-  ops: Op[] = [],
-  deps: TurnstileFlowDeps = {},
-): Promise<IdentityBootstrapResult> {
-  const sync = deps.postSyncFn ?? postSync;
-  let serverSiteKey: string | null;
-  try {
-    const { response } = await sync({ ops });
-    return { response, firstEntry: false };
-  } catch (e) {
-    if (!(e instanceof TurnstileRequiredError)) throw e;
-    serverSiteKey = e.turnstileSiteKey;
-  }
-  // The server owns the key (it sends it in the 401 body); a missing one is a
-  // configuration error and must fail loudly, never be papered over by a build-time key.
-  if (!serverSiteKey) throw new Error('turnstile_required but no site key');
-  const siteKey = serverSiteKey;
-  const requestToken = deps.requestToken ?? overlayRequestToken;
-  const token = await requestToken(siteKey);
-  // the token rides exactly one first /sync
-  const { response } = await sync({ turnstileToken: token, ops });
-  return { response, firstEntry: true };
 }

@@ -1,29 +1,24 @@
-// POST /sync — the single write entry point. Applies every op in array order, then
-// returns the full state snapshot. Ops from a non-root identity that need root powers
-// are dropped, and a failing op never aborts the rest of the batch.
+// Album write path shared by the /ws Durable Object: per-op statement planning, batched
+// application, and the full snapshot. Extracted from the deleted HTTP /sync route (ADR 0026);
+// the semantics it owned live here — validation in JS so a malformed op cannot roll back its
+// neighbours, photos addressed by sha256 so order never needs a lookup, and one fixed handful
+// of transactions per batch instead of a round trip per op.
 
-import type { Context } from 'hono';
-import type { AppEnv } from '../app.ts';
-import type { Db, DbStatement } from '../db.ts';
-import {
-  MEDIA_TYPE,
-  MAX_POLL_OPTIONS,
-  MAX_SYNC_OPS,
-  MAX_TEXT_LENGTH,
-  type Announcement,
-  type Feedback,
-  type LocaleCode,
-  type MediaType,
-  type Op,
-  type Photo,
-  type Poll,
-  type SyncRequest,
-} from '../../shared/types.ts';
-import { ROOT_ID, createUser, resolveUser, sessionCookie, type UserRow } from '../identity.ts';
-import { verifyTurnstile } from '../turnstile.ts';
-import { isLocaleCode } from '../../shared/copy.ts';
-import { isRecord, safeJsonParse } from '../../shared/json.ts';
-import { isAllowedMediaUrl } from './media.ts';
+import type {
+  Announcement,
+  Feedback,
+  LocaleCode,
+  MediaType,
+  Op,
+  Photo,
+  Poll,
+} from '../shared/types.ts';
+import { MEDIA_TYPE, MAX_POLL_OPTIONS, MAX_TEXT_LENGTH } from '../shared/types.ts';
+import { ROOT_ID } from './identity.ts';
+import type { Db, DbStatement } from './db.ts';
+import { isLocaleCode } from '../shared/copy.ts';
+import { isRecord, safeJsonParse } from '../shared/json.ts';
+import { isAllowedMediaUrl } from './routes/media.ts';
 
 /** Longest emoji an anonymous op may carry. */
 const MAX_EMOJI_LENGTH = 16;
@@ -96,9 +91,9 @@ const mediaType = (v: unknown): MediaType | null =>
   v === MEDIA_TYPE.IMAGE || v === MEDIA_TYPE.ANIMATED || v === MEDIA_TYPE.VIDEO ? v : null;
 
 /** Statements per `db.batch` call. One call is one round trip, and every op below becomes a
- *  fixed one or two statements, so a request's cost is a small multiple of this constant
- *  instead of a round trip per op — the difference between a 200-photo sync finishing and
- *  the page giving up on it. */
+ *  fixed one or two statements, so a batch's cost is a small multiple of this constant
+ *  instead of a round trip per op — the difference between a 200-photo backlog finishing
+ *  and the page giving up on it. */
 const MAX_BATCH_STATEMENTS = 100;
 
 /** The column an attitude's opposite writes: a like and a dislike are one choice, never both. */
@@ -148,7 +143,7 @@ interface PollDefinition {
 }
 
 /** D1's per-query cap on bound parameters is 100 (`d1/platform/limits`). `MAX_SYNC_OPS` lets one
- *  request vote on more distinct polls than that, so this read is sliced rather than built whole. */
+ *  frame vote on more distinct polls than that, so this read is sliced rather than built whole. */
 const MAX_BOUND_PARAMS = 100;
 
 /**
@@ -187,10 +182,10 @@ async function loadPolls(db: Db, ops: Op[]): Promise<Map<number, PollDefinition>
  * which creates its row still applies: the statements keep the order the ops arrived in.
  */
 function planOp(
-  env: AppEnv,
-  user: UserRow,
+  env: OpsEnv,
+  user: { id: number },
   op: Op,
-  serverTime: number,
+  opTime: number,
   polls: Map<number, PollDefinition>,
 ): DbStatement[] {
   const isRoot = user.id === ROOT_ID;
@@ -204,10 +199,10 @@ function planOp(
       const size = count(p.size);
       const type = mediaType(p.type);
       // The client reports when the facade returned the URL. It is the only source of a
-      // per-photo timestamp: `serverTime` is read once for the whole request, so a batch of
-      // uploads would otherwise share one millisecond and "latest" could not order them.
-      // Bounded by the server clock so a skewed or forged value cannot pin a photo into the
-      // future; `uploader` stays server-authoritative.
+      // per-photo timestamp: the batch's arrival time is read once for the whole frame, so a
+      // backlog of uploads would otherwise share one millisecond and "latest" could not order
+      // them. Bounded by the op's own (already server-clamped) commit time; `uploader` stays
+      // server-authoritative.
       const createdAt = count(p.createdAt);
       if (!sha256 || !url || width === null || height === null || size === null) return [];
       if (type === null || createdAt === null || createdAt === 0) return [];
@@ -228,7 +223,7 @@ function planOp(
             width,
             height,
             size,
-            Math.min(createdAt, serverTime),
+            Math.min(createdAt, opTime),
             type,
             sha256,
           ],
@@ -257,12 +252,14 @@ function planOp(
       const contentMd = text(payload.contentMd);
       const locale = isLocaleCode(payload.locale) ? payload.locale : null;
       if (!contentMd || !locale) return [];
-      // One below this locale's current minimum, so the newest row sorts first.
+      // One below this locale's current minimum, so the newest row sorts first. The row's
+      // timestamp is the op's own commit time: a suggestion written offline lands with the
+      // moment it was written, not the moment the socket came back (ADR 0026).
       return [
         {
           sql: `INSERT INTO feedback (user_id, content_md, created_at, locale, sort)
                 VALUES (?, ?, ?, ?, (SELECT COALESCE(MIN(sort), 0) - 1 FROM feedback WHERE locale = ?))`,
-          binds: [user.id, contentMd, serverTime, locale, locale],
+          binds: [user.id, contentMd, opTime, locale, locale],
         },
       ];
     }
@@ -325,23 +322,42 @@ function planOp(
   }
 }
 
+/** The op's client-stamped commit time, clamped to the server clock; an op queued before
+ *  the field existed falls back to the frame's arrival time. */
+function effectiveOpTime(op: Op, now: number): number {
+  const ts = op.ts;
+  return typeof ts === 'number' && Number.isFinite(ts) && ts > 0 ? Math.min(ts, now) : now;
+}
+
+/** The database environment the write path runs against. */
+export interface OpsEnv {
+  db: Db;
+  /** External image-host facade; upload ops accept only URLs it names. */
+  mediaHostUrl?: string;
+}
+
 /**
  * Plan every op, then write the plan in a fixed handful of transactions.
  *
- * Each op below is one or two statements, so what a request costs is the statement count
- * divided by `MAX_BATCH_STATEMENTS` — not a round trip per op, which is what let a 200-photo
- * upload outlast the page's patience for the response. A chunk is one transaction and its ops
- * are independent, so a chunk that fails is dropped on its own, leaving the others applied.
+ * Each op below is one or two statements, so what a frame costs is the statement count
+ * divided by `MAX_BATCH_STATEMENTS` — not a round trip per op. A chunk is one transaction and
+ * its ops are independent, so a chunk that fails is dropped on its own, leaving the others
+ * applied. `now` is the frame's arrival time; an op without its own `ts` rides it.
  */
-async function applyOps(env: AppEnv, user: UserRow, ops: Op[], serverTime: number): Promise<void> {
+export async function applyOps(
+  env: OpsEnv,
+  user: { id: number },
+  ops: Op[],
+  now: number,
+): Promise<void> {
   const polls = await loadPolls(env.db, ops);
   const statements: DbStatement[] = [];
   for (const op of ops) {
     if (!op || typeof op.type !== 'string') continue;
     try {
-      statements.push(...planOp(env, user, op, serverTime, polls));
+      statements.push(...planOp(env, user, op, effectiveOpTime(op, now), polls));
     } catch (e) {
-      console.error('[sync] op dropped', op.type, e);
+      console.error('[album] op dropped', op.type, e);
     }
   }
   for (let offset = 0; offset < statements.length; offset += MAX_BATCH_STATEMENTS) {
@@ -349,7 +365,7 @@ async function applyOps(env: AppEnv, user: UserRow, ops: Op[], serverTime: numbe
     try {
       await env.db.batch(chunk);
     } catch (e) {
-      console.error('[sync] ops dropped', chunk.length, e);
+      console.error('[album] ops dropped', chunk.length, e);
     }
   }
 }
@@ -383,7 +399,7 @@ function groupById<T>(rows: T[], key: (row: T) => number): Map<number, T[]> {
 
 /** Every locale's content rows: the client filters by its content locale, so a language
  *  switch is a local re-render rather than another round trip. Photos are locale-neutral. */
-async function snapshot(
+export async function snapshot(
   db: Db,
   selfId: number,
 ): Promise<{
@@ -442,63 +458,4 @@ async function snapshot(
     }));
   }
   return { photos: photoRows.results.map(rowToPhoto), announcements, polls, feedback };
-}
-
-export function syncHandler(env: AppEnv) {
-  return async (c: Context): Promise<Response> => {
-    let body: SyncRequest;
-    try {
-      body = (await c.req.json()) as SyncRequest;
-    } catch {
-      return c.json({ ok: false, error: 'bad_request' }, 400);
-    }
-    if (!body || typeof body !== 'object' || !Array.isArray(body.ops)) {
-      return c.json({ ok: false, error: 'bad_request' }, 400);
-    }
-    if (body.ops.length > MAX_SYNC_OPS) {
-      return c.json({ ok: false, error: 'too_many_ops' }, 413);
-    }
-
-    let user = await resolveUser(env.db, c.req.header('cookie'));
-    if (!user) {
-      // Creating an identity requires a Turnstile token; the 401 body carries the
-      // public site key the page renders the widget with.
-      const token = typeof body.turnstileToken === 'string' ? body.turnstileToken : '';
-      if (!token) {
-        return c.json(
-          {
-            ok: false,
-            error: 'turnstile_required',
-            turnstileSiteKey: env.turnstileSiteKey ?? null,
-          },
-          401,
-        );
-      }
-      const passed = await verifyTurnstile(
-        token,
-        env.turnstileSecret,
-        c.req.header('cf-connecting-ip'),
-      );
-      if (!passed) return c.json({ ok: false, error: 'turnstile_failed' }, 401);
-      user = await createUser(env.db);
-    }
-
-    const serverTime = Date.now();
-    await applyOps(env, user, body.ops, serverTime);
-
-    const snap = await snapshot(env.db, user.id);
-    const res = c.json({
-      ok: true,
-      serverTime,
-      selfId: user.id,
-      // Uploads go straight from the browser to the facade; this server only stores the
-      // URL it hands back. `MEDIA_HOST_URL` is the only source — a deployment always has
-      // it (the deploy workflow exits 1 without it) and dev gets it from `.dev.vars`, so
-      // there is no default to fall back to and no second place to keep in sync.
-      mediaHostUrl: env.mediaHostUrl ?? '',
-      ...snap,
-    });
-    res.headers.set('Set-Cookie', sessionCookie(user.uuid, c.req.raw));
-    return res;
-  };
 }

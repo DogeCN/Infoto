@@ -101,7 +101,7 @@ export interface Feedback {
   locale: LocaleCode;
 }
 
-/** All op kinds accepted by POST /sync (the single write entry point). */
+/** All op kinds the write path accepts (POST /sync historically; the /ws sync frame now). */
 type OpType =
   // photo area
   | 'upload'
@@ -129,8 +129,8 @@ export interface UploadPayload {
   size: number;
   type: MediaType;
   /** When the upload URL was obtained (ms epoch), reported by the uploading client and
-   *  bounded by the server clock. Without it every photo in one /sync batch shares a single
-   *  timestamp, because `serverTime` is read once per request — and "latest" cannot order them. */
+   *  bounded by the server clock. The client stamps this when it commits the op, so an
+   *  offline backlog lands with its real per-photo ordering (ADR 0026). */
   createdAt: number;
 }
 
@@ -153,7 +153,7 @@ export interface VotePayload {
 type OpPayload =
   UploadPayload | FeedbackPayload | ReactPayload | VotePayload | Record<string, unknown>;
 
-/** One op-log entry, applied by /sync strictly in array order. */
+/** One op-log entry, applied strictly in array order. */
 export interface Op {
   type: OpType;
   /** Poll ID for votes; announcement ID for reactions. Photo operations use targetSha instead. */
@@ -161,12 +161,10 @@ export interface Op {
   /** Photo ops: the target photo's sha256. */
   targetSha?: string;
   payload?: OpPayload | null;
-}
-
-export interface SyncRequest {
-  /** Required when no identity exists yet. */
-  turnstileToken?: string | null;
-  ops: Op[];
+  /** Millisecond epoch when the client committed the op. The offline queue stamps it so a
+   *  backlog lands with its real per-op timestamps; the server clamps the value to its own
+   *  clock and falls back to the frame's arrival time when absent (ADR 0026). */
+  ts?: number;
 }
 
 export interface SyncResponse {
@@ -185,6 +183,48 @@ export interface SyncResponse {
   /** Real data for the root user only; empty array for everyone else. */
   feedback: Feedback[];
 }
+
+/** Client → server frames on the /ws WebSocket (ADR 0026). */
+export interface WsHelloFrame {
+  type: 'hello';
+  /** Required when the upgrade request's uuid cookie resolved no identity. */
+  turnstileToken?: string;
+}
+export interface WsSyncFrame {
+  type: 'sync';
+  /** The whole pending backlog in one frame; chunked only past MAX_SYNC_OPS. */
+  ops: Op[];
+}
+export interface WsPingFrame {
+  type: 'ping';
+}
+export type WsClientFrame = WsHelloFrame | WsSyncFrame | WsPingFrame;
+
+/** Server → client frames on the /ws WebSocket. */
+export interface WsWelcomeFrame {
+  type: 'welcome';
+  selfId: number;
+  /** The session identity; the client mirrors it into its uuid cookie. */
+  uuid: string;
+  serverTime: number;
+  mediaHostUrl: string;
+}
+export interface WsErrorFrame {
+  type: 'error';
+  error: string;
+  /** Public Turnstile site key, carried by `turnstile_required`. */
+  turnstileSiteKey?: string | null;
+}
+export interface WsSyncedFrame {
+  type: 'synced';
+  /** The same full snapshot POST /sync returned. */
+  response: SyncResponse;
+}
+export interface WsPongFrame {
+  type: 'pong';
+  serverTime: number;
+}
+export type WsServerFrame = WsWelcomeFrame | WsErrorFrame | WsSyncedFrame | WsPongFrame;
 
 /**
  * Image-host JSON returned by the facade's POST /upload: URL in `data`, message in `msg` / `error`.

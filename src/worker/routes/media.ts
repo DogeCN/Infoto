@@ -28,7 +28,7 @@ const MIME_BY_TYPE: Record<number, string> = {
  * Compare parsed origins, never string prefixes: "http://127.0.0.1:8788.evil.example"
  * shares a prefix with the origin but is an unrelated host.
  */
-export function isAllowedMediaUrl(env: AppEnv, url: string): boolean {
+export function isAllowedMediaUrl(env: { mediaHostUrl?: string }, url: string): boolean {
   if (isStorableMediaUrl(url)) return true;
   // Only a loopback-configured facade unlocks the exception; absent config is a
   // misconfigured deployment and gets no exemption.

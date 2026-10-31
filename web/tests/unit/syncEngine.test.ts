@@ -1,22 +1,18 @@
+// The sync engine over the /ws transport (ADR 0026): connection state, the offline
+// queue's one-frame flush, client timestamps, the Turnstile hello, and the page-exit
+// hand-off. The oplog semantics underneath are exercised by their own suites; these
+// cases drive the engine through a scripted socket.
+
 import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, test, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 
-import type { Op, SyncRequest, SyncResponse } from '$shared/types';
-import type { SyncCallResult, SyncClientIo } from '../../src/core/api/syncClient';
+import { MAX_SYNC_OPS, type Op, type SyncResponse } from '$shared/types';
 import { clearOps, openOplogDb, readOps } from '../../src/core/oplog';
-import {
-  type EngineIo,
-  KEEPALIVE_BODY_LIMIT,
-  keepalivePrefix,
-  SyncEngine,
-} from '../../src/core/engine';
+import { SyncEngine } from '../../src/core/engine';
+import { autoServer, deadSocketFactory, FakeWebSocket, type WsStub } from './wsMock';
 
-const op = (target: number): Op => ({
-  type: 'react',
-  target,
-  payload: { emoji: '👍' },
-});
+const op = (target: number): Op => ({ type: 'react', target, payload: { emoji: '👍' } });
 
 const snapshot = (announcements: SyncResponse['announcements'] = []): SyncResponse => ({
   ok: true,
@@ -29,108 +25,14 @@ const snapshot = (announcements: SyncResponse['announcements'] = []): SyncRespon
   feedback: [],
 });
 
-const result = (response: SyncResponse): SyncCallResult => ({ response, status: 200 });
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  return { promise, resolve, reject };
-}
-
-type FetchMock = Mock<(...args: Parameters<typeof fetch>) => Promise<Response>>;
-type PostSyncMock = Mock<(body: SyncRequest, io?: SyncClientIo) => Promise<SyncCallResult>>;
-type ErrorSink = Mock<(phase: 'submit' | 'pagehide', error: unknown) => void>;
-type ArrangeCtx = { db: IDBDatabase; fetchFn: FetchMock };
-
-/** Every onError call the engine made, reduced to comparable phase/message pairs. */
-const reports = (sink: ErrorSink): Array<{ phase: string; message: string }> =>
-  sink.mock.calls.map(([phase, error]) => ({ phase, message: (error as Error).message }));
-
-class ListenerHub {
-  private readonly listeners = new Map<string, Array<() => void>>();
-  addEventListener(type: string, listener: () => void): void {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-  }
-  dispatch(type: string): void {
-    for (const listener of this.listeners.get(type) ?? []) listener();
-  }
-}
-
-class StubWindow extends ListenerHub {
-  readonly location = { origin: 'http://localhost' };
-}
-
-class StubDocument extends ListenerHub {
-  visibilityState: DocumentVisibilityState = 'visible';
-}
-
-const bytes = (s: string) => new TextEncoder().encode(s).length;
-
 let db: IDBDatabase;
-
-// Fixtures shared by the in-flight dedup and pagehide flush cases.
-let sink: ErrorSink;
-let fetchFn: FetchMock;
-let postSyncFn: PostSyncMock;
-/** Every op the default postSync accepted — the runSync-side dedup recorder. */
-let submitted: Op[];
-let windowStub: StubWindow;
-let documentStub: StubDocument;
-
-/** Stand in for the stubbed `window` / `document` and their spies for one case. */
-const arrangeFlushFixtures = (): void => {
-  submitted = [];
-  sink = vi.fn<(phase: 'submit' | 'pagehide', error: unknown) => void>();
-  fetchFn = vi
-    .fn<(...args: Parameters<typeof fetch>) => Promise<Response>>()
-    .mockResolvedValue(new Response(null, { status: 200 }));
-  postSyncFn = vi.fn((body: SyncRequest) => {
-    submitted.push(...body.ops);
-    return Promise.resolve(result(snapshot()));
-  });
-  windowStub = new StubWindow();
-  documentStub = new StubDocument();
-  vi.stubGlobal('window', windowStub);
-  vi.stubGlobal('document', documentStub);
-};
-
-const engine = (io: EngineIo = {}): SyncEngine =>
-  new SyncEngine({ db, fetchFn, postSyncFn, onError: sink, ...io });
-
-const installed = new WeakSet<SyncEngine>();
-/** Fire pagehide through `install()` — never reach into private methods. */
-const firePagehide = (e: SyncEngine): void => {
-  if (!installed.has(e)) {
-    e.install(windowStub as unknown as Window);
-    installed.add(e);
-  }
-  windowStub.dispatch('pagehide');
-};
-
-/** Await an oplog read issued *after* a dispatch — same-store transactions run
- * in creation order, so this resolves once the pagehide dump has decided. */
-const pagehideReadDone = async (): Promise<void> => {
-  await readOps(db);
-};
-
-const dumpAndReports = async (
-  e: SyncEngine,
-): Promise<Array<{ phase: string; message: string }>> => {
-  firePagehide(e);
-  await vi.waitFor(() => assert.ok(sink.mock.calls.length > 0));
-  return reports(sink);
-};
 
 beforeEach(async () => {
   db = await openOplogDb();
   await clearOps(db);
 });
 
-afterEach(() => {
+afterEach(async () => {
   try {
     db.close();
   } catch {
@@ -138,559 +40,293 @@ afterEach(() => {
   }
 });
 
-/** The flush cases leave stubbed globals behind; nothing else does. */
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+/** Drain the timers and microtasks a connect → welcome → flush round needs. */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+};
 
-test('SyncEngine request: every sync and the pagehide dump carry ops and nothing else', async () => {
-  arrangeFlushFixtures();
-  documentStub.visibilityState = 'hidden';
-  const requests: SyncRequest[] = [];
-  const dumpBodies: string[] = [];
-  fetchFn.mockImplementation((_url, init) => {
-    dumpBodies.push(String(init?.body ?? ''));
-    return Promise.resolve(new Response(null, { status: 200 }));
-  });
-  const e = engine({
-    postSyncFn: (body) => {
-      requests.push(body);
-      return Promise.resolve(result(snapshot()));
-    },
-  });
+const loggedCount = async (): Promise<number> => (await readOps(db)).length;
 
-  await e.addOp(op(1));
-  await e.sync();
-  assert.deepEqual(Object.keys(requests.at(-1)!).sort(), ['ops']);
+const syncFrames = (server: WsStub): Array<Record<string, unknown> & { type: string }> =>
+  server.frames.filter((f) => f.type === 'sync');
 
-  // The pagehide dump serializes its own body rather than going through postSyncFn, so
-  // it is a second place the payload shape can drift. Queue the op after the sync, since
-  // a drained oplog is exactly what the flush skips.
-  await e.addOp(op(2));
-  firePagehide(e);
-  await vi.waitFor(() => assert.ok(dumpBodies.length > 0, 'pagehide sent a batch'));
-  for (const body of dumpBodies) {
-    assert.deepEqual(Object.keys(JSON.parse(body) as SyncRequest).sort(), ['ops']);
-  }
-});
-
-test('SyncEngine awaitable sync: coalesces callers and retains concurrent edits for the next sync', async () => {
-  const first = deferred<SyncCallResult>();
-  const second = deferred<SyncCallResult>();
-  const requests: SyncRequest[] = [];
-  const postSyncFn = vi.fn((body: SyncRequest) => {
-    requests.push(body);
-    return requests.length === 1 ? first.promise : second.promise;
-  });
-  const engine = new SyncEngine({ db, postSyncFn });
-  await engine.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
-
-  const active = engine.sync();
-  const coalesced = engine.sync();
-  await vi.waitFor(() => assert.equal(postSyncFn.mock.calls.length, 1));
-  assert.equal(coalesced, active);
-
-  await engine.addOp(op(-1));
-  first.resolve(
-    result(
-      snapshot([
-        {
-          id: 9,
-          title: 'new',
-          contentMd: 'body',
-          locale: 'en-US',
-          sort: 0,
-          updatedAt: 1_000,
-          reactions: [],
-        },
-      ]),
-    ),
-  );
-  assert.equal((await active).ok, true);
-  assert.deepEqual(
-    (await readOps(db)).map((entry) => entry.op),
-    [op(-1)],
-  );
-  const nextSync = engine.sync();
-  await vi.waitFor(() => assert.equal(postSyncFn.mock.calls.length, 2));
-
-  assert.equal(requests[0]!.ops.length, 1);
-  assert.deepEqual(requests[1]!.ops, [{ type: 'react', target: -1, payload: { emoji: '👍' } }]);
-  second.resolve(
-    result(
-      snapshot([
-        {
-          id: 9,
-          title: 't',
-          contentMd: 'c',
-          locale: 'en-US',
-          sort: 0,
-          updatedAt: 1_000,
-          reactions: [],
-        },
-      ]),
-    ),
-  );
-
-  assert.equal((await active).ok, true);
-  assert.equal((await nextSync).ok, true);
-});
-
-test('SyncEngine awaitable sync: retains failed operations without timers and retries only on the next manual request', async () => {
-  const postSyncFn = vi.fn().mockRejectedValue(new Error('offline'));
-  const engine = new SyncEngine({ db, postSyncFn });
-  await engine.addOp({ type: 'like', target: 2 });
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-  try {
-    assert.equal((await engine.sync()).ok, false);
-    await vi.advanceTimersByTimeAsync(120_000);
-    assert.equal(postSyncFn.mock.calls.length, 1);
-    assert.equal(vi.getTimerCount(), 0);
-    assert.deepEqual(
-      (await readOps(db)).map((entry) => entry.op),
-      [{ type: 'like', target: 2 }],
-    );
-    postSyncFn.mockResolvedValue(result(snapshot()));
-    assert.equal((await engine.sync()).ok, true);
-    assert.equal(postSyncFn.mock.calls.length, 2);
-    assert.equal((await readOps(db)).length, 0);
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-test('SyncEngine awaitable sync: reports confirmation only through the ops the request actually carried', async () => {
+test('SyncEngine: a commit while offline only queues, and stays put', async () => {
   const engine = new SyncEngine({
     db,
-    postSyncFn: vi.fn().mockResolvedValue(result(snapshot())),
+    wsFactory: deadSocketFactory(),
+    wsUrl: 'ws://album.test/ws',
   });
-  const first = await engine.addOp(op(-1));
-  const second = await engine.addOp(op(-2));
-  assert.ok(second > first);
-
-  // Confirm only the highest operation key carried by the request.
-  assert.deepEqual(await engine.sync(), { ok: true, confirmedThroughVersion: second });
+  await engine.addOp(op(1));
+  await engine.addOp(op(2));
+  await settle();
+  assert.equal(engine.state.connected, false);
+  assert.equal(await loggedCount(), 2);
+  assert.deepEqual(engine.state, { syncing: false, pending: 2, connected: false });
 });
 
-test('SyncEngine in-flight dedup and pagehide flush: install() wires the pagehide dump only — hiding the tab is not a trigger', async () => {
-  arrangeFlushFixtures();
-  const e = engine();
-  e.install(windowStub as unknown as Window);
-  await e.addOp(op(-1));
-
-  windowStub.dispatch('pagehide');
-  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
-  assert.equal(fetchFn.mock.calls[0]![1]?.keepalive, true);
-
-  // Tab visibility changes do not send durable operations.
-  documentStub.visibilityState = 'hidden';
-  documentStub.dispatch('visibilitychange');
-  await pagehideReadDone();
-  assert.equal(postSyncFn.mock.calls.length, 0);
-});
-
-test('SyncEngine in-flight dedup and pagehide flush: a sync requested while the document is hidden goes out keepalive', async () => {
-  arrangeFlushFixtures();
-  const e = engine();
-  await e.addOp(op(-1));
-  documentStub.visibilityState = 'hidden';
-
-  await e.sync();
-
-  assert.equal(postSyncFn.mock.calls.length, 1);
-  assert.deepEqual(postSyncFn.mock.calls[0]![1], { keepalive: true });
-});
-
-test('SyncEngine in-flight dedup and pagehide flush: does not resubmit ops a pagehide keepalive already carries', async () => {
-  arrangeFlushFixtures();
-  const keepalive = deferred<Response>();
-  fetchFn.mockImplementation(() => keepalive.promise);
-  const e = engine();
-  await e.addOp({ type: 'fb_create', payload: { contentMd: 'body', locale: 'en-US' } });
-  await e.addOp(op(-1));
-
-  firePagehide(e);
-  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
-  const carried = (JSON.parse(fetchFn.mock.calls[0]![1]?.body as string) as SyncRequest).ops;
-  assert.equal(carried.length, 2);
-
-  assert.equal((await e.sync()).ok, true);
-  const carriedJson = new Set(carried.map((o) => JSON.stringify(o)));
-  assert.deepEqual(
-    submitted.filter((o) => carriedJson.has(JSON.stringify(o))),
-    [],
-  );
-  assert.equal((await readOps(db)).length, 2); // still queued: the keepalive has not settled
-
-  keepalive.resolve(new Response(null, { status: 200 }));
-  await vi.waitFor(async () => {
-    assert.equal((await readOps(db)).length, 0);
-  });
-});
-
-test('SyncEngine in-flight dedup and pagehide flush: clears only the ops the keepalive sent when one lands mid-flight', async () => {
-  arrangeFlushFixtures();
-  const keepalive = deferred<Response>();
-  fetchFn.mockImplementation(() => keepalive.promise);
-  const e = engine();
-  await e.addOp(op(-1));
-
-  firePagehide(e);
-  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
-  const queued: Op = { type: 'like', target: 2 };
-  await e.addOp(queued);
-
-  keepalive.resolve(new Response(null, { status: 200 }));
-  await vi.waitFor(async () => {
-    assert.equal((await readOps(db)).length, 1);
-  });
-  assert.deepEqual(
-    (await readOps(db)).map((entry) => entry.op),
-    [queued],
-  );
-});
-
-test('SyncEngine in-flight dedup and pagehide flush: drops an op owned by an active sync from the pagehide dump', async () => {
-  arrangeFlushFixtures();
-  const syncCall = deferred<SyncCallResult>();
-  const e = engine({
-    postSyncFn: (body) => {
-      submitted.push(...body.ops);
-      return syncCall.promise;
-    },
-  });
-  const only = op(-1);
-  await e.addOp(only);
-
-  const attempt = e.sync();
-  await vi.waitFor(() => assert.deepEqual(submitted, [only]));
-
-  firePagehide(e);
-  await pagehideReadDone();
-  assert.equal(fetchFn.mock.calls.length, 0);
-
-  syncCall.resolve(result(snapshot()));
-  assert.equal((await attempt).ok, true);
-  assert.equal((await readOps(db)).length, 0);
-});
-
-test('SyncEngine in-flight dedup and pagehide flush: does not double-send when pagehide fires twice during a keepalive', async () => {
-  arrangeFlushFixtures();
-  const keepalive = deferred<Response>();
-  fetchFn.mockImplementation(() => keepalive.promise);
-  const e = engine();
-  await e.addOp(op(-1));
-
-  firePagehide(e);
-  await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 1));
-
-  firePagehide(e);
-  await pagehideReadDone();
-  assert.equal(fetchFn.mock.calls.length, 1);
-
-  keepalive.resolve(new Response(null, { status: 200 }));
-  await vi.waitFor(async () => {
-    assert.equal((await readOps(db)).length, 0);
-  });
-
-  firePagehide(e); // nothing queued anymore
-  await pagehideReadDone();
-  assert.equal(fetchFn.mock.calls.length, 1);
-});
-
-const fetchFailures: Array<{
-  name: string;
-  arrange: (ctx: ArrangeCtx) => void;
-  verify: (reported: Array<{ phase: string; message: string }>) => void;
-}> = [
-  {
-    name: 'a synchronously throwing fetch',
-    arrange: ({ fetchFn: f }) =>
-      f.mockImplementation(() => {
-        throw new Error('fetch exploded');
-      }),
-    verify: (reported) =>
-      assert.deepEqual(reported, [{ phase: 'pagehide', message: 'fetch exploded' }]),
-  },
-  {
-    name: 'a rejected keepalive request',
-    arrange: ({ fetchFn: f }) => f.mockImplementation(() => Promise.reject(new Error('offline'))),
-    verify: (reported) => assert.deepEqual(reported, [{ phase: 'pagehide', message: 'offline' }]),
-  },
-  {
-    name: 'a non-ok response',
-    arrange: ({ fetchFn: f }) =>
-      f.mockImplementation(() => Promise.resolve(new Response('nope', { status: 500 }))),
-    verify: (reported) =>
-      assert.deepEqual(reported, [
-        { phase: 'pagehide', message: 'pagehide flush rejected: HTTP 500' },
-      ]),
-  },
-];
-
-test.each(fetchFailures)(
-  'SyncEngine in-flight dedup and pagehide flush: reports $name, keeps the op, and lets the next dump retry',
-  async ({ arrange, verify }) => {
-    arrangeFlushFixtures();
-    const e = engine();
-    await e.addOp(op(-1));
-    arrange({ db, fetchFn });
-
-    verify(await dumpAndReports(e));
-    assert.deepEqual(
-      (await readOps(db)).map((entry) => entry.op),
-      [op(-1)],
-    );
-
-    firePagehide(e);
-    await vi.waitFor(() => assert.equal(fetchFn.mock.calls.length, 2));
-  },
-);
-
-const oplogFailures: Array<{
-  name: string;
-  arrange: (ctx: ArrangeCtx) => void;
-}> = [
-  {
-    name: 'a failed oplog read',
-    arrange: ({ db: d }) => {
-      d.close();
-    },
-  },
-  {
-    name: 'a failed oplog clear',
-    arrange: ({ db: d, fetchFn: f }) => {
-      f.mockImplementation(() => {
-        d.close(); // 200 comes back, but the connection the clear needs is gone
-        return Promise.resolve(new Response(null, { status: 200 }));
-      });
-    },
-  },
-];
-
-test.each(oplogFailures)(
-  'SyncEngine in-flight dedup and pagehide flush: reports $name instead of swallowing it',
-  async ({ arrange }) => {
-    arrangeFlushFixtures();
-    const e = engine();
-    await e.addOp(op(-1));
-    arrange({ db, fetchFn });
-
-    const reported = await dumpAndReports(e);
-    assert.equal(reported.length, 1);
-    assert.equal(reported[0]!.phase, 'pagehide');
-    assert.equal(typeof reported[0]!.message, 'string');
-  },
-);
-
-test('SyncEngine in-flight dedup and pagehide flush: passes keepalive only for a sync started on a hidden document', async () => {
-  arrangeFlushFixtures();
-  const e = engine();
-  await e.addOp(op(-1));
-
-  await e.sync();
-  assert.deepEqual(postSyncFn.mock.calls[0]![1], { keepalive: false });
-
-  documentStub.visibilityState = 'hidden';
-  await e.addOp(op(-2));
-  await e.sync();
-  assert.deepEqual(postSyncFn.mock.calls[1]![1], { keepalive: true });
-});
-
-test('SyncEngine in-flight dedup and pagehide flush: falls back to a plain request when a hidden batch busts the keepalive cap', async () => {
-  arrangeFlushFixtures();
-  documentStub.visibilityState = 'hidden';
-  const e = engine();
-  await e.addOp({
-    type: 'fb_create',
-    payload: { contentMd: 'x'.repeat(KEEPALIVE_BODY_LIMIT) },
-  });
-
-  await e.sync();
-  assert.deepEqual(postSyncFn.mock.calls[0]![1], { keepalive: false });
-  assert.equal((await readOps(db)).length, 0);
-});
-
-test('SyncEngine batch limits: keeps a large backlog local until tab initialization drains bounded batches', async () => {
-  const { MAX_SYNC_OPS } = await import('$shared/types');
-  const postSyncFn = vi.fn().mockResolvedValue(result(snapshot()));
+test('SyncEngine: welcome marks connected, and the backlog leaves in one frame', async () => {
+  const server = autoServer(snapshot());
+  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
+  const states: Array<Record<string, unknown>> = [];
+  engine.onState((s) => states.push({ ...s }));
   const onSyncResponse = vi.fn();
-  const engine = new SyncEngine({ db, postSyncFn, onSyncResponse });
-  for (let i = 0; i < MAX_SYNC_OPS + 3; i++) await engine.addOp(op(i));
-  assert.equal(postSyncFn.mock.calls.length, 0);
-  assert.equal(engine.state.pending, 503);
+  engine.rebind({ onSyncResponse });
+
+  // Two commits while offline: queued, stamped, never flushed (nothing is connected).
+  await engine.addOp(op(1));
+  await engine.addOp(op(2));
+  assert.equal(await loggedCount(), 2);
+  await settle();
+  assert.equal(syncFrames(server).length, 0, 'the offline queue stays put');
+
+  // Page open: init connects, the welcome flips the state, and the whole backlog —
+  // both ops, one frame.
   await engine.init();
-  assert.equal((await engine.sync()).ok, true);
+  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
+  const frames = syncFrames(server);
+  assert.equal(frames.length, 1, 'the accumulated log leaves in one frame, never one per op');
+  const ops = frames[0]!.ops as Op[];
   assert.deepEqual(
-    postSyncFn.mock.calls.map(([body]) => body.ops.length),
-    [MAX_SYNC_OPS, 3],
+    ops.map((o) => o.target),
+    [1, 2],
   );
-  assert.deepEqual(onSyncResponse.mock.calls[0][1].queuedOps, [op(500), op(501), op(502)]);
-  assert.equal((await readOps(db)).length, 0);
-});
-
-test('SyncEngine batch limits: keeps the unconfirmed suffix when a later batch fails', async () => {
-  const { appendOp } = await import('../../src/core/oplog');
-  for (let i = 0; i < 501; i++) await appendOp(db, op(i));
-  const entries = await readOps(db);
-  const postSyncFn = vi
-    .fn()
-    .mockResolvedValueOnce(result(snapshot()))
-    .mockRejectedValueOnce(new Error('offline'))
-    .mockResolvedValue(result(snapshot()));
-  const engine = new SyncEngine({ db, postSyncFn });
-  const failed = await engine.sync();
-  assert.equal(failed.ok, false);
-  assert.equal(failed.confirmedThroughVersion, entries[499].key);
-  assert.deepEqual(
-    (await readOps(db)).map((entry) => entry.op),
-    [op(500)],
-  );
-  await engine.sync();
-  assert.equal((await readOps(db)).length, 0);
-});
-
-test('SyncEngine batch limits: limits pagehide batches by count as well as bytes', async () => {
-  assert.equal(keepalivePrefix(Array.from({ length: 600 }, (_, i) => op(i)))?.ops.length, 500);
-});
-
-test('SyncEngine batch limits: reports storage failures and releases the syncing state', async () => {
-  const onError = vi.fn();
-  const engine = new SyncEngine({ db, onError });
-  db.close();
-  vi.useFakeTimers();
-  try {
-    assert.equal((await engine.sync()).ok, false);
-    assert.equal(engine.state.syncing, false);
-    assert.equal(onError.mock.calls.length, 1);
-  } finally {
-    vi.clearAllTimers();
-    vi.useRealTimers();
+  for (const o of ops) {
+    assert.equal(typeof o.ts, 'number', 'the client stamps the real commit time');
+    assert.ok(Math.abs((o.ts as number) - Date.now()) < 60_000);
   }
+  assert.equal(await loggedCount(), 0, 'confirmed ops are cleared');
+  assert.equal(onSyncResponse.mock.calls.length, 1, 'the snapshot reached the store');
+  assert.deepEqual(states.at(-1), { syncing: false, pending: 0, connected: true });
 });
 
-test('keepalivePrefix: sends the longest prefix that fits the browser body cap', () => {
-  assert.equal(KEEPALIVE_BODY_LIMIT, 65_536);
-  const ops = [op(1), op(2), op(3)];
-  const whole = keepalivePrefix(ops);
-  assert.deepEqual(whole!.ops, ops);
-  assert.deepEqual(JSON.parse(whole!.body), { ops });
-  assert.ok(bytes(whole!.body) <= KEEPALIVE_BODY_LIMIT);
+test('SyncEngine: a connected commit flushes promptly, and a burst coalesces into one frame', async () => {
+  const server = autoServer(snapshot());
+  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
+  await engine.init();
+  await vi.waitFor(() => assert.ok(engine.state.connected));
+  server.frames.length = 0;
 
-  // Accounting is in UTF-8 bytes, not characters: multi-byte payloads cost more.
-  const big: Op = {
-    type: 'fb_create',
-    target: null,
-    payload: { contentMd: '€'.repeat(2000) + '🔥' },
-  };
-  const fit = keepalivePrefix([op(1), big, big, op(2)], 8_000);
-  assert.deepEqual(fit!.ops, [op(1), big]);
-  assert.ok(bytes(fit!.body) <= 8_000);
+  await engine.addOp(op(1));
+  await engine.addOp(op(2));
+  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
+  const frames = syncFrames(server);
+  assert.equal(frames.length, 1, 'the burst rides one frame');
+  assert.equal((frames[0]!.ops as Op[]).length, 2);
+});
+
+test('SyncEngine: a failed connection reports offline and keeps the queue', async () => {
+  const engine = new SyncEngine({
+    db,
+    wsFactory: deadSocketFactory(),
+    wsUrl: 'ws://album.test/ws',
+  });
+  const errors: Array<{ phase: string; message: string }> = [];
+  engine.rebind({
+    onError: (phase, error) => errors.push({ phase, message: (error as Error).message }),
+  });
+  await engine.addOp(op(1));
+  await settle();
+  assert.equal(engine.state.connected, false);
+  const attempt = await engine.sync();
+  assert.equal(attempt.ok, false, 'the button click fails honestly');
   assert.ok(
-    bytes(`{"ops":[${JSON.stringify(op(1))},${JSON.stringify(big)},${JSON.stringify(big)}]}`) >
-      8_000,
+    errors.some((e) => e.phase === 'connect'),
+    'the transport failure is reported',
   );
+  assert.equal(await loggedCount(), 1, 'the op stays queued');
+  assert.equal(engine.state.pending, 1);
+});
 
-  const giant: Op = {
-    type: 'fb_create',
-    target: null,
-    payload: { contentMd: 'x'.repeat(70_000) },
+test('SyncEngine: the button flow reconnects a dropped engine and flushes', async () => {
+  // A factory whose sockets fail until the test flips the switch — the user fixes the
+  // network, then clicks sync.
+  let alive = false;
+  const server = autoServer(snapshot());
+  const factory = (url: string) => (alive ? server.factory(url) : deadSocketFactory()(url));
+  const engine = new SyncEngine({ db, wsFactory: factory, wsUrl: 'ws://album.test/ws' });
+  await engine.addOp(op(7));
+  const first = await engine.sync();
+  assert.equal(first.ok, false);
+  assert.equal(await loggedCount(), 1, 'still queued while offline');
+
+  alive = true;
+  const second = await engine.sync();
+  assert.equal(second.ok, true);
+  assert.equal(await loggedCount(), 0, 'the backlog lands on reconnect');
+  assert.equal(engine.state.connected, true);
+});
+
+test('SyncEngine: a dropped socket unmarks reserved ops and flips to offline', async () => {
+  const server = autoServer(snapshot());
+  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
+  await engine.init();
+  await vi.waitFor(() => assert.ok(engine.state.connected));
+
+  // The welcome already carried the empty-queue snapshot request; forget it.
+  server.frames.length = 0;
+  // The network dies right after the welcome: reserved-but-unconfirmed ops must unmark,
+  // or every later flush would skip them.
+  server.sockets[0]!.close();
+  await settle();
+  assert.equal(engine.state.connected, false);
+  await engine.addOp(op(3));
+  await settle();
+  assert.equal(syncFrames(server).length, 0, 'a dead socket carries nothing');
+  assert.equal(await loggedCount(), 1);
+});
+
+test('SyncEngine: hello without a token asks for verification, and the token rides the next hello', async () => {
+  const frames: Array<Record<string, unknown> & { type: string }> = [];
+  const factory = (url: string) => {
+    const ws = new FakeWebSocket(url);
+    ws.onSend = (frame) => {
+      frames.push(frame);
+      if (frame.type === 'hello') {
+        if (frame.turnstileToken === 'tok') {
+          ws.serverSend({
+            type: 'welcome',
+            selfId: 3,
+            uuid: 'uuid-3',
+            serverTime: 1,
+            mediaHostUrl: 'https://facade.test',
+          });
+        } else {
+          ws.serverSend({
+            type: 'error',
+            error: 'turnstile_required',
+            turnstileSiteKey: 'site-key-1',
+          });
+        }
+      }
+      if (frame.type === 'sync') ws.serverSend({ type: 'synced', response: snapshot() });
+    };
+    setTimeout(() => ws.serverOpen(), 0);
+    return ws;
   };
-  assert.equal(keepalivePrefix([giant]), null);
-  assert.deepEqual(keepalivePrefix([op(1), giant])!.ops, [op(1)]);
+  const engine = new SyncEngine({ db, wsFactory: factory, wsUrl: 'ws://album.test/ws' });
+  const onTurnstileRequired = vi.fn();
+  engine.rebind({ onTurnstileRequired });
+
+  await engine.init();
+  await vi.waitFor(() => assert.equal(onTurnstileRequired.mock.calls.length, 1));
+  assert.deepEqual(onTurnstileRequired.mock.calls[0], ['site-key-1']);
+  assert.equal(engine.state.connected, false, 'an unauthenticated session is not connected');
+
+  engine.verify('tok');
+  await vi.waitFor(() => assert.ok(engine.state.connected));
+  const hellos = frames.filter((f) => f.type === 'hello');
+  assert.equal(hellos[0]!.turnstileToken, undefined, 'the first hello carries no token');
+  assert.equal(hellos[1]!.turnstileToken, 'tok', 'the verified hello carries the token');
+  await vi.waitFor(() =>
+    assert.equal(
+      frames.filter((f) => f.type === 'sync').length,
+      1,
+      'the flush follows the welcome',
+    ),
+  );
 });
 
-test('withdrawPhoto removes a pending photo record and its ops, and keeps the pending count honest', async () => {
-  const uploadOp = (sha: string): Op => ({
-    type: 'upload',
-    target: null,
-    payload: {
-      sha256: sha,
-      url: `https://cdn.test/${sha}.webp`,
-      width: 1,
-      height: 1,
-      size: 1,
-      type: 0,
-      createdAt: 1_000,
-    },
-  });
-  const record = (sha: string) => ({
-    sha256: sha,
-    status: 'uploading' as const,
-    meta: { width: 1, height: 1, size: 1, type: 0 as const },
-    artifact: { key: `job-${sha}`, ext: 'webp' as const },
-    url: `https://cdn.test/${sha}.webp`,
-    createdAt: 1_000,
-  });
-  const e = engine();
-  await e.addUploadOp(uploadOp('sha-a'), record('sha-a'));
-  await e.addUploadOp(uploadOp('sha-b'), record('sha-b'));
-  assert.equal(e.state.pending, 2);
-  assert.equal((await e.hostedPhotos()).length, 2);
+test('SyncEngine: a refused token re-asks, and the last known site key rides along', async () => {
+  const factory = (url: string) => {
+    const ws = new FakeWebSocket(url);
+    ws.onSend = (frame) => {
+      if (frame.type === 'hello') {
+        if (frame.turnstileToken === 'good') {
+          ws.serverSend({ type: 'welcome', selfId: 1, uuid: 'u', serverTime: 1, mediaHostUrl: '' });
+        } else if (frame.turnstileToken === undefined) {
+          // The first refusal carries the public key the widget renders with.
+          ws.serverSend({
+            type: 'error',
+            error: 'turnstile_required',
+            turnstileSiteKey: 'site-key-1',
+          });
+        } else {
+          // A failed check carries no key; the engine must still be able to re-render
+          // the widget from the key the first refusal supplied.
+          ws.serverSend({ type: 'error', error: 'turnstile_failed' });
+        }
+      }
+    };
+    setTimeout(() => ws.serverOpen(), 0);
+    return ws;
+  };
+  const engine = new SyncEngine({ db, wsFactory: factory, wsUrl: 'ws://album.test/ws' });
+  const onTurnstileRequired = vi.fn();
+  engine.rebind({ onTurnstileRequired });
 
-  // The record knows which op it owns, so the withdrawal deletes exactly that op.
-  await e.withdrawPhotos(['sha-a']);
-  assert.equal(e.state.pending, 1);
-  assert.deepEqual(
-    (await e.hostedPhotos()).map((r) => r.sha256),
-    ['sha-b'],
-  );
-  // Withdrawing something already gone changes nothing, including the pending count.
-  await e.withdrawPhotos(['sha-a']);
-  assert.equal(e.state.pending, 1);
+  await engine.init();
+  await vi.waitFor(() => assert.deepEqual(onTurnstileRequired.mock.calls[0], ['site-key-1']));
+  engine.verify('bad');
+  await vi.waitFor(() => assert.equal(onTurnstileRequired.mock.calls.length, 2));
+  assert.deepEqual(onTurnstileRequired.mock.calls[1], ['site-key-1'], 'the cached key is reused');
+  engine.verify('good');
+  await vi.waitFor(() => assert.ok(engine.state.connected));
 });
-test('addOp supersedes a queued op on the same dimension, and never an in-flight one', async () => {
-  const like = (sha: string): Op => ({ type: 'like', targetSha: sha, payload: null });
-  const e = engine();
 
-  // A toggled mark costs one entry, not a growing chain.
-  await e.addOp(like('sha-a'));
-  await e.addOp({ type: 'unlike', targetSha: 'sha-a', payload: null });
-  await e.addOp(like('sha-a'));
-  assert.equal(e.state.pending, 1);
-  assert.deepEqual(
-    (await readOps(db)).map((entry) => entry.op.type),
-    ['like'],
-  );
+test('SyncEngine: a backlog larger than MAX_SYNC_OPS chunks into several frames', async () => {
+  const server = autoServer(snapshot());
+  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
+  for (let i = 0; i < MAX_SYNC_OPS + 1; i++) await engine.addOp(op(i));
+  await engine.init();
+  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
+  const frames = syncFrames(server);
+  assert.equal(frames.length, 2, 'one frame per MAX_SYNC_OPS chunk, never one per op');
+  assert.equal((frames[0]!.ops as Op[]).length, MAX_SYNC_OPS);
+  assert.equal((frames[1]!.ops as Op[]).length, 1);
+});
 
-  // Another photo, or a report on the same photo, is a separate write: a report may coexist
-  // with either attitude, so it does not share the attitude's dimension.
-  await e.addOp(like('sha-b'));
-  await e.addOp({ type: 'report', targetSha: 'sha-a', payload: null });
-  assert.equal(e.state.pending, 3);
+test('SyncEngine: pagehide hands the queue to an open socket, and stays silent offline', async () => {
+  class StubWindow {
+    private listeners = new Map<string, Array<() => void>>();
+    addEventListener(type: string, listener: () => void): void {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    }
+    dispatch(type: string): void {
+      for (const l of this.listeners.get(type) ?? []) l();
+    }
+  }
+  const win = new StubWindow();
 
-  // A dislike replaces the queued like for the same photo — the server clears the opposite
-  // column, so the newest op states the whole intent — while the other two entries stand.
-  await e.addOp({ type: 'dislike', targetSha: 'sha-a', payload: null });
-  assert.equal(e.state.pending, 3);
-  assert.deepEqual(
-    (await readOps(db)).map((entry) => [entry.op.type, entry.op.targetSha]),
-    [
-      ['dislike', 'sha-a'],
-      ['like', 'sha-b'],
-      ['report', 'sha-a'],
-    ],
-  );
+  // Offline: nothing is sent, the ops wait for the next session.
+  const offline = new SyncEngine({
+    db,
+    wsFactory: deadSocketFactory(),
+    wsUrl: 'ws://album.test/ws',
+  });
+  offline.install(win as unknown as Window);
+  await offline.addOp(op(1));
+  win.dispatch('pagehide');
+  await settle();
+  assert.equal(await loggedCount(), 1, 'an offline pagehide keeps the queue');
 
-  // An op a request already carries keeps its key: the response clears that key on success, so
-  // replacing it would take the edit with it. The superseding op is appended instead.
-  await clearOps(db);
-  const held = deferred<SyncCallResult>();
-  const postSyncFn = vi.fn(() => held.promise);
-  const syncing = new SyncEngine({ db, postSyncFn });
-  await syncing.addOp(like('sha-c'));
-  const inFlight = syncing.sync();
-  await vi.waitFor(() => assert.equal(postSyncFn.mock.calls.length, 1));
-  await syncing.addOp({ type: 'unlike', targetSha: 'sha-c', payload: null });
-  assert.equal(syncing.state.pending, 2);
+  // Connected: the page-exit trigger starts the same exchange a commit would.
+  const server = autoServer(snapshot());
+  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
+  engine.install(win as unknown as Window);
+  await engine.init();
+  await vi.waitFor(() => assert.ok(engine.state.connected));
+  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
+  server.frames.length = 0;
+  await engine.addOp(op(9));
+  win.dispatch('pagehide');
+  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
+  const dumps = syncFrames(server);
+  assert.equal(dumps.length, 1, 'one exchange, never a pagehide dump beside the flush');
   assert.deepEqual(
-    (await readOps(db)).map((entry) => entry.op.type),
-    ['like', 'unlike'],
+    (dumps[0]!.ops as Op[]).map((o) => o.target),
+    [9],
   );
-  held.resolve(result(snapshot()));
-  await inFlight;
-  assert.deepEqual(
-    (await readOps(db)).map((entry) => entry.op.type),
-    ['unlike'],
-  );
+});
+
+test('SyncEngine: an op superseded in place stays one entry and rides one flush', async () => {
+  const server = autoServer(snapshot());
+  const engine = new SyncEngine({ db, wsFactory: server.factory, wsUrl: 'ws://album.test/ws' });
+  await engine.addOp(op(1));
+  await engine.addOp(op(1));
+  assert.equal(await loggedCount(), 1, 'the second reaction replaced the first');
+  await engine.init();
+  await vi.waitFor(() => assert.equal(engine.state.pending, 0));
+  const frames = syncFrames(server);
+  assert.equal(frames.length, 1);
+  assert.equal((frames[0]!.ops as Op[]).length, 1);
 });

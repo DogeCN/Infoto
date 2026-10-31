@@ -34,6 +34,14 @@ run_worker_first = [
   "/l/*",
   "/robots.txt",
   "/admin/migrate",
+  # Cloudflare does not document whether `*` crosses `/`, so a sub-resource like
+  # /admin/polls/12 is only guaranteed to match by having both forms present.
+  "/admin/announcements",
+  "/admin/announcements/*",
+  "/admin/polls",
+  "/admin/polls/*",
+  "/admin/feedback",
+  "/admin/feedback/*",
   "/admin/translate",
 ]
 not_found_handling = "single-page-application"

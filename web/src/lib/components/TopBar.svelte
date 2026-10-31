@@ -31,6 +31,9 @@
     pendingCount?: number;
     filterCount?: number;
     isSyncing?: boolean;
+    /** Whether the /ws session is open and authenticated; the sync button hides while
+     *  it is, because a connected client syncs without being told to (ADR 0026). */
+    connected?: boolean;
     settingsActive?: boolean;
     announcementActive?: boolean;
     multiSelectActive?: boolean;
@@ -60,6 +63,7 @@
     pendingCount = 0,
     filterCount = 0,
     isSyncing = false,
+    connected = false,
     settingsActive = false,
     announcementActive = false,
     multiSelectActive = false,
@@ -356,7 +360,9 @@
 {#snippet leftGroup()}
   <div class="flex shrink-0 items-center gap-1">
     {@render settingsBtn()}
-    <SyncButton {pendingCount} {isSyncing} onSync={onSyncClick} />
+    {#if !connected}
+      <SyncButton {pendingCount} {isSyncing} onSync={onSyncClick} />
+    {/if}
   </div>
 {/snippet}
 
