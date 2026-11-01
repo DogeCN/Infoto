@@ -116,6 +116,12 @@ Deployment is automated by GitHub Actions; you configure it once and then push.
 afterwards, so deploy once with the checked-in configuration and do not edit the
 `[[migrations]]` block.
 
+**Upgrading from v0.4.0 to v0.5.0.** No manual D1 schema migration or export/import is
+required; the new Durable Object hydrates from the existing D1 snapshot. Before deploying,
+open v0.4.0 online on every device that may have queued changes and use **Sync** until those
+changes are confirmed. On first connection, v0.5.0 removes legacy queued operations without
+client IDs; any operation still pending on a device at that point can be lost.
+
 **Releasing.** The version on the site is the latest git tag, read at build time — nothing
 in the repo is edited to cut a version:
 
@@ -258,6 +264,11 @@ Worker、前端和本地图床替身。
 
 **首次部署会创建 Durable Object。** 它的存储后端一旦创建就无法更改，因此请用仓库里的
 配置部署一次，之后不要改 `[[migrations]]` 段。
+
+**从 v0.4.0 升级到 v0.5.0。** 无需手动迁移 D1 表结构，也无需导出或导入数据；新的
+Durable Object 会从现有 D1 快照初始化。部署前，请在可能存在待同步更改的每台设备上联网
+打开 v0.4.0，并点击“同步”，直到确认更改已同步。v0.5.0 首次连接时会清除缺少客户端 ID
+的旧格式排队操作；届时设备上仍未同步的操作可能丢失。
 
 **发布版本。** 站点上显示的版本号来自构建时的最新 git tag——仓库里没有任何文件需要手改：
 
