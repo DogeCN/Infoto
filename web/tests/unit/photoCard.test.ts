@@ -1,8 +1,9 @@
-// Guards the failed-media fallback on a gallery card. It is a contract entry with no runtime
-// assertion behind it — the component needs a browser and a failing network to exercise — so a
-// source-level check is the only thing that fails when someone deletes it. That already happened
-// once: 412b6e0 removed it while the commit was about reflow motion, and the grid went silent for
-// two weeks without a single test noticing.
+// Guards the failed-media fallback on the two surfaces that show media: the gallery card and
+// the Lightbox. It is a contract entry with no runtime assertion behind it — the component
+// needs a browser and a failing network to exercise — so a source-level check is the only
+// thing that fails when someone deletes it. That already happened once: 412b6e0 removed it
+// while the commit was about reflow motion, and the grid went silent for two weeks without a
+// single test noticing.
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -11,6 +12,10 @@ import path from 'node:path';
 
 const card = readFileSync(
   path.join(import.meta.dirname, '..', '..', 'src', 'lib', 'components', 'PhotoCard.svelte'),
+  'utf8',
+);
+const lightbox = readFileSync(
+  path.join(import.meta.dirname, '..', '..', 'src', 'lib', 'components', 'Lightbox.svelte'),
   'utf8',
 );
 
@@ -43,6 +48,23 @@ test('photo card: the failure glyph is sized for the card it sits in', () => {
   const branch = failedBranch();
   // Card width, not viewport width: a 90px card and a 400px card are on the same screen.
   assert.match(branch, /size=\{width < 140 \? 24 : 40\}/);
+});
+
+test('Lightbox: the failed surface carries the same grey site mark, never a bare box', () => {
+  // The card's rule on §3 belongs to both surfaces that show media. The viewer used to drop
+  // the shimmer for a flat solid rectangle plus a toast — a bare surface at stage size.
+  const start = lightbox.indexOf('lb-box lb-skeleton');
+  assert.ok(start >= 0, 'the Lightbox has no media placeholder');
+  const end = lightbox.indexOf('{/if}', start);
+  assert.ok(end > start, 'the media placeholder is not closed');
+  const placeholder = lightbox.slice(start, end);
+  assert.match(placeholder, /lb-skeleton-solid/, 'the failed placeholder no longer goes solid');
+  // The mark renders only once the load has failed — the loading shimmer stays empty.
+  assert.match(
+    placeholder,
+    /\{#if loadFailed\}\s*<SiteIcon[^>]*text-muted-foreground/,
+    'no grey site mark renders on the failed surface',
+  );
 });
 
 test('photo card: no overlay control lets its click reach the card', () => {

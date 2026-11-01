@@ -158,16 +158,18 @@ Back-filled from the commit history. Tagged sections are not yet written.
   `/l/*` here). A second slash is not handled — no path the app hands out produces one.
 - **Broken media shows the site mark in muted grey.** A card whose media fails to load
   renders `SiteIcon` — the inline site mark at `text-muted-foreground/50` — over a
-  `--color-card` surface, sized to the card (24px below a 140px card width, 40px above), and
-  still opens the Lightbox, which raises a failure toast of its own. Media is fetched
+  `--color-card` surface, sized to the card (24px below a 140px card width, 40px above).
+  The Lightbox raises a failure toast of its own and renders **the same mark** on the
+  failed surface (56px, over the flat `--color-card` skeleton box; the loading shimmer
+  stays empty until `loadFailed`). Media is fetched
   cross-origin, where an `<img>`/`<video>` error event carries no HTTP status and `fetch()`
   can only return an opaque response, so the mark reads as "this file cannot be shown" —
   never as a status code. The earlier glitching-404 glyph (the error page's `GlitchText`)
   was removed on 2026-10-04, restored on 2026-10-19 after a transcode defect blanked every
   uploaded GIF with nothing in the grid to say so, and replaced by the quiet mark on
   2026-10-31: the animated 404 was the loudest element on a broken card, and a failure is
-  not a headline. **A failed card must never be a bare surface** — whatever replaces the
-  media has to say something.
+  not a headline. **A failed media surface — card or Lightbox — must never be a bare
+  surface** — whatever replaces the media has to say something.
 - **Segmented sort pill.** The pill never decides its own shape — it renders `labelMode`
   as handed to it, and the **top bar** decides via `resolveBarMode`. Four modes, widest
   first: `full` (one screen, every item labelled), `compact` (one screen, only the current

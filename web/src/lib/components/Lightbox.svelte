@@ -28,6 +28,7 @@
   import { playbackVolume, isAudioMediaOpen, toggleAudio } from '../../state/playback.svelte';
   import { markDecoded } from '../../state/decode.svelte';
   import ActionSheet from './ActionSheet.svelte';
+  import SiteIcon from './SiteIcon.svelte';
   import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
   import TooltipIconButton from './TooltipIconButton.svelte';
@@ -1215,14 +1216,20 @@
         data-lb-media
         class="relative flex max-w-full select-none items-center justify-center will-change-transform"
       >
-        <!-- Size the placeholder from native dimensions and aspect ratio. -->
+        <!-- Size the placeholder from native dimensions and aspect ratio. On load failure the
+             shimmer drops to a flat solid surface; a bare surface says nothing, so the same
+             quiet grey site mark the grid card raises fills it (⚠️ §3, broken media). -->
         {#if loadedUrl !== photo.url}
           <div
             class="lb-box lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
             style="--h: {photo.height}px; --ar: {photo.width /
               photo.height}; aspect-ratio: {photo.width} / {photo.height};"
             aria-hidden="true"
-          ></div>
+          >
+            {#if loadFailed}
+              <SiteIcon size={56} class="text-muted-foreground/50" />
+            {/if}
+          </div>
         {/if}
         {#if photo.type !== 0}
           <!-- Render silent and audio WebM with CSS sizing and eager buffering. The element
