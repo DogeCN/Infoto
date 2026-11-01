@@ -282,7 +282,7 @@ export class Album {
           await this.ingest(ws, frame);
           return;
         case 'ping':
-          this.send(ws, { type: 'pong', serverTime: Date.now() });
+          this.send(ws, { type: 'pong' });
           return;
         default:
           this.send(ws, { type: 'error', error: 'bad_request' });
@@ -355,7 +355,6 @@ export class Album {
       type: 'welcome',
       selfId: info.userId,
       uuid: info.uuid ?? '',
-      serverTime: Date.now(),
       mediaHostUrl: this.env.MEDIA_HOST_URL ?? '',
       seq: maxSeq,
       ...(fullSnapshot

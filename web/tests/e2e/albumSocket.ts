@@ -25,7 +25,6 @@ export interface LiveWelcome {
   type: 'welcome';
   selfId: number;
   uuid: string;
-  serverTime: number;
   mediaHostUrl: string;
   seq: number;
   snapshot?: AlbumSnapshot;
@@ -277,7 +276,6 @@ export async function mockAlbumSocket(
     type: 'welcome',
     selfId,
     uuid: 'e2e-user',
-    serverTime: Date.now(),
     mediaHostUrl: options.mediaHostUrl ?? 'https://facade.test',
     seq,
     snapshot,

@@ -25,8 +25,6 @@ import {
 const op = (i: number) => ({ type: 'like' as const, target: i, payload: null });
 const snapshot = (...ids: number[]): SyncResponse =>
   ({
-    ok: true,
-    serverTime: 0,
     selfId: 0,
     mediaHostUrl: 'https://facade.test',
     photos: ids.map((id) => ({ id, sha256: `sha-${id}` })),

@@ -14,7 +14,6 @@ const WELCOME: WsServerFrame = {
   type: 'welcome',
   selfId: 7,
   uuid: 'u-test',
-  serverTime: 1_000,
   mediaHostUrl: 'https://facade.test',
   seq: 0,
 };

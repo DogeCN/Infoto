@@ -1155,8 +1155,10 @@ before deadline` / `no response before deadline`).
     client used to assert the response shape, and the frame handler owns that check now.
   - **Catch-up is a snapshot whenever the client's `lastSeq` cannot be explained by this
     object** — fresh (`0`), behind the retained window, or _ahead of_ `maxSeq`, which is what a
-    migrate import leaves behind after it resets the log beneath a connected client. An empty
-    incremental frame would silently strand that tab on a stale album forever.
+    migrate import leaves behind after it resets the log beneath a connected client. A whole
+    `welcome` makes the coordinator adopt the server's `seq` as its stored position (replace,
+    not advance), so that client is un-stranded instead of qualifying for snapshots forever.
+    An empty incremental frame would silently strand that tab on a stale album forever.
 - **Service worker (production only).** `main.ts` registers `/sw.js` behind
   `import.meta.env.PROD` — in dev the worker would cache Vite's unhashed module URLs and pin
   stale code against HMR. Navigations serve the cached SPA shell, so the album opens offline

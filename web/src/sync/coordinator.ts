@@ -202,6 +202,11 @@ export class CoordinatorCore {
         this.helloFailed = false;
         this.connected = true;
         this.selfId = frame.selfId;
+        // A whole snapshot already folds every op up to the server's seq: adopt it as this
+        // browser's position, replacing rather than advancing. That is what un-strands a
+        // client whose stored lastSeq sits above a rehydrated (reset) log — otherwise its
+        // hello keeps qualifying for whole snapshots forever.
+        if (frame.snapshot) this.saveLastSeq(frame.seq);
         this.startPing();
         // Queue entries without a nonce predate the coordinator; the welcome snapshot is
         // the server's current state and those entries were flushed by the previous

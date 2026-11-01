@@ -156,13 +156,10 @@ export class SyncEngine {
         this.mirrorCookie(frame.uuid);
         if (frame.snapshot) {
           const response: SyncResponse = {
-            ok: true,
-            serverTime: frame.serverTime,
+            ...frame.snapshot,
             selfId: frame.selfId,
             mediaHostUrl: frame.mediaHostUrl,
-            photos: frame.snapshot.photos,
-            announcements: frame.snapshot.announcements,
-            polls: frame.snapshot.polls,
+            // Feedback is real for the root only; a non-root store keeps its own empty.
             feedback: frame.selfId === 0 ? frame.snapshot.feedback : [],
           };
           void this.applySnapshot(response);

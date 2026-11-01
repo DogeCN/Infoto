@@ -19,7 +19,6 @@ const welcomeFrame = (selfId = 0, withSnapshot = true) => ({
   type: 'welcome' as const,
   selfId,
   uuid: 'uuid-test',
-  serverTime: 1_000,
   mediaHostUrl: 'https://facade.test',
   seq: 0,
   ...(withSnapshot

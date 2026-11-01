@@ -183,23 +183,6 @@ export interface Op {
   ct?: number;
 }
 
-export interface SyncResponse {
-  ok: boolean;
-  /** Server millisecond clock for correcting optimistic timestamps. */
-  serverTime: number;
-  selfId: number;
-  /** Where the browser POSTs artifacts. The standalone facade owns the image host and its
-   *  credentials, so this server never sees an upload or a TC_SECRET. */
-  mediaHostUrl: string;
-  photos: Photo[];
-  /** Every locale's rows: the client filters by its content locale, so switching language
-   *  never needs another round trip. */
-  announcements: Announcement[];
-  polls: Poll[];
-  /** Real data for the root user only; empty array for everyone else. */
-  feedback: Feedback[];
-}
-
 /** The album state a client hydrates from, carried whole in `welcome`. */
 export interface AlbumSnapshot {
   photos: Photo[];
@@ -210,6 +193,16 @@ export interface AlbumSnapshot {
   /** Real data for the root user only; empty for everyone else. */
   feedback: Feedback[];
 }
+
+/** One full snapshot plus the identity context it arrived with. `welcome` flattens its
+ *  nested snapshot into this shape; the IndexedDB snapshot cache keeps it, so a snapshot
+ *  cached by an older build simply carries ignored extra fields. */
+export type SyncResponse = AlbumSnapshot & {
+  selfId: number;
+  /** Where the browser POSTs artifacts. The standalone facade owns the image host and its
+   *  credentials, so this server never sees an upload or a TC_SECRET. */
+  mediaHostUrl: string;
+};
 
 /** One applied op as broadcast to every connection and replayed on catch-up. */
 export interface AppliedOp {
@@ -249,9 +242,10 @@ export interface WsWelcomeFrame {
   selfId: number;
   /** The session identity; the client mirrors it into its uuid cookie. */
   uuid: string;
-  serverTime: number;
   mediaHostUrl: string;
-  /** Highest applied-op sequence on the server at welcome time. */
+  /** Highest applied-op sequence on the server at welcome time. The coordinator adopts it
+   *  as its stored position — which also resets a client whose stored lastSeq was left
+   *  ahead of a rehydrated log, instead of starving it on whole snapshots. */
   seq: number;
   /** Carried whole when the client's lastSeq is behind the retained window (or absent);
    *  absent when the client is catching up incrementally. */
@@ -273,8 +267,9 @@ export interface WsOpsBroadcastFrame {
   applied: AppliedOp[];
 }
 export interface WsPongFrame {
+  /** The keepalive answer only; nobody reads a clock off it — op timestamps are
+   *  server-stamped at ingest. */
   type: 'pong';
-  serverTime: number;
 }
 export type WsServerFrame = WsWelcomeFrame | WsErrorFrame | WsOpsBroadcastFrame | WsPongFrame;
 

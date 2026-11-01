@@ -259,8 +259,6 @@ const photo = (id: number, sha: string): Photo => ({
 });
 
 const snapshot = (photos: Photo[] = []): SyncResponse => ({
-  ok: true,
-  serverTime: 1_700_000_000_000,
   selfId: 0,
   mediaHostUrl: 'https://facade.test',
   photos,
@@ -329,7 +327,6 @@ test('a confirmed sync retires both the ops and the records', async () => {
     type: 'welcome',
     selfId: 0,
     uuid: 'u',
-    serverTime: 1_000,
     mediaHostUrl: 'https://facade.test',
     seq: 1,
     snapshot: {
