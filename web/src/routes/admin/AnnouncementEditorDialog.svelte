@@ -84,7 +84,7 @@
   }
 
   /**
-   * Pick and upload one or more files. The batch runs sequentially through the single
+   * Pick one or more files. The batch runs sequentially through the single
    * editor-task slot — the panel row, the cancel button and the retry link all describe
    * one job at a time — and stops at the first failure or cancel. Files already hosted
    * return their URLs so the editor can insert them: discarding a completed upload
@@ -119,6 +119,14 @@
     });
     const files = Array.from(input.files ?? []);
     input.value = '';
+    return uploadBatch(files);
+  }
+
+  /**
+   * Hand one batch of files — chosen in the picker or dropped on the editor — to the
+   * sequential upload: the body pickFile's promise settled into.
+   */
+  async function uploadBatch(files: File[]): Promise<EditorPickResult> {
     if (files.length === 0 || destroyed) return { urls: [], error: null };
     uploadBusy = true;
     // Show the first picked image immediately and measure it, so the preview renders the
@@ -206,6 +214,7 @@
         <MarkdownEditor
           bind:value={contentMd}
           onPickFile={pickFile}
+          onUploadFiles={uploadBatch}
           {polls}
           {selfId}
           {uploadTask}

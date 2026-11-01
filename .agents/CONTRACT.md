@@ -952,17 +952,24 @@ before deadline` / `no response before deadline`).
       second magic number. Both heights are measured from the panel's own shell — never a
       breakpoint or a guessed header height; on the desktop panel (bottom-right, 18rem wide)
       both are zero because it does not span the gallery's bottom edge.
-  - **The announcement editor takes any file, and any number of them.** Its input carries no
-    `accept` but does carry `multiple` (user call, 2026-11-01), and both
+  - **The announcement editor takes any file, and any number of them — picked or dropped.**
+    Its input carries no `accept` but does carry `multiple`, and the whole editor surface is a
+    file dropzone (user calls, 2026-11-01): dragging files over it lights a dashed overlay with
+    the localized hint chip (`copy.editor.dropHint`), and dropping runs **the same sequential
+    batch, the same task slot** as the picker. The overlay tracks dragenter/dragleave **depth**
+    (both fire for every child crossed, so a boolean per event flickers), and a host that
+    passes no `onUploadFiles` never lights it — a highlighted dropzone that swallows the drop
+    without uploading would be worse than no drop at all. Both
     `uploadEditorFile` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
-    leg. Each picked file is uploaded as-is, so its extension survives into the returned URL. The
+    leg. Each file is uploaded as-is, so its extension survives into the returned URL. The
     batch runs **sequentially** through the one editor-task slot — the panel row, the cancel
     button and the retry link all describe a single job at a time — and stops at the first
     failure or cancel. Files that already landed before the stop are still inserted: throwing
     away completed uploads because a later file failed would silently lose the reader's picks.
-    The pick therefore resolves to `{ urls, error }`, not one URL. **A multi-file insert is one
-    line per file** (`insertMediaLinesAt`), never one concatenated run; a single URL keeps the
-    single-file path so its name still lands as alt text. How
+    The pick therefore resolves to `{ urls, error }`, not one URL — and the drop resolves the
+    same way: `uploadBatch` is the shared body, `pickFile` only wraps the OS picker around it.
+    **A multi-file insert is one line per file** (`insertMediaLinesAt`), never one concatenated
+    run; a single URL keeps the single-file path so its name still lands as alt text. How
     it lands in Markdown is decided by the extension — and the same predicate decides how it
     renders, so what is inserted is what appears:
     - a real image extension (webp/jpg/png/gif/avif/heic/svg…) → `![](url)`, rendered as
@@ -1628,7 +1635,7 @@ The parts of this contract that are asserted by `npm test`:
 | Every MIME the upload can name maps to an extension the Markdown classifier knows       | `web/tests/unit/markdown.test.ts`                                                  |
 | A media URL's extension picks the Markdown element (video / audio / image)              | `web/tests/unit/markdown.test.ts`                                                  |
 | Only a real image extension renders in place; a non-media file links                    | `web/tests/unit/markdown.test.ts`                                                  |
-| A multi-file pick inserts **one line per file**, never a concatenated run (§3)          | `web/tests/unit/markdown.test.ts`                                                  |
+| A multi-file pick or drop inserts **one line per file**, never a run (§3)               | `web/tests/unit/markdown.test.ts`                                                  |
 | The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder    | `web/tests/unit/markdown.test.ts`                                                  |
 | A picked file previews locally by MIME **or** file name                                 | `web/tests/unit/markdown.test.ts`                                                  |
 | The editor uploads any file, not only images and videos                                 | `web/tests/unit/editorUpload.test.ts`                                              |

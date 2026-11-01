@@ -35,6 +35,8 @@
     value: string;
     /** Open the picker and upload what was chosen; resolves when the batch has stopped. */
     onPickFile?: () => Promise<EditorPickResult>;
+    /** Upload files dropped on the editor — the same batch, without the picker. */
+    onUploadFiles?: (files: File[]) => Promise<EditorPickResult>;
     /** Current language's poll registry powers embedded live previews. */
     polls?: Poll[];
     selfId?: number;
@@ -52,6 +54,7 @@
   let {
     value = $bindable(''),
     onPickFile,
+    onUploadFiles,
     polls = [],
     selfId = -1,
     uploadTask = null,
@@ -71,6 +74,10 @@
   let textareaEl: HTMLTextAreaElement | undefined = $state(undefined);
   let fileUploading = $state(false);
   let fileError = $state('');
+  let dropActive = $state(false);
+  // dragenter/dragleave fire for every child crossed, so the highlight needs a live count
+  // of dragged-into subtrees, not a boolean per event.
+  let dragDepth = 0;
   let pendingImageCaret: number | null = null;
   // Captured from the failed snapshot so the retry button can call pipeline.retry(jobId).
   let failedJobId = $state<string | null>(null);
@@ -164,6 +171,30 @@
     await runUpload(pick);
   }
 
+  /** Files dropped on the editor join the same single upload path as the picker. */
+  async function dropFiles(event: DragEvent): Promise<void> {
+    event.preventDefault();
+    dragDepth = 0;
+    dropActive = false;
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    const run = onUploadFiles;
+    if (files.length === 0 || !run || fileUploading) return;
+    await runUpload(() => run(files));
+  }
+
+  function dragEntering(event: DragEvent): void {
+    if (!onUploadFiles) return; // a host without the drop path must not light the overlay
+    if (!event.dataTransfer?.types.includes('Files')) return;
+    event.preventDefault();
+    dragDepth += 1;
+    dropActive = true;
+  }
+
+  function dragLeaving(): void {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dropActive = false;
+  }
+
   // Derived, not a constant: these labels are read from the reactive copy table, and a
   // component-scope `const` would freeze them in whichever language was active at mount.
   const TOOLS = $derived<
@@ -201,7 +232,28 @@
   ]);
 </script>
 
-<div class="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
+<div
+  class="relative grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2"
+  role="presentation"
+  ondragenter={dragEntering}
+  ondragleave={dragLeaving}
+  ondragover={(event) => {
+    // Without preventDefault the browser refuses the drop (no valid target cursor).
+    if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+  }}
+  ondrop={dropFiles}
+>
+  {#if dropActive}
+    <div
+      class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-primary/10"
+      role="status"
+    >
+      <span
+        class="rounded-full border border-primary/50 bg-card px-3 py-1 text-xs font-medium text-primary"
+        >{copy.editor.dropHint}</span
+      >
+    </div>
+  {/if}
   <div class="flex min-h-0 min-w-0 flex-col gap-3">
     <div class="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/60 p-1">
       {#each TOOLS as tool (tool.title)}

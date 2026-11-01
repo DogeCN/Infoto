@@ -256,6 +256,7 @@ export const enUS = {
   editor: {
     fileUploadFailed: 'File upload failed. Retry',
     uploading: 'Uploading',
+    dropHint: 'Drop files to upload',
     retry: 'Retry',
     previewAria: 'Live preview',
     previewEmpty: 'Preview',
@@ -616,6 +617,7 @@ const zhCN: Copy = {
   editor: {
     fileUploadFailed: '文件上传失败，请重试',
     uploading: '上传中',
+    dropHint: '拖放文件以上传',
     retry: '重试',
     previewAria: '实时预览',
     previewEmpty: '预览',
