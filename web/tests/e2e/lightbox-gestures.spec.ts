@@ -66,7 +66,9 @@ async function parsed(lightbox: Lightbox) {
   };
 }
 
-test('a zoomed photo drags freely, without an edge clamp', async ({ page }) => {
+test('a zoomed photo drags freely, then springs back to the centre on release', async ({
+  page,
+}) => {
   const lightbox = await openLightbox(page);
   const media = await lightbox.locator('img.lb-media').boundingBox();
   const cx = media!.x + media!.width / 2;
@@ -78,73 +80,88 @@ test('a zoomed photo drags freely, without an edge clamp', async ({ page }) => {
   await page.waitForTimeout(400);
   const zoomed = await parsed(lightbox);
   expect(zoomed.scale).toBeGreaterThan(1.2);
-  // The wheel step is eased like the double-click path.
-  expect(zoomed.transition).toContain('transform');
 
-  // Drag well past where the old half-overflow bound sat.
+  // Drag well past where the old half-overflow bound sat: the gesture is still
+  // unbounded, so the photo follows the cursor wherever it goes.
   await page.mouse.move(cx, cy);
   await page.mouse.down();
   await page.mouse.move(cx + 320, cy + 160, { steps: 10 });
+  const midDrag = await parsed(lightbox);
+  expect(midDrag.scale).toBeGreaterThan(1.2);
+  expect(Math.abs(midDrag.tx - zoomed.tx - 320)).toBeLessThanOrEqual(2);
+  expect(Math.abs(midDrag.ty - zoomed.ty - 160)).toBeLessThanOrEqual(2);
+
+  // Release: a plain drag — even on a zoomed photo — returns to the centre, position
+  // only; the zoom it built up stays.
   await page.mouse.up();
-  await page.waitForTimeout(300);
-  const dragged = await parsed(lightbox);
-  expect(dragged.scale).toBeGreaterThan(1.2);
-  expect(Math.abs(dragged.tx - zoomed.tx - 320)).toBeLessThanOrEqual(2);
-  expect(Math.abs(dragged.ty - zoomed.ty - 160)).toBeLessThanOrEqual(2);
+  await page.waitForTimeout(400);
+  const home = await parsed(lightbox);
+  expect(home.scale).toBeGreaterThan(1.2);
+  expect(Math.abs(home.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(home.ty)).toBeLessThanOrEqual(2);
 });
 
-test('a double-click zoomed photo drags past the old edge bound', async ({ page }) => {
+test('a double-click zoomed photo drags, then springs back to the centre', async ({
+  page,
+}) => {
   const lightbox = await openLightbox(page);
   const media = await lightbox.locator('img.lb-media').boundingBox();
   const cx = media!.x + media!.width / 2;
   const cy = media!.y + media!.height / 2;
 
-  // Zoom 2x anchored left of centre, so the zoom itself leaves a translate.
+  // Zoom 2x anchored left of centre, so the zoom itself leaves a translate that the
+  // settle keeps (a discrete zoom anchors on the cursor on purpose).
   await page.mouse.dblclick(cx - 180, cy);
   await page.waitForTimeout(400);
   const zoomed = await parsed(lightbox);
   expect(zoomed.scale).toBe(2);
   expect(zoomed.tx).toBeGreaterThan(100);
 
-  // 260px of drag past that: the old half-overflow bound stopped it at ~164 more.
+  // 260px of drag: the gesture is unbounded, so the photo follows the cursor.
   await page.mouse.move(cx, cy);
   await page.mouse.down();
   await page.mouse.move(cx + 260, cy + 140, { steps: 10 });
+  const midDrag = await parsed(lightbox);
+  expect(Math.abs(midDrag.tx - zoomed.tx - 260)).toBeLessThanOrEqual(2);
+  expect(Math.abs(midDrag.ty - zoomed.ty - 140)).toBeLessThanOrEqual(2);
+
+  // Release: a plain drag on a zoomed photo still returns to the centre, leaving the zoom.
   await page.mouse.up();
-  await page.waitForTimeout(300);
-  const dragged = await parsed(lightbox);
-  expect(Math.abs(dragged.tx - zoomed.tx - 260)).toBeLessThanOrEqual(2);
-  expect(Math.abs(dragged.ty - zoomed.ty - 140)).toBeLessThanOrEqual(2);
+  await page.waitForTimeout(400);
+  const home = await parsed(lightbox);
+  expect(home.scale).toBe(2);
+  expect(Math.abs(home.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(home.ty)).toBeLessThanOrEqual(2);
 });
 
-test('Ctrl+drag rotates where the photo sits instead of recentring it', async ({ page }) => {
+test('Ctrl+drag rotates where the photo sits, keeping its anchored offset', async ({
+  page,
+}) => {
   const lightbox = await openLightbox(page);
   const media = await lightbox.locator('img.lb-media').boundingBox();
   const cx = media!.x + media!.width / 2;
   const cy = media!.y + media!.height / 2;
 
-  await page.mouse.move(cx, cy);
-  await page.mouse.wheel(0, -400);
+  // Zoom 2x anchored left of centre: a discrete zoom keeps its offset at rest, so the
+  // photo now sits off-centre on purpose (a plain drag would spring it back, but this is
+  // an anchor the user zoomed into).
+  await page.mouse.dblclick(cx - 180, cy);
   await page.waitForTimeout(400);
-  await page.mouse.move(cx, cy);
-  await page.mouse.down();
-  await page.mouse.move(cx + 180, cy + 90, { steps: 8 });
-  await page.mouse.up();
-  await page.waitForTimeout(300);
-  const panned = await parsed(lightbox);
-  expect(Math.abs(panned.tx)).toBeGreaterThan(100);
+  const anchored = await parsed(lightbox);
+  expect(anchored.scale).toBe(2);
+  expect(Math.abs(anchored.tx)).toBeGreaterThan(100);
 
-  // Ctrl pressed after the image has been panned: the pivot is the media's own
-  // centre, so the pan must survive the whole gesture.
+  // Ctrl pressed while the photo is off-centre: the pivot is the media's own centre, so
+  // the anchored offset must survive the whole rotate — the photo spins where it sits.
   await page.keyboard.down('Control');
   await page.mouse.move(cx + 40, cy);
   await page.mouse.down();
   await page.mouse.move(cx + 40, cy + 220, { steps: 10 });
-  // Mid-gesture the photo still sits where the pan put it: entering Ctrl pins the centre
-  // where it is, and the rotation happens about that pinned point.
+  // Mid-gesture the photo still sits where the anchor put it: entering Ctrl pins the
+  // centre where it is, and the rotation happens about that pinned point.
   const rotating = await parsed(lightbox);
-  expect(Math.abs(rotating.tx - panned.tx)).toBeLessThanOrEqual(2);
-  expect(Math.abs(rotating.ty - panned.ty)).toBeLessThanOrEqual(2);
+  expect(Math.abs(rotating.tx - anchored.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(rotating.ty - anchored.ty)).toBeLessThanOrEqual(2);
   await page.mouse.up();
   await page.keyboard.up('Control');
   await page.waitForTimeout(400);
@@ -156,7 +173,9 @@ test('Ctrl+drag rotates where the photo sits instead of recentring it', async ({
   expect(Math.abs(rotated.ty)).toBeLessThanOrEqual(2);
 });
 
-test('a lightly zoomed photo pans instead of swiping, with no clamp', async ({ page }) => {
+test('a lightly zoomed photo drags instead of swiping, then springs back', async ({
+  page,
+}) => {
   const lightbox = await openLightbox(page);
   const media = await lightbox.locator('img.lb-media').boundingBox();
   const cx = media!.x + media!.width / 2;
@@ -173,12 +192,17 @@ test('a lightly zoomed photo pans instead of swiping, with no clamp', async ({ p
   await page.mouse.move(cx, cy);
   await page.mouse.down();
   await page.mouse.move(cx + 120, cy + 80, { steps: 8 });
+  const midDrag = await parsed(lightbox);
+  expect(Math.abs(midDrag.tx - zoomed.tx - 120)).toBeLessThanOrEqual(2);
+  expect(Math.abs(midDrag.ty - zoomed.ty - 80)).toBeLessThanOrEqual(2);
+
+  // Release: it springs back to the centre rather than staying panned, and no mark
+  // was made by the drag (a zoomed photo drags, it does not swipe).
   await page.mouse.up();
-  await page.waitForTimeout(300);
-  const dragged = await parsed(lightbox);
-  expect(Math.abs(dragged.tx - zoomed.tx - 120)).toBeLessThanOrEqual(2);
-  expect(Math.abs(dragged.ty - zoomed.ty - 80)).toBeLessThanOrEqual(2);
-  // Still the same photo, and no mark was made by the drag.
+  await page.waitForTimeout(400);
+  const home = await parsed(lightbox);
+  expect(Math.abs(home.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(home.ty)).toBeLessThanOrEqual(2);
   await expect(lightbox.getByText('1 / 2', { exact: true })).toBeVisible();
   await expect(
     lightbox.getByRole('button', { name: enCopy.lightbox.like, exact: true }),
@@ -198,20 +222,16 @@ test('a Ctrl rotate keeps its position when only the mouse is released', async (
   const cx = media!.x + media!.width / 2;
   const cy = media!.y + media!.height / 2;
 
-  // Zoom in and pan, so the card really sits off-centre and a recentre would be visible.
-  await page.mouse.move(cx - 180, cy);
-  await page.mouse.wheel(0, -400);
+  // Anchor a 2x zoom off-centre (a discrete zoom keeps its offset; a plain drag would not,
+  // so a recentre would be visible) so the card really sits off-centre.
+  await page.mouse.dblclick(cx - 180, cy);
   await page.waitForTimeout(400);
-  await page.mouse.move(cx, cy);
-  await page.mouse.down();
-  await page.mouse.move(cx + 200, cy + 80, { steps: 8 });
-  await page.mouse.up();
-  await page.waitForTimeout(300);
-  const panned = await parsed(lightbox);
-  expect(Math.abs(panned.tx)).toBeGreaterThan(100);
+  const anchored = await parsed(lightbox);
+  expect(anchored.scale).toBe(2);
+  expect(Math.abs(anchored.tx)).toBeGreaterThan(100);
 
   // Rotate to the opposite side of the pivot drawing the pointer IN, so the scale falls back
-  // to fit while the angle reaches 180°. That is the exact state  recentres — a
+  // to fit while the angle reaches 180°. That is the exact state that used to recentre — a
   // fit, axis-aligned media — reached in the middle of a gesture the user is still holding.
   const pivot = await lightbox.locator('.will-change-transform').evaluate((n) => {
     const r = n.getBoundingClientRect();
@@ -229,7 +249,7 @@ test('a Ctrl rotate keeps its position when only the mouse is released', async (
   expect(Math.abs(held.rot)).toBeGreaterThan(150);
   // The card is still held by Ctrl, so the position it had must survive: no recentre, no
   // jump, whether the rotation happened to land on a multiple of 90° or not.
-  expect(Math.abs(held.tx - panned.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(held.tx - anchored.tx)).toBeLessThanOrEqual(2);
 
   // The mouse was already released, so letting Ctrl go ends the hold too: now, and only now,
   // the card may return to the centre. The return runs as a Web Animations animation — an

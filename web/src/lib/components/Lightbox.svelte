@@ -240,16 +240,27 @@
    * Starting from the rendered transform and cancelling the snap before animating keeps the
    * whole return continuous, however fast the release follows the rotate.
    */
-  function settleTransform(): void {
+  /**
+   * Settle the transform to its resting state as a single Web Animations animation that
+   * starts from the transform currently on screen — never a CSS `transition` (the rotation-snap
+   * ease is also a WAAPI animation on the same `transform`, so a CSS transition would be
+   * shadowed and the settle would land as a hard jump).
+   *
+   * `keepPosition` decides where the card rests:
+   *  - `false` (the default): recentre — position only, keeping the zoom and the snapped angle.
+   *    Every plain single-pointer drag (a zoomed or rotated photo included) and every Ctrl
+   *    gesture ends centred, because at rest the card always sits at the stage centre; a photo
+   *    parked off-centre reads as a rendering fault.
+   *  - `true`: keep the offset the gesture left. This is the deliberate zoom path — wheel zoom,
+   *    double-click zoom and two-finger pinch each anchor or pan the photo on purpose, so the
+   *    settle must not pull it back to the middle. Those gestures keep their offset through
+   *    `engineSettlePan` rather than the free-drag "always recentre" rule.
+   */
+  function settleTransform(keepPosition = false): void {
     if (!wrapEl) return;
-    // A Ctrl gesture pinned the card's centre for the whole rotate/zoom; un-pinning it sends
-    // the card home — position only, with the zoom and the snapped angle kept. That is the
-    // whole point of the pin: the gesture happened about a fixed centre, so it ends centred.
-    // A gesture that never used Ctrl keeps the free-drag rule instead: only the fit view is
-    // centred, and a zoomed or rotated card keeps the offset its drag produced.
-    const next = ctrlWasActive
-      ? { zoomX: 0, zoomY: 0 }
-      : engineSettlePan({ scale, zoomX, zoomY, rot });
+    const next = keepPosition
+      ? engineSettlePan({ scale, zoomX, zoomY, rot })
+      : { zoomX: 0, zoomY: 0 };
     const targetRot = snapRotation(rot);
     zoomX = next.zoomX;
     zoomY = next.zoomY;
@@ -279,9 +290,9 @@
    * assumed so a stray call can never pull the media out of a live gesture: releasing Ctrl
    * while the mouse is still down must hand over to plain panning, not recentre.
    */
-  function returnHome(): void {
+  function returnHome(keepPosition = false): void {
     if (isHeld()) return;
-    settleTransform();
+    settleTransform(keepPosition);
     // Nothing holds the card any more, so the Ctrl flow is over and its pin is spent. Clearing
     // it here (not at the next press) is what stops a stale pin from recentring an unrelated
     // wheel zoom seconds later.
@@ -303,7 +314,10 @@
     const frame = requestAnimationFrame(() => {
       // A gesture that started in the meantime owns the transform again.
       if (pointerHeld > 0 || ctrlPressed) return;
-      returnHome();
+      // The resting rule is the catch-all: keep whatever a deliberate zoom (wheel,
+      // double-click, pinch) left, and do not recentre it. Plain drags and Ctrl
+      // gestures have already recentred through their own explicit settle.
+      returnHome(true);
     });
     return () => cancelAnimationFrame(frame);
   });
@@ -369,7 +383,9 @@
     if (!stageEl) return;
     const sr = stageEl.getBoundingClientRect();
     commitZoom(engineZoomToPoint({ scale, zoomX, zoomY, rot }, ns, sx, sy, sr), animate);
-    returnHome();
+    // A discrete zoom anchors on the cursor and keeps that offset at rest — the user zoomed
+    // into a point on purpose, so the settle must not recentre it.
+    returnHome(true);
   }
 
   /** Page-width-proportional thresholds: `base` is defined for a 768px-wide
@@ -665,8 +681,10 @@
       // surviving finger's pan writes cannot cancel the settle). The snap writes
       // the rotated state *before* settling — snapping changes whether the image
       // is axis-aligned, so the fit-view recentre must judge the snapped angle.
+      // A pinch keeps its panned offset at rest: it is a deliberate zoom, not a
+      // transient drag, so the card stays where the fingers left it.
       snapWithEase();
-      returnHome();
+      returnHome(true);
       if (active.size === 0) pinchSequence = false;
       return;
     }
@@ -703,12 +721,13 @@
     // branch a two-finger zoom lands here with `dx` spanning the gap between the two
     // fingers — far past the threshold — so zooming marks the photo and advances,
     // which also resets the rotation and hides that a rotate gesture happened.
+    // The panned offset survives: a pinch stays where the fingers left it.
     if (release.kind === 'pinch-tail') {
       lastTap = null;
       gestureDir = null;
       gestureRatio = 0;
       applyWrap(0, 0, true);
-      returnHome();
+      returnHome(true);
       return;
     }
 
@@ -782,7 +801,8 @@
     if (pinchActive) {
       pinchActive = false;
       snapWithEase();
-      returnHome();
+      // A cancelled pinch keeps its offset, like a finished one — the zoom was deliberate.
+      returnHome(true);
     }
 
     // Partner fingers are still down: the gesture is not over. Nothing resets yet

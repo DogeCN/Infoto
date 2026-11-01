@@ -75,9 +75,11 @@ test('snapRotation lands on the nearest 90° keeping sign', () => {
   assert.equal(snapRotation(-179), -180);
 });
 
-// Panning has no positional bound: `settlePan` only recentres the fit view. Every other
-// state keeps the offset the gesture produced, which is what makes a drag feel free after
-// a zoom, a rotation, or a double-click.
+// `settlePan` is the "keep" settle: it recentres only the fit, axis-aligned view. Every
+// other state keeps the offset the gesture produced — this is the deliberate zoom path
+// (wheel, double-click, pinch), each of which anchors or pans on purpose. Plain single-pointer
+// drags do NOT go through `settlePan`: the component recentres them directly, so a free drag
+// always springs back to the centre.
 test('settlePan centres the fit view and leaves every other offset alone', () => {
   // At (or below) fit scale and unrotated: the whole-photo state is centred.
   for (const scale of [1, 0.8]) {
