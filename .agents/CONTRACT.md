@@ -1131,13 +1131,21 @@ before deadline` / `no response before deadline`).
   - **Timestamps are server-authoritative.** The Durable Object stamps every op's `ts` at
     ingest; the client's commit time rides `ct` and display times take `min(ct, ts)` — an
     offline-written moment survives, a skewed clock cannot move state into the future.
-  - **One WebSocket per browser, not per tab** (ADR 0026 §8): `sync/coordinator.ts` runs in a
-    SharedWorker and owns hello/lastSeq catch-up, the backlog flush, and ack bookkeeping
+  - **One WebSocket per browser, not per tab**: `sync/coordinator.ts` runs in a SharedWorker
+    and owns hello/lastSeq catch-up, the backlog flush, and ack bookkeeping
     (confirmed ops leave the shared oplog by client nonce; a superseded op changes nonce, so
     a stale echo can never delete its replacement). Tabs queue into the shared IndexedDB
     oplog and apply broadcast ops live — foreign marks/votes/uploads appear in every open
     tab without a snapshot round trip. The server kicks a user's older connection (4001);
     the kicked tab drops to the offline state.
+  - **Where a browser ships no SharedWorker (Safari on iOS), the same coordinator runs in the
+    page** — `transport.inPageTransport()` wires `CoordinatorCore` to the engine through a
+    same-realm loopback port, so a tab syncs through its own socket instead of queueing
+    forever. Multiple tabs then hold one connection each and the kick rule cycles the
+    newest-first set; every tab still syncs, its turn arriving through the sync button.
+    ⚠️ The loopback posts through the sink's own end of the pair (`coreSide.postMessage`),
+    never the reader's — the first version posted to the tab side and the coordinator heard
+    nothing back, which reads as a hung socket rather than a wiring mistake.
   - **A connected commit flushes within one animation frame**, and a burst of commits — even
     ones an `await` splits across tasks — coalesces into one frame; each frame costs a full
     snapshot on the way back, which is why the debounce exists. The page-exit trigger starts

@@ -13,7 +13,7 @@
 // The protocol core lives in CoordinatorCore so the unit suite can drive it without a
 // SharedWorker; the worker shell only wires ports onto it.
 
-import { WsClient, wsUrl, type WsSocket } from '../core/api/wsClient';
+import { WsClient, type WsSocket } from '../core/api/wsClient';
 import { countOps, deleteOps, openOplogDb, readOps } from '../core/oplog';
 import { MAX_SYNC_OPS, type AppliedOp, type WsServerFrame } from '$shared/types';
 
@@ -89,7 +89,10 @@ export class CoordinatorCore {
     this.io = io;
     this.ws = new WsClient({
       factory: io.wsFactory,
-      url: io.wsUrl ?? wsUrl(),
+      // The default endpoint is deliberately not resolved here: WsClient.connect() applies
+      // the same-origin default at dial time, when a browser location exists. A coordinator
+      // built in node (unit tests) has no location at construction.
+      ...(io.wsUrl ? { url: io.wsUrl } : {}),
       onOpen: () => this.sendHello(),
       onClose: () => this.onSocketDown(),
       onError: (e) => this.onSocketDown(e),

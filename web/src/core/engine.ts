@@ -22,7 +22,7 @@ import {
   type PhotoRecord,
 } from './oplog';
 import { coalesceKey, type MarkSet } from './ops';
-import { portTransport, sharedWorkerTransport, type SyncTransport } from '../sync/transport';
+import { inPageTransport, sharedWorkerTransport, type SyncTransport } from '../sync/transport';
 
 export interface EngineIo {
   db?: IDBDatabase;
@@ -90,14 +90,10 @@ export class SyncEngine {
     this.db = io.db ?? null;
     this.transport =
       io.transport ??
+      // Safari on iOS ships no SharedWorker: the coordinator then runs in this page, so a
+      // tab syncs through its own socket (see transport.inPageTransport).
       sharedWorkerTransport() ??
-      // No SharedWorker (old Safari): no shared connection is possible, so the page runs
-      // in the offline state — browsing and queueing work, syncing waits for a browser
-      // that can hold the socket.
-      portTransport({
-        addEventListener: () => {},
-        postMessage: () => {},
-      });
+      inPageTransport();
     this.transport.onFrame((frame) => this.onFrame(frame));
     this.transport.onDropped((cid) => {
       this.recentCids.delete(cid);

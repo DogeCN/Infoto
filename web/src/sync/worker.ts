@@ -2,7 +2,12 @@
 // the single WebSocket (ADR 0026 §8), the ack bookkeeping over the shared oplog, and
 // fans every server frame out to every tab's engine.
 
-import { CoordinatorCore, type CoordinatorMessage, type TabMessage } from './coordinator';
+import {
+  attachCoordinatorPort,
+  CoordinatorCore,
+  type CoordinatorMessage,
+  type TabMessage,
+} from './coordinator';
 
 interface TabPort {
   addEventListener: (type: 'message', l: (ev: { data: TabMessage }) => void) => void;
@@ -33,8 +38,5 @@ self.onconnect = (event: MessageEvent) => {
   const port = event.source as unknown as TabPort | null;
   if (!port) return;
   ports.push(port);
-  port.addEventListener('message', (ev) => {
-    void core.message(ev.data);
-  });
-  port.start?.();
+  attachCoordinatorPort(core, port);
 };
