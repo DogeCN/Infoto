@@ -340,3 +340,23 @@ test('the double-click zoom eases instead of jumping', async ({ page }) => {
   const zoomed = parsed(await transformOf(lightbox));
   expect(zoomed.scale).toBe(2);
 });
+
+test('the double-click zoom-out eases instead of jumping', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  await page.mouse.dblclick(100, 360);
+  await page.waitForTimeout(700);
+  expect(parsed(await transformOf(lightbox)).scale).toBe(2);
+
+  await page.mouse.dblclick(100, 360);
+  const animating = await lightbox
+    .locator('.will-change-transform')
+    .evaluate((n) =>
+      n.getAnimations().some((a) => a instanceof Animation && a.playState === 'running'),
+    );
+  expect(
+    animating,
+    'the zoom-out ease should be in flight right after the second double-click',
+  ).toBe(true);
+  await page.waitForTimeout(700);
+  expect(parsed(await transformOf(lightbox)).scale).toBe(1);
+});

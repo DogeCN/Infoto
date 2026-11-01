@@ -80,7 +80,7 @@ test('translate: malformed or incomplete structured output is rejected', async (
       title: 'T',
       contentMd: 'A\n\nB',
     }),
-    /invalid_response/,
+    /draft_mismatch:texts_1_of_2/,
   );
   await assert.rejects(
     structuredTranslator(jsonRunner({ title: 'T', texts: ['A', ''] }))({
@@ -100,7 +100,7 @@ test('translate: malformed or incomplete structured output is rejected', async (
       options: ['A', 'B'],
       allowMultiple: false,
     }),
-    /invalid_response/,
+    /draft_mismatch:options_1_of_2/,
   );
   await assert.rejects(
     structuredTranslator(async () => 'not json')({
@@ -110,7 +110,7 @@ test('translate: malformed or incomplete structured output is rejected', async (
       options: ['A', 'B'],
       allowMultiple: false,
     }),
-    /invalid_response/,
+    /draft_mismatch:not_json/,
   );
 });
 
@@ -147,7 +147,7 @@ test('translate: a draft the album would refuse is rejected, not returned', asyn
       options: ['A', 'B'],
       allowMultiple: false,
     }),
-    /invalid_response/,
+    /draft_mismatch:option_not_string/,
   );
 });
 
@@ -199,4 +199,84 @@ test('translate: the dev REST transport sends a JSON-schema request', async () =
     fail([{ role: 'user', content: 'u' }], { type: 'object' }),
     /rest_translate_failed_502/,
   );
+});
+
+// The model returns the wrong shape intermittently for the SAME input — an announcement
+// translated on one click and rejected with the wrong number of entries on the next — so a
+// shape mismatch is retried once instead of surfacing as a coin flip.
+test('translate: a wrong-shape draft is retried once and the retry can succeed', async () => {
+  let calls = 0;
+  const runner: ModelRunner = async () => {
+    calls += 1;
+    return JSON.stringify(
+      calls === 1
+        ? { title: 'T', texts: ['merged everything'] }
+        : { title: 'T', texts: ['A2', 'B2'] },
+    );
+  };
+  const draft = await structuredTranslator(runner)({
+    kind: 'announcement',
+    sourceLocale: 'en-US',
+    targetLocale: 'zh-CN',
+    title: 'T',
+    contentMd: 'A\n\nB',
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(draft, { kind: 'announcement', title: 'T', contentMd: 'A2\n\nB2' });
+});
+
+test('translate: a persistent wrong shape fails after exactly one retry, naming the check', async () => {
+  let calls = 0;
+  const runner: ModelRunner = async () => {
+    calls += 1;
+    return JSON.stringify({ title: 'T', texts: ['merged everything'] });
+  };
+  await assert.rejects(
+    structuredTranslator(runner)({
+      kind: 'announcement',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      title: 'T',
+      contentMd: 'A\n\nB',
+    }),
+    /draft_mismatch:texts_1_of_2/,
+  );
+  assert.equal(calls, 2, 'one attempt plus one retry, never a loop');
+});
+
+test('translate: an unparseable reply is retried too, and an overlong draft is not', async () => {
+  let calls = 0;
+  const runner: ModelRunner = async () => {
+    calls += 1;
+    return calls === 1
+      ? 'here is your translation, sorry!'
+      : JSON.stringify({ title: 'T', texts: ['A2'] });
+  };
+  const draft = await structuredTranslator(runner)({
+    kind: 'announcement',
+    sourceLocale: 'en-US',
+    targetLocale: 'zh-CN',
+    title: 'T',
+    contentMd: 'A',
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(draft, { kind: 'announcement', title: 'T', contentMd: 'A2' });
+
+  // An overlong draft is a real answer, not a flake: retrying would only burn another call.
+  let longCalls = 0;
+  const longRunner: ModelRunner = async () => {
+    longCalls += 1;
+    return JSON.stringify({ title: 'T', texts: ['x'.repeat(200_000)] });
+  };
+  await assert.rejects(
+    structuredTranslator(longRunner)({
+      kind: 'announcement',
+      sourceLocale: 'en-US',
+      targetLocale: 'zh-CN',
+      title: 'T',
+      contentMd: 'A',
+    }),
+    /invalid_response/,
+  );
+  assert.equal(longCalls, 1, 'a deterministic rejection is not retried');
 });

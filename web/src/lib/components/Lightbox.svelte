@@ -245,9 +245,8 @@
     // is where the card actually is.
     const from = wrapEl.style.transform;
     if (from === settled) {
-      // Already there — including the case where a commitZoom write is mid-ease towards
-      // exactly this transform. Touching the element now would set transition:'none' and kill
-      // that ease (the double-click zoom's), so the state is synced and the element left alone.
+      // Already there — including the case where a commitZoom or a resetZoom write is mid-ease
+      // towards exactly this transform. Touching the element now would cancel that ease.
       zoomX = next.zoomX;
       zoomY = next.zoomY;
       rot = targetRot;
@@ -256,12 +255,14 @@
     zoomX = next.zoomX;
     zoomY = next.zoomY;
     rot = targetRot;
-    applyWrap(0, 0, false);
-    snapAnim?.cancel();
-    snapAnim = wrapEl.animate([{ transform: from || settled }, { transform: settled }], {
-      duration: motionMs('exit'),
-      easing: motionEase('exit'),
-    });
+    // Written through the same transform transition every other zoom uses, never with
+    // `transition:'none'`: a settle that landed while another zoom was still easing (the
+    // double-click's zoom-out) would otherwise cut that ease dead and the card would jump. A
+    // CSS transition retargets from the value currently on screen, so the settle continues the
+    // motion from wherever it had reached. Nothing is panning at this point — a settle only
+    // runs when no pointer and no Ctrl are held — so the reason `snapWithEase` needs WAAPI
+    // (a surviving finger rewriting the transform every frame) does not apply here.
+    applyWrap(0, 0, true);
   }
 
   /**

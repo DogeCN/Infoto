@@ -203,7 +203,7 @@ function parseJsonDraft(raw: string): Record<string, unknown> {
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/, '');
   const parsed = safeJsonParse<unknown>(text, null);
-  if (!isRecord(parsed)) throw new Error('invalid_response');
+  if (!isRecord(parsed)) throw new Error('draft_mismatch:not_json');
   return parsed;
 }
 
@@ -229,6 +229,11 @@ function buildMessages(
   ];
 }
 
+/** Whether a rejection describes a model-output shape a retry could satisfy. */
+function isDraftMismatch(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith('draft_mismatch');
+}
+
 /**
  * Translate a whole request in one structured model call. Announcement literal blocks
  * (fences, blank lines, poll references) are never sent to the model: they are removed from
@@ -236,6 +241,27 @@ function buildMessages(
  * travel as one array, so the model cannot change their count or order silently.
  */
 export function structuredTranslator(run: ModelRunner): Translator {
+  const once = translateOnce(run);
+  return async (request) => {
+    try {
+      return await once(request);
+    } catch (error) {
+      // Workers AI returns a well-formed JSON object with the wrong shape intermittently, for
+      // the very same input: the same announcement translated on one click and came back with
+      // the wrong number of entries on the next. One retry turns a coin flip into a rare miss;
+      // a second failure still surfaces with the check that failed, so it stays diagnosable.
+      if (!isDraftMismatch(error)) throw error;
+      return once(request);
+    }
+  };
+}
+
+/**
+ * One structured model call, validated. Rejections are named `draft_mismatch:<what>` when a
+ * retry could plausibly fix them, and plain `invalid_response` when it could not (an overlong
+ * draft is a real answer, not a flake).
+ */
+function translateOnce(run: ModelRunner): Translator {
   return async (request): Promise<TranslationDraft> => {
     const source = LANGUAGE_NAME[languageOf(request.sourceLocale)];
     const target = LANGUAGE_NAME[languageOf(request.targetLocale)];
@@ -256,8 +282,10 @@ export function structuredTranslator(run: ModelRunner): Translator {
       );
       const title = typeof draft.title === 'string' ? draft.title.trim() : '';
       const translated = draft.texts;
-      if (!title || !Array.isArray(translated) || translated.length !== texts.length) {
-        throw new Error('invalid_response');
+      if (!title) throw new Error('draft_mismatch:title_empty');
+      if (!Array.isArray(translated)) throw new Error('draft_mismatch:texts_not_array');
+      if (translated.length !== texts.length) {
+        throw new Error(`draft_mismatch:texts_${translated.length}_of_${texts.length}`);
       }
 
       const pieces: string[] = [];
@@ -289,12 +317,13 @@ export function structuredTranslator(run: ModelRunner): Translator {
       ),
     );
     const translated = draft.options;
-    if (!Array.isArray(translated) || translated.length !== request.options.length) {
-      throw new Error('invalid_response');
+    if (!Array.isArray(translated)) throw new Error('draft_mismatch:options_not_array');
+    if (translated.length !== request.options.length) {
+      throw new Error(`draft_mismatch:options_${translated.length}_of_${request.options.length}`);
     }
     const options: string[] = [];
     for (const option of translated) {
-      if (typeof option !== 'string') throw new Error('invalid_response');
+      if (typeof option !== 'string') throw new Error('draft_mismatch:option_not_string');
       const value = option.trim();
       if (!value) throw new Error('empty_translation');
       // The saved poll enforces the same per-option ceiling, so an overlong draft is unsavable.

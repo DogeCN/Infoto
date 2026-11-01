@@ -506,9 +506,12 @@ Back-filled from the commit history. Tagged sections are not yet written.
     and a zoomed or rotated card keeps the offset its drag produced. The settle reads the inline
     transform rather than the state, because a plain drag previews its displacement without
     writing it back — a card can be visibly off-centre over a state that reads settled. And when
-    the visual already matches the settled transform the settle **touches nothing**: an in-flight
-    ease (the double-click zoom's) would otherwise be killed by a `transition:'none'` rewrite
-    and the zoom would jump. Applying any of this mid-gesture is what used to yank a rotating
+    the visual already matches the settled transform the settle **touches nothing**. When it does
+    write, it goes through the same transform transition every zoom uses — never a
+    `transition:'none'` write — so a settle that lands while another ease is still running (the
+    double-click's zoom-out) retargets that motion from where it had reached instead of cutting
+    it dead. A settle only ever runs with nothing held, so the reason `snapWithEase` needs WAAPI
+    (a surviving finger rewriting the transform every frame) does not apply to it. Applying any of this mid-gesture is what used to yank a rotating
     card back to the stage centre the moment its rotation passed through horizontal. The rule is
     enforced, not remembered: an effect watches the hold itself, so a release path that forgets
     to ask for the settle cannot leave the card parked off-centre with nothing held. **Both** touch pinch and
@@ -1132,7 +1135,15 @@ before deadline` / `no response before deadline`).
     body over `MAX_TEXT_LENGTH` `413 too_large`, and a malformed body `400`. Local dev may set
     `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` in `.dev.vars` to post to the REST endpoint
     instead, because the local binding's remote edge path is unreachable on some networks;
-    production has neither variable, so the binding is the only transport there. Fenced code, blank
+    production has neither variable, so the binding is the only transport there. **A model output
+    with the wrong shape is retried once**, because Workers AI returns a well-formed JSON object
+    with the wrong number of entries intermittently for the very same input — one click translated
+    an announcement and the next rejected it with `texts_1_of_2`, and a coin-flip button is not
+    a translation feature. A rejection retried this way is named `draft_mismatch:<what>`
+    (empty title, wrong entry count, non-JSON reply); a deterministic rejection — an overlong
+    draft — is plain `invalid_response` and is not retried, so a real answer never costs a second
+    call. The name reaches the log through the route's `console.error`, which is what makes a
+    502 diagnosable at all. Fenced code, blank
     lines and whole-line `::poll:` references pass through untranslated (ADR 0021). Its limits
     are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTIONS` / `MAX_POLL_OPTION_CHARS` in
     `shared/types.ts`; `shared/poll.ts#parsePollOptions` is the one poll-option rule and
