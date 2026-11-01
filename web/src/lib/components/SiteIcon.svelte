@@ -10,9 +10,12 @@
     color = 'currentColor',
   }: {
     class?: string;
-    size?: number;
+    /** A pixel number, or any CSS length (`min(56px, 12cqmin)`) for a surface that sizes
+     *  the mark from its own container instead of a breakpoint or a JS measurement. */
+    size?: number | string;
     color?: string;
   } = $props();
+  let length = $derived(typeof size === 'number' ? `${size}px` : size);
 </script>
 
 <svg
@@ -23,7 +26,7 @@
   stroke-linecap="round"
   stroke-linejoin="round"
   class={cn('block', className)}
-  style="width: {size}px; height: {size}px"
+  style="width: {length}; height: {length}"
   aria-hidden="true"
 >
   <circle cx="12" cy="12" r="10" />

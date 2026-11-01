@@ -4,6 +4,7 @@
   // reorder callback. Shared by the admin announcement and feedback lists.
   import { tick, type Snippet } from 'svelte';
   import * as ops from '../../core/ops';
+  import { animateDisplaced } from '$base/lib/flip';
   import { motionEase, motionMs } from '$base/lib/motion';
   import { prefersReducedMotion } from '$base/lib/device.svelte';
 
@@ -34,7 +35,7 @@
   let draggedElement: HTMLElement | null = null;
   let flipToken = 0;
   const cardElements = new Map<number, HTMLElement>();
-  const animations = new Map<number, Animation>();
+  const animations = new Map<number, Pick<Animation, 'cancel'>>();
 
   const DRAG_THRESHOLD = 4;
 
@@ -62,21 +63,7 @@
     // The dragged card moved in the document: rebase it first, then FLIP the others.
     rebaseDraggedCard();
     if (prefersReducedMotion()) return;
-    for (const [id, element] of cardElements) {
-      if (id === dragId) continue;
-      const previous = first.get(id);
-      const current = element.getBoundingClientRect();
-      if (!previous) continue;
-      const dx = previous.left - current.left;
-      const dy = previous.top - current.top;
-      animations.get(id)?.cancel();
-      if (dx === 0 && dy === 0) continue;
-      const animation = element.animate(
-        [{ transform: `translate3d(${dx}px, ${dy}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }],
-        { duration: motionMs('exit'), easing: motionEase('exit') },
-      );
-      animations.set(id, animation);
-    }
+    animateDisplaced(first, cardElements, dragId, animations);
   }
 
   function followPointer(x: number, y: number): void {

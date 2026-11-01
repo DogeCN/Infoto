@@ -4,6 +4,7 @@
   import { CheckSquare, Eraser, GripVertical, Plus, Trash2 } from '@lucide/svelte';
   import { fmt, plural } from '$shared/copy';
   import { MAX_POLL_OPTIONS, type Poll, type Vote } from '$shared/types';
+  import { animateDisplaced } from '$base/lib/flip';
   import { countHop, countHopOut, motionEase, motionMs } from '$base/lib/motion';
   import { prefersReducedMotion } from '$base/lib/device.svelte';
   import TriStateToggle from '$lib/components/TriStateToggle.svelte';
@@ -118,7 +119,7 @@
   const DRAG_THRESHOLD = 4;
   let rowsEl = $state<HTMLElement | undefined>(undefined);
   const rowElements = new Map<number, HTMLElement>();
-  const animations = new Map<number, Animation>();
+  const animations = new Map<number, Pick<Animation, 'cancel'>>();
   let pressId: number | null = null;
   let pressX = 0;
   let pressY = 0;
@@ -154,26 +155,7 @@
     if (token !== flipToken) return;
     rebaseDraggedCard();
     if (prefersReducedMotion()) return;
-    for (const [id, element] of rowElements) {
-      if (id === dragId) continue;
-      const previous = first.get(id);
-      if (!previous) continue;
-      const current = element.getBoundingClientRect();
-      const dx = previous.left - current.left;
-      const dy = previous.top - current.top;
-      animations.get(id)?.cancel();
-      if (dx === 0 && dy === 0) continue;
-      animations.set(
-        id,
-        element.animate(
-          [
-            { transform: `translate3d(${dx}px, ${dy}px, 0)` },
-            { transform: 'translate3d(0, 0, 0)' },
-          ],
-          { duration: motionMs('exit'), easing: motionEase('exit') },
-        ),
-      );
-    }
+    animateDisplaced(first, rowElements, dragId, animations);
   }
 
   function followPointer(x: number, y: number): void {

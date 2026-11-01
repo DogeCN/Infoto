@@ -248,12 +248,19 @@
     onClick?.();
   }}
 >
-  <!-- Media: on load failure render the site mark in muted grey. The failure is also reported
-       by the Lightbox toast, which the card still opens; the grid shows this mark instead of
-       silence. Empty URL (upload still in flight) keeps the skeleton instead of an <img>
-       whose instant error would flip the card to the fallback. -->
+  <!-- Media: on load failure render the site mark in muted grey. The surface is spoken
+       (role="img" + the load-failed label): unlike the Lightbox, the card raises no toast,
+       and an aria-hidden failure would leave a screen-reader user with silence where the
+       grid says "cannot be shown". The failure is also reported by the Lightbox toast,
+       which the card still opens; the grid shows this mark instead of blankness. Empty URL
+       (upload still in flight) keeps the skeleton instead of an <img> whose instant error
+       would flip the card to the fallback. -->
   {#if loadFailed}
-    <div class="flex h-full w-full items-center justify-center bg-card text-muted-foreground/50">
+    <div
+      class="flex h-full w-full items-center justify-center bg-card text-muted-foreground/50"
+      role="img"
+      aria-label={copy.lightbox.loadFailed}
+    >
       <SiteIcon size={width < 140 ? 24 : 40} />
     </div>
   {:else if showMedia}

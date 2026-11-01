@@ -37,6 +37,14 @@ test('photo card: a failed media card shows the grey site mark rather than a bla
   assert.match(branch, /<SiteIcon/, 'the failed branch renders no site mark');
   assert.match(branch, /text-muted-foreground/, 'the mark is not muted grey');
   assert.doesNotMatch(branch, /GlitchText/, 'the failed branch still renders the glitch 404');
+  // The grid raises no toast, so the surface must be spoken — a screen-reader user gets
+  // the failure through this label, the only channel the card has.
+  assert.match(branch, /role="img"/, 'the failed surface is not announced as an image');
+  assert.match(
+    branch,
+    /aria-label=\{copy\.lightbox\.loadFailed\}/,
+    'the failed surface has no label',
+  );
   // The regression this test exists for: a bare surface with nothing to say.
   assert.equal(
     branch.replace(/\s+/g, ' ').includes('<div class="h-full w-full bg-card"></div>'),
@@ -50,21 +58,44 @@ test('photo card: the failure glyph is sized for the card it sits in', () => {
   assert.match(branch, /size=\{width < 140 \? 24 : 40\}/);
 });
 
-test('Lightbox: the failed surface carries the same grey site mark, never a bare box', () => {
-  // The card's rule on §3 belongs to both surfaces that show media. The viewer used to drop
-  // the shimmer for a flat solid rectangle plus a toast — a bare surface at stage size.
-  const start = lightbox.indexOf('lb-box lb-skeleton');
-  assert.ok(start >= 0, 'the Lightbox has no media placeholder');
-  const end = lightbox.indexOf('{/if}', start);
-  assert.ok(end > start, 'the media placeholder is not closed');
-  const placeholder = lightbox.slice(start, end);
-  assert.match(placeholder, /lb-skeleton-solid/, 'the failed placeholder no longer goes solid');
-  // The mark renders only once the load has failed — the loading shimmer stays empty.
+test('Lightbox: the failed surface matches the card — replaces media, same grey mark', () => {
+  // Both surfaces that show media follow one rule (§3, broken media): the broken element
+  // leaves the DOM (it must not stay opacity-0, clickable and invisible behind a mark),
+  // and the solid surface carries the same quiet grey mark, sized from the surface it
+  // sits in — the stage's cq box where the card uses its width.
+  const start = lightbox.indexOf('{#if loadFailed}');
+  assert.ok(start >= 0, 'the Lightbox has no failed branch');
+  const failedBlock = lightbox.slice(start, lightbox.indexOf('{:else}', start));
+  assert.match(failedBlock, /lb-failed/, 'the failed surface is not a solid box');
   assert.match(
-    placeholder,
-    /\{#if loadFailed\}\s*<SiteIcon[^>]*text-muted-foreground/,
-    'no grey site mark renders on the failed surface',
+    failedBlock,
+    /<SiteIcon[^>]*size="min\(56px, 12cqmin\)"[^>]*text-muted-foreground/,
+    'the failed surface carries no stage-sized grey mark',
   );
+  // The media elements live in the {:else} arm only: failure means they were unmounted.
+  const outer = lightbox.slice(start, lightbox.indexOf('{:else}', start));
+  assert.ok(
+    !outer.includes('<img') && !outer.includes('<video'),
+    'a media element still renders inside the failed branch',
+  );
+  const elseArm = lightbox.slice(lightbox.indexOf('{:else}', start));
+  assert.ok(elseArm.indexOf('<img') >= 0, 'no image element after the failed branch');
+  // A failed render has no media to mute, and no decoded record to keep.
+  assert.match(
+    lightbox,
+    /\{#if photo\.type === 2 && !loadFailed\}/,
+    'the volume button ignores failure',
+  );
+  const handler = /function handleMediaError\(url: string\): void\s*\{([\s\S]*?)\n {2}\}/.exec(
+    lightbox,
+  );
+  assert.ok(handler, 'the Lightbox has no handleMediaError');
+  assert.match(
+    handler[1]!,
+    /if \(isPending\) return;/,
+    'a still-in-flight preview is judged broken',
+  );
+  assert.match(handler[1]!, /forgetDecoded\(url\);/, 'the failed URL still counts as decoded');
 });
 
 test('photo card: no overlay control lets its click reach the card', () => {

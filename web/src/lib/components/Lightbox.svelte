@@ -26,7 +26,7 @@
   import { copyToClipboard } from '$base/lib/clipboard';
   import { motionEase, motionMs } from '$base/lib/motion';
   import { playbackVolume, isAudioMediaOpen, toggleAudio } from '../../state/playback.svelte';
-  import { markDecoded } from '../../state/decode.svelte';
+  import { markDecoded, forgetDecoded } from '../../state/decode.svelte';
   import ActionSheet from './ActionSheet.svelte';
   import SiteIcon from './SiteIcon.svelte';
   import TimeLabel from './TimeLabel.svelte';
@@ -95,8 +95,10 @@
   });
   // loadedUrl === photo.url means the current media finished decoding (drives skeleton + opacity).
   let loadedUrl = $state('');
-  // Media load failure: the skeleton drops to a flat surface and a toast reports it.
-  // The HTTP status is not reliably obtainable cross-origin (HEAD is CORS-gated).
+  // Media load failure: the broken element leaves the DOM and the flat solid surface with
+  // the grey site mark replaces it, and a toast reports it (the same branch shape the card
+  // raises — ⚠️ §3, broken media). The HTTP status is not reliably obtainable cross-origin
+  // (HEAD is CORS-gated).
   let loadFailed = $state(false);
 
   // Track which failing URLs have already surfaced a toast, so revisiting a
@@ -1069,12 +1071,29 @@
     _warming = next;
   });
 
-  /** Surface a toast once per failing URL. The ERROR glitch is already shown by
-   * the media element's onerror handler. */
-  function toastLoadFailed(url: string) {
+  /** Surface a toast once per failing URL. The grey site mark on the failed surface is
+   * already painted by the media branch below. */
+  function toastLoadFailed(url: string): void {
     if (failToastSeen.has(url)) return;
     failToastSeen.add(url);
     toast.error(copy.lightbox.loadFailed);
+  }
+
+  /**
+   * A media element that cannot load its source, handled the same way as on the card: a
+   * local preview (an optimistic upload, `id < 0`) is a stand-in for bytes the browser may
+   * still be able to decode, so a transient failure keeps the skeleton rather than claiming
+   * the file is broken — and the grid refuses to open a FAILED upload into the viewer at
+   * all, so inside the viewer `isPending` always means still in flight. A hosted URL is
+   * never retried: it marks the surface failed, drops the toast, and stops the URL counting
+   * as decoded page-wide, or the card would trust the stale record and re-mount the same
+   * broken element.
+   */
+  function handleMediaError(url: string): void {
+    if (isPending) return;
+    loadFailed = true;
+    forgetDecoded(url);
+    toastLoadFailed(url);
   }
 
   // ---- menu actions ----------------------------------------------------------
@@ -1216,64 +1235,78 @@
         data-lb-media
         class="relative flex max-w-full select-none items-center justify-center will-change-transform"
       >
-        <!-- Size the placeholder from native dimensions and aspect ratio. On load failure the
-             shimmer drops to a flat solid surface; a bare surface says nothing, so the same
-             quiet grey site mark the grid card raises fills it (⚠️ §3, broken media). -->
-        {#if loadedUrl !== photo.url}
+        <!-- The failed branch replaces the media element outright, the same shape the card
+             raises (§3, broken media): the broken element leaves the DOM, and a bare surface
+             says nothing, so the flat solid box carries the quiet grey site mark — scaled
+             from the stage itself via the cq container, mirroring "size for the surface it
+             sits in". The surface sits inside the media wrap, so a click on it is inert —
+             like the wrap chrome — there is nothing to zoom and it is not the mask. -->
+        {#if loadFailed}
           <div
-            class="lb-box lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
-            style="--h: {photo.height}px; --ar: {photo.width /
+            class="lb-box lb-failed"
+            style="--ar: {photo.width /
               photo.height}; aspect-ratio: {photo.width} / {photo.height};"
             aria-hidden="true"
           >
-            {#if loadFailed}
-              <SiteIcon size={56} class="text-muted-foreground/50" />
-            {/if}
+            <SiteIcon size="min(56px, 12cqmin)" class="text-muted-foreground/50" />
           </div>
-        {/if}
-        {#if photo.type !== 0}
-          <!-- Render silent and audio WebM with CSS sizing and eager buffering. The element
-               keeps its own mute state; `volume` follows the shared playback level. -->
-          <video
-            bind:this={mediaVideoEl}
-            src={photo.url}
-            class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
-            style="--ar: {photo.width} / {photo.height};"
-            draggable="false"
-            muted
-            loop
-            autoplay
-            playsinline
-            preload="metadata"
-            onloadeddata={() => {
-              loadedUrl = photo.url;
-              markDecoded(photo.url);
-            }}
-            onerror={() => {
-              loadFailed = true;
-              toastLoadFailed(photo.url);
-            }}
-          ></video>
         {:else}
-          <img
-            src={photo.url}
-            alt=""
-            class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
-            style="--ar: {photo.width} / {photo.height};"
-            draggable="false"
-            onload={() => {
-              loadedUrl = photo.url;
-              markDecoded(photo.url);
-            }}
-            onerror={() => {
-              loadFailed = true;
-              toastLoadFailed(photo.url);
-            }}
-          />
+          {#if photo.url === '' || loadedUrl !== photo.url}
+            <!-- Size the placeholder from native dimensions and aspect ratio. An optimistic
+                 upload with no URL yet keeps the shimmer here too: `loadedUrl === ''` would
+                 otherwise match and render nothing. -->
+            <div
+              class="lb-box lb-skeleton"
+              style="--h: {photo.height}px; --ar: {photo.width /
+                photo.height}; aspect-ratio: {photo.width} / {photo.height};"
+              aria-hidden="true"
+            ></div>
+          {/if}
+          <!-- An optimistic upload with no URL yet keeps the shimmer: rendering an `<img>`
+               with an empty source would error instantly and toast for a file that is
+               still in flight (the card guards the same rule with `showMedia`). -->
+          {#if photo.url !== ''}
+            {#if photo.type !== 0}
+              <!-- Render silent and audio WebM with CSS sizing and eager buffering. The element
+                   keeps its own mute state; `volume` follows the shared playback level. -->
+              <video
+                bind:this={mediaVideoEl}
+                src={photo.url}
+                class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
+                style="--ar: {photo.width} / {photo.height};"
+                draggable="false"
+                muted
+                loop
+                autoplay
+                playsinline
+                preload="metadata"
+                onloadeddata={() => {
+                  loadedUrl = photo.url;
+                  markDecoded(photo.url);
+                }}
+                onerror={() => handleMediaError(photo.url)}
+              ></video>
+            {:else}
+              <img
+                src={photo.url}
+                alt=""
+                class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
+                style="--ar: {photo.width} / {photo.height};"
+                draggable="false"
+                onload={() => {
+                  loadedUrl = photo.url;
+                  markDecoded(photo.url);
+                }}
+                onerror={() => handleMediaError(photo.url)}
+              />
+            {/if}
+          {/if}
         {/if}
 
-        <!-- Anchor the counter-scaled volume control to the media corner. -->
-        {#if photo.type === 2}
+        <!-- Anchor the counter-scaled volume control to the media corner. A failed card has
+             no media to mute — the same `!loadFailed` gate the card raises, and it keeps the
+             corner away from the failed surface. -->
+        {#if photo.type === 2 && !loadFailed}
           <div class="lb-corner" bind:this={cornerEl}>
             <Tooltip text={volumeMuted ? copy.lightbox.unmute : copy.lightbox.mute} side="left">
               <button
@@ -1506,6 +1539,15 @@
       transform var(--duration-enter) var(--ease-enter);
   }
 
+  /* The card carries the same local fallback: the global reduced-motion rule in `app.css`
+     flattens durations for `*`, but the unlayered shorthand above outranks a utility — the
+     component that declares the transition also declares its own stop. */
+  @media (prefers-reduced-motion: reduce) {
+    .lb-media {
+      transition: none;
+    }
+  }
+
   /* Media and placeholder dimensions. The viewer is a stage, so the media fills the space
      available instead of being capped at its native pixel width — a 320px photo used to sit
      as a small island in the middle of a desktop viewer. The aspect ratio decides the shape
@@ -1526,19 +1568,28 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    /* Establish a size container so the ERROR glitch can scale to the media box
-       via cqmin instead of a fixed font-size (which overflowed narrow media). */
-    container-type: size;
     background: var(--shimmer-gradient);
     background-size: var(--shimmer-size);
     animation: shimmer var(--shimmer-duration) infinite ease-in-out;
     border-radius: var(--radius-card);
   }
 
-  /* On load failure: drop the shimmer, keep a flat solid surface behind the glitch code. */
-  .lb-skeleton-solid {
+  /* The failed surface replaces the media branch outright (the card's shape): a flat solid
+     box carrying the grey mark, no shimmer. container-type:size gives the mark its cq
+     scale — "sized for the surface it sits in", the stage's counterpart of the card's
+     width rule. */
+  .lb-failed {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    max-height: calc(100dvh - 8rem);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    container-type: size;
     background: var(--color-card);
-    animation: none;
+    border-radius: var(--radius-card);
   }
 
   /* Anchor the volume control to the media corner and counter-scale it during zoom. */

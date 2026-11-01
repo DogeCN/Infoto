@@ -16,8 +16,8 @@ history). Pitfalls stay in `.agents/memory/`.
    two are equal, so a one-sided edit fails `npm test`.
 3. **Anything that was wrong once and got corrected earns a ⚠️ entry in §4.** Read §4
    before "simplifying" something that looks over-engineered.
-4. **§3 is still being back-filled from the commit history.** Sections tagged
-   `TODO(contract)` are known gaps — a gap is not permission to invent.
+4. **§3 records current component behavior.** An undocumented behavior is not permission to
+   invent a visual change; record the decision here before changing it.
 
 ---
 
@@ -137,7 +137,14 @@ Verified against the tree on 2026-10-03.
 
 ## 3. Component behaviour
 
-Back-filled from the commit history. Tagged sections are not yet written.
+This section records current component behavior. An undocumented behavior is not permission to
+invent a visual change; record the decision here before changing it.
+
+- **Sortable row displacement.** `ReorderableList` and the poll editor use the same FLIP helper.
+  When motion is enabled, it cancels an item's in-flight displacement before measuring the next
+  one, skips unchanged rectangles, and animates displaced rows with the exit motion tokens. The
+  active row is rebased to the pointer before neighboring rows animate; reduced-motion users do
+  not receive the FLIP animation.
 
 - **Error page.** Two surfaces draw one design, defined in `src/shared/glitch.ts`.
   - `ErrorPage.svelte` delegates to `GlitchText`, which injects the shared CSS and supplies only
@@ -156,12 +163,26 @@ Back-filled from the commit history. Tagged sections are not yet written.
   trailing slashes for its own routes. Without it the Worker answered its own 404 for a link that
   names an existing photo; the asset layer is not involved (`run_worker_first` already routes
   `/l/*` here). A second slash is not handled — no path the app hands out produces one.
-- **Broken media shows the site mark in muted grey.** A card whose media fails to load
-  renders `SiteIcon` — the inline site mark at `text-muted-foreground/50` — over a
+- **Broken media shows the site mark in muted grey, on both surfaces that show media, with
+  one shape.** A card whose media fails to load renders a `loadFailed` branch that
+  **replaces** the `<img>`/`<video>` outright — the broken element leaves the DOM — and
+  raises `SiteIcon` (the inline site mark at `text-muted-foreground/50`) over a
   `--color-card` surface, sized to the card (24px below a 140px card width, 40px above).
-  The Lightbox raises a failure toast of its own and renders **the same mark** on the
-  failed surface (56px, over the flat `--color-card` skeleton box; the loading shimmer
-  stays empty until `loadFailed`). Media is fetched
+  The Lightbox renders the same branch shape: failure swaps the media arm for a solid
+  `lb-failed` box carrying the same mark scaled from the stage (`min(56px, 12cqmin)` — the
+  viewer's counterpart of "sized for the surface it sits in"; the box is a size container),
+  keeps `aria-hidden` and raises the per-URL failure toast. A failed render has no media to
+  mute, so the volume corner is gated on `!loadFailed` exactly like the card's. Both error
+  handlers keep the page-wide decoded record honest: a genuine failure calls `forgetDecoded`
+  so no remount trusts a stale decode, and **a local preview that is still in flight is
+  never judged broken** — the card guards with `overlay?.preview && !overlay.failed`, the
+  viewer with `isPending` (the grid refuses to open a failed upload, so pending-in-viewer
+  always means in flight). An empty URL renders no media element at all (card: `showMedia`;
+  viewer: the media arm is gated on `photo.url !== ''` and the shimmer covers the empty
+  case) — an `<img src="">` would error instantly and flip the surface or spam the toast for
+  bytes still being produced. **A failed card surface is spoken** (`role="img"` + the
+  load-failed label): the grid raises no toast, so the label is its only failure channel;
+  the viewer's aria-hidden box plus toast covers the same on that surface. Media is fetched
   cross-origin, where an `<img>`/`<video>` error event carries no HTTP status and `fetch()`
   can only return an opaque response, so the mark reads as "this file cannot be shown" —
   never as a status code. The earlier glitching-404 glyph (the error page's `GlitchText`)
@@ -169,7 +190,8 @@ Back-filled from the commit history. Tagged sections are not yet written.
   uploaded GIF with nothing in the grid to say so, and replaced by the quiet mark on
   2026-10-31: the animated 404 was the loudest element on a broken card, and a failure is
   not a headline. **A failed media surface — card or Lightbox — must never be a bare
-  surface** — whatever replaces the media has to say something.
+  surface** — whatever replaces the media has to say something, and the broken element must
+  not sit invisible behind the mark, still clickable.
 - **Segmented sort pill.** The pill never decides its own shape — it renders `labelMode`
   as handed to it, and the **top bar** decides via `resolveBarMode`. Four modes, widest
   first: `full` (one screen, every item labelled), `compact` (one screen, only the current
@@ -1647,66 +1669,66 @@ assertion in test #1 was dropped.
 
 The parts of this contract that are asserted by `npm test`:
 
-| Invariant                                                                            | Enforced by                                                        |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions           | `web/tests/unit/designTokens.test.ts`                              |
-| `motion.ts` motion fallbacks equal the `@theme` motion tokens                        | `web/tests/unit/designTokens.test.ts`                              |
-| `schema.sql` and `schema-ddl.ts` are byte-identical (line endings normalised)        | `src/worker/schema-alignment.test.ts`                              |
-| Layer direction: no import points above its own layer (AGENTS.md red line 5)         | `web/tests/unit/layering.test.ts`                                  |
-| Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)        | `src/worker/assets-routing.test.ts`                                |
-| No `transition` in `web/src` carries a literal duration or easing curve              | `web/tests/unit/designTokens.test.ts`                              |
-| `GLITCH_PALETTE` equals the matching `@theme` colours                                | `web/tests/unit/designTokens.test.ts`                              |
-| Lightbox gesture geometry: fit recentring, pan gate, anchor, pinch, tap/swipe/click  | `web/tests/unit/lightboxEngine.test.ts`                            |
-| Hold/release rule (both release orders)                                              | `web/tests/e2e/lightbox-gestures.spec.ts`                          |
-| The admin copy confirmation is one component, used by every row that copies          | `web/src/routes/admin/CopyButton.svelte` (no unit test: it is DOM) |
-| The upload's silence budget ends where the response budget begins                    | `web/tests/unit/uploadClient.test.ts`                              |
-| The upload leg's ceiling holds independently of the image pool                       | `web/tests/unit/uploadPool.test.ts`                                |
-| Which op dimensions collapse, and which never do (ADR 0016)                          | `web/tests/unit/frontend.test.ts`                                  |
-| The local fold clears the opposite attitude, as the server does                      | `web/tests/unit/frontend.test.ts`                                  |
-| A queued op is superseded in place, and an in-flight one never is                    | `web/tests/unit/syncEngine.test.ts`                                |
-| A photo op waits for the upload op that creates its row                              | `web/tests/unit/photoRecords.test.ts`                              |
-| The server clears the opposite attitude when either is added                         | `src/worker/album-ops.test.ts`                                     |
-| A sync frame over the op cap is refused whole, and unauthenticated writes answer     | `src/worker/do/album.test.ts`                                      |
-| A translation request writes no row, and only root may ask                           | `src/worker/routes/admin.test.ts`                                  |
-| The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`                                     |
-| A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/photoRecords.test.ts`                              |
-| A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/photoRecords.test.ts`                              |
-| A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/photoRecords.test.ts`                              |
-| A card's local preview comes from OPFS, never from the picked file (§3)              | `web/tests/unit/photoRecords.test.ts`                              |
-| A hosted photo record still renders a card after a failed sync                       | `web/tests/unit/photoRecords.test.ts`                              |
-| An own upload echo promotes its card with the server id and pending marks            | `web/tests/unit/photoRecords.test.ts`                              |
-| A confirmed snapshot retires records, and a landed/live sha never double-draws       | `web/tests/unit/photoRecords.test.ts`                              |
-| An upload op and its photo record are written together, and withdrawn together       | `web/tests/unit/oplog.test.ts`                                     |
-| A batch's writes cost a fixed handful of round trips, not one per op                 | `src/worker/album-ops.test.ts`                                     |
-| A GIF frame duration is read through the one owner, never re-derived in the worker   | `web/tests/unit/gifFrameTiming.test.ts`                            |
-| A GIF's timestamps accumulate; no frame lands before its predecessor                 | `web/tests/unit/gifFrameTiming.test.ts`                            |
-| A zero GIF frame duration is treated as missing, not as an instant frame             | `web/tests/unit/pipeline.test.ts`                                  |
-| Every MIME the upload can name maps to an extension the Markdown classifier knows    | `web/tests/unit/markdown.test.ts`                                  |
-| A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`                                  |
-| Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`                                  |
-| A multi-file pick or drop inserts **one line per file**, never a run (§3)            | `web/tests/unit/markdown.test.ts`                                  |
-| The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`                                  |
-| A picked file previews locally by MIME **or** file name                              | `web/tests/unit/markdown.test.ts`                                  |
-| The editor uploads any file, not only images and videos                              | `web/tests/unit/editorUpload.test.ts`                              |
-| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer       | `web/tests/unit/designTokens.test.ts`                              |
-| Markdown structure follows GitHub: heading ladder, quote bar, code chip              | `web/tests/unit/designTokens.test.ts`                              |
-| A block-opening or block-closing image carries no rhythm margin                      | `web/tests/unit/designTokens.test.ts`                              |
-| No decorative text is injected into a line: quote glyphs and code backticks          | `web/tests/unit/designTokens.test.ts`                              |
-| A table reads at body size, on a collapsed grid, and scrolls when wide               | `web/tests/unit/designTokens.test.ts`                              |
-| The font race cancels the losers, and a failed source removes only itself            | `src/shared/fonts.test.ts`                                         |
-| The error page's CSP hash equals the race script it authorises                       | `src/shared/fonts.test.ts`                                         |
-| The playback level is a setting: v5 round-trips, clamps, and a bad one resets (§3)   | `web/tests/unit/settings.test.ts`                                  |
-| One open sound per media; ownership moves without restarting the audio (§3)          | `web/tests/unit/playbackAudio.test.ts`                             |
-| One shared "already decoded" record keeps a loaded card off the skeleton (§3)        | `web/tests/unit/decode.test.ts`                                    |
-| An editor upload keeps the picked name; only an unknown payload becomes `.bin` (§3)  | `web/tests/unit/protocol.test.ts`                                  |
-| A failed media card shows the grey site mark, never a bare surface (§3)              | `web/tests/unit/photoCard.test.ts`                                 |
-| Every registered copy key is read by a source file (§10)                             | `src/shared/copy.test.ts`                                          |
-| An overlong announcement is refused on write, and a create takes no votes            | `src/worker/do/album.test.ts`                                      |
-| A locale change joins the target locale's order instead of duplicating an index      | `src/worker/album-ops.test.ts`                                     |
-| An op the actor may never apply is refused before the log, so D1 keeps its row       | `src/worker/do/album.test.ts`                                      |
-| A create op carries the id the server allocated                                      | `src/worker/do/album.test.ts`                                      |
-| A client past `maxSeq` gets a snapshot instead of an empty increment                 | `src/worker/do/album.test.ts`                                      |
-| A translation the album would refuse is rejected, never returned as a draft          | `src/worker/translate.test.ts`                                     |
+| Invariant                                                                              | Enforced by                                                        |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions             | `web/tests/unit/designTokens.test.ts`                              |
+| `motion.ts` motion fallbacks equal the `@theme` motion tokens                          | `web/tests/unit/designTokens.test.ts`                              |
+| `schema.sql` and `schema-ddl.ts` are byte-identical (line endings normalised)          | `src/worker/schema-alignment.test.ts`                              |
+| Layer direction: no import points above its own layer (AGENTS.md red line 5)           | `web/tests/unit/layering.test.ts`                                  |
+| Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)          | `src/worker/assets-routing.test.ts`                                |
+| No `transition` in `web/src` carries a literal duration or easing curve                | `web/tests/unit/designTokens.test.ts`                              |
+| `GLITCH_PALETTE` equals the matching `@theme` colours                                  | `web/tests/unit/designTokens.test.ts`                              |
+| Lightbox gesture geometry: fit recentring, pan gate, anchor, pinch, tap/swipe/click    | `web/tests/unit/lightboxEngine.test.ts`                            |
+| Hold/release rule (both release orders)                                                | `web/tests/e2e/lightbox-gestures.spec.ts`                          |
+| The admin copy confirmation is one component, used by every row that copies            | `web/src/routes/admin/CopyButton.svelte` (no unit test: it is DOM) |
+| The upload's silence budget ends where the response budget begins                      | `web/tests/unit/uploadClient.test.ts`                              |
+| The upload leg's ceiling holds independently of the image pool                         | `web/tests/unit/uploadPool.test.ts`                                |
+| Which op dimensions collapse, and which never do (ADR 0016)                            | `web/tests/unit/frontend.test.ts`                                  |
+| The local fold clears the opposite attitude, as the server does                        | `web/tests/unit/frontend.test.ts`                                  |
+| A queued op is superseded in place, and an in-flight one never is                      | `web/tests/unit/syncEngine.test.ts`                                |
+| A photo op waits for the upload op that creates its row                                | `web/tests/unit/photoRecords.test.ts`                              |
+| The server clears the opposite attitude when either is added                           | `src/worker/album-ops.test.ts`                                     |
+| A sync frame over the op cap is refused whole, and unauthenticated writes answer       | `src/worker/do/album.test.ts`                                      |
+| A translation request writes no row, and only root may ask                             | `src/worker/routes/admin.test.ts`                                  |
+| The cached snapshot round-trips through `metaCache` and is replaced on sync            | `web/tests/unit/oplog.test.ts`                                     |
+| A pending card keeps its Photo identity until a field or mark changes                  | `web/tests/unit/photoRecords.test.ts`                              |
+| A pending card holds the local preview until the hosted copy is renderable             | `web/tests/unit/photoRecords.test.ts`                              |
+| A transcode failure renders no card; an upload failure does (§3)                       | `web/tests/unit/photoRecords.test.ts`                              |
+| A card's local preview comes from OPFS, never from the picked file (§3)                | `web/tests/unit/photoRecords.test.ts`                              |
+| A hosted photo record still renders a card after a failed sync                         | `web/tests/unit/photoRecords.test.ts`                              |
+| An own upload echo promotes its card with the server id and pending marks              | `web/tests/unit/photoRecords.test.ts`                              |
+| A confirmed snapshot retires records, and a landed/live sha never double-draws         | `web/tests/unit/photoRecords.test.ts`                              |
+| An upload op and its photo record are written together, and withdrawn together         | `web/tests/unit/oplog.test.ts`                                     |
+| A batch's writes cost a fixed handful of round trips, not one per op                   | `src/worker/album-ops.test.ts`                                     |
+| A GIF frame duration is read through the one owner, never re-derived in the worker     | `web/tests/unit/gifFrameTiming.test.ts`                            |
+| A GIF's timestamps accumulate; no frame lands before its predecessor                   | `web/tests/unit/gifFrameTiming.test.ts`                            |
+| A zero GIF frame duration is treated as missing, not as an instant frame               | `web/tests/unit/pipeline.test.ts`                                  |
+| Every MIME the upload can name maps to an extension the Markdown classifier knows      | `web/tests/unit/markdown.test.ts`                                  |
+| A media URL's extension picks the Markdown element (video / audio / image)             | `web/tests/unit/markdown.test.ts`                                  |
+| Only a real image extension renders in place; a non-media file links                   | `web/tests/unit/markdown.test.ts`                                  |
+| A multi-file pick or drop inserts **one line per file**, never a run (§3)              | `web/tests/unit/markdown.test.ts`                                  |
+| The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder   | `web/tests/unit/markdown.test.ts`                                  |
+| A picked file previews locally by MIME **or** file name                                | `web/tests/unit/markdown.test.ts`                                  |
+| The editor uploads any file, not only images and videos                                | `web/tests/unit/editorUpload.test.ts`                              |
+| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer         | `web/tests/unit/designTokens.test.ts`                              |
+| Markdown structure follows GitHub: heading ladder, quote bar, code chip                | `web/tests/unit/designTokens.test.ts`                              |
+| A block-opening or block-closing image carries no rhythm margin                        | `web/tests/unit/designTokens.test.ts`                              |
+| No decorative text is injected into a line: quote glyphs and code backticks            | `web/tests/unit/designTokens.test.ts`                              |
+| A table reads at body size, on a collapsed grid, and scrolls when wide                 | `web/tests/unit/designTokens.test.ts`                              |
+| The font race cancels the losers, and a failed source removes only itself              | `src/shared/fonts.test.ts`                                         |
+| The error page's CSP hash equals the race script it authorises                         | `src/shared/fonts.test.ts`                                         |
+| The playback level is a setting: v5 round-trips, clamps, and a bad one resets (§3)     | `web/tests/unit/settings.test.ts`                                  |
+| One open sound per media; ownership moves without restarting the audio (§3)            | `web/tests/unit/playbackAudio.test.ts`                             |
+| One shared "already decoded" record keeps a loaded card off the skeleton (§3)          | `web/tests/unit/decode.test.ts`                                    |
+| An editor upload keeps the picked name; only an unknown payload becomes `.bin` (§3)    | `web/tests/unit/protocol.test.ts`                                  |
+| A failed media surface — card or Lightbox — shows the grey mark, never a bare box (§3) | `web/tests/unit/photoCard.test.ts`                                 |
+| Every registered copy key is read by a source file (§10)                               | `src/shared/copy.test.ts`                                          |
+| An overlong announcement is refused on write, and a create takes no votes              | `src/worker/do/album.test.ts`                                      |
+| A locale change joins the target locale's order instead of duplicating an index        | `src/worker/album-ops.test.ts`                                     |
+| An op the actor may never apply is refused before the log, so D1 keeps its row         | `src/worker/do/album.test.ts`                                      |
+| A create op carries the id the server allocated                                        | `src/worker/do/album.test.ts`                                      |
+| A client past `maxSeq` gets a snapshot instead of an empty increment                   | `src/worker/do/album.test.ts`                                      |
+| A translation the album would refuse is rejected, never returned as a draft            | `src/worker/translate.test.ts`                                     |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are
