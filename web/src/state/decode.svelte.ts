@@ -11,11 +11,8 @@
 // surfaces need to agree on. A URL that is still cold on both is unchanged: each surface
 // shows its own skeleton until its own element fires.
 
-import type { MediaType } from '$shared/types';
-
 /** URLs known to have decoded at least one image or video element on this page. */
 const decoded = new Set<string>();
-
 /** Reactive version counter, so a surface can re-derive when the record changes. Svelte's
  *  reactivity does not see a plain `Set`, and a deep store would re-render every card on
  *  every decode — the counter is the cheapest signal that something changed. */
@@ -40,6 +37,3 @@ export function forgetDecoded(url: string | null | undefined): void {
   decoded.delete(url);
   decodedEpoch.value += 1;
 }
-
-/** Re-exported for callers that switch their dismiss control by media kind. */
-export type { MediaType };

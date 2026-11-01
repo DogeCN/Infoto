@@ -807,14 +807,21 @@
   function handleKeyUp(e: KeyboardEvent) {
     if (e.key !== 'Control') return;
     ctrlPressed = false;
-    // Releasing the modifier ends the rotate/zoom gesture: settle it at once. The rotation
-    // snaps to the nearest 90° (eased) and the pan is re-applied from wherever it landed,
-    // which is what makes the hand-off back to plain panning continuous instead of a jump —
-    // and what a horizontal drag needed, since its preview used to be dropped on entry.
-    if (ctrlZoomPointer !== null) {
-      ctrlZoomPointer = null;
-      snapWithEase();
-      settleTransform(true);
+    if (ctrlZoomPointer === null) return;
+    // Releasing the modifier while the pointer is still down only SNAPS the rotation; it must
+    // not settle the position. The pointer has not been released, so the drag continues as a
+    // plain pan, and `settlePan` would centre a fit, unrotated media — the card would jump to
+    // the middle mid-drag and then snap back to the cursor on the next move.
+    ctrlZoomPointer = null;
+    snapWithEase();
+    // The plain drag measures its preview from `downPoint`, but the pointer has already moved
+    // through the Ctrl gesture. Re-anchoring here is what stops the whole displacement being
+    // counted twice (once as rotation, again as pan). Committing the current offset first keeps
+    // the media exactly where it is on screen as the reference moves.
+    const held = [...active.entries()][0];
+    if (held) {
+      const [, p] = held;
+      downPoint = { x: p.x, y: p.y };
     }
   }
 

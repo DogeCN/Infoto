@@ -10,7 +10,7 @@
   import TopBar from '$lib/components/TopBar.svelte';
   import { toastOptions } from '$base/lib/ui';
   import { getEngine } from '../../core/engine';
-  import { createAppStore } from '../../state/appStore.svelte';
+  import { createAppStore, setMediaHostSink } from '../../state/appStore.svelte';
   import { UploadPipeline, type UploadRow } from '../../transcode/pipeline';
 
   import AdminMigrateMenu from './AdminMigrateMenu.svelte';
@@ -98,7 +98,12 @@
     engine.init().catch(console.error);
   });
 
+  // The editor uploads through this page's own pipeline, so IT must receive the facade
+  // address — the gallery's pipeline is not mounted here at all.
+  const unregisterMediaHost = setMediaHostSink((url) => pipeline.setMediaHost(url));
+
   onDestroy(() => {
+    unregisterMediaHost();
     pipeline.stop();
     store.dispose();
   });

@@ -20,173 +20,148 @@
 
 ## English
 
-Infoto is a full-stack shared photo album: a **Cloudflare Workers** (Hono + D1) backend and
-a **Svelte 5** SPA. The SPA build output in `dist/` is served by the Worker's `ASSETS`
-binding. Cloudflare checks the asset layer before the Worker, so every path the Worker serves
-is listed in `run_worker_first` (`wrangler.toml`) — a path that is missing from that list never
-reaches the Worker, and the album still deploys as one unit.
+### What it is
 
-Media never flows through the album server. The browser transcodes photos to WebP and
-videos to WebM (WebCodecs + SharedWorker), uploads the finished artifact **directly to an
-external media-host facade**, and the server stores only the URL that comes back — served
-back to viewers through the SSRF-guarded read proxy `GET /l/:id36`.
+A photo album you host for a group: one shared waterfall of photos and videos, bilingual
+(English / 简体中文), with announcements, polls, suggestions, likes and reactions. Anyone can
+browse and upload; one account holds the admin rights.
 
-### Architecture
+- **Photos and videos** land in one infinite waterfall, sorted by latest / hottest / random,
+  with filters and multi-select.
+- **Uploads are transcoded in your browser** — photos to WebP, videos to WebM — so what
+  reaches storage is already the final artifact. Uploads resume, deduplicate by content, and
+  queue while offline.
+- **Announcements** can embed photos, polls and Markdown; **polls** support multiple choice;
+  **suggestions** are readable by everyone and readable by the admin only when signed in as it.
+- **Admin** manages content from `/admin`, and can export or import the whole album as SQL.
+- **Works offline**: the album you have already seen opens without a network and uploads
+  queue until you are back.
 
-```
-src/worker/        Worker entry & API (Hono routes, D1, identity / sync / read proxy)
-src/shared/        Contracts shared by both runtimes: media ids, i18n copy, JSON guards
-src/testing/       Local dev & unit-test adapters (node:sqlite Db; never imported by the Worker)
-schema.sql         D1 DDL — source of truth; src/worker/schema-ddl.ts is generated from it
-web/src/
-  base/            Common layer: lib/ (layout, media, utils) + upload/ (upload pipeline)
-  core/            Business logic: sync/upload clients, oplog, identity, markdown — pure TS
-  state/           Svelte reactive stores (.svelte.ts)
-  lib/components/  UI component library
-  routes/          Page routes
-  transcode/       Browser-side transcoding (WebCodecs + SharedWorker scheduler)
-dist/              Vite build output (served by wrangler [assets])
-```
+Media never passes through the album server. The browser uploads the finished file directly
+to a media host you control, and the album stores only the URL.
 
-Dependency direction is strict: `routes → components → state/core → base`. `base/` never
-imports business-layer code.
+### Requirements
 
-### Getting started
+- Node **≥ 22.6** (24 recommended)
+- A Cloudflare account with **Workers**, **D1**, **Durable Objects** and **Turnstile**
+- A **media host facade** — see [Media host facade](#media-host-facade). The album cannot
+  store a photo without one.
 
-- **Node ≥ 22.6** (24 recommended; CI runs 22)
-- One lockfile at the repo root — never generate one in `web/`
-
-| Command              | Purpose                                                        |
-| -------------------- | -------------------------------------------------------------- |
-| `npm ci`             | Install everything (worker + web, one shot)                    |
-| `npm run dev`        | Local dev: D1 seed + Worker (:8787) + Vite (:5173) in parallel |
-| `npm run build`      | Build the SPA → `dist/`                                        |
-| `npm test`           | All unit tests (root + web)                                    |
-| `npm run lint`       | ESLint + Prettier check (CI gate)                              |
-| `npm run ts-check`   | Type gate: tsc × 3 + `svelte-check --fail-on-warnings`         |
-| `npm run db:local`   | Apply `schema.sql` to local D1 (`--force` re-applies it)       |
-| `npm run gen-schema` | Regenerate `src/worker/schema-ddl.ts` from `schema.sql`        |
-
-Web-only: `npm run e2e -w infoto-web` (Playwright, local and manual).
-
-The full command list — seeding, resetting the local database, and `npm run release`, which
-preflights, bumps both manifests and the lockfile, tags, and pushes — is owned by
-[AGENTS.md §6](AGENTS.md#6-commands).
-
-Local development reads `.dev.vars` — copy the tracked template once:
+### Run locally
 
 ```sh
+npm ci
 cp .dev.vars.example .dev.vars
+npm run dev
 ```
 
-It holds the published Cloudflare Turnstile test keys and `MEDIA_HOST_URL`, which points
-at the local stand-in (`http://127.0.0.1:8788`). `npm run dev` starts
-`scripts/local-media-host.mjs`, which answers CORS exactly like a real facade. **The port
-is written once, in `MEDIA_HOST_URL`**: the Worker loads that file, and the dev scripts
-(`dev:media`, `predev`'s port sweep, the e2e harness) read the same value through
-`scripts/dev-config.mjs`. `.dev.vars` itself is gitignored; `.dev.vars.example` is tracked
-and is what the scripts fall back to when no local copy exists yet.
+Open <http://localhost:5173>. The first run seeds the local database; `npm run dev` starts the
+Worker, the SPA and a local stand-in for the media host together.
+
+`.dev.vars` ships with Cloudflare's published Turnstile **test** keys and a local media host.
+It is gitignored — commit `.dev.vars.example`, never your real secrets.
+
+| Command            | Purpose                                     |
+| ------------------ | ------------------------------------------- |
+| `npm run dev`      | Local development, everything together      |
+| `npm run build`    | Build the SPA that the Worker serves        |
+| `npm test`         | Unit tests                                  |
+| `npm run lint`     | Lint and format check (CI gate)             |
+| `npm run ts-check` | Type check (CI gate)                        |
+| `npm run db:seed`  | Fill the local database with demo content   |
+| `npm run db:reset` | Rebuild the local database from scratch     |
+| `npm run release`  | Cut a release (see [Releasing](#releasing)) |
+
+`npm run e2e -w infoto-web` runs the browser suite. It needs a browser and the local stack,
+so it is run manually rather than in CI.
+
+### Deploy
+
+Deployment is automated by GitHub Actions; you configure it once and then push.
+
+1. **Create the D1 database** (or let the workflow create it): `npx wrangler d1 create <name>`.
+2. **Deploy your media host facade** and note its origin. It must be reachable over HTTPS by
+   Cloudflare's edge — see [Media host facade](#media-host-facade).
+3. **Set repository variables** under _Settings → Secrets and variables → Actions →
+   Variables_:
+
+   | Variable             | Required | Value                                            |
+   | -------------------- | -------- | ------------------------------------------------ |
+   | `MEDIA_HOST_URL`     | yes      | Your facade's origin, no trailing slash, no path |
+   | `TURNSTILE_SITE_KEY` | yes      | Public Turnstile site key                        |
+
+   And **secrets**:
+
+   | Secret                  | Required | Value                               |
+   | ----------------------- | -------- | ----------------------------------- |
+   | `CLOUDFLARE_API_TOKEN`  | yes      | Token with Workers + D1 + DO rights |
+   | `CLOUDFLARE_ACCOUNT_ID` | yes      | Your Cloudflare account id          |
+   | `TURNSTILE_SECRET_KEY`  | yes      | Turnstile secret key                |
+
+4. **Push.** `.github/workflows/deploy.yml` runs the CI gate first and deploys only if it
+   passes:
+   - push **`main`** → test deployment, Worker name `infoto-dev`
+   - push a **`v*` tag** → production deployment, Worker name `infoto`
+   - **Actions → Deploy → Run workflow** for an explicit target
+
+   The workflow resolves the D1 database, applies the schema (idempotent), deploys, and
+   injects secrets. **A missing `MEDIA_HOST_URL` fails the deploy** rather than pointing
+   production somewhere unintended.
+
+**The first deploy creates the Durable Object.** Its storage backend cannot be changed
+afterwards, so deploy once with the checked-in configuration and do not edit the
+`[[migrations]]` block.
+
+**Releasing.** The version on the site is the latest git tag, read at build time — nothing
+in the repo is edited to cut a version:
+
+```sh
+npm run release -- minor "what changed in this one"
+```
+
+It bumps both manifests and the lockfile together, commits, tags `v<x.y.z>` and pushes. It
+refuses a dirty tree, a branch other than `main`, or a tag that already exists; `--dry-run`
+prints the plan without writing.
 
 ### Media host facade
 
-Infoto does not talk to any image host directly. You deploy a small **facade** that signs
-and forwards uploads to your storage of choice (S3, R2, a transcoding service — anything),
-and the album stores the URL it returns. **Nothing in `src/` needs to change** to swap
-storage. The facade is stateless: no KV, no database, no user identity. A reference
-implementation existed in this repository until v0.1.1 and was removed from history in
-v0.1.2; the contract below is everything an implementation needs.
+Infoto never talks to an image host directly. You deploy a small **facade** that accepts an
+upload, puts the file wherever you like (S3, R2, a transcoding service), and returns its
+public URL. The album stores that URL and proxies it to viewers. Swapping storage means
+replacing the facade — the album does not change.
 
-**Configuration.** Set the facade's origin as the `MEDIA_HOST_URL` repository **Variable**
-(Actions → Settings → Secrets and variables → Actions → _Variables_). No trailing slash,
-no path. The deploy workflow fails the build if it is empty. The value is injected as a
-plain-text `[vars]` entry in `wrangler.toml` — it is a public hostname, not a credential.
+The facade is stateless: no KV, no database, no user identity.
 
-**Responsibilities.**
-
-| Concern                                  | Owner                                    |
-| ---------------------------------------- | ---------------------------------------- |
-| Signing the request to your storage      | **You** (the facade)                     |
-| Storing the file, returning a public URL | **You** (the facade)                     |
-| Authenticating the visitor               | Infoto (`/ws`), not the facade           |
-| Storing the URL                          | Infoto (`photos.url`)                    |
-| Serving the bytes to viewers             | Infoto (`GET /l/:id36`) proxies your URL |
-| Transcoding to WebP / WebM               | The browser, before upload               |
-
-**Endpoint: `POST /upload`.** One multipart file, field name exactly `file`. The
-`filename` carries the extension the browser chose (`m.webp`, `m.webm`, …) and is
-advisory; the part's `Content-Type` carries the real media type. No cookies, no
-`Authorization` header — do not require either. Success answers `200` with:
+**Endpoint: `POST /upload`.** One multipart file, field name exactly `file`. The `filename`
+is advisory; the part's `Content-Type` carries the real media type. Requests carry **no
+cookies and no `Authorization` header** — do not require either. Success answers `200` with:
 
 ```json
 { "data": "https://cdn.example.com/objects/9f2c….webp" }
 ```
 
-`data` is the only field Infoto reads and is stored verbatim in `photos.url`. Any failure
-answers non-2xx with JSON: `{ "error": "<machine-code>", "msg": "<detail>" }` — a non-JSON
-body is surfaced as `http_<status>`. `GET /health → 200 { "ok": true }` is a convenient
-probe, not part of the contract.
+`data` is the only field read, and it is stored verbatim. Any failure should answer non-2xx
+with `{ "error": "<machine-code>", "msg": "<detail>" }`. `GET /health → 200 { "ok": true }` is
+a convenient probe.
 
-**The URL contract.** The returned URL is checked by `isStorableMediaUrl`
-(`src/shared/media.ts`); a URL that fails is **silently dropped** — the upload op is
-discarded and the photo never appears. It must be:
-
-- `https:` with no embedded credentials, and
-- a public DNS name (or a global-unicast IPv6 literal), and
-- **publicly fetchable by Cloudflare** — the read proxy fetches it from the edge with no
-  credentials, so a pre-signed URL or an auth-walled bucket renders as a 404.
-
-Rejected:
-
-| Rejected                                                             | Why                                                        |
-| -------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `http://…`                                                           | Must be HTTPS. Plain HTTP is an SSRF and downgrade vector. |
-| `localhost`, `*.local`, `*.internal`, trailing-dot variants          | Only resolve inside your own network.                      |
-| `127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`       | Private IPv4 literals.                                     |
-| `0.0.0.0/8`, `100.64/10` (CGNAT), `198.18/15`, `192.0.0/24`, `224/4` | Special-use ranges.                                        |
-| `::1`, `fc00::/7`, `fe80::/10`, IPv4-mapped IPv6                     | Non-global-unicast IPv6.                                   |
-
-One dev-only exception: while `MEDIA_HOST_URL` points at a loopback origin (what `.dev.vars`
-sets for local development), Infoto additionally accepts that exact origin — matched by parsed
-origin, never by string prefix. A deployed facade is a real HTTPS host and never gets the
-exception, and an unset `MEDIA_HOST_URL` gets none either: that is a misconfigured deployment,
-not local dev.
+**The URL must be** `https:`, with no embedded credentials, on a public DNS name (or a global
+unicast IPv6 literal), and **publicly fetchable by Cloudflare** — the album fetches it from
+the edge without credentials, so a pre-signed or auth-walled URL renders as a 404. Plain
+`http:` URLs, private addresses, loopback names, and special-use ranges are rejected and the
+upload is discarded.
 
 **CORS.** The upload is cross-origin: answer `OPTIONS` with `204` and
-`Access-Control-Allow-Origin` (echo a specific origin, or `*` — the request carries no
-credentials), `Access-Control-Allow-Methods: GET, POST, OPTIONS`,
-`Access-Control-Allow-Headers: content-type` on both the preflight and the response.
-Cache the preflight with `Access-Control-Max-Age: 86400` so the browser does not re-send
-it for every upload.
+`Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: GET, POST, OPTIONS`,
+`Access-Control-Allow-Headers: content-type` on both the preflight and the response. Send
+`Access-Control-Max-Age: 86400` so the browser caches the preflight.
 
-**Operations.** The facade is a public endpoint by design — anyone who learns the URL can
-spend your storage and egress. Rate-limit it (Cloudflare WAF / Rate Limiting rules) or
-require a Turnstile token in a header before exposing it.
+**Secure it.** The facade is a public endpoint by design — anyone who learns the URL can
+spend your storage. Rate-limit it (Cloudflare WAF or Rate Limiting rules), or require a
+Turnstile token in a header.
 
-### Deployment
-
-`.github/workflows/ci.yml` runs `npm ci → lint → ts-check → test` on push/PR, and is
-reused by the deploy workflow (`workflow_call`).
-
-`.github/workflows/deploy.yml` **runs the CI gate first and deploys only on pass**:
-
-- push `main` → test deploy (`infoto-dev`)
-- tag `v*` → production deploy (`infoto`, real Turnstile secret)
-- `workflow_dispatch` for an explicit target
-
-Flow: ensure the D1 database exists → patch `wrangler.toml` per target → apply the schema
-idempotently → `wrangler deploy` → inject secrets. A missing `MEDIA_HOST_URL` hard-fails
-the deploy rather than silently pointing production at localhost.
-
-**Releasing is a tag push.** The SPA's version label reads the latest tag at build time, so
-nothing in the repo has to be edited to cut a version:
-
-```bash
-npm run release -- minor "what changed in this one"
-```
-
-That bumps both `package.json` files and the lockfile together, commits, tags `v<x.y.z>` and
-pushes with `--follow-tags`. It refuses a dirty working tree, a branch other than `main`, and
-a tag that already exists; `--dry-run` prints the plan without writing anything.
+For local development, `.dev.vars` points `MEDIA_HOST_URL` at a local stand-in that answers
+exactly like a real facade, so local failures are real failures. **The port lives in
+`MEDIA_HOST_URL` only** — every dev script reads it from there.
 
 ### License
 
@@ -196,157 +171,131 @@ a tag that already exists; `--dry-run` prints the plan without writing anything.
 
 ## 简体中文
 
-自托管共享相册：**Cloudflare Workers**（Hono + D1）后端 + **Svelte 5** SPA。SPA 构建产物
-`dist/` 由 Worker 的 `ASSETS` 绑定托管。Cloudflare 先检查静态资源层，因此 Worker 提供的每条路径
-都必须列在 `run_worker_first`（`wrangler.toml`）里——漏列就不会到达 Worker；整个相册仍是一次部署。
+### 这是什么
 
-媒体文件不经过相册服务器：浏览器端转码（WebCodecs + SharedWorker，照片转 WebP、视频转
-WebM），把成品**直传给外部图片宿主门面**，服务器只存返回的 URL；访客通过带 SSRF 防护的
-读代理 `GET /l/:id36` 取图。
+一个给一群人自托管共享相册：照片和视频汇成一条瀑布流，支持中英双语，带公告、投票、
+留言建议、点赞和表情回应。任何人可以浏览和上传；只有一个账号拥有管理员权限。
 
-### 架构
+- **照片与视频**进入同一条无限瀑布流，可按 最新 / 最热 / 随机 排序，支持筛选和框选。
+- **上传在你的浏览器里完成转码**：照片转 WebP、视频转 WebM，进入存储的就已经是最终产物。
+  上传可断点续传、按内容去重，离线时排队等待。
+- **公告**可内嵌图片、投票和 Markdown；**投票**支持多选；**留言建议**对所有人可读，
+  仅在以管理员身份登录后可读。
+- **管理后台**在 `/admin`，可导出或导入整站数据（SQL）。
+- **离线可用**：看过的相册断网也能打开，上传会排队到网络恢复。
 
-```
-src/worker/        Worker 入口与 API（Hono 路由、D1、身份/同步/读代理）
-src/shared/        两侧共享契约：媒体标识、i18n 文案、JSON 形状守卫
-src/testing/       本地开发与单测适配器（node:sqlite Db；Worker 绝不引用）
-schema.sql         D1 建表脚本——唯一事实源；src/worker/schema-ddl.ts 由它生成
-web/src/
-  base/            通用层：lib/（布局、媒体、工具）+ upload/（上传管线）
-  core/            业务逻辑：sync/upload client、oplog、身份、markdown——纯 TS 可测
-  state/           Svelte 响应式 store（.svelte.ts）
-  lib/components/  UI 组件库
-  routes/          页面路由
-  transcode/       浏览器端视频转码（WebCodecs + SharedWorker 调度）
-dist/              Vite 构建产物（wrangler [assets] 托管）
-```
+媒体文件从不经过相册服务器：浏览器把成品直传到你自己控制的图床，相册只保存返回的 URL。
 
-依赖方向严格单向：`routes → components → state/core → base`，`base/` 不引用业务层。
+### 环境要求
 
-### 快速开始
+- Node **≥ 22.6**（推荐 24）
+- 一个 Cloudflare 账号，需开通 **Workers**、**D1**、**Durable Objects**、**Turnstile**
+- 一个 **图片宿主门面** —— 见 [图片宿主门面](#图片宿主门面)。没有它相册无法保存照片。
 
-- **Node ≥ 22.6**（推荐 24，CI 用 22）
-- 全仓单 lockfile（根目录），`web/` 下不生成 lockfile
-
-| 命令                 | 作用                                                   |
-| -------------------- | ------------------------------------------------------ |
-| `npm ci`             | 安装全部依赖（worker + web，一次安装）                 |
-| `npm run dev`        | 本地开发：D1 灌库 + Worker (:8787) + Vite (:5173) 并行 |
-| `npm run build`      | 构建 SPA → `dist/`                                     |
-| `npm test`           | 全部单测（根 + web）                                   |
-| `npm run lint`       | ESLint + Prettier 检查（CI 门禁）                      |
-| `npm run ts-check`   | 类型门禁：tsc × 3 + `svelte-check --fail-on-warnings`  |
-| `npm run db:local`   | 向本地 D1 应用 `schema.sql`（`--force` 覆盖重放）      |
-| `npm run gen-schema` | 从 `schema.sql` 重新生成 `src/worker/schema-ddl.ts`    |
-
-web 子包专用：`npm run e2e -w infoto-web`（Playwright，本地手动）。
-
-完整命令表——灌库、重置本地库、以及 `npm run release`（预检、升两个 manifest 和 lockfile、
-打 tag 并推送）——以 [AGENTS.md §6](AGENTS.md#6-commands) 为准。
-
-本地开发读 `.dev.vars`，从追踪的模板复制一次即可：
+### 本地运行
 
 ```sh
+npm ci
 cp .dev.vars.example .dev.vars
+npm run dev
 ```
 
-里面有 Cloudflare 公开的 Turnstile 测试密钥和 `MEDIA_HOST_URL`（指向本地模拟宿主
-`http://127.0.0.1:8788`）。`npm run dev` 会自动启动 `scripts/local-media-host.mjs`，其 CORS
-应答与真实门面完全一致（本地失败即生产失败）。**端口只写在 `MEDIA_HOST_URL` 一处**：Worker
-直接加载这个文件，`dev:media`、`predev` 的端口清理和 e2e 都通过 `scripts/dev-config.mjs`
-读同一个值。`.dev.vars` 本身被 gitignore，追踪的是 `.dev.vars.example`；本地还没复制时脚本
-会回落到模板。
+打开 <http://localhost:5173>。首次运行会初始化本地数据库；`npm run dev` 会同时启动
+Worker、前端和本地图床替身。
+
+`.dev.vars` 里是 Cloudflare 公开的 Turnstile **测试**密钥和本地图床地址。它被 gitignore
+——只提交 `.dev.vars.example`，永远不要提交真实密钥。
+
+| 命令               | 作用                           |
+| ------------------ | ------------------------------ |
+| `npm run dev`      | 本地开发，一次启动全部         |
+| `npm run build`    | 构建 Worker 托管的 SPA         |
+| `npm test`         | 单元测试                       |
+| `npm run lint`     | 代码与格式检查（CI 门禁）      |
+| `npm run ts-check` | 类型检查（CI 门禁）            |
+| `npm run db:seed`  | 往本地数据库灌入演示内容       |
+| `npm run db:reset` | 从零重建本地数据库             |
+| `npm run release`  | 发布新版本（见 [发布](#发布)） |
+
+`npm run e2e -w infoto-web` 运行浏览器测试套件。它需要浏览器和本地环境，因此手动运行，
+不在 CI 里跑。
+
+### 部署
+
+部署由 GitHub Actions 自动完成：配置一次，之后推送即可。
+
+1. **创建 D1 数据库**（也可以让工作流自动创建）：`npx wrangler d1 create <名称>`。
+2. **部署你的图片宿主门面**，记下它的域名。它必须能通过 HTTPS 被 Cloudflare 边缘访问
+   —— 见 [图片宿主门面](#图片宿主门面)。
+3. **配置仓库变量**（_Settings → Secrets and variables → Actions → Variables_）：
+
+   | 变量                 | 必需 | 值                             |
+   | -------------------- | ---- | ------------------------------ |
+   | `MEDIA_HOST_URL`     | 是   | 门面域名，结尾无斜杠、不带路径 |
+   | `TURNSTILE_SITE_KEY` | 是   | Turnstile 公开站点密钥         |
+
+   以及**仓库密钥**：
+
+   | 密钥                    | 必需 | 值                          |
+   | ----------------------- | ---- | --------------------------- |
+   | `CLOUDFLARE_API_TOKEN`  | 是   | 具备 Workers + D1 + DO 权限 |
+   | `CLOUDFLARE_ACCOUNT_ID` | 是   | 你的 Cloudflare 账号 ID     |
+   | `TURNSTILE_SECRET_KEY`  | 是   | Turnstile 私密密钥          |
+
+4. **推送**。`.github/workflows/deploy.yml` 先跑 CI 门禁，通过后才部署：
+   - 推送 **`main`** → 测试环境，Worker 名为 `infoto-dev`
+   - 推送 **`v*` 标签** → 生产环境，Worker 名为 `infoto`
+   - **Actions → Deploy → Run workflow** 可显式指定目标
+
+   工作流会解析 D1 数据库、幂等地应用表结构、部署、注入密钥。
+   **`MEDIA_HOST_URL` 缺失会直接让部署失败**，而不是把生产指向错误的地方。
+
+**首次部署会创建 Durable Object。** 它的存储后端一旦创建就无法更改，因此请用仓库里的
+配置部署一次，之后不要改 `[[migrations]]` 段。
+
+**发布版本。** 站点上显示的版本号来自构建时的最新 git tag——仓库里没有任何文件需要手改：
+
+```sh
+npm run release -- minor "本次改了什么"
+```
+
+它会同时升级两个 manifest 和 lockfile、提交、打 `v<x.y.z>` 标签并推送。工作区不干净、
+当前分支不是 `main`、或标签已存在时都会拒绝；`--dry-run` 只打印计划不写入。
 
 ### 图片宿主门面
 
-相册不直连任何图床。你自部署一个小型**门面**，负责签名并把上传转发到你的存储（S3、R2、
-转码服务均可），相册只存它返回的 URL——换存储**不需要改 `src/` 任何代码**。门面无状态：
-无 KV、无数据库、无用户身份。参考实现随本仓库发布至 v0.1.1，v0.1.2 起从历史中移除；下面的
-契约是实现所需的全部内容。
+Infoto 不直接对接任何图床。你需要部署一个小的**门面**：接收上传，把文件放到你喜欢的地方
+（S3、R2、转码服务……），返回它的公开 URL。相册保存这个 URL 并转发给访客。
+更换存储只需替换门面——相册本身不用改。
 
-**配置**：把门面 origin 设为仓库 **Variable** `MEDIA_HOST_URL`（Actions → Settings →
-Secrets and variables → Actions → _Variables_）。不带末尾斜杠、不带路径；缺失时部署硬
-失败。该值由部署工作流以明文 `[vars]` 注入 `wrangler.toml`——它是公开主机名，不是凭据。
+门面是无状态的：不存 KV、不用数据库、不持有用户身份。
 
-**职责划分**：
-
-| 事项                 | 归属                                  |
-| -------------------- | ------------------------------------- |
-| 对存储的请求签名     | **你**（门面）                        |
-| 存文件、返回公开 URL | **你**（门面）                        |
-| 访客身份验证         | Infoto（`/ws`），不是门面             |
-| 存储 URL             | Infoto（`photos.url`）                |
-| 向访客提供字节       | Infoto（`GET /l/:id36` 代理你的 URL） |
-| 转码为 WebP / WebM   | 浏览器，上传之前                      |
-
-**接口：`POST /upload`**。一次一个 multipart 文件，字段名必须是 `file`。`filename` 带浏览器
-选的扩展名（`m.webp`、`m.webm`…），仅作参考；part 内的 `Content-Type` 才是真实媒体类型。
-不带 cookie、不带 `Authorization`——也不要要求这两样。成功返回 `200`：
+**接口：`POST /upload`。** 一个 multipart 文件，字段名必须正好是 `file`。`filename` 仅供参考，
+真实媒体类型由该 part 的 `Content-Type` 决定。请求**不带 cookie、不带 `Authorization` 头**
+——不要要求这两者。成功返回 `200`：
 
 ```json
 { "data": "https://cdn.example.com/objects/9f2c….webp" }
 ```
 
-Infoto 只读 `data` 字段，原样写入 `photos.url`。任何失败返回非 2xx + JSON：
-`{ "error": "<机器码>", "msg": "<可读详情>" }`——非 JSON 响应体会被当作 `http_<状态码>` 处理。
-`GET /health → 200 { "ok": true }` 是探针便利接口，不属于契约。
+只读取 `data` 一个字段，并原样保存。失败应返回非 2xx 和
+`{ "error": "<机器码>", "msg": "<详情>" }`。`GET /health → 200 { "ok": true }` 可作为探活。
 
-**URL 契约**。返回的 URL 由 `isStorableMediaUrl`（`src/shared/media.ts`）校验，
-不合格会被**静默丢弃**——上传 op 被丢弃、照片永远不出现，访客看不到任何错误，所以这是实现
-门面最重要的一条。URL 必须满足：
+**URL 必须是** `https:`、不含内嵌凭据、位于公开 DNS 域名（或全局单播 IPv6 字面量）上，
+且**能被 Cloudflare 公开抓取**——相册在边缘不带凭据地抓取它，因此预签名或需要鉴权的
+链接会呈现为 404。纯 `http:`、私有地址、回环名称、特殊用途网段一律拒绝，并丢弃这次上传。
 
-- `https:` 且不带内嵌凭据；
-- 公网 DNS 域名（或全球单播 IPv6 字面量）；
-- **Cloudflare 能匿名抓取**——读代理从边缘无凭据地抓取它，预签名 URL 或需要鉴权的桶会渲染
-  成相册里的 404。
+**CORS。** 上传是跨域的：`OPTIONS` 需返回 `204` 并带 `Access-Control-Allow-Origin`、
+`Access-Control-Allow-Methods: GET, POST, OPTIONS`、
+`Access-Control-Allow-Headers: content-type`（预检和正式响应都要带）。返回
+`Access-Control-Max-Age: 86400` 让浏览器缓存预检。
 
-拒绝项：
+**务必加防护。** 门面本质上是公开端点——任何人知道这个 URL 就能消耗你的存储和流量。
+请限流（Cloudflare WAF 或 Rate Limiting 规则），或在请求头里校验 Turnstile token。
 
-| 拒绝                                                                  | 原因                                   |
-| --------------------------------------------------------------------- | -------------------------------------- |
-| `http://…`                                                            | 必须 HTTPS，明文 HTTP 是 SSRF/降级向量 |
-| `localhost`、`*.local`、`*.internal` 及尾点变体                       | 只在你的内网解析                       |
-| `127.0.0.0/8`、`10/8`、`172.16/12`、`192.168/16`、`169.254/16`        | 私有 IPv4                              |
-| `0.0.0.0/8`、`100.64/10`（CGNAT）、`198.18/15`、`192.0.0/24`、`224/4` | 特殊用途段                             |
-| `::1`、`fc00::/7`、`fe80::/10`、IPv4 映射 IPv6                        | 非全球单播 IPv6                        |
-
-唯一的开发期例外：`MEDIA_HOST_URL` 指向 loopback origin（即 `.dev.vars` 为本地开发所设）时，
-Infoto 额外接受该确切 origin——按解析后的 origin 匹配，绝不按字符串前缀。已部署的门面是真实
-HTTPS 主机，永不享受该例外；`MEDIA_HOST_URL` 未设置同样没有例外，那属于配置错误的部署，不是本地开发。
-
-**CORS**。上传是跨域请求：`OPTIONS` 预检答 `204`，并在预检和正式响应上都带
-`Access-Control-Allow-Origin`（回显具体 origin，或 `*`——请求不带凭据）、
-`Access-Control-Allow-Methods: GET, POST, OPTIONS`、`Access-Control-Allow-Headers:
-content-type`。用 `Access-Control-Max-Age: 86400` 缓存预检，避免每次上传都重发。
-
-**运维**。门面按设计就是公开端点——任何知道 URL 的人都能消耗你的存储和流量。上线前配
-Cloudflare WAF / 速率限制规则，或在请求头里要求 Turnstile token。
-
-### 部署
-
-`.github/workflows/ci.yml` 在 push/PR 时跑 `npm ci → lint → ts-check → test`，并被部署
-工作流复用（`workflow_call`）。
-
-`.github/workflows/deploy.yml` **先跑 CI 门禁，通过才部署**：
-
-- push `main` → 测试部署（`infoto-dev`）
-- tag `v*` → 生产部署（`infoto`，注入真实 Turnstile secret）
-- `workflow_dispatch` 可指定目标
-
-流程：确保同名 D1 存在 → 按目标补丁 `wrangler.toml` → 幂等应用 schema →
-`wrangler deploy` → 注入 secrets。`MEDIA_HOST_URL` 缺失会硬失败，绝不悄悄把生产指向
-localhost。
-
-**发版就是打 tag。** SPA 的版本号在构建时读取最新 tag，所以仓库里没有任何文件需要手改：
-
-```bash
-npm run release -- minor "这次改了什么"
-```
-
-它会同时更新两个 `package.json` 和 lockfile，提交，打上 `v<x.y.z>`，并用 `--follow-tags`
-推送。工作区不干净、不在 `main` 分支、tag 已存在，这三种情况都会被拒绝；`--dry-run`
-只打印计划，不写任何东西。
+本地开发时，`.dev.vars` 把 `MEDIA_HOST_URL` 指向本地替身，它的应答与真实门面完全一致，
+所以本地失败就是真实失败。**端口只写在 `MEDIA_HOST_URL` 一处**——所有开发脚本都从那里读。
 
 ### 许可证
 
-[AGPL-3.0](LICENSE) —— 另见 [NOTICE](NOTICE)。
+[AGPL-3.0](LICENSE) — 见 [NOTICE](NOTICE)。

@@ -99,7 +99,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   }
 
   // the `welcome` frame names the upload facade; the SharedWorker needs it before any job can upload.
-  setMediaHostSink((url) => pipeline.setMediaHost(url));
+  const unregisterMediaHost = setMediaHostSink((url) => pipeline.setMediaHost(url));
   // Deleting a pending photo reaches here through the app store: cancel the job (stops an
   // in-flight transfer before it can write its upload op) and drop the card.
   setPendingUploadCancelSink((sha) => cancelPendingBySha(sha));
@@ -526,6 +526,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   onDestroy(() => {
     destroyed = true;
     unsubscribeQueued();
+    unregisterMediaHost();
     pipeline.stop();
     for (const url of previewUrls.values()) URL.revokeObjectURL(url);
     previewUrls.clear();

@@ -17,6 +17,7 @@ import { activeLocale, copy, type Copy } from '$shared/copy';
 import type { EngineState, SyncEngine, SyncSnapshotContext } from '../core/engine';
 import { toast } from 'svelte-sonner';
 import * as ops from '../core/ops';
+import { publishMediaHost } from './mediaHost.svelte';
 
 /** Allocate descending temporary IDs for optimistic announcements and feedback. */
 let nextTempId = -1;
@@ -256,15 +257,10 @@ function readCachedSelfId(): number {
   return -1;
 }
 
-/** Facade sink, wired by the upload store once its pipeline exists. Layering note:
- *  appStore must not import the upload pipeline, so the upload store registers here. */
-let mediaHostSink: ((url: string) => void) | null = null;
-
-export function setMediaHostSink(sink: (url: string) => void): void {
-  mediaHostSink = sink;
-}
-
-const setMediaHost = (url: string): void => mediaHostSink?.(url);
+/** Facade sinks live in their own module (`state/mediaHost.svelte.ts`) so both the store and
+ *  the route components can register without importing each other's pipeline. Re-exported
+ *  here because the store is the only publisher. */
+export { onMediaHost as setMediaHostSink } from './mediaHost.svelte';
 
 /** Pending-card cancel sink, wired by the upload store. Same layering note as above: a
  *  pending card belongs to the upload pipeline, and appStore cannot import it. */
@@ -489,7 +485,7 @@ class AppState {
     // Uploads go straight to the facade; the SharedWorker needs the target before a job
     // can run, and a reconfigured facade must take effect without a reload.
     this.mediaHostUrl = r.mediaHostUrl;
-    setMediaHost(r.mediaHostUrl);
+    publishMediaHost(r.mediaHostUrl);
     try {
       localStorage.setItem(SELF_ID_KEY, String(r.selfId));
     } catch {
