@@ -323,3 +323,20 @@ test('a pinch tail on a zoomed photo pans without voting', async ({ page }) => {
     lightbox.getByRole('button', { name: enCopy.lightbox.dislike, exact: true }),
   ).toContainText('0');
 });
+
+// A zoom is a motion, not a state flip: the double-click write carries a transform
+// transition, and nothing in the settle path may set transition:'none' over it — that once
+// turned the double-click into an instant jump.
+test('the double-click zoom eases instead of jumping', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  await page.mouse.dblclick(100, 360);
+  const animating = await lightbox
+    .locator('.will-change-transform')
+    .evaluate((n) =>
+      n.getAnimations().some((a) => a instanceof Animation && a.playState === 'running'),
+    );
+  expect(animating, 'the zoom ease should be in flight right after the double-click').toBe(true);
+  await page.waitForTimeout(600);
+  const zoomed = parsed(await transformOf(lightbox));
+  expect(zoomed.scale).toBe(2);
+});

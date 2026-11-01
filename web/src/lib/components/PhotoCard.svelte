@@ -47,14 +47,12 @@
      *  virtualizer's buffer band renders cards before they are visible; keeping their
      *  images out of the DOM is what bounds decoded-image memory on a long album. */
     mediaNear?: boolean;
-    /** Whether this card is INSIDE the live viewport, which is the one condition for smooth
-     *  positional motion. A card outside it appears where it belongs and fades in; it never
-     *  travels across the page, because that travel happens off-screen and only makes the
-     *  layout look busy. Derived from the measured viewport at the moment of the change. */
+    /** The one condition for smooth positional motion: the card is on screen AND its old and
+     *  new positions are in neighbouring columns. A longer jump is not a move the eye can
+     *  follow, so the card appears in its final place and fades in rather than travelling
+     *  across the page past cards that are standing still. Decided by `WaterfallLayout` from
+     *  the measured viewport and the committed geometry. */
     smoothMotion?: boolean;
-    /** Whether this card was inside the viewport the last time it rendered. A card that was
-     *  NOT visible then must not glide in on remount: it appears where it belongs and fades. */
-    wasOnScreen?: boolean;
     /** Whether this card is in the autoplay band (the viewport's visible top row); the
      *  open-sound holder always keeps its player regardless of the band. */
     autoplay?: boolean;
@@ -79,7 +77,6 @@
     overlay,
     mediaNear = true,
     smoothMotion = true,
-    wasOnScreen = false,
     autoplay: autoplayProp = true,
     selected = false,
     multiMode = false,
@@ -115,16 +112,6 @@
   let placed = $state(false);
   const reducedMotion = prefersReducedMotion();
   let fromBox: GeomStamp | null = $state(null);
-  /**
-   * Whether this card's positional change should be animated, decided ONCE per change.
-   *
-   * `smoothMotion` says whether the card is inside the live viewport RIGHT NOW. It is read at
-   * the moment the box moves, not at mount: a card that was off-screen a frame ago is on
-   * screen when its new position lands, and it must then simply appear rather than glide in
-   * from somewhere the user never saw. The previous version snapshotted this at mount, so it
-   * described the card's position at mount time and every later reflow ignored the rule.
-   */
-  let motionAllowed = $state(false);
   // Mount-time snapshot, on purpose. This sits outside every `$effect` in the component, so
   // no later prop update can retro-fire the flip — a remounting card either glides from the
   // box it last rendered at, or appears in place. `untrack` is what marks the props below as
@@ -134,10 +121,7 @@
     const remembered =
       motionMemory &&
       !reducedMotion &&
-      // A card may only glide in if the eye could already see it when it left. `wasOnScreen`
-      // is the reading from its last frame, so a card that scrolled in from off-screen stays
-      // put instead of flying in from wherever it used to sit.
-      wasOnScreen &&
+      smoothMotion &&
       reflowAt > 0 &&
       performance.now() - reflowAt <= reflowFlipWindowMs
         ? motionMemory.get(photo.id)
@@ -155,24 +139,12 @@
   let cancelFlip: (() => void) | undefined;
   onDestroy(() => cancelFlip?.());
   let flipArmed = false;
-  /** The box this card last rendered, used to tell a position change from a re-render. */
-  const initialBox = untrack(() => ({ x, y, w: width, h: height }));
-  let lastBox = initialBox;
   $effect(() => {
     void x;
     void y;
     void width;
     void height;
     void fromBox;
-    // Re-decide the transition class per POSITION CHANGE, not per mount: whether the move
-    // may be animated depends on whether the card is on screen when the move lands.
-    const moved = lastBox.x !== x || lastBox.y !== y || lastBox.w !== width || lastBox.h !== height;
-    if (moved) {
-      lastBox = { x, y, w: width, h: height };
-      motionAllowed = smoothMotion;
-    } else if (motionAllowed !== smoothMotion && !fromBox) {
-      motionAllowed = smoothMotion;
-    }
     if (fromBox) {
       if (!flipArmed) {
         flipArmed = true;
@@ -338,7 +310,7 @@
   class="absolute left-0 top-0 overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border {selected
     ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
-  class:card-motion={placed && motionAllowed}
+  class:card-motion={placed && smoothMotion}
   style="transform: translate3d({fromBox?.x ?? x}px, {fromBox?.y ?? y}px, 0); width: {fromBox?.w ??
     width}px; height: {fromBox?.h ?? height}px; transform-origin: top left"
   role="button"

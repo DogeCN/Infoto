@@ -1,9 +1,7 @@
 <script lang="ts">
   import type { Feedback } from '$shared/types';
-  import { Check, Copy, MessageSquare, Trash2 } from '@lucide/svelte';
-  import { onDestroy } from 'svelte';
-  import { toast } from 'svelte-sonner';
-  import { copyToClipboard } from '$base/lib/clipboard';
+  import { MessageSquare, Trash2 } from '@lucide/svelte';
+  import CopyButton from './CopyButton.svelte';
   import { copy } from '$lib/i18n.svelte';
   import { fmt } from '$shared/copy';
   import EmptyState from '$lib/components/EmptyState.svelte';
@@ -23,27 +21,6 @@
   let { feedback, onDelete, onReorder }: Props = $props();
   let query = $state('');
   let visibleFeedback = $derived(filterFeedback(feedback, query));
-
-  /** How long the copied row shows its confirmation before the icon fades back. */
-  const COPIED_HOLD_MS = 1600;
-  /** The row that just copied, plus the timer that clears it. The confirmation is in place
-   *  rather than a toast: the button the click landed on is where the user is looking. */
-  let copiedId = $state<number | null>(null);
-  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
-
-  function flashCopied(id: number): void {
-    copiedId = id;
-    clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copiedId = null), COPIED_HOLD_MS);
-  }
-  onDestroy(() => clearTimeout(copiedTimer));
-
-  /** Copy a feedback body verbatim; success is the boolean the clipboard owner returns, so the
-   *  row keeps its own confirmation instead of a shared toast. */
-  async function copyContent(item: Feedback): Promise<void> {
-    if (await copyToClipboard(item.contentMd)) flashCopied(item.id);
-    else toast.error(copy.lightbox.copyFailed);
-  }
 
   /** A drag over a filtered list orders visible rows only: splice that order into
    * the full list's slots so hidden rows keep their position. */
@@ -99,33 +76,13 @@
               </span>
             </div>
           {/snippet}
-          <TooltipIconButton
-            text={copiedId === feedbackItem.id
-              ? copy.admin.feedback.copied
-              : copy.admin.feedback.copy}
+          <CopyButton
+            value={feedbackItem.contentMd}
+            text={copy.admin.feedback.copy}
+            copiedText={copy.admin.feedback.copied}
             ariaLabel={copy.admin.feedback.copyAria}
-            class="p-2"
-            onclick={() => void copyContent(feedbackItem)}
-          >
-            <!-- The glyph swaps in place: the copy icon fades out and the check fades in
-                 within one grid cell, so the button does not move or resize. The swap is the
-                 whole confirmation — the button keeps its resting treatment, because `active`
-                 means "this control is engaged", and a copy that succeeded is not engaged. -->
-            <span class="grid size-4 place-items-center">
-              <Copy
-                class="col-start-1 row-start-1 size-4 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {copiedId ===
-                feedbackItem.id
-                  ? 'opacity-0'
-                  : 'opacity-100'}"
-              />
-              <Check
-                class="col-start-1 row-start-1 size-4 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {copiedId ===
-                feedbackItem.id
-                  ? 'opacity-100'
-                  : 'opacity-0'}"
-              />
-            </span>
-          </TooltipIconButton>
+            failedText={copy.lightbox.copyFailed}
+          />
           <TooltipIconButton
             text={copy.admin.feedback.delete}
             ariaLabel={copy.admin.feedback.deleteAria}

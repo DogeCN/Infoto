@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { Poll } from '$shared/types';
-  import { ChartNoAxesColumn, Copy, Pencil, Trash2 } from '@lucide/svelte';
-  import { toast } from 'svelte-sonner';
-  import { copyToClipboard } from '$base/lib/clipboard';
+  import { ChartNoAxesColumn, Pencil, Trash2 } from '@lucide/svelte';
+  import CopyButton from './CopyButton.svelte';
   import { copy } from '$lib/i18n.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
@@ -33,12 +32,6 @@
     translatingId = null,
     translateDisabled = false,
   }: Props = $props();
-
-  async function copySyntax(poll: Poll): Promise<void> {
-    if (await copyToClipboard(`::poll:${poll.locale}:${poll.id}`))
-      toast.success(copy.admin.poll.syntaxCopied);
-    else toast.error(copy.admin.poll.copyFailed);
-  }
 </script>
 
 {#if polls.length === 0}
@@ -55,14 +48,13 @@
             {poll.allowMultiple ? copy.admin.poll.multipleAnswers : copy.admin.poll.singleAnswer}
           </p>
         {/snippet}
-        <TooltipIconButton
+        <CopyButton
+          value={`::poll:${poll.locale}:${poll.id}`}
           text={copy.admin.poll.copySyntax}
-          class="p-2"
+          copiedText={copy.admin.poll.syntaxCopied}
           disabled={poll.id < 0}
-          onclick={() => void copySyntax(poll)}
-        >
-          <Copy class="size-4" />
-        </TooltipIconButton>
+          failedText={copy.admin.poll.copyFailed}
+        />
         <TranslateButton
           locale={poll.locale}
           translating={translatingId === poll.id}

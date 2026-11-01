@@ -335,14 +335,17 @@ Back-filled from the commit history. Tagged sections are not yet written.
     per-instance at all: it is the page's one open sound, which an unmount releases through
     `releaseAudio` only when that surface owned it. Geometry is deliberately carried across
     the unmount; ⚠️ §4.4 is the model, and it is the reason a remount can glide at all.
-  - **Smooth positional motion is for cards on screen, and only those.** A card that is
-    inside the live viewport may glide between layouts (the `--duration-reflow` /
-    `--ease-reflow` retarget, and a remount's FLIP from its remembered box). A card outside
-    it appears where it belongs and **fades in only** — its glide would happen off-screen,
-    so it is work nobody can see, and on a long album it is a card travelling across the
-    page for no reason. `smoothMotion` arrives from `WaterfallLayout`, derived from the
-    measured viewport and the live scroll offset at the moment of the change (never a
-    breakpoint), and it gates both the transition class and the remount FLIP.
+  - **Smooth positional motion belongs to a move the eye can follow: on screen, and between
+    neighbouring columns.** A card may glide between layouts (the `--duration-reflow` /
+    `--ease-reflow` retarget, and a remount's FLIP from its remembered box) only when it is
+    inside the live viewport **and** its previous and next positions are in the same or
+    adjacent columns. A longer jump — a re-sort, a filter, a column-count change — is not a move
+    anyone can follow: the card would travel across the page past cards that are standing
+    still, so it appears in its final place and **fades in only**. Both inputs are measured, not
+    declared: `WaterfallLayout` derives the viewport membership from the live scroll offset and
+    the column step from the smallest gap between two committed x values (a single-column album
+    has no step, which correctly disables sideways gliding). That single `smoothMotion` flag
+    gates both the transition class and the remount FLIP; there is no second rule.
   - **Media is loaded in a narrower band than the render window.** A card renders its `<img>` /
     `<video>` only while its box sits within the viewport plus `MEDIA_LOAD_LOOKAHEAD = 0.4` of a
     viewport on each side; the rest of the buffer band paints the skeleton with the media element
@@ -487,11 +490,28 @@ Back-filled from the commit history. Tagged sections are not yet written.
     vertical case only survived because its preview happened to already sit near the centre).
     `beginCtrlZoom` commits the previewed displacement into `zoomX`/`zoomY` before it captures
     its start state, so the media never moves on the frame the modifier is pressed, on either
-    axis. **Releasing `Ctrl` ends the gesture**: `handleKeyUp` drops the pointer and runs the
-    rotation snap (`snapWithEase`) plus `settleTransform`, so the rotation lands on the nearest
-    90° and plain panning resumes from where it settled — with no jump, because the offset was
-    never discarded. `settleTransform` still centres a fit, **unrotated** image, which is the
-    whole-photo state; anything zoomed or rotated keeps its offset. **Both** touch pinch and
+    axis. **The card belongs to whatever is holding it.** One predicate decides every positional
+    question: `isHeld()` is "a pointer is down, or `Ctrl` is held". While it is true the
+    gesture owns the transform and nothing may recentre it; only when it is false does the
+    resting rule run, and it always runs **eased** (`returnHome` is the single entry, and
+    `settleTransform` can no longer be asked for a hard set). So: releasing the **mouse** only
+    snaps the rotation, because `Ctrl` is still holding the card; releasing **`Ctrl`** snaps it
+    again and, if the pointer is still down, hands the drag over to plain panning; and the card
+    returns to the centre only once both are up. **A gesture that used `Ctrl` ends at the
+    centre, unconditionally**: the pin held the card's centre for the whole rotate/zoom, so
+    letting go sends it home — position only, with the zoom and the snapped angle kept
+    (`settleTransform` centres whenever the gesture had entered the `Ctrl` mode). A gesture
+    that never used `Ctrl` keeps the free-drag rule instead: only the fit, **unrotated** image
+    is centred (`isRotated` counts 180° as axis-aligned, because it is for the bounding box),
+    and a zoomed or rotated card keeps the offset its drag produced. The settle reads the inline
+    transform rather than the state, because a plain drag previews its displacement without
+    writing it back — a card can be visibly off-centre over a state that reads settled. And when
+    the visual already matches the settled transform the settle **touches nothing**: an in-flight
+    ease (the double-click zoom's) would otherwise be killed by a `transition:'none'` rewrite
+    and the zoom would jump. Applying any of this mid-gesture is what used to yank a rotating
+    card back to the stage centre the moment its rotation passed through horizontal. The rule is
+    enforced, not remembered: an effect watches the hold itself, so a release path that forgets
+    to ask for the settle cannot leave the card parked off-centre with nothing held. **Both** touch pinch and
     `Ctrl`+drag rotation snap to the nearest 90° on release (kept as a signed value so a −90°
     gesture does not spin a full turn) — the desktop path had been missing the snap. The snap
     eases via the **Web Animations API**, not the inline CSS `transition`: a pinch's surviving
@@ -601,8 +621,13 @@ isRotated(rot)`), so any zoom or rotation turns a drag into a pan instead of a s
     the right events, and the sizing formula. `ui.spec.ts` asserts the sheet's colours and hover,
     the counter between the arrows, wrap-around paging, and Ctrl-drag zoom; `lightbox-pinch.spec.ts`
     covers the multi-touch release path; `lightbox-gestures.spec.ts` covers an unbounded drag after
-    a wheel or double-click zoom, a lightly zoomed drag panning rather than swiping, and `Ctrl`+drag
-    keeping the pan it started from. Still unasserted: wheel easing, swipe, key bindings, and the
+    a wheel or double-click zoom, a lightly zoomed drag panning rather than swiping, `Ctrl`+drag
+    keeping the pan it started from, and — the two orders that decide the hold rule — that a
+    `Ctrl` rotate keeps its position when **only the mouse** is released, and that releasing the
+    mouse **before** `Ctrl` still snaps the rotation and still settles once the last hold ends.
+    `waterfallMotion.spec.ts` covers the in-viewport half of the reflow rule (an off-screen card
+    carries no positional transition). Still unasserted: wheel easing, swipe, key bindings, the
+    column-adjacency half of the motion gate (it needs a controlled column-count change), and the
     sizing formula.
 - **Sidebar / overlay stack.** `base/lib/overlay.ts` is the **only** owner of focus trapping,
   Escape and scroll locking. `OverlaySidebar`, `ActionSheet` and `Lightbox` all use it.
@@ -1110,21 +1135,23 @@ before deadline` / `no response before deadline`).
     card can neither be stored nor be left permanently untranslatable. Because the write is a
     WebSocket op now (ADR 0026), the refusal arrives as `{ error: 'op_dropped', cid }` and the
     editor rolls the optimistic row back, rather than as an HTTP status.
-  - **Each feedback row copies its Markdown in one click, and confirms in place.** A copy
-    icon-button sits to the left of delete in the row's top-right cluster and writes `contentMd`
-    through `copyToClipboard`. Success raises **no toast**: the glyph cross-fades to a check inside
-    the same 16px cell (copy fading out, check fading in, one grid cell so the button never moves),
-    its tooltip and label swap to the copied wording, and after `COPIED_HOLD_MS = 1600` the check
-    fades back to the copy glyph. The confirmation belongs where the click landed. **The
-    confirmation is that glyph swap and the label swap, never the button's `active` treatment.**
-    `active` — the `text-primary` tint `TooltipIconButton` applies — means "this control is
-    engaged": a filter is on, a mode is selected, a panel is open. A copy that happened once is
-    not engagement. Painted on a transient confirmation the tint reads as state the user could
-    click again to leave, it competes with the one signal that means engagement, and it sharpens
-    and fades for a reason nothing else on the row shares. A transient confirmation therefore
-    rides the glyph and the label only, and the control keeps its resting treatment throughout.
-    Failure is the one generic toast (`lightbox.copyFailed`) — a second copy of that string is
-    exactly the drift the copy table exists to prevent.
+  - **One copy control owns the confirmation, on every admin row that has one.**
+    `routes/admin/CopyButton.svelte` is the single implementation, used by the poll row and the
+    feedback row alike; the two had drifted, the feedback row confirming in place while the poll
+    row only raised a toast, so the same action looked different depending on the tab. It writes
+    a value through `copyToClipboard` and raises **no toast on success**: the glyph cross-fades
+    to a check inside the same 16px cell (copy fading out, check fading in, one grid cell so the
+    button never moves), its tooltip and aria-label swap to the copied wording, and after
+    `COPIED_HOLD_MS = 1600` the check fades back. The confirmation belongs where the click
+    landed. **The confirmation is that glyph swap and the label swap, never the button's
+    `active` treatment.** `active` — the `text-primary` tint `TooltipIconButton` applies —
+    means "this control is engaged": a filter is on, a mode is selected, a panel is open. A copy
+    that happened once is not engagement. Painted on a transient confirmation the tint reads as
+    state the user could click again to leave, it competes with the one signal that means
+    engagement, and it sharpens and fades for a reason nothing else on the row shares. Failure is
+    the one generic toast the caller passes in (`lightbox.copyFailed` for a feedback body,
+    `admin.poll.copyFailed` for a poll reference) — a second copy of either string is exactly
+    the drift the copy table exists to prevent.
 - **Sync rides the `/ws` WebSocket (ADR 0026).** Frames (`shared/types.ts`): `hello` →
   `welcome` | `error`; `ops` {ops} → `ops` {applied} plus `welcome` on connect; `ping` → `pong`.
   The Durable Object is the album's single sequential writer — it appends each op to its own
@@ -1564,64 +1591,66 @@ renderable, and any band computed from the viewport must read the scroll offset 
 
 The parts of this contract that are asserted by `npm test`:
 
-| Invariant                                                                            | Enforced by                             |
-| ------------------------------------------------------------------------------------ | --------------------------------------- |
-| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions           | `web/tests/unit/designTokens.test.ts`   |
-| `motion.ts` motion fallbacks equal the `@theme` motion tokens                        | `web/tests/unit/designTokens.test.ts`   |
-| `schema.sql` and `schema-ddl.ts` are byte-identical (line endings normalised)        | `src/worker/schema-alignment.test.ts`   |
-| Layer direction: no import points above its own layer (AGENTS.md red line 5)         | `web/tests/unit/layering.test.ts`       |
-| Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)        | `src/worker/assets-routing.test.ts`     |
-| No `transition` in `web/src` carries a literal duration or easing curve              | `web/tests/unit/designTokens.test.ts`   |
-| `GLITCH_PALETTE` equals the matching `@theme` colours                                | `web/tests/unit/designTokens.test.ts`   |
-| The reflow flip window outlasts the reflow duration it brackets                      | `web/tests/unit/motion.test.ts`         |
-| Lightbox gesture geometry: fit recentring, pan gate, anchor, pinch, tap/swipe/click  | `web/tests/unit/lightboxEngine.test.ts` |
-| The upload's silence budget ends where the response budget begins                    | `web/tests/unit/uploadClient.test.ts`   |
-| The upload leg's ceiling holds independently of the image pool                       | `web/tests/unit/uploadPool.test.ts`     |
-| Which op dimensions collapse, and which never do (ADR 0016)                          | `web/tests/unit/frontend.test.ts`       |
-| The local fold clears the opposite attitude, as the server does                      | `web/tests/unit/frontend.test.ts`       |
-| A queued op is superseded in place, and an in-flight one never is                    | `web/tests/unit/syncEngine.test.ts`     |
-| A photo op waits for the upload op that creates its row                              | `web/tests/unit/photoRecords.test.ts`   |
-| The server clears the opposite attitude when either is added                         | `src/worker/album-ops.test.ts`          |
-| A sync frame over the op cap is refused whole, and unauthenticated writes answer     | `src/worker/do/album.test.ts`           |
-| A translation request writes no row, and only root may ask                           | `src/worker/routes/admin.test.ts`       |
-| The cached snapshot round-trips through `metaCache` and is replaced on sync          | `web/tests/unit/oplog.test.ts`          |
-| A pending card keeps its Photo identity until a field or mark changes                | `web/tests/unit/photoRecords.test.ts`   |
-| A pending card holds the local preview until the hosted copy is renderable           | `web/tests/unit/photoRecords.test.ts`   |
-| A transcode failure renders no card; an upload failure does (§3)                     | `web/tests/unit/photoRecords.test.ts`   |
-| A card's local preview comes from OPFS, never from the picked file (§3)              | `web/tests/unit/photoRecords.test.ts`   |
-| A hosted photo record still renders a card after a failed sync                       | `web/tests/unit/photoRecords.test.ts`   |
-| A confirmed sync retires those records, and a landed/live sha never double-draws     | `web/tests/unit/photoRecords.test.ts`   |
-| An upload op and its photo record are written together, and withdrawn together       | `web/tests/unit/oplog.test.ts`          |
-| A batch's writes cost a fixed handful of round trips, not one per op                 | `src/worker/album-ops.test.ts`          |
-| A GIF frame duration is read through the one owner, never re-derived in the worker   | `web/tests/unit/gifFrameTiming.test.ts` |
-| A GIF's timestamps accumulate; no frame lands before its predecessor                 | `web/tests/unit/gifFrameTiming.test.ts` |
-| A zero GIF frame duration is treated as missing, not as an instant frame             | `web/tests/unit/pipeline.test.ts`       |
-| Every MIME the upload can name maps to an extension the Markdown classifier knows    | `web/tests/unit/markdown.test.ts`       |
-| A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`       |
-| Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`       |
-| A multi-file pick inserts **one line per file**, never a concatenated run (§3)          | `web/tests/unit/markdown.test.ts`       |
-| The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`       |
-| A picked file previews locally by MIME **or** file name                              | `web/tests/unit/markdown.test.ts`       |
-| The editor uploads any file, not only images and videos                              | `web/tests/unit/editorUpload.test.ts`   |
-| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer       | `web/tests/unit/designTokens.test.ts`   |
-| Markdown structure follows GitHub: heading ladder, quote bar, code chip              | `web/tests/unit/designTokens.test.ts`   |
-| A block-opening or block-closing image carries no rhythm margin                      | `web/tests/unit/designTokens.test.ts`   |
-| No decorative text is injected into a line: quote glyphs and code backticks          | `web/tests/unit/designTokens.test.ts`   |
-| A table reads at body size, on a collapsed grid, and scrolls when wide               | `web/tests/unit/designTokens.test.ts`   |
-| The font race cancels the losers, and a failed source removes only itself            | `src/shared/fonts.test.ts`              |
-| The error page's CSP hash equals the race script it authorises                       | `src/shared/fonts.test.ts`              |
-| The playback level is a setting: v5 round-trips, clamps, and a bad one resets (§3)   | `web/tests/unit/settings.test.ts`       |
-| One open sound per media; ownership moves without restarting the audio (§3)          | `web/tests/unit/playbackAudio.test.ts`  |
-| One shared "already decoded" record keeps a loaded card off the skeleton (§3)        | `web/tests/unit/decode.test.ts`         |
-| An editor upload keeps the picked name; only an unknown payload becomes `.bin` (§3)  | `web/tests/unit/protocol.test.ts`       |
-| A failed media card shows the grey site mark, never a bare surface (§3)              | `web/tests/unit/photoCard.test.ts`      |
-| Every registered copy key is read by a source file (§10)                             | `src/shared/copy.test.ts`               |
-| An overlong announcement is refused on write, and a create takes no votes            | `src/worker/do/album.test.ts`           |
-| A locale change joins the target locale's order instead of duplicating an index      | `src/worker/album-ops.test.ts`          |
-| An op the actor may never apply is refused before the log, so D1 keeps its row       | `src/worker/do/album.test.ts`           |
-| A create op carries the id the server allocated                                      | `src/worker/do/album.test.ts`           |
-| A client past `maxSeq` gets a snapshot instead of an empty increment                 | `src/worker/do/album.test.ts`           |
-| A translation the album would refuse is rejected, never returned as a draft          | `src/worker/translate.test.ts`          |
+| Invariant                                                                               | Enforced by                                                                        |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| §1.1 table equals the `@theme` block in `web/src/app.css`, both directions              | `web/tests/unit/designTokens.test.ts`                                              |
+| `motion.ts` motion fallbacks equal the `@theme` motion tokens                           | `web/tests/unit/designTokens.test.ts`                                              |
+| `schema.sql` and `schema-ddl.ts` are byte-identical (line endings normalised)           | `src/worker/schema-alignment.test.ts`                                              |
+| Layer direction: no import points above its own layer (AGENTS.md red line 5)            | `web/tests/unit/layering.test.ts`                                                  |
+| Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)           | `src/worker/assets-routing.test.ts`                                                |
+| No `transition` in `web/src` carries a literal duration or easing curve                 | `web/tests/unit/designTokens.test.ts`                                              |
+| `GLITCH_PALETTE` equals the matching `@theme` colours                                   | `web/tests/unit/designTokens.test.ts`                                              |
+| The reflow flip window outlasts the reflow duration it brackets                         | `web/tests/unit/motion.test.ts`                                                    |
+| Lightbox gesture geometry: fit recentring, pan gate, anchor, pinch, tap/swipe/click     | `web/tests/unit/lightboxEngine.test.ts`                                            |
+| Hold/release rule and in-viewport reflow motion (both release orders, off-screen inert) | `web/tests/e2e/lightbox-gestures.spec.ts`, `web/tests/e2e/waterfallMotion.spec.ts` |
+| The admin copy confirmation is one component, used by every row that copies             | `web/src/routes/admin/CopyButton.svelte` (no unit test: it is DOM)                 |
+| The upload's silence budget ends where the response budget begins                       | `web/tests/unit/uploadClient.test.ts`                                              |
+| The upload leg's ceiling holds independently of the image pool                          | `web/tests/unit/uploadPool.test.ts`                                                |
+| Which op dimensions collapse, and which never do (ADR 0016)                             | `web/tests/unit/frontend.test.ts`                                                  |
+| The local fold clears the opposite attitude, as the server does                         | `web/tests/unit/frontend.test.ts`                                                  |
+| A queued op is superseded in place, and an in-flight one never is                       | `web/tests/unit/syncEngine.test.ts`                                                |
+| A photo op waits for the upload op that creates its row                                 | `web/tests/unit/photoRecords.test.ts`                                              |
+| The server clears the opposite attitude when either is added                            | `src/worker/album-ops.test.ts`                                                     |
+| A sync frame over the op cap is refused whole, and unauthenticated writes answer        | `src/worker/do/album.test.ts`                                                      |
+| A translation request writes no row, and only root may ask                              | `src/worker/routes/admin.test.ts`                                                  |
+| The cached snapshot round-trips through `metaCache` and is replaced on sync             | `web/tests/unit/oplog.test.ts`                                                     |
+| A pending card keeps its Photo identity until a field or mark changes                   | `web/tests/unit/photoRecords.test.ts`                                              |
+| A pending card holds the local preview until the hosted copy is renderable              | `web/tests/unit/photoRecords.test.ts`                                              |
+| A transcode failure renders no card; an upload failure does (§3)                        | `web/tests/unit/photoRecords.test.ts`                                              |
+| A card's local preview comes from OPFS, never from the picked file (§3)                 | `web/tests/unit/photoRecords.test.ts`                                              |
+| A hosted photo record still renders a card after a failed sync                          | `web/tests/unit/photoRecords.test.ts`                                              |
+| A confirmed sync retires those records, and a landed/live sha never double-draws        | `web/tests/unit/photoRecords.test.ts`                                              |
+| An upload op and its photo record are written together, and withdrawn together          | `web/tests/unit/oplog.test.ts`                                                     |
+| A batch's writes cost a fixed handful of round trips, not one per op                    | `src/worker/album-ops.test.ts`                                                     |
+| A GIF frame duration is read through the one owner, never re-derived in the worker      | `web/tests/unit/gifFrameTiming.test.ts`                                            |
+| A GIF's timestamps accumulate; no frame lands before its predecessor                    | `web/tests/unit/gifFrameTiming.test.ts`                                            |
+| A zero GIF frame duration is treated as missing, not as an instant frame                | `web/tests/unit/pipeline.test.ts`                                                  |
+| Every MIME the upload can name maps to an extension the Markdown classifier knows       | `web/tests/unit/markdown.test.ts`                                                  |
+| A media URL's extension picks the Markdown element (video / audio / image)              | `web/tests/unit/markdown.test.ts`                                                  |
+| Only a real image extension renders in place; a non-media file links                    | `web/tests/unit/markdown.test.ts`                                                  |
+| A multi-file pick inserts **one line per file**, never a concatenated run (§3)          | `web/tests/unit/markdown.test.ts`                                                  |
+| The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder    | `web/tests/unit/markdown.test.ts`                                                  |
+| A picked file previews locally by MIME **or** file name                                 | `web/tests/unit/markdown.test.ts`                                                  |
+| The editor uploads any file, not only images and videos                                 | `web/tests/unit/editorUpload.test.ts`                                              |
+| The Markdown palette binds `--tw-prose-*` to site tokens, from the right layer          | `web/tests/unit/designTokens.test.ts`                                              |
+| Markdown structure follows GitHub: heading ladder, quote bar, code chip                 | `web/tests/unit/designTokens.test.ts`                                              |
+| A block-opening or block-closing image carries no rhythm margin                         | `web/tests/unit/designTokens.test.ts`                                              |
+| No decorative text is injected into a line: quote glyphs and code backticks             | `web/tests/unit/designTokens.test.ts`                                              |
+| A table reads at body size, on a collapsed grid, and scrolls when wide                  | `web/tests/unit/designTokens.test.ts`                                              |
+| The font race cancels the losers, and a failed source removes only itself               | `src/shared/fonts.test.ts`                                                         |
+| The error page's CSP hash equals the race script it authorises                          | `src/shared/fonts.test.ts`                                                         |
+| The playback level is a setting: v5 round-trips, clamps, and a bad one resets (§3)      | `web/tests/unit/settings.test.ts`                                                  |
+| One open sound per media; ownership moves without restarting the audio (§3)             | `web/tests/unit/playbackAudio.test.ts`                                             |
+| One shared "already decoded" record keeps a loaded card off the skeleton (§3)           | `web/tests/unit/decode.test.ts`                                                    |
+| An editor upload keeps the picked name; only an unknown payload becomes `.bin` (§3)     | `web/tests/unit/protocol.test.ts`                                                  |
+| A failed media card shows the grey site mark, never a bare surface (§3)                 | `web/tests/unit/photoCard.test.ts`                                                 |
+| Every registered copy key is read by a source file (§10)                                | `src/shared/copy.test.ts`                                                          |
+| An overlong announcement is refused on write, and a create takes no votes               | `src/worker/do/album.test.ts`                                                      |
+| A locale change joins the target locale's order instead of duplicating an index         | `src/worker/album-ops.test.ts`                                                     |
+| An op the actor may never apply is refused before the log, so D1 keeps its row          | `src/worker/do/album.test.ts`                                                      |
+| A create op carries the id the server allocated                                         | `src/worker/do/album.test.ts`                                                      |
+| A client past `maxSeq` gets a snapshot instead of an empty increment                    | `src/worker/do/album.test.ts`                                                      |
+| A translation the album would refuse is rejected, never returned as a draft             | `src/worker/translate.test.ts`                                                     |
 
 The bypass rule covers state transitions only. `animation` timings are out of scope on
 purpose: the glitch's `steps(2)` jitter and the upload sweep's `1.3s linear infinite` are

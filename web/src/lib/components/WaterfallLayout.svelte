@@ -226,15 +226,6 @@
   let layoutReady = $state(false);
   /** Last committed box per card id, kept across virtualizer unmounts for FLIP reflows. */
   const geomMemory = new Map<number, GeomStamp>();
-  /**
-   * Whether each card was inside the viewport the last time its geometry was committed.
-   *
-   * A card remounts when it enters the render window, and by then `onScreen` is already true —
-   * so judging "may this remount glide?" from the current frame lets a card that scrolled in
-   * from off-screen fly in from wherever it used to be, which is exactly what must not happen.
-   * The honest question is whether the card was visible when the remembered box was written.
-   */
-  const wasVisible = new Map<number, boolean>();
   /** performance.now() of the latest layout commit, gating the FLIP remount window. */
   let reflowAt = $state(0);
   let currentAbort: AbortController | null = null;
@@ -415,17 +406,40 @@
     // Rendering one handed PhotoCard an undefined `photo`, and its media load/error handlers
     // are dispatched against the recorded handler even after teardown -- that read threw on
     // `$$props.photo.url`. Dropping those boxes keeps the two structures in step.
+    // A card may glide only when it stays on screen AND its old and new positions are in
+    // neighbouring columns. A longer jump — a re-sort, a filter, a column-count change — is
+    // not a move the eye can follow: the card would travel across the page past cards that
+    // are not moving. Those appear in their final place and fade in instead.
+    const step = columnStep();
     return indices
       .filter((i) => photoMap.has(boxes[i].id))
-      .map((i) => ({ box: boxes[i], index: i, near: near.has(i), onScreen: onScreen.has(i) }));
+      .map((i) => {
+        const box = boxes[i];
+        const from = geomMemory.get(box.id);
+        const columns = step > 0 && from ? Math.abs(from.x - box.x) / step : 0;
+        return { box, index: i, near: near.has(i), smooth: onScreen.has(i) && columns <= 1.5 };
+      });
   });
 
-  /** Record each rendered card's current viewport membership for the next remount to read. */
-  $effect(() => {
-    for (const entry of visibleBoxes) {
-      wasVisible.set(entry.box.id, entry.onScreen);
+  /**
+   * The horizontal distance between adjacent columns, measured from the committed layout.
+   *
+   * Derived rather than declared: the column width is a function of the viewport, the zoom and
+   * the photo count, and a second formula for it here would drift from the layout the first
+   * time either changed. The smallest gap between two distinct x values IS the step, and a
+   * single-column album simply has none (0), which disables gliding — correct, because with
+   * one column nothing moves sideways.
+   */
+  function columnStep(): number {
+    let step = Infinity;
+    for (let a = 0; a < boxes.length; a += 1) {
+      for (let b = 0; b < boxes.length; b += 1) {
+        const other = boxes[b];
+        if (other.x > boxes[a].x) step = Math.min(step, other.x - boxes[a].x);
+      }
     }
-  });
+    return Number.isFinite(step) ? step : 0;
+  }
 
   // Marquee hits: computed inside onMove (marqueeRect is only used for rendering)
 
@@ -680,15 +694,14 @@
         ? `${totalH}px`
         : `calc(100% - ${padTop + padX}px)`}"
     >
-      {#each visibleBoxes as { box, near, onScreen } (box.id)}
+      {#each visibleBoxes as { box, near, smooth } (box.id)}
         {@const photo = photoMap.get(box.id)}
         {#if photo}
           <PhotoCard
             {photo}
             {selfId}
             mediaNear={near}
-            smoothMotion={onScreen}
-            wasOnScreen={wasVisible.get(box.id) ?? false}
+            smoothMotion={smooth}
             autoplay={near && autoplayBoxIds.has(box.id)}
             x={box.x}
             y={box.y}

@@ -157,12 +157,25 @@
   /** The active rotation-snap ease (Web Animations API). Kept separate from the
    *  inline `transition` so a pan write on the surviving finger cannot cancel it. */
   let snapAnim: Animation | null = null;
-  /** True while Ctrl is held; lets a plain drag switch into the Ctrl zoom/rotate mode. */
-  let ctrlPressed = false;
+  /** True while Ctrl is held; lets a plain drag switch into the Ctrl zoom/rotate mode.
+   *  Reactive because the resting rule is enforced from an effect that watches it. */
+  let ctrlPressed = $state(false);
+  /** `active.size` mirrored into reactive state, for the same reason. */
+  let pointerHeld = $state(0);
   /** True once the CURRENT gesture has entered the Ctrl rotate/zoom mode. Read on release so
    *  a rotate is classified as a rotate rather than as a swipe (its pointer travelled far). */
   let ctrlWasActive = false;
   const active = new Map<number, { x: number; y: number }>();
+  /** Track a pointer and publish the hold, so the resting rule sees it start. */
+  function holdPointer(pointerId: number, point: { x: number; y: number }): void {
+    active.set(pointerId, point);
+    pointerHeld = active.size;
+  }
+  /** Drop a pointer and publish the hold, so the resting rule sees it end. */
+  function dropPointer(pointerId: number): void {
+    active.delete(pointerId);
+    pointerHeld = active.size;
+  }
   let downPoint = { x: 0, y: 0 };
   /** Viewport-scaled thresholds for the gesture in flight (set on pointerdown). */
   let hintAt = HINT_THRESHOLD;
@@ -197,20 +210,97 @@
   }
 
   /**
-   * Apply the one positional rule left: a fit, unrotated image is centred and everything
-   * else keeps the offset the gesture produced. Panning is deliberately unbounded (see
-   * `settlePan`), so this no longer measures the stage or the wrap — there is no bound to
-   * compare against.
+   * Is something holding the media right now?
+   *
+   * One predicate, because every positional question in this component reduces to it. A
+   * pointer down and Ctrl held are both "the user is moving this", and while either is true
+   * the transform belongs to the gesture — nothing may recentre it underneath the hand.
    */
-  function settleTransform(animate: boolean): void {
+  function isHeld(): boolean {
+    return pointerHeld > 0 || ctrlPressed;
+  }
+
+  /**
+   * The one positional rule: a fit, axis-aligned media returns to the centre.
+   *
+   * A whole-photo view sitting off-centre reads as a rendering fault, so the resting state is
+   * centred. That rule is about a media at REST, which is why `returnHome` is the only caller
+   * and why it is always eased — a hard set reads as the card teleporting.
+   */
+  function settleTransform(): void {
     if (!wrapEl) return;
-    const beforeX = zoomX;
-    const beforeY = zoomY;
-    const next = engineSettlePan({ scale, zoomX, zoomY, rot });
+    // A Ctrl gesture pinned the card's centre for the whole rotate/zoom; un-pinning it sends
+    // the card home — position only, with the zoom and the snapped angle kept. That is the
+    // whole point of the pin: the gesture happened about a fixed centre, so it ends centred.
+    // A gesture that never used Ctrl keeps the free-drag rule instead: only the fit view is
+    // centred, and a zoomed or rotated card keeps the offset its drag produced.
+    const next = ctrlWasActive
+      ? { zoomX: 0, zoomY: 0 }
+      : engineSettlePan({ scale, zoomX, zoomY, rot });
+    const targetRot = snapRotation(rot);
+    const settled = `translate(${next.zoomX}px, ${next.zoomY}px) scale(${scale}) rotate(${targetRot}deg)`;
+    // The visual transform can disagree with the state: a plain drag previews its displacement
+    // through `applyWrap(dx, dy)` without writing it back, so comparing state alone would miss
+    // a card that is visibly off-centre over a state that reads settled. The inline transform
+    // is where the card actually is.
+    const from = wrapEl.style.transform;
+    if (from === settled) {
+      // Already there — including the case where a commitZoom write is mid-ease towards
+      // exactly this transform. Touching the element now would set transition:'none' and kill
+      // that ease (the double-click zoom's), so the state is synced and the element left alone.
+      zoomX = next.zoomX;
+      zoomY = next.zoomY;
+      rot = targetRot;
+      return;
+    }
     zoomX = next.zoomX;
     zoomY = next.zoomY;
-    if (zoomX !== beforeX || zoomY !== beforeY) applyWrap(0, 0, animate);
+    rot = targetRot;
+    applyWrap(0, 0, false);
+    snapAnim?.cancel();
+    snapAnim = wrapEl.animate([{ transform: from || settled }, { transform: settled }], {
+      duration: motionMs('exit'),
+      easing: motionEase('exit'),
+    });
   }
+
+  /**
+   * Release the hold and let the media settle.
+   *
+   * Called from exactly two places — the last pointer lifting, and Ctrl lifting — because
+   * those are the only two events that can end a hold. Every other gesture branch snaps the
+   * rotation and leaves the position to whoever is still holding it. Guarded rather than
+   * assumed so a stray call can never pull the media out of a live gesture: releasing Ctrl
+   * while the mouse is still down must hand over to plain panning, not recentre.
+   */
+  function returnHome(): void {
+    if (isHeld()) return;
+    settleTransform();
+    // Nothing holds the card any more, so the Ctrl flow is over and its pin is spent. Clearing
+    // it here (not at the next press) is what stops a stale pin from recentring an unrelated
+    // wheel zoom seconds later.
+    ctrlWasActive = false;
+  }
+
+  /**
+   * The resting rule is ENFORCED, not remembered.
+   *
+   * Every gesture path calling `returnHome` on release was a list of places to forget: one
+   * release route omitting the call left the card parked off-centre with nothing holding it,
+   * and no amount of adding call sites makes that class of bug go away. This watches the hold
+   * itself, so whenever no pointer and no Ctrl are down the media is nobody's and the fit view
+   * comes back to the centre. It is the last word, not the only word — the explicit calls still
+   * exist so the settle starts on the release frame rather than a frame later.
+   */
+  $effect(() => {
+    if (!open || pointerHeld > 0 || ctrlPressed) return;
+    const frame = requestAnimationFrame(() => {
+      // A gesture that started in the meantime owns the transform again.
+      if (pointerHeld > 0 || ctrlPressed) return;
+      returnHome();
+    });
+    return () => cancelAnimationFrame(frame);
+  });
 
   /** Capture the pinch-start geometry (distance, angle, and current zoom state). */
   function startPinch(): void {
@@ -224,32 +314,20 @@
   }
 
   /**
-   * Snap the free rotation to the nearest 90° and ease into it with the Web
-   * Animations API rather than the inline `transition`.
-   *
-   * A plain CSS transition is cancelled the moment the surviving finger of a pinch
-   * (or any stray move during a rotate) rewrites the transform with
-   * `transition:'none'` to pan, so a two-finger rotate would snap with no easing
-   * whenever the leftover finger twitched within the 160ms settle. WAAPI plays on
-   * top of the inline style, so the pan writes
-   * that follow it cannot kill the ease; the rotation settles and only then does
-   * the panned position take over.
-   */
-  /**
    * Ease the free rotation to the nearest 90°.
    *
-   * Rotation only: the position is left exactly where the gesture put it. `settlePan` centres
-   * a fit, unrotated media, and running it here eased the media back to the stage centre —
-   * which read as a magnet pulling the card away from the cursor the moment Ctrl was released.
-   * A caller that genuinely wants the resting position (a release, where the media is no
-   * longer held) runs `settleTransform` after this.
+   * Rotation only — never the position. The pivot is the media's own centre, so a snap that
+   * also moved the card would fight the hand that is still dragging it.
+   *
+   * This is a Web Animations API animation rather than the inline `transition` because a pan
+   * write on a surviving finger sets `transition:'none'` every frame, which would cancel a CSS
+   * ease mid-flight; WAAPI plays on top of the inline style and survives those writes.
    */
   function snapWithEase(): void {
     if (!wrapEl) return;
     const startTransform = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${rot}deg)`;
     rot = snapRotation(rot);
     const endTransform = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${rot}deg)`;
-    // Commit the snapped state with no transition; WAAPI supplies the ease.
     applyWrap(0, 0, false);
     snapAnim?.cancel();
     snapAnim = wrapEl.animate([{ transform: startTransform }, { transform: endTransform }], {
@@ -258,34 +336,34 @@
     });
   }
 
-  /** Write the transform, then apply the one positional rule left (the fit view is
-   *  centred) and write again only if it moved. `animate` eases the step: the tap and
-   *  double-click zooms pass it, and so does the wheel, so a notch glides into place
-   *  instead of jumping.
+  /**
+   * Write a new transform. Position is NEVER settled here: a mid-gesture recentre is what
+   * pulled the card to the middle of the stage while it was being rotated. Settling belongs to
+   * `returnHome`, and only after the last hold has ended.
    *
-   *  The resting rule is skipped while a gesture is still in the user's hand. `settlePan`
-   *  centres a fit, axis-aligned media, and `isRotated` treats 180° as axis-aligned — so a
-   *  Ctrl rotate that passed through exactly horizontal zeroed the pan mid-drag and then
-   *  restored it a fraction of a degree later. A held gesture owns the position; the rule
-   *  only applies once the pointer is released. */
+   * `animate` eases the write itself, which the wheel and the double-click zoom want so a
+   * notch glides in instead of jumping.
+   */
   function commitZoom(next: ZoomState, animate = false): void {
     scale = next.scale;
     zoomX = next.zoomX;
     zoomY = next.zoomY;
     rot = next.rot;
     applyWrap(0, 0, animate);
-    // A live gesture owns the position: no resting rule until the pointer is released. Both
-    // terms matter — a Ctrl rotate, and the plain drag that continues after Ctrl is let go.
-    if (ctrlZoomPointer !== null || active.size > 0) return;
-    settleTransform(animate);
   }
 
   /** Zoom to `ns` anchored at the stage-relative point (sx, sy); when rotated,
-   *  pin the anchor to the centre so the scale+translate math stays valid. */
+   *  pin the anchor to the centre so the scale+translate math stays valid.
+   *
+   *  The only discrete zoom entry point (wheel and double-click), so it is also where the
+   *  resting rule is applied: scaling back down to the fit view must end centred. It is a
+   *  no-op while a gesture holds the media, which is what keeps a drag from being recentred
+   *  mid-flight. */
   function zoomToPoint(ns: number, sx: number, sy: number, animate = false): void {
     if (!stageEl) return;
     const sr = stageEl.getBoundingClientRect();
     commitZoom(engineZoomToPoint({ scale, zoomX, zoomY, rot }, ns, sx, sy, sr), animate);
+    returnHome();
   }
 
   /** Page-width-proportional thresholds: `base` is defined for a 768px-wide
@@ -310,7 +388,7 @@
       return;
     }
 
-    active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    holdPointer(e.pointerId, { x: e.clientX, y: e.clientY });
     if (active.size === 1) {
       dragging = true;
       gestureMoved = false;
@@ -373,13 +451,13 @@
     ctrlZoomPointer = pointerId;
     ctrlWasActive = true;
     gestureMoved = true;
-    active.set(pointerId, { x: clientX, y: clientY });
+    holdPointer(pointerId, { x: clientX, y: clientY });
     target?.setPointerCapture?.(pointerId);
   }
 
   function onPointerMove(e: PointerEvent) {
     if (ctrlZoomPointer === e.pointerId) {
-      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      holdPointer(e.pointerId, { x: e.clientX, y: e.clientY });
       commitZoom(
         ctrlZoomTransform(
           {
@@ -402,7 +480,7 @@
     const start = active.get(e.pointerId)!;
     const dx = e.clientX - start.x;
     const dy = e.clientY - start.y;
-    active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    holdPointer(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (active.size >= 2) {
       // Pinch: zoom + rotate around the two-finger midpoint, recomputed every
@@ -542,7 +620,7 @@
 
   function onPointerUp(e: PointerEvent) {
     if (ctrlZoomPointer === e.pointerId) {
-      active.delete(e.pointerId);
+      dropPointer(e.pointerId);
       ctrlZoomPointer = null;
       (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
       dragging = false;
@@ -551,11 +629,11 @@
       // path), then settle the position: the pointer is gone, so the resting rule (a fit,
       // axis-aligned media is centred) applies again.
       snapWithEase();
-      settleTransform(true);
+      returnHome();
       return;
     }
     const start = active.get(e.pointerId);
-    active.delete(e.pointerId);
+    dropPointer(e.pointerId);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
 
     // Pinch: end on the first finger lift, snap rotation to the nearest 90°
@@ -582,7 +660,7 @@
       // the rotated state *before* settling — snapping changes whether the image
       // is axis-aligned, so the fit-view recentre must judge the snapped angle.
       snapWithEase();
-      settleTransform(true);
+      returnHome();
       if (active.size === 0) pinchSequence = false;
       return;
     }
@@ -624,7 +702,7 @@
       gestureDir = null;
       gestureRatio = 0;
       applyWrap(0, 0, true);
-      settleTransform(true);
+      returnHome();
       return;
     }
 
@@ -637,14 +715,14 @@
       gestureRatio = 0;
       applyWrap(0, 0, true);
       snapWithEase();
-      settleTransform(true);
+      returnHome();
       return;
     }
 
     // Zoomed/rotated drag ends: settle in place.
     if (release.kind === 'pan-end') {
       applyWrap(0, 0, true);
-      settleTransform(true);
+      returnHome();
       return;
     }
 
@@ -687,7 +765,7 @@
    * transform without animating: nothing was completed, so there is nothing to settle.
    */
   function onPointerCancel(e: PointerEvent): void {
-    active.delete(e.pointerId);
+    dropPointer(e.pointerId);
     if (ctrlZoomPointer === e.pointerId) ctrlZoomPointer = null;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
 
@@ -698,7 +776,7 @@
     if (pinchActive) {
       pinchActive = false;
       snapWithEase();
-      settleTransform(true);
+      returnHome();
     }
 
     // Partner fingers are still down: the gesture is not over. Nothing resets yet
@@ -822,22 +900,28 @@
   function handleKeyUp(e: KeyboardEvent) {
     if (e.key !== 'Control') return;
     ctrlPressed = false;
-    if (ctrlZoomPointer === null) return;
-    // Releasing the modifier while the pointer is still down only SNAPS the rotation; it must
-    // not settle the position. The pointer has not been released, so the drag continues as a
-    // plain pan, and `settlePan` would centre a fit, unrotated media — the card would jump to
-    // the middle mid-drag and then snap back to the cursor on the next move.
-    ctrlZoomPointer = null;
-    snapWithEase();
-    // The plain drag measures its preview from `downPoint`, but the pointer has already moved
-    // through the Ctrl gesture. Re-anchoring here is what stops the whole displacement being
-    // counted twice (once as rotation, again as pan). Committing the current offset first keeps
-    // the media exactly where it is on screen as the reference moves.
-    const held = [...active.entries()][0];
-    if (held) {
-      const [, p] = held;
-      downPoint = { x: p.x, y: p.y };
+    if (ctrlZoomPointer !== null) {
+      // Ctrl ends the rotate/zoom mode. The rotation snaps where it stands, and the pointer —
+      // if it is still down — keeps moving the card, now as a plain pan. Arming `panning` is
+      // what makes that handover real: without it a fit, axis-aligned media would fall back to
+      // the swipe preview and the card would stop following the cursor.
+      ctrlZoomPointer = null;
+      snapWithEase();
+      ctrlWasActive = true;
+      // The drag measures its preview from `downPoint`, but the pointer has already travelled
+      // through the Ctrl gesture. Re-anchoring stops that displacement being counted twice,
+      // once as rotation and again as pan.
+      const held = [...active.entries()][0];
+      if (held) {
+        downPoint = { x: held[1].x, y: held[1].y };
+        dragging = true;
+        panning = true;
+      }
     }
+    // Ctrl is up. With the pointer up too nothing holds the media, so it returns to the fit
+    // view — eased, never set. With the pointer still down this is a no-op by construction,
+    // because the drag owns the position until it is released.
+    returnHome();
   }
 
   /** Toggle the shared sound for the photo on show; only type 2 has an audio track.

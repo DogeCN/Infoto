@@ -140,13 +140,20 @@ test('Ctrl+drag rotates where the photo sits instead of recentring it', async ({
   await page.mouse.move(cx + 40, cy);
   await page.mouse.down();
   await page.mouse.move(cx + 40, cy + 220, { steps: 10 });
+  // Mid-gesture the photo still sits where the pan put it: entering Ctrl pins the centre
+  // where it is, and the rotation happens about that pinned point.
+  const rotating = await parsed(lightbox);
+  expect(Math.abs(rotating.tx - panned.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(rotating.ty - panned.ty)).toBeLessThanOrEqual(2);
   await page.mouse.up();
   await page.keyboard.up('Control');
   await page.waitForTimeout(400);
   const rotated = await parsed(lightbox);
   expect(Math.abs(rotated.rot)).toBeGreaterThan(30);
-  expect(Math.abs(rotated.tx - panned.tx)).toBeLessThanOrEqual(2);
-  expect(Math.abs(rotated.ty - panned.ty)).toBeLessThanOrEqual(2);
+  // With both hands off, the Ctrl flow is over and the card goes home — position only, the
+  // snapped angle and the zoom stay.
+  expect(Math.abs(rotated.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(rotated.ty)).toBeLessThanOrEqual(2);
 });
 
 test('a lightly zoomed photo pans instead of swiping, with no clamp', async ({ page }) => {
@@ -176,4 +183,99 @@ test('a lightly zoomed photo pans instead of swiping, with no clamp', async ({ p
   await expect(
     lightbox.getByRole('button', { name: enCopy.lightbox.like, exact: true }),
   ).toContainText('0');
+});
+
+// The reported failure: rotating with Ctrl and letting go of the MOUSE snapped the card back
+// to the stage centre the instant the rotation passed through horizontal. Two rules produce
+// that — `settlePan` centres a fit, axis-aligned media, and `isRotated` reports 180° as
+// axis-aligned (true for the bounding box) — so a mid-gesture settle zeroed the pan and the
+// next few degrees restored it.
+//
+// The card belongs to the hand that is holding it: no pointer and no Ctrl means released.
+test('a Ctrl rotate keeps its position when only the mouse is released', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  const media = await lightbox.locator('img.lb-media').boundingBox();
+  const cx = media!.x + media!.width / 2;
+  const cy = media!.y + media!.height / 2;
+
+  // Zoom in and pan, so the card really sits off-centre and a recentre would be visible.
+  await page.mouse.move(cx - 180, cy);
+  await page.mouse.wheel(0, -400);
+  await page.waitForTimeout(400);
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 200, cy + 80, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const panned = await parsed(lightbox);
+  expect(Math.abs(panned.tx)).toBeGreaterThan(100);
+
+  // Rotate to the opposite side of the pivot drawing the pointer IN, so the scale falls back
+  // to fit while the angle reaches 180°. That is the exact state  recentres — a
+  // fit, axis-aligned media — reached in the middle of a gesture the user is still holding.
+  const pivot = await lightbox.locator('.will-change-transform').evaluate((n) => {
+    const r = n.getBoundingClientRect();
+    return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+  });
+  await page.keyboard.down('Control');
+  await page.mouse.move(pivot.x + 150, pivot.y);
+  await page.mouse.down();
+  await page.mouse.move(pivot.x - 70, pivot.y, { steps: 14 });
+  // Release ONLY the mouse. Ctrl stays down, so the card is still held.
+  await page.mouse.up();
+  await page.waitForTimeout(350);
+
+  const held = await parsed(lightbox);
+  expect(Math.abs(held.rot)).toBeGreaterThan(150);
+  // The card is still held by Ctrl, so the position it had must survive: no recentre, no
+  // jump, whether the rotation happened to land on a multiple of 90° or not.
+  expect(Math.abs(held.tx - panned.tx)).toBeLessThanOrEqual(2);
+
+  // The mouse was already released, so letting Ctrl go ends the hold too: now, and only now,
+  // the card may return to the centre. The return runs as a Web Animations animation — an
+  // ease, never a hard set.
+  await page.keyboard.up('Control');
+  const animating = await lightbox
+    .locator('.will-change-transform')
+    .evaluate((n) =>
+      n.getAnimations().some((a) => a instanceof Animation && a.playState === 'running'),
+    );
+  expect(animating).toBe(true);
+  await page.waitForTimeout(450);
+  const home = await parsed(lightbox);
+  expect(Math.abs(home.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(home.ty)).toBeLessThanOrEqual(2);
+});
+
+// Releasing the pointer first and Ctrl second is the other way round from the case above, and
+// it must behave identically: the snap happens when the rotation is let go, and the return to
+// the fit view happens when the last hold ends.
+test('releasing the mouse before Ctrl still snaps and still settles', async ({ page }) => {
+  const lightbox = await openLightbox(page);
+  const pivot = await lightbox.locator('.will-change-transform').evaluate((n) => {
+    const r = n.getBoundingClientRect();
+    return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+  });
+
+  // Ctrl first, then grab the media and rotate it off-axis (~40°).
+  await page.keyboard.down('Control');
+  await page.mouse.move(pivot.x + 150, pivot.y);
+  await page.mouse.down();
+  await page.mouse.move(pivot.x + 115, pivot.y - 96, { steps: 10 });
+  await page.waitForTimeout(120);
+  const rotating = await parsed(lightbox);
+  expect(Math.abs(rotating.rot)).toBeGreaterThan(20);
+
+  // Pointer up FIRST: the rotation must snap to the nearest 90° right there.
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const snapped = await parsed(lightbox);
+  expect(Math.abs(snapped.rot % 90)).toBeLessThanOrEqual(0.5);
+
+  // Ctrl up second: the hold ends and the fit view returns to the centre.
+  await page.keyboard.up('Control');
+  await page.waitForTimeout(450);
+  const home = await parsed(lightbox);
+  expect(Math.abs(home.tx)).toBeLessThanOrEqual(2);
+  expect(Math.abs(home.ty)).toBeLessThanOrEqual(2);
 });
