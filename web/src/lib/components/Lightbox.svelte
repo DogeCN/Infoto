@@ -188,6 +188,11 @@
   function applyWrap(dx = 0, dy = 0, animate = false): void {
     if (!wrapEl) return;
     const transition = animate ? 'transform var(--duration-exit) var(--ease-exit)' : 'none';
+    if (animate) {
+      // Force the browser to snapshot the current rendered transform before we overwrite
+      // it, so the transition actually runs instead of being collapsed in the same frame.
+      void getComputedStyle(wrapEl).transform;
+    }
     wrapEl.style.transition = transition;
     wrapEl.style.transform = `translate(${zoomX + dx}px, ${zoomY + dy}px) scale(${scale}) rotate(${rot}deg)`;
     // Counter-scale media controls while preserving their independent hover scale.
@@ -226,6 +231,14 @@
    * A whole-photo view sitting off-centre reads as a rendering fault, so the resting state is
    * centred. That rule is about a media at REST, which is why `returnHome` is the only caller
    * and why it is always eased — a hard set reads as the card teleporting.
+   *
+   * The settle runs as a single Web Animations animation starting from the transform currently
+   * on screen, never as a CSS `transition`. That matters: the rotation-snap ease
+   * (`snapWithEase`) is also a WAAPI animation on the same `transform` property, so a settle
+   * that begins while that snap is still in flight would have its CSS transition shadowed by
+   * the snap — the move to centre would only land as a hard jump when the snap finished.
+   * Starting from the rendered transform and cancelling the snap before animating keeps the
+   * whole return continuous, however fast the release follows the rotate.
    */
   function settleTransform(): void {
     if (!wrapEl) return;
@@ -238,31 +251,23 @@
       ? { zoomX: 0, zoomY: 0 }
       : engineSettlePan({ scale, zoomX, zoomY, rot });
     const targetRot = snapRotation(rot);
-    const settled = `translate(${next.zoomX}px, ${next.zoomY}px) scale(${scale}) rotate(${targetRot}deg)`;
-    // The visual transform can disagree with the state: a plain drag previews its displacement
-    // through `applyWrap(dx, dy)` without writing it back, so comparing state alone would miss
-    // a card that is visibly off-centre over a state that reads settled. The inline transform
-    // is where the card actually is.
-    const from = wrapEl.style.transform;
-    if (from === settled) {
-      // Already there — including the case where a commitZoom or a resetZoom write is mid-ease
-      // towards exactly this transform. Touching the element now would cancel that ease.
-      zoomX = next.zoomX;
-      zoomY = next.zoomY;
-      rot = targetRot;
-      return;
-    }
     zoomX = next.zoomX;
     zoomY = next.zoomY;
     rot = targetRot;
-    // Written through the same transform transition every other zoom uses, never with
-    // `transition:'none'`: a settle that landed while another zoom was still easing (the
-    // double-click's zoom-out) would otherwise cut that ease dead and the card would jump. A
-    // CSS transition retargets from the value currently on screen, so the settle continues the
-    // motion from wherever it had reached. Nothing is panning at this point — a settle only
-    // runs when no pointer and no Ctrl are held — so the reason `snapWithEase` needs WAAPI
-    // (a surviving finger rewriting the transform every frame) does not apply here.
-    applyWrap(0, 0, true);
+    // Read the transform as it is right now — the snap (or any live zoom) may have it partway
+    // through a motion — so the new animation continues from where the card visibly is instead
+    // of from the state variables (which can disagree with a previewed drag) or from the
+    // post-snap end (which would jump).
+    const from = getComputedStyle(wrapEl).transform;
+    const to = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${rot}deg)`;
+    // Write the target inline with `transition:'none'` so this write cannot start its own
+    // (shadowed) transition; the WAAPI animation below is the only thing moving the transform.
+    applyWrap(0, 0, false);
+    snapAnim?.cancel();
+    snapAnim = wrapEl.animate([{ transform: from }, { transform: to }], {
+      duration: motionMs('exit'),
+      easing: motionEase('exit'),
+    });
   }
 
   /**

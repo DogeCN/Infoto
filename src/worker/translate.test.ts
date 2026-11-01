@@ -201,36 +201,11 @@ test('translate: the dev REST transport sends a JSON-schema request', async () =
   );
 });
 
-// The model returns the wrong shape intermittently for the SAME input — an announcement
-// translated on one click and rejected with the wrong number of entries on the next — so a
-// shape mismatch is retried once instead of surfacing as a coin flip.
-test('translate: a wrong-shape draft is retried once and the retry can succeed', async () => {
-  let calls = 0;
-  const runner: ModelRunner = async () => {
-    calls += 1;
-    return JSON.stringify(
-      calls === 1
-        ? { title: 'T', texts: { 0: 'merged everything' } }
-        : { title: 'T', texts: { 0: 'A2', 1: 'B2' } },
-    );
-  };
-  const draft = await structuredTranslator(runner)({
-    kind: 'announcement',
-    sourceLocale: 'en-US',
-    targetLocale: 'zh-CN',
-    title: 'T',
-    contentMd: 'A\n\nB',
-  });
-  assert.equal(calls, 2);
-  assert.deepEqual(draft, { kind: 'announcement', title: 'T', contentMd: 'A2\n\nB2' });
-});
-
-test('translate: a persistent wrong shape fails after exactly one retry, naming the check', async () => {
-  let calls = 0;
-  const runner: ModelRunner = async () => {
-    calls += 1;
-    return JSON.stringify({ title: 'T', texts: { 0: 'merged everything' } });
-  };
+// The model returns a wrong shape for the same input sometimes; the translator rejects it
+// outright (no retry) so the caller sees a clean, named error instead of a silent coin flip.
+test('translate: a wrong-shape draft is rejected outright, never retried', async () => {
+  const runner: ModelRunner = async () =>
+    JSON.stringify({ title: 'T', texts: { 0: 'merged everything' } });
   await assert.rejects(
     structuredTranslator(runner)({
       kind: 'announcement',
@@ -241,28 +216,7 @@ test('translate: a persistent wrong shape fails after exactly one retry, naming 
     }),
     /draft_mismatch:text_missing_1/,
   );
-  assert.equal(calls, 2, 'one attempt plus one retry, never a loop');
-});
-
-test('translate: an unparseable reply is retried too, and an overlong draft is not', async () => {
-  let calls = 0;
-  const runner: ModelRunner = async () => {
-    calls += 1;
-    return calls === 1
-      ? 'here is your translation, sorry!'
-      : JSON.stringify({ title: 'T', texts: { 0: 'A2' } });
-  };
-  const draft = await structuredTranslator(runner)({
-    kind: 'announcement',
-    sourceLocale: 'en-US',
-    targetLocale: 'zh-CN',
-    title: 'T',
-    contentMd: 'A',
-  });
-  assert.equal(calls, 2);
-  assert.deepEqual(draft, { kind: 'announcement', title: 'T', contentMd: 'A2' });
-
-  // An overlong draft is a real answer, not a flake: retrying would only burn another call.
+  // An overlong draft is a real answer, not a flake: it is rejected once and not retried.
   let longCalls = 0;
   const longRunner: ModelRunner = async () => {
     longCalls += 1;

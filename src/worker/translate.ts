@@ -254,11 +254,6 @@ function buildMessages(
   ];
 }
 
-/** Whether a rejection describes a model-output shape a retry could satisfy. */
-function isDraftMismatch(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith('draft_mismatch');
-}
-
 /**
  * Translate a whole request in one structured model call. Announcement literal blocks
  * (fences, blank lines, poll references) are never sent to the model: they are removed from
@@ -266,25 +261,14 @@ function isDraftMismatch(error: unknown): boolean {
  * travel as one array, so the model cannot change their count or order silently.
  */
 export function structuredTranslator(run: ModelRunner): Translator {
-  const once = translateOnce(run);
-  return async (request) => {
-    try {
-      return await once(request);
-    } catch (error) {
-      // Workers AI returns a well-formed JSON object with the wrong shape intermittently, for
-      // the very same input: the same announcement translated on one click and came back with
-      // the wrong number of entries on the next. One retry turns a coin flip into a rare miss;
-      // a second failure still surfaces with the check that failed, so it stays diagnosable.
-      if (!isDraftMismatch(error)) throw error;
-      return once(request);
-    }
-  };
+  return translateOnce(run);
 }
 
 /**
- * One structured model call, validated. Rejections are named `draft_mismatch:<what>` when a
- * retry could plausibly fix them, and plain `invalid_response` when it could not (an overlong
- * draft is a real answer, not a flake).
+ * One structured model call, validated. Rejections are named `draft_mismatch:<what>` when the
+ * model returned a parseable object with the wrong shape (a missing key, wrong entry count, a
+ * non-string option), and plain `invalid_response` when it could not (an overlong draft is a
+ * real answer, not a flake; unparseable JSON is `draft_mismatch:not_json`).
  */
 function translateOnce(run: ModelRunner): Translator {
   return async (request): Promise<TranslationDraft> => {
