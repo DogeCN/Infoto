@@ -734,6 +734,12 @@ tabular-nums`, swapping in place inside one grid cell so the cross-fade never re
     weight 400, upright, **and no quote glyph**; lists indented `2em`; `hr` as a `0.25em` band
     with a 1px rule; inline code as a chip (`.2em .4em`, 6px radius, 85% size, `--color-border` at
     45% alpha); tables as described below.
+  - **Decorative lines run heavier than the UA hairline.** A prose link's underline and a
+    strikethrough's rule render at `text-decoration-thickness: .15em` — at 14px body the browser
+    default reads as ~1px and looked accidental crossing 600-weight text. The value is in `em` so
+    it scales with the text, and the underline sits `0.2em` off the baseline so the thicker rule
+    never cuts descenders. The editor's retry link keeps Tailwind's own hairline underline —
+    chrome, not prose.
   - **A table is body text in a grid, and a wide one scrolls.** The plugin's `prose-sm` variant
     sets `.857143em` on a table — **12px against the 14px body** — so every cell read smaller than
     the prose around it. `font-size: 100%` restores parity, which is what GitHub does by setting
@@ -921,9 +927,17 @@ before deadline` / `no response before deadline`).
       second magic number. Both heights are measured from the panel's own shell — never a
       breakpoint or a guessed header height; on the desktop panel (bottom-right, 18rem wide)
       both are zero because it does not span the gallery's bottom edge.
-  - **The announcement editor takes any file.** Its input carries no `accept`, and both
+  - **The announcement editor takes any file, and any number of them.** Its input carries no
+    `accept` but does carry `multiple` (user call, 2026-11-01), and both
     `uploadEditorFile` and the SW's `addJob` skip the album's `routeByMime` gate for the editor
-    leg. The picked file is uploaded as-is, so its extension survives into the returned URL. How
+    leg. Each picked file is uploaded as-is, so its extension survives into the returned URL. The
+    batch runs **sequentially** through the one editor-task slot — the panel row, the cancel
+    button and the retry link all describe a single job at a time — and stops at the first
+    failure or cancel. Files that already landed before the stop are still inserted: throwing
+    away completed uploads because a later file failed would silently lose the reader's picks.
+    The pick therefore resolves to `{ urls, error }`, not one URL. **A multi-file insert is one
+    line per file** (`insertMediaLinesAt`), never one concatenated run; a single URL keeps the
+    single-file path so its name still lands as alt text. How
     it lands in Markdown is decided by the extension — and the same predicate decides how it
     renders, so what is inserted is what appears:
     - a real image extension (webp/jpg/png/gif/avif/heic/svg…) → `![](url)`, rendered as
@@ -932,8 +946,9 @@ before deadline` / `no response before deadline`).
       unmute); an audio extension → `![](url)`, rendered as `<audio controls>`.
     - **anything else — a `.pdf`, a `.zip`, no extension at all — becomes `[name](url)`**, a
       plain link the reader clicks to open or download. `isEmbeddableArtifact` is the one
-      predicate (image ∪ video ∪ audio extensions) and is shared by `insertMediaAt` and
-      `markdownImageRule`, so what the editor inserts is what the page renders.
+      predicate (image ∪ video ∪ audio extensions) and is shared by `insertMediaAt`,
+      `embedLineFor` (the batch line) and `markdownImageRule`, so what the editor inserts is what
+      the page renders.
     - **The renderer emits the final element; nothing is upgraded after parsing.** The trusted
       renderer (`mdFull`) replaces markdown-it's `image` rule with `markdownImageRule`
       (`core/markdown.ts`), so `![alt](url)` is born as `<img>`, `<video>`, `<audio>` or
@@ -1584,6 +1599,7 @@ The parts of this contract that are asserted by `npm test`:
 | Every MIME the upload can name maps to an extension the Markdown classifier knows    | `web/tests/unit/markdown.test.ts`       |
 | A media URL's extension picks the Markdown element (video / audio / image)           | `web/tests/unit/markdown.test.ts`       |
 | Only a real image extension renders in place; a non-media file links                 | `web/tests/unit/markdown.test.ts`       |
+| A multi-file pick inserts **one line per file**, never a concatenated run (§3)          | `web/tests/unit/markdown.test.ts`       |
 | The Markdown media rule emits video/audio/link directly, with no `<img>` placeholder | `web/tests/unit/markdown.test.ts`       |
 | A picked file previews locally by MIME **or** file name                              | `web/tests/unit/markdown.test.ts`       |
 | The editor uploads any file, not only images and videos                              | `web/tests/unit/editorUpload.test.ts`   |

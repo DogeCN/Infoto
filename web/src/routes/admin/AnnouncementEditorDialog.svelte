@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import EditorDialog from '$lib/components/EditorDialog.svelte';
-  import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
+  import MarkdownEditor, { type EditorPickResult } from '$lib/components/MarkdownEditor.svelte';
   import type { Poll } from '$shared/types';
   import { probeSourceSize, type UploadRow } from '../../transcode/pipeline';
   import { isImageFile } from '../../core/markdown';
@@ -83,9 +83,17 @@
     return { title, contentMd };
   }
 
-  async function pickFile() {
+  /**
+   * Pick and upload one or more files. The batch runs sequentially through the single
+   * editor-task slot — the panel row, the cancel button and the retry link all describe
+   * one job at a time — and stops at the first failure or cancel. Files already hosted
+   * return their URLs so the editor can insert them: discarding a completed upload
+   * because a later file failed would silently lose the reader's picks. The outcome
+   * shape (successful urls + the stopping error) is what lets the editor do both.
+   */
+  async function pickFile(): Promise<EditorPickResult> {
     const input = fileInput;
-    if (!input) return null;
+    if (!input) return { urls: [], error: null };
     await new Promise<void>((resolve) => {
       let settled = false;
       let grace: ReturnType<typeof setTimeout> | undefined;
@@ -109,36 +117,50 @@
       window.addEventListener('focus', onFocus);
       input.click();
     });
-    const file = input.files?.[0] ?? null;
+    const files = Array.from(input.files ?? []);
     input.value = '';
-    if (!file || destroyed) return null;
+    if (files.length === 0 || destroyed) return { urls: [], error: null };
     uploadBusy = true;
-    // Show the picked file immediately and measure it, so the preview renders the real
-    // image at its real size from the first frame. Probing and creating the object URL
-    // are both cheap and independent, so neither gates the other.
-    if (!isImageFile(file)) {
+    // Show the first picked image immediately and measure it, so the preview renders the
+    // real image at its real size from the first frame. Probing and creating the object
+    // URL are both cheap and independent, so neither gates the other. A batch previews its
+    // first image only; the rest arrive as hosted URLs line by line.
+    const first = files[0]!;
+    if (!isImageFile(first)) {
       clearPreview();
     } else {
       clearPreview();
-      previewUrl = URL.createObjectURL(file);
-      void probeSourceSize(file).then((size) => {
+      previewUrl = URL.createObjectURL(first);
+      void probeSourceSize(first).then((size) => {
         if (destroyed || !size) return;
         previewSize = size;
       });
     }
+    const urls: string[] = [];
+    let stopping: unknown = null;
     try {
-      return await onPickFile(file);
-    } catch (error) {
-      // A cancel is not a failure: the editor handles AbortError silently.
-      const cancelled = error instanceof DOMException && error.name === 'AbortError';
-      if (!cancelled) console.error('[admin] editor upload failed', error);
-      throw error;
+      for (const file of files) {
+        if (destroyed) break;
+        try {
+          const url = await onPickFile(file);
+          if (url) urls.push(url);
+        } catch (error) {
+          // A cancel is not a failure: the editor handles AbortError silently. Anything
+          // else stops the batch and carries the pipeline's localized copy.
+          stopping = error;
+          const cancelled = error instanceof DOMException && error.name === 'AbortError';
+          if (!cancelled) console.error('[admin] editor upload failed', error);
+          break;
+        }
+      }
     } finally {
       uploadBusy = false;
-      // The hosted URL is now in the markdown, so the local stand-in has done its job.
-      // Leaving it would double-render the same image; clearPreview releases the blob URL.
+      // The hosted URLs are now the editor's to insert, so the local stand-in has done its
+      // job. Leaving it would double-render the same image; clearPreview releases the blob
+      // URL.
       clearPreview();
     }
+    return { urls, error: stopping };
   }
 
   /**
@@ -158,7 +180,7 @@
   }
 </script>
 
-<input bind:this={fileInput} type="file" class="hidden" />
+<input bind:this={fileInput} type="file" multiple class="hidden" />
 
 <EditorDialog
   label={copy.admin.editor.titlePlaceholder}

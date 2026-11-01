@@ -13,6 +13,7 @@ import {
   insertImageAt,
   insertLinkAt,
   insertMediaAt,
+  insertMediaLinesAt,
   insertMarkdownBlock,
   isEmbeddableArtifact,
   isImageFile,
@@ -144,6 +145,34 @@ test('markdown toolbar transforms: transforms Markdown selections and identifies
       insertLinkAt('', 0, 'https://host/a.pdf', 'a]b[c').value,
       '[abc](https://host/a.pdf)',
     );
+  }
+
+  // A multi-file pick lands one line per file — never one concatenated run.
+  {
+    const batch = insertMediaLinesAt('intro', 5, [
+      'https://host/a.png',
+      'https://host/notes.pdf',
+      'https://host/clip.mp4',
+    ]);
+    assert.equal(
+      batch.value,
+      [
+        'intro',
+        '![](https://host/a.png)',
+        '[https://host/notes.pdf](https://host/notes.pdf)',
+        '![](https://host/clip.mp4)',
+      ].join('\n'),
+    );
+    // One hosted URL alone takes the single-file path, so its name still lands as alt.
+    assert.equal(
+      insertMediaAt('', 0, 'https://host/a.png', 'shot').value,
+      '![shot](https://host/a.png)',
+    );
+    // The caret sits after the inserted block, on its own line.
+    assert.equal(batch.selection.start, batch.value.length, 'caret after the whole block');
+    // Inserting mid-document keeps a newline on both sides of the block.
+    const middle = insertMediaLinesAt('ab\ncd', 2, ['https://host/x.png']);
+    assert.equal(middle.value, 'ab\n![](https://host/x.png)\ncd');
   }
 });
 

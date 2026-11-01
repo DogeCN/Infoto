@@ -273,6 +273,17 @@
     content: none;
   }
 
+  /* Both decorative lines — the prose link's underline, the strikethrough's rule — run
+     heavier than the UA's hairline: at prose body size ~1px reads as a rendering artefact
+     rather than a deliberate line. In em, so the weight scales with the text it crosses;
+     the offset keeps the thicker underline clear of descenders. */
+  .prose :where(a, del, s) {
+    text-decoration-thickness: 0.15em;
+  }
+  .prose :where(a) {
+    text-underline-offset: 0.2em;
+  }
+
   /* GitHub's table: text at body size, a full 1px collapsed grid, a heavier header row, zebra
      rows, and horizontal scrolling instead of squeezed columns.
 

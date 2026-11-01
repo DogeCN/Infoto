@@ -1,6 +1,16 @@
+<script module lang="ts">
+  /** What a batch pick resolves to: every URL that finished hosting before the batch
+   *  stopped, plus whatever stopped it (a failure's localized error, a cancel, or null
+   *  when the whole batch — or the dialog itself — was abandoned). */
+  export interface EditorPickResult {
+    urls: string[];
+    error: unknown;
+  }
+</script>
+
 <script lang="ts">
-  // Markdown editor with a toolbar and a split live preview. Picked files go through
-  // the shared upload pipeline; the returned URL is inserted at the remembered
+  // Markdown editor with a toolbar and a split live preview. Picked files — one or many —
+  // go through the shared upload pipeline; every hosted URL is inserted at the remembered
   // caret so edits made while an upload is in flight do not move it.
   import { Bold, Italic, Strikethrough, Quote, Code, List, Link, FileUp } from '@lucide/svelte';
   import { copy } from '$lib/i18n.svelte';
@@ -10,6 +20,7 @@
   import type { Poll } from '$shared/types';
   import {
     insertMediaAt,
+    insertMediaLinesAt,
     insertMarkdownBlock,
     mapOffsetThroughEdit,
     prefixSelectedLines,
@@ -22,8 +33,8 @@
   interface Props {
     /** Two-way bound by the caller, which is the one place the draft text lives. */
     value: string;
-    /** Pick and upload a file; returns the hosted URL (via /upload proxy). */
-    onPickFile?: () => Promise<string | null>;
+    /** Open the picker and upload what was chosen; resolves when the batch has stopped. */
+    onPickFile?: () => Promise<EditorPickResult>;
     /** Current language's poll registry powers embedded live previews. */
     polls?: Poll[];
     selfId?: number;
@@ -110,31 +121,37 @@
   }
 
   /**
-   * Run one editor upload from whichever path started it — a fresh pick or a retry. The caret
-   * is captured before the transfer, the returned URL is inserted at it, and the error/uploading
-   * state is owned in one place so the two paths cannot drift.
+   * Run one editor upload batch from whichever path started it — a fresh pick or a retry.
+   * The caret is captured before the transfer, every hosted URL is inserted at it (one line
+   * per file), and the error/uploading state is owned in one place so the two paths cannot
+   * drift. A batch that stopped on a later file still inserts what already landed.
    */
-  async function runUpload(start: () => Promise<string | null>): Promise<void> {
+  async function runUpload(start: () => Promise<EditorPickResult>): Promise<void> {
     fileError = '';
     failedJobId = null;
     fileUploading = true;
     pendingImageCaret = selection().start;
     try {
-      const url = await start();
-      if (url) {
+      const { urls, error } = await start();
+      if (urls.length > 0) {
         const caret = pendingImageCaret ?? selection().start;
         // Media renders in place; anything else becomes a link to the hosted file.
         // No alt text: the browser paints alt as broken-image text while the image
         // decodes, so a file name there reads as an ugly caption over the placeholder.
-        applyTransform(insertMediaAt(value, caret, url));
+        applyTransform(
+          urls.length === 1
+            ? insertMediaAt(value, caret, urls[0]!)
+            : insertMediaLinesAt(value, caret, urls),
+        );
       }
-    } catch (error) {
-      // A deliberate cancel is not a failure: no error line, no message under the editor.
-      if (isCancelled(error)) return;
-      console.error('[editor] upload failed', error);
-      // The pipeline already translates engine error codes into localized copy.
-      fileError =
-        error instanceof Error && error.message ? error.message : copy.editor.fileUploadFailed;
+      if (error !== null && error !== undefined) {
+        // A deliberate cancel is not a failure: no error line, no message under the editor.
+        if (isCancelled(error)) return;
+        console.error('[editor] upload failed', error);
+        // The pipeline already translates engine error codes into localized copy.
+        fileError =
+          error instanceof Error && error.message ? error.message : copy.editor.fileUploadFailed;
+      }
     } finally {
       fileUploading = false;
       pendingImageCaret = null;
@@ -225,7 +242,15 @@
             onclick={() => {
               const id = failedJobId;
               if (!id || !onRetryUpload) return;
-              void runUpload(() => onRetryUpload(id));
+              // The retry re-runs one job; its outcome joins the batch shape so both
+              // paths report through the same channel.
+              void runUpload(async () => {
+                try {
+                  return { urls: [await onRetryUpload(id)], error: null };
+                } catch (error) {
+                  return { urls: [], error };
+                }
+              });
             }}>{copy.editor.retry}</button
           >
         {/if}

@@ -376,6 +376,26 @@ export function insertMediaAt(
     : insertLinkAt(value, position, url, fileName);
 }
 
+/** One hosted URL's Markdown line — the same embed-or-link choice `insertMediaAt` makes.
+ *  Embeds carry no alt: the browser paints alt as broken-image text while the image decodes
+ *  (the single-file insert has the same rule). A link's label is its URL, brackets stripped. */
+export function embedLineFor(url: string): string {
+  return isEmbeddableArtifact(url) ? `![](${url})` : `[${url.replace(/[[\]]/g, '')}](${url})`;
+}
+
+/** Insert a batch of hosted files as **one line per file**, as a single block: a picked set
+ *  must never concatenate into one run of media. The caret moves past the whole block. */
+export function insertMediaLinesAt(value: string, position: number, urls: string[]): TextTransform {
+  const safePosition = Math.max(0, Math.min(value.length, position));
+  const leadingBreak = safePosition > 0 && value[safePosition - 1] !== '\n' ? '\n' : '';
+  const trailingBreak = safePosition < value.length && value[safePosition] !== '\n' ? '\n' : '';
+  const inserted = leadingBreak + urls.map(embedLineFor).join('\n') + trailingBreak;
+  return {
+    value: value.slice(0, safePosition) + inserted + value.slice(safePosition),
+    selection: { start: safePosition + inserted.length, end: safePosition + inserted.length },
+  };
+}
+
 // Poll references are stable IDs owned by the poll manager, never poll content stored in Markdown.
 export type MarkdownPollPart =
   { type: 'markdown'; content: string } | { type: 'poll'; locale: LocaleCode; id: number };
