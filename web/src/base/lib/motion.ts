@@ -14,7 +14,7 @@
 import { clamp01 } from './num.ts';
 
 /** `enter` runs when something appears, `exit` when it leaves, `spring` for bouncy motion. */
-export type MotionPhase = 'enter' | 'exit' | 'spring' | 'reflow';
+export type MotionPhase = 'enter' | 'exit' | 'spring';
 
 type MotionProperty = `--duration-${MotionPhase}` | `--ease-${MotionPhase}`;
 
@@ -28,13 +28,11 @@ export const FALLBACK_MS: Record<MotionPhase, number> = {
   enter: 280,
   exit: 160,
   spring: 420,
-  reflow: 450,
 };
 export const FALLBACK_EASE: Record<MotionPhase, string> = {
   enter: 'cubic-bezier(0.2, 0, 0, 1)',
   exit: 'cubic-bezier(0.3, 0, 0.8, 0.15)',
   spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
-  reflow: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
 };
 
 /** Resolve one motion custom property, falling back to its declared value. */
@@ -115,16 +113,3 @@ export const countHop = {
 
 /** The exit hop mirrors the entry hop: the outgoing number leaves against the incoming one. */
 export const countHopOut = { ...countHop, y: -countHop.y };
-
-/**
- * How long after a layout commit a card may still remount and glide from the box it last
- * rendered at, rather than appearing at the new one.
- *
- * Evaluated once at module load, not per card: `motionMs` reads a custom property through
- * `getComputedStyle`, and a waterfall mounts and unmounts cards on every scroll step. The
- * value comes from the token so it cannot drift from the duration it brackets; hard-coding
- * the pair here is the mistake ADR 0015 records. The margin is the frame in
- * which a remount lands after the commit; with no document (unit tests) it degrades to the
- * asserted fallback rather than to a second literal.
- */
-export const reflowFlipWindowMs = motionMs('reflow') + 30;

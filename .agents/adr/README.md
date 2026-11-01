@@ -70,3 +70,5 @@ an already-cited ADR breaks every reference to it.
 | [0025](0025-one-record-per-photo.md)                       | One Durable Record Per Photo, Keyed by sha256                                           | Accepted                   |
 | [0026](0026-websocket-sync-offline-queue.md)               | Album Sync Moves to a WebSocket With an Offline Op Queue                                | Accepted                   |
 | [0027](0027-markdown-gfm-and-scoped-html.md)               | Markdown Is CommonMark + GFM, With Raw HTML Scoped Per Surface                          | Accepted                   |
+| [0028](0028-remove-waterfall-card-reflow-transition.md)    | The Waterfall Card Carries No Positional Transition                                     | Accepted                   |
+| [0029](0029-service-worker-caches-cross-origin-media.md)   | The Service Worker Caches Cross-Origin Media for Offline Browsing                       | Accepted                   |

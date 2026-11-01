@@ -4,7 +4,6 @@
     computeLayoutChunked,
     orderByMain,
     windowIndices,
-    type GeomStamp,
     type LayoutBox,
     type ScrollDir,
     type FillStrategy,
@@ -224,10 +223,6 @@
   let totalW = $state(0);
   let order = $state<number[]>([]);
   let layoutReady = $state(false);
-  /** Last committed box per card id, kept across virtualizer unmounts for FLIP reflows. */
-  const geomMemory = new Map<number, GeomStamp>();
-  /** performance.now() of the latest layout commit, gating the FLIP remount window. */
-  let reflowAt = $state(0);
   let currentAbort: AbortController | null = null;
   let layoutTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -333,19 +328,12 @@
           const sorted = orderByMain(result.boxes, d);
           requestAnimationFrame(() => {
             if (!controller.signal.aborted) {
-              reflowAt = performance.now();
               boxes = result.boxes;
               totalH = result.totalH;
               totalW = result.totalW;
               maxExtent = result.boxes.reduce((m, bx) => Math.max(m, d === 'v' ? bx.h : bx.w), 0);
               order = sorted;
               layoutReady = true;
-              // Drop memory for removed cards; unmounted survivors keep their stale box
-              // until they remount, which is exactly the FLIP source they need.
-              const live = new Set(result.boxes.map((bx) => bx.id));
-              for (const id of geomMemory.keys()) {
-                if (!live.has(id)) geomMemory.delete(id);
-              }
             }
           });
         }
@@ -392,54 +380,15 @@
             ),
           )
         : new Set(indices);
-    // The cards the *live viewport* can see, with no lookahead. This is the one gate for
-    // smooth positional motion: a card on screen may glide between layouts, and a card
-    // outside it must not travel across the page — it appears where it belongs and only
-    // fades in. Derived from the measured viewport and the live scroll offset (never a
-    // breakpoint), so it follows exactly what is visible at the moment of the change.
-    const onScreen =
-      viewportSize > 0
-        ? new Set(windowIndices(boxes, order, dir, scrollPos, scrollPos + viewportSize, maxExtent))
-        : new Set<number>();
     // `boxes` is replaced on a debounce, while `allPhotos` changes the moment a sync
     // snapshot lands, so for a frame a laid-out box can name a photo that is already gone.
     // Rendering one handed PhotoCard an undefined `photo`, and its media load/error handlers
     // are dispatched against the recorded handler even after teardown -- that read threw on
     // `$$props.photo.url`. Dropping those boxes keeps the two structures in step.
-    // A card may glide only when it stays on screen AND its old and new positions are in
-    // neighbouring columns. A longer jump — a re-sort, a filter, a column-count change — is
-    // not a move the eye can follow: the card would travel across the page past cards that
-    // are not moving. Those appear in their final place and fade in instead.
-    const step = columnStep();
     return indices
       .filter((i) => photoMap.has(boxes[i].id))
-      .map((i) => {
-        const box = boxes[i];
-        const from = geomMemory.get(box.id);
-        const columns = step > 0 && from ? Math.abs(from.x - box.x) / step : 0;
-        return { box, index: i, near: near.has(i), smooth: onScreen.has(i) && columns <= 1.5 };
-      });
+      .map((i) => ({ box: boxes[i], index: i, near: near.has(i) }));
   });
-
-  /**
-   * The horizontal distance between adjacent columns, measured from the committed layout.
-   *
-   * Derived rather than declared: the column width is a function of the viewport, the zoom and
-   * the photo count, and a second formula for it here would drift from the layout the first
-   * time either changed. The smallest gap between two distinct x values IS the step, and a
-   * single-column album simply has none (0), which disables gliding — correct, because with
-   * one column nothing moves sideways.
-   */
-  function columnStep(): number {
-    let step = Infinity;
-    for (let a = 0; a < boxes.length; a += 1) {
-      for (let b = 0; b < boxes.length; b += 1) {
-        const other = boxes[b];
-        if (other.x > boxes[a].x) step = Math.min(step, other.x - boxes[a].x);
-      }
-    }
-    return Number.isFinite(step) ? step : 0;
-  }
 
   // Marquee hits: computed inside onMove (marqueeRect is only used for rendering)
 
@@ -694,21 +643,18 @@
         ? `${totalH}px`
         : `calc(100% - ${padTop + padX}px)`}"
     >
-      {#each visibleBoxes as { box, near, smooth } (box.id)}
+      {#each visibleBoxes as { box, near } (box.id)}
         {@const photo = photoMap.get(box.id)}
         {#if photo}
           <PhotoCard
             {photo}
             {selfId}
             mediaNear={near}
-            smoothMotion={smooth}
             autoplay={near && autoplayBoxIds.has(box.id)}
             x={box.x}
             y={box.y}
             width={box.w}
             height={box.h}
-            motionMemory={geomMemory}
-            {reflowAt}
             overlay={overlays.get(photo.id)}
             onRetryUpload={() => onRetryUpload?.(photo)}
             onDismissUpload={() => onDismissUpload?.(photo)}

@@ -1,13 +1,10 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy } from 'svelte';
   import type { Photo } from '$shared/types';
   import { copy } from '$lib/i18n.svelte';
   import { fmt, plural } from '$shared/copy';
-  import { reflowFlipWindowMs } from '$base/lib/motion';
-  import { prefersReducedMotion } from '$base/lib/device.svelte';
   import TooltipIconButton from './TooltipIconButton.svelte';
   import SiteIcon from './SiteIcon.svelte';
-  import type { GeomStamp } from '$base/lib/layout';
   import type { UploadOverlay } from '../../core/pending';
   import { hasDecoded, markDecoded, forgetDecoded } from '../../state/decode.svelte';
   import {
@@ -35,24 +32,12 @@
     y?: number;
     width: number;
     height: number;
-    /** Cross-mount geometry memory, so a card the virtualizer had unmounted can glide from
-     *  the box it last rendered at instead of appearing at the new one. */
-    motionMemory?: Map<number, GeomStamp>;
-    /** performance.now() of the latest layout commit; a remount inside the flip window
-     *  (derived from `--duration-reflow`) glides, a later one appears in place. */
-    reflowAt?: number;
     /** Upload curtain overlay; see `UploadOverlay` in `core/pending`. */
     overlay?: UploadOverlay;
     /** Whether the card is close enough to the viewport to hold decoded media. The
      *  virtualizer's buffer band renders cards before they are visible; keeping their
      *  images out of the DOM is what bounds decoded-image memory on a long album. */
     mediaNear?: boolean;
-    /** The one condition for smooth positional motion: the card is on screen AND its old and
-     *  new positions are in neighbouring columns. A longer jump is not a move the eye can
-     *  follow, so the card appears in its final place and fades in rather than travelling
-     *  across the page past cards that are standing still. Decided by `WaterfallLayout` from
-     *  the measured viewport and the committed geometry. */
-    smoothMotion?: boolean;
     /** Whether this card is in the autoplay band (the viewport's visible top row); the
      *  open-sound holder always keeps its player regardless of the band. */
     autoplay?: boolean;
@@ -72,11 +57,8 @@
     y = 0,
     width,
     height,
-    motionMemory,
-    reflowAt = 0,
     overlay,
     mediaNear = true,
-    smoothMotion = true,
     autoplay: autoplayProp = true,
     selected = false,
     multiMode = false,
@@ -105,69 +87,6 @@
    *  is what plays it. */
   let volumeMuted = $derived(!isAudioMediaOpen(photo.url));
   let loadFailed = $state(false);
-  // The card sits at 0,0 and moves purely by transform; a CSS transition interpolates
-  // between reflows and retargets mid-flight, so continuous reflows (a dragged slider)
-  // glide instead of restart-jumping. `placed` gates the transition until the first box
-  // has landed, so a mount never slides in from the origin.
-  let placed = $state(false);
-  const reducedMotion = prefersReducedMotion();
-  let fromBox: GeomStamp | null = $state(null);
-  // Mount-time snapshot, on purpose. This sits outside every `$effect` in the component, so
-  // no later prop update can retro-fire the flip — a remounting card either glides from the
-  // box it last rendered at, or appears in place. `untrack` is what marks the props below as
-  // deliberately read once: Svelte otherwise warns that they only capture their initial
-  // value, which is exactly the intent, and `--fail-on-warnings` would fail the build.
-  untrack(() => {
-    const remembered =
-      motionMemory &&
-      !reducedMotion &&
-      smoothMotion &&
-      reflowAt > 0 &&
-      performance.now() - reflowAt <= reflowFlipWindowMs
-        ? motionMemory.get(photo.id)
-        : undefined;
-    if (
-      remembered &&
-      (remembered.x !== x ||
-        remembered.y !== y ||
-        remembered.w !== width ||
-        remembered.h !== height)
-    ) {
-      fromBox = remembered;
-    }
-  });
-  let cancelFlip: (() => void) | undefined;
-  onDestroy(() => cancelFlip?.());
-  let flipArmed = false;
-  $effect(() => {
-    void x;
-    void y;
-    void width;
-    void height;
-    void fromBox;
-    if (fromBox) {
-      if (!flipArmed) {
-        flipArmed = true;
-        // Frame A: enable the transition while the inline style still holds the old box;
-        // frame B: retarget to the new box. Both must be separate painted commits or the
-        // browser sees transition:none in the before-change style and skips the animation.
-        let raf2 = 0;
-        const raf1 = requestAnimationFrame(() => {
-          placed = true;
-          raf2 = requestAnimationFrame(() => {
-            fromBox = null;
-          });
-        });
-        cancelFlip = () => {
-          cancelAnimationFrame(raf1);
-          cancelAnimationFrame(raf2);
-        };
-      }
-      return;
-    }
-    if (!placed) placed = true;
-    motionMemory?.set(photo.id, { x, y, w: width, h: height });
-  });
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
   // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
   // every sync keeps the loaded image visible; the browser caches decoding by URL itself.
@@ -305,14 +224,15 @@
 
 <!-- The border width stays constant: `border-width` is not in the transition list, so a
      selected `border-2` would snap 1px while the colour cross-fades. Only colour moves. -->
+<!-- The card's box arrives as a prop and is written straight into the inline style: a reflow
+     places it instantly, with no positional transition. The transition below carries only
+     hover/selection state (border colour, opacity), never geometry. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="absolute left-0 top-0 overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border {selected
+  class="card-state absolute left-0 top-0 overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border {selected
     ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
-  class:card-motion={placed && smoothMotion}
-  style="transform: translate3d({fromBox?.x ?? x}px, {fromBox?.y ?? y}px, 0); width: {fromBox?.w ??
-    width}px; height: {fromBox?.h ?? height}px; transform-origin: top left"
+  style="transform: translate3d({x}px, {y}px, 0); width: {width}px; height: {height}px; transform-origin: top left"
   role="button"
   aria-label={copy.lightbox.preview}
   aria-pressed={multiMode ? selected : undefined}
@@ -550,20 +470,17 @@
 </div>
 
 <style>
-  /* Demo-standard reflow motion: the layout writes transform/width/height and this
-     transition interpolates, so a reflow glides and retargets mid-flight instead of
-     restart-jumping. border-color/opacity ride along because a Tailwind transition
-     utility would be overridden by this unlayered shorthand. */
-  .card-motion {
+  /* The only card transition is the hover/selection border cross-fade; geometry is never
+     transitioned — the layout writes transform/width/height and the card lands where the
+     last commit put it. A Tailwind transition utility would be overridden by this
+     unlayered shorthand, which is why the pair is declared here instead of in the class. */
+  .card-state {
     transition:
-      transform var(--duration-reflow) var(--ease-reflow),
-      width var(--duration-reflow) var(--ease-reflow),
-      height var(--duration-reflow) var(--ease-reflow),
       border-color var(--duration-exit) var(--ease-exit),
       opacity var(--duration-exit) var(--ease-exit);
   }
   @media (prefers-reduced-motion: reduce) {
-    .card-motion {
+    .card-state {
       transition: none;
     }
   }

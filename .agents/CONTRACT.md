@@ -59,8 +59,6 @@ this table.
 | `--duration-enter`             | `280ms`                             | Entering motion                                          |
 | `--duration-exit`              | `160ms`                             | Leaving motion                                           |
 | `--duration-spring`            | `420ms`                             | Bouncy motion                                            |
-| `--ease-reflow`                | `cubic-bezier(0.22, 0.61, 0.36, 1)` | Waterfall box retarget — no overshoot                    |
-| `--duration-reflow`            | `450ms`                             | Waterfall box retarget — no overshoot                    |
 | `--shadow-md`                  | `0 4px 12px rgba(0, 0, 0, 0.4)`     | Light popover: toast, dropdown                           |
 | `--shadow-lg`                  | `0 20px 50px rgba(0, 0, 0, 0.6)`    | Heavy popover: migrate menu, upload panel                |
 | `--shadow-lift`                | `0 -8px 24px rgba(0, 0, 0, 0.45)`   | A bar pinned to the bottom edge                          |
@@ -74,10 +72,10 @@ a `0s` duration is interpolated **discretely**, so it resolves to `hidden` at t=
 disappears before its exit transform can paint — the exit slide silently did not exist while the
 class read as if it did.
 
-**Reflow is its own phase and must not be `spring`.** The waterfall writes
-`transform` / `width` / `height` and lets a CSS transition interpolate, so an interrupted
-reflow retargets mid-flight instead of restarting; `spring`'s overshoot is wrong for a box
-that has to land on a computed size.
+**There is no reflow phase.** The waterfall card carries no positional transition: the layout
+writes `transform` / `width` / `height` and the card lands where the last commit put it. The
+`--duration-reflow` / `--ease-reflow` pair and the FLIP machinery that consumed them were
+removed on 2026-11-01 (ADR 0028, ⚠️ §4.4).
 
 ### 1.2 Token discipline
 
@@ -333,19 +331,18 @@ Back-filled from the commit history. Tagged sections are not yet written.
     media straight into the fresh element from the browser's HTTP cache instead of flashing
     the skeleton (the element still unmounts, releasing the decode). The mute state is not
     per-instance at all: it is the page's one open sound, which an unmount releases through
-    `releaseAudio` only when that surface owned it. Geometry is deliberately carried across
-    the unmount; ⚠️ §4.4 is the model, and it is the reason a remount can glide at all.
-  - **Smooth positional motion belongs to a move the eye can follow: on screen, and between
-    neighbouring columns.** A card may glide between layouts (the `--duration-reflow` /
-    `--ease-reflow` retarget, and a remount's FLIP from its remembered box) only when it is
-    inside the live viewport **and** its previous and next positions are in the same or
-    adjacent columns. A longer jump — a re-sort, a filter, a column-count change — is not a move
-    anyone can follow: the card would travel across the page past cards that are standing
-    still, so it appears in its final place and **fades in only**. Both inputs are measured, not
-    declared: `WaterfallLayout` derives the viewport membership from the live scroll offset and
-    the column step from the smallest gap between two committed x values (a single-column album
-    has no step, which correctly disables sideways gliding). That single `smoothMotion` flag
-    gates both the transition class and the remount FLIP; there is no second rule.
+    `releaseAudio` only when that surface owned it. Geometry is not carried across the
+    unmount at all: a remount paints at its committed box. ⚠️ §4.4 records why the
+    carried-geometry FLIP was removed, not just why it was built.
+  - **The card carries no positional motion.** A reflow — a scroll-remount, a slider drag,
+    a filter, a column-count change — places the card instantly at its committed box.
+    There is no glide and no remembered start frame: positional interpolation of
+    `transform` / `width` / `height` across the virtualizer's unmounts was removed on
+    2026-11-01 (ADR 0028; the rule that used to gate it — on screen **and** between
+    neighbouring columns, both measured, never declared — went with it). What the card
+    does transition is state: the hover/selection `border-color` and `opacity` cross-fade
+    on the exit pair, and media fades in on the enter pair. A card that appears where the
+    last commit put it is the contract; a future re-introduction must clear §4.4 first.
   - **Media is loaded in a narrower band than the render window.** A card renders its `<img>` /
     `<video>` only while its box sits within the viewport plus `MEDIA_LOAD_LOOKAHEAD = 0.4` of a
     viewport on each side; the rest of the buffer band paints the skeleton with the media element
@@ -368,10 +365,10 @@ Back-filled from the commit history. Tagged sections are not yet written.
     photo costs ~48 MB of decoded bitmap wherever it is shown. The band bounds _how many_ are
     decoded, not _how big_ each one is. A future fix is a smaller stored rendition (cap the
     artifact's long edge at transcode time), and it is a product decision, not a render tweak.
-  - **Reflow rides `transform` / `width` / `height` on `--duration-reflow` / `--ease-reflow`**
-    and nothing else. `border-color` and `opacity` stay on the exit pair — they are hover and
-    selection state, not geometry. A card's start box comes from `WaterfallLayout`'s
-    `geomMemory`, never from its own state.
+  - **Nothing on the card rides a geometry transition.** `transform` / `width` / `height` are
+    written straight from the committed box. `border-color` and `opacity` stay on the exit
+    pair — they are hover and selection state, not geometry — and are the only legs the
+    card declares.
   - **Two failure kinds, two outcomes.** A **transcode** failure leaves no card at all: the
     encoder aborts its partial artifact, the source is a Blob that died with the page, and the
     job's photo record is deleted — so there is nothing to preview and nothing for a retry to
@@ -628,10 +625,10 @@ isRotated(rot)`), so any zoom or rotation turns a drag into a pan instead of a s
     keeping the pan it started from, and — the two orders that decide the hold rule — that a
     `Ctrl` rotate keeps its position when **only the mouse** is released, and that releasing the
     mouse **before** `Ctrl` still snaps the rotation and still settles once the last hold ends.
-    `waterfallMotion.spec.ts` covers the in-viewport half of the reflow rule (an off-screen card
-    carries no positional transition). Still unasserted: wheel easing, swipe, key bindings, the
-    column-adjacency half of the motion gate (it needs a controlled column-count change), and the
-    sizing formula.
+    Nothing asserts the waterfall card's positional behaviour, and nothing should until it has
+    any: the card lands where the layout commit put it (ADR 0028, ⚠️ §4.4); the e2e spec that
+    used to cover the removed glide (`waterfallMotion.spec.ts`) was deleted with the feature.
+    Still unasserted: wheel easing, swipe, key bindings, and the sizing formula.
 - **Sidebar / overlay stack.** `base/lib/overlay.ts` is the **only** owner of focus trapping,
   Escape and scroll locking. `OverlaySidebar`, `ActionSheet` and `Lightbox` all use it.
   - The stack is last-in-first-out; a handler acts only when its own node is on top.
@@ -1276,7 +1273,7 @@ icon width as labelled width and flapped forever at the collapse threshold.
 one state means the input is broken, not that the predicate needs tuning. Patch the
 measurement, never the threshold.
 
-### 4.4 The waterfall reflow has been rewritten four times, and the unmount model is settled
+### 4.4 The waterfall reflow was rewritten four times, and then removed outright
 
 `a62c833` fixed the FLIP start frame, `ca1b082` abandoned WAAPI for CSS transitions so an
 interrupted reflow retargets instead of restarting, a third approach replaced the animation
@@ -1286,31 +1283,28 @@ The model gap behind all of them: **the virtualizer unmounts off-screen cards, s
 remounts has no previous box to glide from.** A card cannot remember its own old box — the
 component holding it was destroyed. So the memory has to outlive the component.
 
-**Resolved 2026-10-04.** `WaterfallLayout` owns it; the card only reads it:
+**Resolved 2026-10-04, removed 2026-11-01 (ADR 0028).** The settled model was:
+`WaterfallLayout` owned a `geomMemory: Map<photoId, GeomStamp>`, stamped `reflowAt` at commit
+time inside the same `requestAnimationFrame` that swapped the boxes, and a card mounting
+within `reflowFlipWindowMs` (derived from `--duration-reflow`) of that stamp painted the
+**remembered** box, armed the transition one rAF, and retargeted the next — three states,
+not two. **All of it is gone.** The user decision was to delete the smooth positional
+transition entirely: no geometry legs, no start-frame memory, no gating flag, no reflow
+token pair. A reflow places every card instantly.
 
-- `geomMemory: Map<photoId, GeomStamp>` is a plain, non-reactive map, so writing to it during
-  a commit re-renders nothing. Every mounted card writes its own box from its `$effect`, and
-  every layout commit prunes ids no longer in `result.boxes`.
-- `reflowAt` is `performance.now()` taken inside the same `requestAnimationFrame` that commits
-  the new boxes — stamped by the commit, not by when a card happened to mount.
-- A card mounting within `reflowFlipWindowMs` of that stamp, whose remembered box differs from
-  the one it was handed, paints at the **remembered** box, enables the transition, and only
-  then retargets. Three states, not two; the middle one is the whole point.
-- Those two steps are **two separate `requestAnimationFrame`s.** Collapsed into one, the
-  `transition: none` lands in the before-change style and the browser skips the animation
-  outright instead of running it for a frame.
-- A mount outside the window, with no remembered box, or under `prefers-reduced-motion`
-  appears in place.
+What the history still owns — and why this entry stays:
 
-**The window derives from the token, and that is the second half of the lesson.** It was first
-written as a bare `480` — `ca1b082`'s mistake again, inside the same reflow, one commit after
-ADR 0015 was written to name it. It now comes from `--duration-reflow` via
-`reflowFlipWindowMs` (`base/lib/motion.ts`), and `motion.test.ts` asserts only that the window
-outlasts the animation it brackets. Re-stamping the window from the commit time would also be
-wrong: it answers _how long a card may be absent_, not when the layout happened.
+- The unmount model is the reason a naive re-introduction fails. A glide across
+  scroll-out needs memory that outlives the component; every previous rewrite that ignored
+  that produced a half-finished fly-in.
+- If the motion is ever re-armed, the two **separate** rAFs rule still applies: collapsed
+  into one, the `transition: none` lands in the before-change style and the browser skips
+  the animation outright.
+- And the window must again derive from a token, never a bare number — the `480` in
+  `ca1b082`, restated one commit after ADR 0015 was written to name exactly that mistake.
 
-§3's reflow rules are written from observation, not reasoning. If a rewrite is not measured on
-screen first, it does not belong there.
+§3's motion rules are written from observation, not reasoning. If a rewrite is not measured
+on screen first, it does not belong there.
 
 ### 4.5 A "locator hint" is not a change
 
@@ -1335,14 +1329,14 @@ same declaration block tokenized its `border-color` and `opacity` legs and left 
 new ones literal, which is the usual shape of a bypass: tokenize what you were looking at,
 keep writing literals for what you just added. The gate in §5 now rejects it.
 
-It now has its own phase, `--duration-reflow` / `--ease-reflow`, carrying exactly the
-literal's value so nothing about the motion changed. It is **not** `spring`: that overshoots,
-and a box retarget must not.
+It was later given its own phase, `--duration-reflow` / `--ease-reflow`, carrying exactly the
+literal's value so nothing about the motion changed; that phase itself was removed on
+2026-11-01 with the whole positional transition (ADR 0028, ⚠️ §4.4).
 
-Both open questions it left are now written down: the properties that ride the phase are
+The bypass lesson stands on its own: the properties the phase had carried were
 `transform` / `width` / `height` (§3, waterfall card), and the unmount/remount model that
-supplies the start frame is ⚠️ §4.4. The token bypass itself is what
-`designTokens.test.ts` now rejects.
+supplied the start frame is ⚠️ §4.4. The token bypass is still what
+`designTokens.test.ts` rejects — the gate outlives the feature that provoked it.
 
 ### 4.8 The two error pages were different constructions; they now share one definition
 
@@ -1622,9 +1616,8 @@ The parts of this contract that are asserted by `npm test`:
 | Every Worker route is in `run_worker_first`, and the SPA shell is not (§4.15)           | `src/worker/assets-routing.test.ts`                                                |
 | No `transition` in `web/src` carries a literal duration or easing curve                 | `web/tests/unit/designTokens.test.ts`                                              |
 | `GLITCH_PALETTE` equals the matching `@theme` colours                                   | `web/tests/unit/designTokens.test.ts`                                              |
-| The reflow flip window outlasts the reflow duration it brackets                         | `web/tests/unit/motion.test.ts`                                                    |
 | Lightbox gesture geometry: fit recentring, pan gate, anchor, pinch, tap/swipe/click     | `web/tests/unit/lightboxEngine.test.ts`                                            |
-| Hold/release rule and in-viewport reflow motion (both release orders, off-screen inert) | `web/tests/e2e/lightbox-gestures.spec.ts`, `web/tests/e2e/waterfallMotion.spec.ts` |
+| Hold/release rule (both release orders)                                                 | `web/tests/e2e/lightbox-gestures.spec.ts`                                          |
 | The admin copy confirmation is one component, used by every row that copies             | `web/src/routes/admin/CopyButton.svelte` (no unit test: it is DOM)                 |
 | The upload's silence budget ends where the response budget begins                       | `web/tests/unit/uploadClient.test.ts`                                              |
 | The upload leg's ceiling holds independently of the image pool                          | `web/tests/unit/uploadPool.test.ts`                                                |
@@ -1693,9 +1686,9 @@ Known gaps, in the order they should be closed:
    regression net, and it is the only category this contract cannot express as an assertion.
 3. `pillMeasure.ts` has no unit coverage; `topbarFit.ts` has three cases including one for
    flapping (and the four-density climb, `icon` included), which is why it is the one that
-   did not regress. The waterfall reflow has exactly
-   one assertion — that the flip window brackets its own animation — and none at all for the
-   layout itself, because that is DOM timing and belongs in the e2e suite.
+   did not regress. The waterfall layout has no assertion
+   at all, because that is DOM timing and belongs in the e2e suite — and nothing of the
+   removed card glide survives to be asserted (ADR 0028).
 4. **Two people can edit this file at once.** A parallel session rewrote §3's error-page entry
    and added ADR 0015 while this section was being written, and separately rewrote
    `Lightbox.svelte` and added `base/lib/lightboxEngine.ts` + its test while the first pass was
