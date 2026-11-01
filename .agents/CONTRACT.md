@@ -1135,15 +1135,19 @@ before deadline` / `no response before deadline`).
     body over `MAX_TEXT_LENGTH` `413 too_large`, and a malformed body `400`. Local dev may set
     `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` in `.dev.vars` to post to the REST endpoint
     instead, because the local binding's remote edge path is unreachable on some networks;
-    production has neither variable, so the binding is the only transport there. **A model output
-    with the wrong shape is retried once**, because Workers AI returns a well-formed JSON object
-    with the wrong number of entries intermittently for the very same input — one click translated
-    an announcement and the next rejected it with `texts_1_of_2`, and a coin-flip button is not
-    a translation feature. A rejection retried this way is named `draft_mismatch:<what>`
-    (empty title, wrong entry count, non-JSON reply); a deterministic rejection — an overlong
-    draft — is plain `invalid_response` and is not retried, so a real answer never costs a second
-    call. The name reaches the log through the route's `console.error`, which is what makes a
-    502 diagnosable at all. Fenced code, blank
+    production has neither variable, so the binding is the only transport there. **Announcement segments travel as KEYED objects, never as an array.** An array of length N
+    asks the model to keep a count, and translating invites splitting one paragraph into two
+    sentences — so it answered five entries for four segments (`texts_5_of_4`) for the same input
+    it had just translated. The schema now lists one REQUIRED key per segment with
+    `additionalProperties: false`, so an extra entry has nowhere to land and the code reads only
+    `0…n-1`: over-counting becomes harmless where an array length made it fatal. Only a missing
+    key can still fail, and that one cannot be invented. **A wrong shape is retried once** — a
+    coin-flip button is not a translation feature — and a rejection names itself
+    (`draft_mismatch:text_missing_2`, `:not_json`, `:title_empty`). A deterministic rejection —
+    an overlong draft — stays plain `invalid_response` and is NOT retried, so a real answer never
+    costs a second call. The name reaches the log through the route's `console.error`, which is
+    what makes a 502 diagnosable at all. Poll options stay an array: they are short atomic labels,
+    nothing invites splitting them, and the count is the load-bearing fact. Fenced code, blank
     lines and whole-line `::poll:` references pass through untranslated (ADR 0021). Its limits
     are the shared `MAX_TEXT_LENGTH` / `MAX_POLL_OPTIONS` / `MAX_POLL_OPTION_CHARS` in
     `shared/types.ts`; `shared/poll.ts#parsePollOptions` is the one poll-option rule and

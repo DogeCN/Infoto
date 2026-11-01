@@ -33,7 +33,7 @@ test('translate: one structured call translates an announcement and reassembles 
     calls += 1;
     messages = nextMessages;
     schema = nextSchema;
-    return JSON.stringify({ title: 'Title2', texts: ['Intro2', 'Closing2'] });
+    return JSON.stringify({ title: 'Title2', texts: { 0: 'Intro2', 1: 'Closing2' } });
   };
   const draft = await structuredTranslator(runner)({
     kind: 'announcement',
@@ -49,7 +49,7 @@ test('translate: one structured call translates an announcement and reassembles 
   assert.equal(draft.contentMd, 'Intro2\n\n```\ncode\n```\n\n::poll:en-US:1\nClosing2');
   assert.deepEqual(JSON.parse(messages[1]!.content), {
     title: 'Title',
-    texts: ['Intro', 'Closing'],
+    texts: { 0: 'Intro', 1: 'Closing' },
   });
   assert.equal(schema.type, 'object');
 });
@@ -73,17 +73,17 @@ test('translate: one structured call translates all poll options in order', asyn
 
 test('translate: malformed or incomplete structured output is rejected', async () => {
   await assert.rejects(
-    structuredTranslator(jsonRunner({ title: 'T', texts: ['only one'] }))({
+    structuredTranslator(jsonRunner({ title: 'T', texts: { 0: 'only one' } }))({
       kind: 'announcement',
       sourceLocale: 'en-US',
       targetLocale: 'zh-CN',
       title: 'T',
       contentMd: 'A\n\nB',
     }),
-    /draft_mismatch:texts_1_of_2/,
+    /draft_mismatch:text_missing_1/,
   );
   await assert.rejects(
-    structuredTranslator(jsonRunner({ title: 'T', texts: ['A', ''] }))({
+    structuredTranslator(jsonRunner({ title: 'T', texts: { 0: 'A', 1: '' } }))({
       kind: 'announcement',
       sourceLocale: 'en-US',
       targetLocale: 'zh-CN',
@@ -129,7 +129,7 @@ test('translate: a draft the album would refuse is rejected, not returned', asyn
   );
   // Same for an announcement draft over MAX_TEXT_LENGTH.
   await assert.rejects(
-    structuredTranslator(jsonRunner({ title: 'T', texts: ['x'.repeat(20_001)] }))({
+    structuredTranslator(jsonRunner({ title: 'T', texts: { 0: 'x'.repeat(20_001) } }))({
       kind: 'announcement',
       sourceLocale: 'en-US',
       targetLocale: 'zh-CN',
@@ -153,7 +153,7 @@ test('translate: a draft the album would refuse is rejected, not returned', asyn
 
 test('translate: model-added blank lines are normalized per text entry', async () => {
   const draft = await structuredTranslator(
-    jsonRunner({ title: 'T2', texts: ['\nIntro\n\n', '\n- A\n\n- B\n'] }),
+    jsonRunner({ title: 'T2', texts: { 0: '\nIntro\n\n', 1: '\n- A\n\n- B\n' } }),
   )({
     kind: 'announcement',
     sourceLocale: 'en-US',
@@ -210,8 +210,8 @@ test('translate: a wrong-shape draft is retried once and the retry can succeed',
     calls += 1;
     return JSON.stringify(
       calls === 1
-        ? { title: 'T', texts: ['merged everything'] }
-        : { title: 'T', texts: ['A2', 'B2'] },
+        ? { title: 'T', texts: { 0: 'merged everything' } }
+        : { title: 'T', texts: { 0: 'A2', 1: 'B2' } },
     );
   };
   const draft = await structuredTranslator(runner)({
@@ -229,7 +229,7 @@ test('translate: a persistent wrong shape fails after exactly one retry, naming 
   let calls = 0;
   const runner: ModelRunner = async () => {
     calls += 1;
-    return JSON.stringify({ title: 'T', texts: ['merged everything'] });
+    return JSON.stringify({ title: 'T', texts: { 0: 'merged everything' } });
   };
   await assert.rejects(
     structuredTranslator(runner)({
@@ -239,7 +239,7 @@ test('translate: a persistent wrong shape fails after exactly one retry, naming 
       title: 'T',
       contentMd: 'A\n\nB',
     }),
-    /draft_mismatch:texts_1_of_2/,
+    /draft_mismatch:text_missing_1/,
   );
   assert.equal(calls, 2, 'one attempt plus one retry, never a loop');
 });
@@ -250,7 +250,7 @@ test('translate: an unparseable reply is retried too, and an overlong draft is n
     calls += 1;
     return calls === 1
       ? 'here is your translation, sorry!'
-      : JSON.stringify({ title: 'T', texts: ['A2'] });
+      : JSON.stringify({ title: 'T', texts: { 0: 'A2' } });
   };
   const draft = await structuredTranslator(runner)({
     kind: 'announcement',
@@ -266,7 +266,7 @@ test('translate: an unparseable reply is retried too, and an overlong draft is n
   let longCalls = 0;
   const longRunner: ModelRunner = async () => {
     longCalls += 1;
-    return JSON.stringify({ title: 'T', texts: ['x'.repeat(200_000)] });
+    return JSON.stringify({ title: 'T', texts: { 0: 'x'.repeat(200_000) } });
   };
   await assert.rejects(
     structuredTranslator(longRunner)({
@@ -279,4 +279,21 @@ test('translate: an unparseable reply is retried too, and an overlong draft is n
     /invalid_response/,
   );
   assert.equal(longCalls, 1, 'a deterministic rejection is not retried');
+});
+
+// The reported failure: the model answered five entries for four segments, because
+// translating invites splitting one paragraph into two sentences. Keyed segments make an extra
+// entry unreachable — nothing reads a key past the last segment — where an array LENGTH made it
+// fatal. Over-counting is now harmless; only a missing key is, and that one cannot be invented.
+test('translate: an entry the model invents cannot break the segment mapping', async () => {
+  const draft = await structuredTranslator(
+    jsonRunner({ title: 'T', texts: { 0: 'A2', 1: 'B2', 2: 'invented extra' } }),
+  )({
+    kind: 'announcement',
+    sourceLocale: 'en-US',
+    targetLocale: 'zh-CN',
+    title: 'T',
+    contentMd: 'A\n\nB',
+  });
+  assert.deepEqual(draft, { kind: 'announcement', title: 'T', contentMd: 'A2\n\nB2' });
 });

@@ -40,15 +40,40 @@ const REST_TIMEOUT_MS = 30_000;
 /** The whole body is one JSON response; leave room for a long announcement. */
 export const MAX_OUTPUT_TOKENS = 8192;
 
-const ANNOUNCEMENT_SCHEMA: Record<string, unknown> = {
-  type: 'object',
-  properties: {
-    title: { type: 'string' },
-    texts: { type: 'array', items: { type: 'string' } },
-  },
-  required: ['title', 'texts'],
-  additionalProperties: false,
-};
+/**
+ * The announcement schema, with one REQUIRED key per text segment.
+ *
+ * Keyed rather than arrayed on purpose. An array of length N asks the model to keep a count,
+ * and translating invites splitting a paragraph into two sentences — so it intermittently
+ * returned five entries for four segments (`texts_5_of_4`), and no amount of retrying makes a
+ * count contract reliable. A JSON-schema object with every key listed as required cannot gain
+ * or lose an entry without violating the schema; where the model chooses to split a sentence
+ * is then irrelevant, because both halves land in the same key.
+ */
+function announcementSchema(count: number): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    properties[String(i)] = { type: 'string' };
+    required.push(String(i));
+  }
+  return {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      texts: { type: 'object', properties, required, additionalProperties: false },
+    },
+    required: ['title', 'texts'],
+    additionalProperties: false,
+  };
+}
+
+/** Text segments keyed by their index, matching `announcementSchema`. */
+function keyedTexts(texts: readonly string[]): Record<string, string> {
+  const keyed: Record<string, string> = {};
+  for (let i = 0; i < texts.length; i += 1) keyed[String(i)] = texts[i] ?? '';
+  return keyed;
+}
 
 const POLL_SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -274,19 +299,21 @@ function translateOnce(run: ModelRunner): Translator {
           buildMessages(
             source,
             target,
-            'Translate the values of "title" and every "texts" entry;',
-            { title: request.title, texts },
+            'Translate the value of "title" and the value of every key inside "texts". Never translate or rename a key; every key must be present in the reply.',
+            { title: request.title, texts: keyedTexts(texts) },
           ),
-          ANNOUNCEMENT_SCHEMA,
+          announcementSchema(texts.length),
         ),
       );
       const title = typeof draft.title === 'string' ? draft.title.trim() : '';
-      const translated = draft.texts;
       if (!title) throw new Error('draft_mismatch:title_empty');
-      if (!Array.isArray(translated)) throw new Error('draft_mismatch:texts_not_array');
-      if (translated.length !== texts.length) {
-        throw new Error(`draft_mismatch:texts_${translated.length}_of_${texts.length}`);
-      }
+      if (!isRecord(draft.texts)) throw new Error('draft_mismatch:texts_not_object');
+      const entries = draft.texts;
+      const translated = texts.map((_, index) => {
+        const value = entries[String(index)];
+        if (typeof value !== 'string') throw new Error(`draft_mismatch:text_missing_${index}`);
+        return value;
+      });
 
       const pieces: string[] = [];
       let next = 0;
