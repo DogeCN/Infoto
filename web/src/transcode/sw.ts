@@ -481,9 +481,8 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   if (!r || rec.cancelled) return;
   if (r.ok) {
     rec.url = r.url;
-    // The photo's own timestamp: the instant the host accepted it. `serverTime` is read
-    // once per sync batch, so a batch of uploads would otherwise share one millisecond
-    // and "latest" could not order them.
+    // The photo's own timestamp: the instant the host accepted it. A single shared
+    // stamp for a whole batch would leave "latest" unable to order its photos.
     rec.createdAt = Date.now();
     // No prewarm here: this worker's fetch does not populate the renderer's cache, so it
     // bought a second download of every artifact and up to two seconds of delay before

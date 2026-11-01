@@ -2,9 +2,10 @@
 //
 // The object owns the op log: every write lands here in order, gets a server stamp and a
 // dense sequence number, is folded into the in-memory snapshot, and is broadcast to every
-// connection in one frame. D1 is the cold snapshot store — written at the edges (an upload
-// op immediately, so /l/:id36 links resolve; a flush before a migrate export; the
-// compaction alarm) and read only to hydrate a cold object.
+// connection in one frame. D1 is the cold snapshot store, written only at the archive edges
+// — before a migrate export, and by the idle alarm an hour after the last connection left —
+// and read only to hydrate a cold object. There is one archive path; nothing compacts the
+// log, because every stored op is already folded into the snapshot the archive writes from.
 //
 // One instance exists ("global"); there are no other albums. A new connection of a user
 // that already has one replaces it (one device online per account); the replaced client
@@ -19,7 +20,6 @@ import {
   applySnapshotOp,
   authorized,
   flushToD1,
-  foldOps,
   hydrateSnapshot,
   isOversizedAnnouncementOp,
 } from '../album-ops.ts';
@@ -61,11 +61,8 @@ interface MetaRow {
   [key: string]: SqlStorageValue;
 }
 
-/** Ops beyond this count after log-level compaction are folded into the snapshot and
- *  archived to D1 (spec §5). */
-const ARCHIVE_THRESHOLD = 256;
-/** Idle compaction alarm: set when the last connection leaves, cleared when one arrives. */
-const COMPACTION_ALARM_MS = 60 * 60 * 1000;
+/** The idle archive alarm: set when the last connection leaves, cleared when one arrives. */
+const IDLE_ARCHIVE_ALARM_MS = 60 * 60 * 1000;
 
 function connInfo(ws: WebSocket): ConnInfo {
   try {
@@ -412,9 +409,8 @@ export class Album {
           .toArray();
         if (seen.length > 0) continue;
       }
-      let changed = false;
       try {
-        changed = applySnapshotOp(snap, { id: info.userId }, op, ts, {
+        applySnapshotOp(snap, { id: info.userId }, op, ts, {
           mediaHostUrl: this.env.MEDIA_HOST_URL,
         });
       } catch (e) {
@@ -441,13 +437,12 @@ export class Album {
         ts,
         ...(cid ? { cid } : {}),
       });
-      void changed;
     }
     if (applied.length === 0) return;
 
     // One frame for the whole batch, to every connection. Feedback ops stay root-only.
     // The hot path never writes D1 — /l/:id36 resolves through this object (the media
-    // proxy queries it before D1), and compaction archives everything in due time.
+    // proxy queries it before D1), and the idle alarm archives everything in due time.
     const broadcast = JSON.stringify({
       type: 'ops',
       applied,
@@ -473,10 +468,12 @@ export class Album {
     }
   }
 
-  // ---------- compaction, archiving, flushing ----------
+  // ---------- archiving ----------
 
   /** Apply every stored op to D1 and fold the log away: D1 becomes exactly current, the
-   *  meta snapshot moves to the latest seq, and catch-up past this point is a snapshot. */
+   *  meta snapshot moves to the latest seq, and catch-up past this point is a snapshot.
+   *  Every stored op reached the snapshot at ingest, so this never writes a D1 row for an
+   *  op the applier refused — the only thing the log needs no compaction for. */
   private async flush(): Promise<void> {
     await this.ensureSchema();
     const snap = await this.ensureLoaded();
@@ -488,38 +485,18 @@ export class Album {
     await this.state.storage.sql.exec('DELETE FROM ops');
   }
 
-  /** The idle alarm: fold the log, and archive to D1 only when the folded log still
-   *  exceeds the threshold. Any connection in the meantime reschedules. */
+  /** The idle alarm: the same archive edge a migrate export triggers, then back to idle.
+   *  A live connection stands the archive down for its hour; archiving folds nothing away
+   *  — every stored op is already in the snapshot, and D1 needs each op's net effect, which
+   *  the snapshot carries whole. */
   async alarm(): Promise<void> {
     if (this.state.getWebSockets().length > 0) {
-      await this.state.storage.setAlarm(Date.now() + COMPACTION_ALARM_MS);
+      await this.state.storage.setAlarm(Date.now() + IDLE_ARCHIVE_ALARM_MS);
       return;
     }
     await this.ensureSchema();
-    const stored = await this.readStoredOps();
-    const kept = foldOps(
-      stored.map((row) => ({ ...row, op: this.toApplied(row).op, actor: row.actor })),
-    );
-    const keptSeqs = new Set(kept.map((k) => k.seq));
-    for (const row of stored) {
-      if (!keptSeqs.has(row.seq)) {
-        await this.state.storage.sql.exec('DELETE FROM ops WHERE seq = ?', row.seq);
-      }
-    }
-    const remaining = await this.readStoredOps();
-    if (remaining.length > ARCHIVE_THRESHOLD) {
-      const snap = await this.ensureLoaded();
-      await flushToD1(
-        d1Db(this.env.DB),
-        snap,
-        remaining.map((row) => this.toApplied(row)),
-      );
-      const maxSeq = remaining.length > 0 ? remaining[remaining.length - 1]!.seq : 0;
-      await this.writeMeta(snap, maxSeq);
-      await this.state.storage.sql.exec('DELETE FROM ops');
-    }
-    // Continue idle-waiting: the next alarm folds whatever accumulated since.
-    await this.state.storage.setAlarm(Date.now() + COMPACTION_ALARM_MS);
+    if ((await this.readStoredOps()).length > 0) await this.flush();
+    await this.state.storage.setAlarm(Date.now() + IDLE_ARCHIVE_ALARM_MS);
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
@@ -528,7 +505,7 @@ export class Album {
       if (connInfo(other).userId === info.userId) return; // a replacement is already live
     }
     if (this.state.getWebSockets().length === 0) {
-      await this.state.storage.setAlarm(Date.now() + COMPACTION_ALARM_MS);
+      await this.state.storage.setAlarm(Date.now() + IDLE_ARCHIVE_ALARM_MS);
     }
   }
 

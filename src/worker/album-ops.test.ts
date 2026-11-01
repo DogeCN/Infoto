@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { AlbumSnapshot, AppliedOp, Op } from '../shared/types.ts';
-import { applySnapshotOp, flushToD1, foldOps, hydrateSnapshot } from './album-ops.ts';
+import { applySnapshotOp, flushToD1, hydrateSnapshot } from './album-ops.ts';
 import { countingDb } from '../testing/app.ts';
 import { openLocalDb, type LocalDb } from '../testing/localDb.ts';
 
@@ -46,8 +46,6 @@ const upload = (sha: string, over: Partial<Op> = {}): Op => ({
   },
   ...over,
 });
-
-const applied = (seq: number, op: Op, actor = 1): AppliedOp => ({ seq, op, actor, ts: 1_000 });
 
 test('album-ops: an upload allocates an id, clamps createdAt, and dedupes by sha', async () => {
   const snap = emptySnapshot();
@@ -402,27 +400,6 @@ test('album-ops: a poll save overwrites the whole vote set (ADR 0022)', async ()
       1_200,
     ),
     false,
-  );
-});
-
-test('album-ops: fold collapses dimensions to their last op and keeps distinct facts', () => {
-  const ops = [
-    applied(1, { type: 'like', targetSha: 'aa' }),
-    applied(2, { type: 'like', targetSha: 'bb' }),
-    applied(3, { type: 'unlike', targetSha: 'aa' }),
-    applied(4, { type: 'vote', target: 5, payload: { options: [0] } }),
-    applied(5, { type: 'vote', target: 5, payload: { options: [1] } }),
-    applied(6, upload('cc')),
-  ];
-  const kept = foldOps(ops);
-  assert.deepEqual(
-    kept.map((k) => [k.seq, k.op.type]),
-    [
-      [2, 'like'],
-      [3, 'unlike'],
-      [5, 'vote'],
-      [6, 'upload'],
-    ],
   );
 });
 

@@ -1,6 +1,6 @@
 // The /ws Durable Object's protocol against a fake socket, a real SQLite op log, and a
 // fake D1: session resolution, kick-dedup, catch-up, ingest with cid idempotency, the
-// broadcast filter, the idle alarm, and the internal flush/rehydrate endpoints.
+// broadcast filter, the idle archive alarm, and the internal flush/rehydrate endpoints.
 
 import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
@@ -335,7 +335,7 @@ test('album do: a frame over the op cap is refused whole', async () => {
   assert.deepEqual(ws.frames, [{ type: 'error', error: 'too_many_ops' }]);
 });
 
-test('album do: internal flush folds the log into D1, and rehydrate forgets it', async () => {
+test('album do: internal flush archives the log into D1, and rehydrate forgets it', async () => {
   const { album, db, connect } = makeAlbum();
   const ws = connect();
   await authenticate(album, ws);
@@ -357,7 +357,7 @@ test('album do: internal flush folds the log into D1, and rehydrate forgets it',
       },
     ],
   });
-  // The hot path left D1 empty; the flush is what folds the log into it.
+  // The hot path left D1 empty; the flush is what archives the log into it.
   await album.fetch(new Request('https://album.internal/internal/flush'));
   const photos = await db.prepare('SELECT COUNT(*) AS n FROM photos').first<{ n: number }>();
   assert.equal(photos!.n, 1, 'the flush archives the logged op');
@@ -371,7 +371,7 @@ test('album do: internal flush folds the log into D1, and rehydrate forgets it',
   assert.equal(probe.status, 404, 'the rehydrated snapshot is empty, like D1');
 });
 
-test('album do: the last departure sets the compaction alarm, a return clears it', async () => {
+test('album do: the last departure sets the idle archive alarm, a return clears it', async () => {
   const { album, connect, state } = makeAlbum();
   const ws = connect();
   await authenticate(album, ws);
@@ -385,8 +385,8 @@ test('album do: the last departure sets the compaction alarm, a return clears it
   assert.equal((state.storage.deleteAlarm as ReturnType<typeof vi.fn>).mock.calls.length, 1);
 });
 
-test('album do: the idle alarm folds coalescible ops and keeps distinct facts', async () => {
-  const { album, connect, state } = makeAlbum();
+test('album do: the idle alarm archives the log to D1 and reschedules', async () => {
+  const { album, db, connect, state } = makeAlbum();
   const ws = connect();
   await authenticate(album, ws);
   const ops = [];
@@ -413,11 +413,18 @@ test('album do: the idle alarm folds coalescible ops and keeps distinct facts', 
   await album.webSocketClose(ws as unknown as WebSocket);
   state.storage.setAlarm.mockClear();
   await album.alarm();
-  // The like/unlike pairs folded to the last unlike; the upload survived.
+  // One archive path, no folding: the log leaves D1 exactly current — the photo row exists,
+  // its mark columns carry the net of the like/unlike pairs — and the object's log is empty.
+  const photo = await db
+    .prepare('SELECT likes, dislikes FROM photos WHERE sha256 = ?')
+    .bind('aa')
+    .first<{ likes: string; dislikes: string }>();
+  assert.ok(photo, 'the upload was archived');
+  assert.equal(photo.likes, '[]', 'the cancelling pairs net out in the snapshot');
   const remaining = await state.storage.sql
     .exec<{ n: number }>('SELECT COUNT(*) AS n FROM ops')
     .one();
-  assert.equal(Number(remaining.n), 2);
+  assert.equal(Number(remaining.n), 0, 'the archive emptied the log');
   assert.equal((state.storage.setAlarm as ReturnType<typeof vi.fn>).mock.calls.length, 1);
 });
 

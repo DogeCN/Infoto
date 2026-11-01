@@ -1114,8 +1114,11 @@ before deadline` / `no response before deadline`).
   `welcome` | `error`; `ops` {ops} → `ops` {applied} plus `welcome` on connect; `ping` → `pong`.
   The Durable Object is the album's single sequential writer — it appends each op to its own
   SQLite log, folds it into the in-memory snapshot, and broadcasts the applied batch — and D1 is
-  the cold snapshot store, written only at the edges (a migrate export flush, the compaction
-  alarm). Every store below this line is transport-blind.
+  the cold snapshot store, written only at the archive edges: before a migrate export, and by an
+  idle alarm an hour after the last connection left. The alarm takes the same flush path as the
+  export — there is no second compaction mechanism, and no log-size threshold: the log holds a
+  few hundred ops at worst, and every archive writes the snapshot's net state, never raw ops.
+  Every store below this line is transport-blind.
   - **An op the actor may never apply is refused before the log.** A non-root `delete`,
     `ann_*`/`poll_*`/`fb_delete`/`fb_reorder`, or an announcement too long to store, is
     answered with `{ error: 'op_dropped', cid }` and neither appended nor broadcast — otherwise

@@ -411,59 +411,6 @@ function readPollDraft(p: Record<string, unknown>, withVotes: boolean): PollDraf
   return { options, allowMultiple: p.allowMultiple, locale, votes };
 }
 
-// ---------- log-level compaction ----------
-
-/** The coalescing dimension of an op, or null when it can never be superseded. Ops in
- *  one dimension collapse to the last value; a cancelling pair (like → unlike) folds into
- *  the surviving op, which is a no-op on its own — dropping it is never required for
- *  correctness, so sequence numbers stay untouched for the clients referencing them. */
-export function coalesceDimension(op: Op): string | null {
-  switch (op.type) {
-    case 'like':
-    case 'unlike':
-    case 'dislike':
-    case 'undislike':
-      return op.targetSha ? `attitude:${op.targetSha}` : null;
-    case 'report':
-    case 'unreport':
-      return op.targetSha ? `report:${op.targetSha}` : null;
-    case 'vote':
-      return op.target != null ? `vote:${op.target}` : null;
-    case 'react':
-      return op.target != null ? `react:${op.target}` : null;
-    case 'ann_update':
-      return op.target != null ? `ann:${op.target}` : null;
-    case 'poll_update':
-      return op.target != null ? `poll:${op.target}` : null;
-    case 'ann_reorder':
-    case 'poll_reorder':
-    case 'fb_reorder': {
-      const locale = record(op.payload).locale;
-      return typeof locale === 'string' ? `reorder:${op.type}:${locale}` : null;
-    }
-    default:
-      // upload / delete / fb_create / fb_delete / ann_create / ann_delete / poll_create /
-      // poll_delete never supersede: each one is a distinct fact.
-      return null;
-  }
-}
-
-/**
- * Log-level compaction: within each (dimension, actor) only the last op survives, in
- * their original order. Returns the ops to keep.
- */
-export function foldOps<T extends { op: Op; actor: number }>(ops: T[]): T[] {
-  const lastByDimension = new Map<string, T>();
-  for (const entry of ops) {
-    const dimension = coalesceDimension(entry.op);
-    if (dimension !== null) lastByDimension.set(`${dimension}:${entry.actor}`, entry);
-  }
-  return ops.filter((entry) => {
-    const dimension = coalesceDimension(entry.op);
-    return dimension === null || lastByDimension.get(`${dimension}:${entry.actor}`) === entry;
-  });
-}
-
 // ---------- D1 hydration and incremental upserts ----------
 
 interface PhotoRow {
