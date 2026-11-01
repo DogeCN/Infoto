@@ -1,13 +1,10 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import {
-  decodedEpoch,
-  forgetDecoded,
-  hasDecoded,
-  markDecoded,
-} from '../../src/state/decode.svelte';
+import { forgetDecoded, hasDecoded, markDecoded } from '../../src/state/decode.svelte';
 
 // The record is module-level page state; each case starts by clearing what it touched.
+// Reactivity itself is the store's contract with Svelte (a $state Set, per-entry tracked);
+// these cases pin the record's semantics, which is what both surfaces read.
 
 test('decode: a URL decoded on one surface reads as decoded on every other', () => {
   assert.equal(hasDecoded('a'), false, 'nothing is decoded before any element fires');
@@ -17,13 +14,10 @@ test('decode: a URL decoded on one surface reads as decoded on every other', () 
   forgetDecoded('a');
 });
 
-test('decode: marking is idempotent and bumps the epoch once', () => {
-  const before = decodedEpoch.value;
+test('decode: marking is idempotent', () => {
   markDecoded('a');
-  assert.equal(decodedEpoch.value, before + 1, 'a new URL re-renders the surfaces');
-  const settled = decodedEpoch.value;
   markDecoded('a');
-  assert.equal(decodedEpoch.value, settled, 'a repeat decode is not a change');
+  assert.equal(hasDecoded('a'), true);
   forgetDecoded('a');
 });
 
@@ -33,19 +27,17 @@ test('decode: an empty or absent URL is never recorded', () => {
   assert.equal(hasDecoded(''), false);
   assert.equal(hasDecoded(null), false);
   assert.equal(hasDecoded(undefined), false);
-  const before = decodedEpoch.value;
   markDecoded('');
   markDecoded(null);
   markDecoded(undefined);
-  assert.equal(decodedEpoch.value, before, 'nothing was recorded, so nothing re-renders');
+  assert.equal(hasDecoded(''), false, 'nothing was recorded');
 });
 
 test('decode: a failed URL can be forgotten so the failure path runs again', () => {
   markDecoded('a');
   forgetDecoded('a');
   assert.equal(hasDecoded('a'), false);
-  // Forgetting a URL that was never decoded is a no-op, not a spurious re-render.
-  const settled = decodedEpoch.value;
+  // Forgetting a URL that was never decoded is a no-op.
   forgetDecoded('never');
-  assert.equal(decodedEpoch.value, settled);
+  assert.equal(hasDecoded('never'), false);
 });

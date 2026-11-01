@@ -1,6 +1,6 @@
 // The per-tab sync engine over the coordinator transport (ADR 0026). Every op is
 // persisted in the shared IndexedDB oplog first — with its client nonce (cid) and commit
-// time (ct) — and the coordinator (one WebSocket per browser, ADR 0026 §8) owns the
+// time (ct) — and the coordinator (one WebSocket per browser, ADR 0026) owns the
 // connection, the backlog flush, and the ack bookkeeping. This engine's remaining jobs:
 // stamp and queue ops, apply what the server broadcasts to this tab's store, and mirror
 // the connection state to the UI. Triggers stay ADR 0008's: page open, page exit, and
@@ -64,6 +64,9 @@ export interface EngineState {
 }
 
 const CONNECT_TIMEOUT_MS = 15_000;
+/** The nonce-skipping window: commits this tab may hold unacknowledged before the oldest
+ *  is safe to treat as foreign. */
+const MAX_RECENT_CIDS = 512;
 /** Sliding cookie window; matches the server's session cookie (400-day browser cap). */
 const COOKIE_MAX_AGE_S = 34_560_000;
 
@@ -80,8 +83,17 @@ export class SyncEngine {
   private syncing = false;
   /** Cids this tab originated and has not seen echoed; their broadcast skips the apply,
    *  because the optimistic state is already on screen. A superseded op keeps its nonce
-   *  here on purpose: its echo must stay skipped even though the queue entry moved on. */
+   *  here on purpose: its echo must stay skipped even though the queue entry moved on.
+   *  Bounded FIFO: an echo arriving after its nonce left the window applies as a foreign
+   *  op — idempotent against the optimistic state it mirrors, and the window is far wider
+   *  than any ack round trip. */
   private recentCids = new Set<string>();
+  private markRecentCid(cid: string): void {
+    this.recentCids.add(cid);
+    if (this.recentCids.size <= MAX_RECENT_CIDS) return;
+    const oldest = this.recentCids.values().next();
+    if (!oldest.done) this.recentCids.delete(oldest.value);
+  }
   private pagehideInstalled = false;
   readonly state: EngineState = { syncing: false, pending: 0, connected: false };
 
@@ -250,7 +262,7 @@ export class SyncEngine {
     // by that cid, so regenerating one here would strand the optimistic row forever.
     const stamped: Op = { ...op, cid: op.cid ?? crypto.randomUUID(), ct: op.ct ?? Date.now() };
     const superseded = await this.queuedKeyFor(stamped);
-    this.recentCids.add(stamped.cid!);
+    this.markRecentCid(stamped.cid!);
     if (superseded !== null) {
       await putOp(this.db, superseded, stamped);
       // The pending count is unchanged, so there is nothing for a listener to re-read.
@@ -289,7 +301,7 @@ export class SyncEngine {
     // by that cid, so regenerating one here would strand the optimistic row forever.
     const stamped: Op = { ...op, cid: op.cid ?? crypto.randomUUID(), ct: op.ct ?? Date.now() };
     const key = await appendUpload(this.db, stamped, record);
-    this.recentCids.add(stamped.cid!);
+    this.markRecentCid(stamped.cid!);
     this.pending += 1;
     this.emit();
     this.transport.queued();

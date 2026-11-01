@@ -1,4 +1,4 @@
-// The sync coordinator (ADR 0026 §8): one WebSocket per browser, shared by every tab
+// The sync coordinator (ADR 0026): one WebSocket per browser, shared by every tab
 // through this SharedWorker. It owns the protocol — hello/lastSeq catch-up, the offline
 // backlog flush, ack bookkeeping — and fans every server frame out to the tabs, whose
 // engines apply it to their own stores. Tabs keep their per-tab optimistic state; this

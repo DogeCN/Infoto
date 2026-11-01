@@ -1,5 +1,5 @@
 // The SharedWorker shell for the sync coordinator. One instance per browser: it owns
-// the single WebSocket (ADR 0026 §8), the ack bookkeeping over the shared oplog, and
+// the single WebSocket (ADR 0026), the ack bookkeeping over the shared oplog, and
 // fans every server frame out to every tab's engine.
 
 import {

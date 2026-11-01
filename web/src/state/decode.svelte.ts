@@ -11,29 +11,24 @@
 // surfaces need to agree on. A URL that is still cold on both is unchanged: each surface
 // shows its own skeleton until its own element fires.
 
-/** URLs known to have decoded at least one image or video element on this page. */
-const decoded = new Set<string>();
-/** Reactive version counter, so a surface can re-derive when the record changes. Svelte's
- *  reactivity does not see a plain `Set`, and a deep store would re-render every card on
- *  every decode — the counter is the cheapest signal that something changed. */
-export const decodedEpoch = $state({ value: 0 });
+/** URLs known to have decoded at least one image or video element on this page. Svelte 5
+ *  proxies a `$state` Set per entry, so a derived that asks about one URL re-runs only when
+ *  that URL's membership changes — no other card re-renders on a decode. */
+const decoded = $state(new Set<string>());
 
 /** True when this URL has decoded somewhere on the page. */
 export function hasDecoded(url: string | null | undefined): boolean {
-  void decodedEpoch.value; // tracked: a decode elsewhere must re-evaluate the caller
   return url != null && decoded.has(url);
 }
 
-/** Record that `url` decoded. Idempotent; only a new URL bumps the epoch. */
+/** Record that `url` decoded. Idempotent. */
 export function markDecoded(url: string | null | undefined): void {
-  if (url == null || url === '' || decoded.has(url)) return;
+  if (url == null || url === '') return;
   decoded.add(url);
-  decodedEpoch.value += 1;
 }
 
 /** Drop a URL that failed to load, so the failure path is re-entered rather than cached. */
 export function forgetDecoded(url: string | null | undefined): void {
-  if (url == null || !decoded.has(url)) return;
+  if (url == null) return;
   decoded.delete(url);
-  decodedEpoch.value += 1;
 }

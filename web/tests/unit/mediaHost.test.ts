@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { currentMediaHost, onMediaHost, publishMediaHost } from '../../src/state/mediaHost.svelte';
+import { onMediaHost, publishMediaHost } from '../../src/state/mediaHost.svelte';
 
 /** The module keeps a last-published value; each case starts from the empty state. */
 const reset = (): void => publishMediaHost('');
@@ -49,12 +49,4 @@ test('mediaHost: unregistering stops delivery, and publishing again reaches the 
   assert.deepEqual(kept, ['https://a.test', 'https://b.test']);
   assert.deepEqual(dropped, ['https://a.test'], 'an unmounted surface is not called again');
   offKept();
-});
-
-test('mediaHost: the current address is readable, and empty before any sync', () => {
-  reset();
-  assert.equal(currentMediaHost(), '', 'nothing is known before a sync');
-  publishMediaHost('https://c.test');
-  assert.equal(currentMediaHost(), 'https://c.test', 'the last published value is kept');
-  reset();
 });

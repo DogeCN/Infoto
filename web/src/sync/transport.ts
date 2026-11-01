@@ -1,8 +1,9 @@
 // The tab-side handle on the sync coordinator. The engine talks to this, never to the
-// socket directly: one browser, one connection, shared across tabs (ADR 0026 §8).
-// Production wires a SharedWorker port; tests inject an in-memory implementation.
+// socket directly: one browser, one connection, shared across tabs (ADR 0026).
+// Production wires a SharedWorker port, with an in-page fallback where one is unavailable;
+// tests inject an in-memory implementation.
 
-import type { AppliedOp, WsServerFrame } from '$shared/types';
+import type { WsServerFrame } from '$shared/types';
 import {
   attachCoordinatorPort,
   CoordinatorCore,
@@ -27,8 +28,6 @@ export interface SyncTransport {
     cb: (state: { connected: boolean; syncing: boolean; pending: number }) => void,
   ): () => void;
 }
-
-export type { AppliedOp };
 
 /** What attachCoordinatorPort accepts: a tab-side port, real or loopback. */
 type TabPort = Parameters<typeof attachCoordinatorPort>[1];

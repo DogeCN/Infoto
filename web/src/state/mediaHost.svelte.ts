@@ -34,8 +34,3 @@ export function publishMediaHost(url: string): void {
   latest = url;
   for (const sink of sinks) sink(url);
 }
-
-/** The current address, or an empty string before the first sync. */
-export function currentMediaHost(): string {
-  return latest;
-}

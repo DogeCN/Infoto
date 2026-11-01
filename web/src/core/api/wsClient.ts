@@ -15,7 +15,7 @@ export interface WsSocket {
   addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void;
 }
 
-export type WsStatus = 'idle' | 'connecting' | 'open' | 'closed';
+type WsStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
 export interface WsClientIo {
   /** Socket factory; defaults to the browser WebSocket. Tests inject a fake. */
@@ -43,20 +43,8 @@ export class WsClient {
     this.io = io;
   }
 
-  /** Adopt new overrides (a remounted page supplies its own). Only keys the caller
-   *  actually defines are replaced — a rebind without a factory must not strip the one
-   *  the constructor injected. */
-  rebind(io: WsClientIo): void {
-    if (io.factory !== undefined) this.io.factory = io.factory;
-    if (io.url !== undefined) this.io.url = io.url;
-  }
-
   get connected(): boolean {
     return this.status === 'open';
-  }
-
-  get state(): WsStatus {
-    return this.status;
   }
 
   connect(): void {
