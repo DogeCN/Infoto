@@ -107,6 +107,11 @@
     let topH = 0;
     const candidates: LayoutBox[] = [];
     for (const box of boxes) {
+      // Only VIDEO cards are candidates: the rule is "the first row of videos plays", not
+      // "the first row of everything". A photo above a video pushed the video's own first
+      // row out of the band, so scrolling to a video did not start it.
+      const photo = photoMap.get(box.id);
+      if (!photo || photo.type === 0) continue;
       // Top edge at or below the bar bottom (not obscured) and starting inside the viewport.
       if (box.y >= windowTop - 1 && box.y < windowBottom) {
         candidates.push(box);
@@ -116,7 +121,7 @@
         }
       }
     }
-    // Same visual row = top edge within the upper half of the topmost card. Masonry
+    // Same visual row = top edge within the upper half of the topmost video. Masonry
     // columns drift apart further down, but the top band is what the rule names.
     const band = minY + topH * 0.5;
     const ids = new Set<number>();
@@ -221,6 +226,15 @@
   let layoutReady = $state(false);
   /** Last committed box per card id, kept across virtualizer unmounts for FLIP reflows. */
   const geomMemory = new Map<number, GeomStamp>();
+  /**
+   * Whether each card was inside the viewport the last time its geometry was committed.
+   *
+   * A card remounts when it enters the render window, and by then `onScreen` is already true —
+   * so judging "may this remount glide?" from the current frame lets a card that scrolled in
+   * from off-screen fly in from wherever it used to be, which is exactly what must not happen.
+   * The honest question is whether the card was visible when the remembered box was written.
+   */
+  const wasVisible = new Map<number, boolean>();
   /** performance.now() of the latest layout commit, gating the FLIP remount window. */
   let reflowAt = $state(0);
   let currentAbort: AbortController | null = null;
@@ -404,6 +418,13 @@
     return indices
       .filter((i) => photoMap.has(boxes[i].id))
       .map((i) => ({ box: boxes[i], index: i, near: near.has(i), onScreen: onScreen.has(i) }));
+  });
+
+  /** Record each rendered card's current viewport membership for the next remount to read. */
+  $effect(() => {
+    for (const entry of visibleBoxes) {
+      wasVisible.set(entry.box.id, entry.onScreen);
+    }
   });
 
   // Marquee hits: computed inside onMove (marqueeRect is only used for rendering)
@@ -667,6 +688,7 @@
             {selfId}
             mediaNear={near}
             smoothMotion={onScreen}
+            wasOnScreen={wasVisible.get(box.id) ?? false}
             autoplay={near && autoplayBoxIds.has(box.id)}
             x={box.x}
             y={box.y}

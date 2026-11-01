@@ -12,7 +12,6 @@
   import { hasDecoded, markDecoded, forgetDecoded } from '../../state/decode.svelte';
   import {
     playbackVolume,
-    isAudioOpen,
     isAudioMediaOpen,
     releaseAudio,
     toggleAudio,
@@ -53,6 +52,9 @@
      *  travels across the page, because that travel happens off-screen and only makes the
      *  layout look busy. Derived from the measured viewport at the moment of the change. */
     smoothMotion?: boolean;
+    /** Whether this card was inside the viewport the last time it rendered. A card that was
+     *  NOT visible then must not glide in on remount: it appears where it belongs and fades. */
+    wasOnScreen?: boolean;
     /** Whether this card is in the autoplay band (the viewport's visible top row); the
      *  open-sound holder always keeps its player regardless of the band. */
     autoplay?: boolean;
@@ -77,6 +79,7 @@
     overlay,
     mediaNear = true,
     smoothMotion = true,
+    wasOnScreen = false,
     autoplay: autoplayProp = true,
     selected = false,
     multiMode = false,
@@ -99,7 +102,11 @@
       : 'flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-xs font-medium text-white/75 backdrop-blur-sm',
   );
   /** The shared open-sound state: this card is the player only while it holds the sound. */
-  let volumeMuted = $derived(!isAudioOpen(photo.url, 'grid'));
+  /** The card is now the ONLY element that sounds a media (the viewer keeps its own muted),
+   *  so its mute follows the media's open state directly rather than which surface owns the
+   *  unmute right. Any surface can open the sound — the viewer's control does — and the card
+   *  is what plays it. */
+  let volumeMuted = $derived(!isAudioMediaOpen(photo.url));
   let loadFailed = $state(false);
   // The card sits at 0,0 and moves purely by transform; a CSS transition interpolates
   // between reflows and retargets mid-flight, so continuous reflows (a dragged slider)
@@ -108,6 +115,16 @@
   let placed = $state(false);
   const reducedMotion = prefersReducedMotion();
   let fromBox: GeomStamp | null = $state(null);
+  /**
+   * Whether this card's positional change should be animated, decided ONCE per change.
+   *
+   * `smoothMotion` says whether the card is inside the live viewport RIGHT NOW. It is read at
+   * the moment the box moves, not at mount: a card that was off-screen a frame ago is on
+   * screen when its new position lands, and it must then simply appear rather than glide in
+   * from somewhere the user never saw. The previous version snapshotted this at mount, so it
+   * described the card's position at mount time and every later reflow ignored the rule.
+   */
+  let motionAllowed = $state(false);
   // Mount-time snapshot, on purpose. This sits outside every `$effect` in the component, so
   // no later prop update can retro-fire the flip — a remounting card either glides from the
   // box it last rendered at, or appears in place. `untrack` is what marks the props below as
@@ -117,10 +134,10 @@
     const remembered =
       motionMemory &&
       !reducedMotion &&
-      // Smooth positional motion is for cards the eye can follow: one that enters from
-      // outside the viewport appears in place and only fades in, because a glide the user
-      // cannot see is not an improvement, it is work the layout does for nobody.
-      smoothMotion &&
+      // A card may only glide in if the eye could already see it when it left. `wasOnScreen`
+      // is the reading from its last frame, so a card that scrolled in from off-screen stays
+      // put instead of flying in from wherever it used to sit.
+      wasOnScreen &&
       reflowAt > 0 &&
       performance.now() - reflowAt <= reflowFlipWindowMs
         ? motionMemory.get(photo.id)
@@ -138,12 +155,24 @@
   let cancelFlip: (() => void) | undefined;
   onDestroy(() => cancelFlip?.());
   let flipArmed = false;
+  /** The box this card last rendered, used to tell a position change from a re-render. */
+  const initialBox = untrack(() => ({ x, y, w: width, h: height }));
+  let lastBox = initialBox;
   $effect(() => {
     void x;
     void y;
     void width;
     void height;
     void fromBox;
+    // Re-decide the transition class per POSITION CHANGE, not per mount: whether the move
+    // may be animated depends on whether the card is on screen when the move lands.
+    const moved = lastBox.x !== x || lastBox.y !== y || lastBox.w !== width || lastBox.h !== height;
+    if (moved) {
+      lastBox = { x, y, w: width, h: height };
+      motionAllowed = smoothMotion;
+    } else if (motionAllowed !== smoothMotion && !fromBox) {
+      motionAllowed = smoothMotion;
+    }
     if (fromBox) {
       if (!flipArmed) {
         flipArmed = true;
@@ -199,21 +228,22 @@
    *  itself) does not pause the card underneath: that would stop and restart the same audio
    *  stream across the entry, which is the gap this avoids. */
   let playsHere = $derived(autoplayProp || isAudioMediaOpen(photo.url));
-  // The band is a playback cap, not a source cap: a card outside it keeps its source and
-  // freezes on the frame it reached, so the grid never flashes blank as the band moves.
+  // The band is a playback cap, not a source cap: the source is always attached, so leaving
+  // the band pauses on the frame it reached and re-entering resumes from it — no reload, no
+  // skeleton, no restart. The `autoplay` attribute is only honoured at load, so every
+  // resumption is an explicit play().
   $effect(() => {
     if (!videoEl) return;
-    if (!playsHere && !videoEl.paused) videoEl.pause();
-    if (playsHere && videoEl.paused && volumeMuted) {
-      // The `autoplay` attribute is only honoured on load, so a muted card that re-enters
-      // the band (or mounts into it after a reflow) must be started explicitly.
-      void videoEl.play().catch(() => undefined);
+    if (!playsHere) {
+      if (!videoEl.paused) videoEl.pause();
+      return;
     }
+    if (videoEl.paused) void videoEl.play().catch(() => undefined);
   });
   // Opening the sound is a user gesture; the explicit play() lets a card outside the band
   // (or one whose element mounted after the state flipped) actually start rolling.
   $effect(() => {
-    if (videoEl && isAudioOpen(photo.url, 'grid')) void videoEl.play().catch(() => undefined);
+    if (videoEl && isAudioMediaOpen(photo.url)) void videoEl.play().catch(() => undefined);
   });
   /** Media is only in the DOM within the load band. Outside it the card keeps its box and
    *  paints the skeleton, which is what releases the decoded bitmap: an `<img>` element left in
@@ -308,7 +338,7 @@
   class="absolute left-0 top-0 overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border {selected
     ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
-  class:card-motion={placed && smoothMotion}
+  class:card-motion={placed && motionAllowed}
   style="transform: translate3d({fromBox?.x ?? x}px, {fromBox?.y ?? y}px, 0); width: {fromBox?.w ??
     width}px; height: {fromBox?.h ?? height}px; transform-origin: top left"
   role="button"
@@ -342,13 +372,14 @@
       <div class="absolute inset-0 overflow-hidden rounded-[var(--radius-card)]">
         <video
           bind:this={videoEl}
-          src={autoplayProp ? photo.url : undefined}
+          src={photo.url}
           class="h-full w-full object-cover rounded-[var(--radius-card)] transition-opacity duration-[var(--duration-enter)] ease-[var(--ease-enter)] {loadedUrl ===
           photo.url
             ? 'opacity-100'
             : 'opacity-0'}"
           muted={volumeMuted}
           loop
+          preload="metadata"
           autoplay={playsHere}
           playsinline
           onloadeddata={() => {

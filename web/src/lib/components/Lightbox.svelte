@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { overlay } from '$base/lib/overlay';
   // Full-screen media viewer with swipe actions, pinch and wheel zoom, drag panning, and keyboard controls.
   import { MEDIA_TYPE, type Photo } from '$shared/types';
@@ -26,14 +25,7 @@
   import { humanSize } from '$base/lib/format';
   import { copyToClipboard } from '$base/lib/clipboard';
   import { motionEase, motionMs } from '$base/lib/motion';
-  import {
-    playbackVolume,
-    audio,
-    isAudioOpen,
-    claimAudio,
-    closeAudio,
-    toggleAudio,
-  } from '../../state/playback.svelte';
+  import { playbackVolume, isAudioMediaOpen, toggleAudio } from '../../state/playback.svelte';
   import { markDecoded } from '../../state/decode.svelte';
   import ActionSheet from './ActionSheet.svelte';
   import TimeLabel from './TimeLabel.svelte';
@@ -111,8 +103,13 @@
   const failToastSeen = new Set<string>();
 
   let photo = $derived(photos[currentIndex]);
-  /** The shared open-sound state; the viewer is the player only while it holds the sound. */
-  let volumeMuted = $derived(!isAudioOpen(photo?.url, 'lightbox'));
+  /** The viewer's own element NEVER sounds: it is a second render of a media the grid card
+   *  is already playing. Two elements cannot share one audio stream, so letting the viewer
+   *  take the unmute over tore the sound down and rebuilt it on the other element at every
+   *  open and close — an audible gap in both directions. The card underneath keeps playing
+   *  and sounding; the viewer shows the picture. The button below therefore reports and
+   *  toggles the SHARED media state, not this element's mute. */
+  const volumeMuted = $derived(!isAudioMediaOpen(photo?.url));
   let isLiked = $derived(photo?.likes.includes(selfId) ?? false);
   let isDisliked = $derived(photo?.dislikes.includes(selfId) ?? false);
   let isReported = $derived(photo?.reports.includes(selfId) ?? false);
@@ -238,16 +235,21 @@
    * that follow it cannot kill the ease; the rotation settles and only then does
    * the panned position take over.
    */
+  /**
+   * Ease the free rotation to the nearest 90°.
+   *
+   * Rotation only: the position is left exactly where the gesture put it. `settlePan` centres
+   * a fit, unrotated media, and running it here eased the media back to the stage centre —
+   * which read as a magnet pulling the card away from the cursor the moment Ctrl was released.
+   * A caller that genuinely wants the resting position (a release, where the media is no
+   * longer held) runs `settleTransform` after this.
+   */
   function snapWithEase(): void {
     if (!wrapEl) return;
-    const gestureRot = rot;
-    const startTransform = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${gestureRot}deg)`;
+    const startTransform = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${rot}deg)`;
     rot = snapRotation(rot);
-    const settled = engineSettlePan({ scale, zoomX, zoomY, rot });
-    zoomX = settled.zoomX;
-    zoomY = settled.zoomY;
     const endTransform = `translate(${zoomX}px, ${zoomY}px) scale(${scale}) rotate(${rot}deg)`;
-    // Commit the resting state with no transition; WAAPI supplies the ease.
+    // Commit the snapped state with no transition; WAAPI supplies the ease.
     applyWrap(0, 0, false);
     snapAnim?.cancel();
     snapAnim = wrapEl.animate([{ transform: startTransform }, { transform: endTransform }], {
@@ -259,13 +261,22 @@
   /** Write the transform, then apply the one positional rule left (the fit view is
    *  centred) and write again only if it moved. `animate` eases the step: the tap and
    *  double-click zooms pass it, and so does the wheel, so a notch glides into place
-   *  instead of jumping. */
+   *  instead of jumping.
+   *
+   *  The resting rule is skipped while a gesture is still in the user's hand. `settlePan`
+   *  centres a fit, axis-aligned media, and `isRotated` treats 180° as axis-aligned — so a
+   *  Ctrl rotate that passed through exactly horizontal zeroed the pan mid-drag and then
+   *  restored it a fraction of a degree later. A held gesture owns the position; the rule
+   *  only applies once the pointer is released. */
   function commitZoom(next: ZoomState, animate = false): void {
     scale = next.scale;
     zoomX = next.zoomX;
     zoomY = next.zoomY;
     rot = next.rot;
     applyWrap(0, 0, animate);
+    // A live gesture owns the position: no resting rule until the pointer is released. Both
+    // terms matter — a Ctrl rotate, and the plain drag that continues after Ctrl is let go.
+    if (ctrlZoomPointer !== null || active.size > 0) return;
     settleTransform(animate);
   }
 
@@ -537,8 +548,10 @@
       dragging = false;
       panning = false;
       // Snap the free rotation to the nearest 90° on release (matches the pinch
-      // path). The pivot stays centred, so the snap only re-orients the image.
+      // path), then settle the position: the pointer is gone, so the resting rule (a fit,
+      // axis-aligned media is centred) applies again.
       snapWithEase();
+      settleTransform(true);
       return;
     }
     const start = active.get(e.pointerId);
@@ -569,6 +582,7 @@
       // the rotated state *before* settling — snapping changes whether the image
       // is axis-aligned, so the fit-view recentre must judge the snapped angle.
       snapWithEase();
+      settleTransform(true);
       if (active.size === 0) pinchSequence = false;
       return;
     }
@@ -684,6 +698,7 @@
     if (pinchActive) {
       pinchActive = false;
       snapWithEase();
+      settleTransform(true);
     }
 
     // Partner fingers are still down: the gesture is not over. Nothing resets yet
@@ -825,10 +840,12 @@
     }
   }
 
-  /** Toggle the shared sound for the photo on show; only type 2 has an audio track. */
+  /** Toggle the shared sound for the photo on show; only type 2 has an audio track.
+   *  The surface is irrelevant to this element (it is always muted), but the state still
+   *  records which render may sound the media, and the card is that render. */
   function toggleVolume(): void {
     if (!photo || photo.type !== 2) return;
-    toggleAudio(photo.url, 'lightbox');
+    toggleAudio(photo.url, 'grid');
   }
 
   // Wrap-around: first and last photos are connected.
@@ -907,32 +924,13 @@
     if (wrapEl) applyWrap();
   });
 
-  // The open sound belongs to the MEDIA, not to the surface that happens to own it (see
-  // `playback.svelte.ts`), so opening the viewer must not restart anything:
-  //   - opened on the sounding photo: ownership moves to the viewer's element so this render
-  //     can unmute it, but `audio.url` never changes — no audio stream is started or stopped;
-  //   - opened on a DIFFERENT photo: the open sound is left alone. Browsing must never mute
-  //     audio the user deliberately opened.
-  $effect(() => {
-    if (!open || !photo) return;
-    if (audio.url === null || audio.url !== photo.url) return;
-    if (audio.surface !== 'lightbox') claimAudio('lightbox', photo.url);
-  });
-
-  // Closing the viewer hands ownership back to the card behind it. The card never stopped
-  // playing that media (ownership is per-media), so this is a mute/unmute on a live element
-  // rather than a restart, and the sound is continuous across the viewer's lifetime.
-  let viewerWasOpen = false;
-  $effect(() => {
-    const wasOpen = viewerWasOpen;
-    viewerWasOpen = open;
-    if (wasOpen && !open && audio.surface === 'lightbox')
-      claimAudio('grid', audio.url ?? undefined);
-  });
-
-  onDestroy(() => {
-    if (audio.surface === 'lightbox') closeAudio();
-  });
+  // The viewer never takes the sound over. It is a second render of a media the grid card is
+  // already playing, and two elements cannot share one audio stream: handing the unmute to
+  // this element tore the playing one down and rebuilt it here at every open, so the sound
+  // gapped on entry and again on close. The card underneath keeps playing and sounding while
+  // the viewer shows the picture, and the viewer's volume control edits the shared media
+  // state instead of its own (always-muted) element. Opening a DIFFERENT photo still leaves
+  // any open sound alone — browsing must not mute audio the user deliberately opened.
 
   // Preload adjacent still images while open. Video buffering is owned by the displayed media element.
   /** The neighbours preloading now. Held in component scope (not in the effect body) so a
@@ -1111,7 +1109,7 @@
         {#if loadedUrl !== photo.url}
           <div
             class="lb-box lb-skeleton {loadFailed ? 'lb-skeleton-solid' : ''}"
-            style="--w: {photo.width}px; --h: {photo.height}px; --ar: {photo.width /
+            style="--h: {photo.height}px; --ar: {photo.width /
               photo.height}; aspect-ratio: {photo.width} / {photo.height};"
             aria-hidden="true"
           ></div>
@@ -1123,9 +1121,9 @@
             bind:this={mediaVideoEl}
             src={photo.url}
             class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
-            style="--w: {photo.width}px; --ar: {photo.width} / {photo.height};"
+            style="--ar: {photo.width} / {photo.height};"
             draggable="false"
-            muted={volumeMuted}
+            muted
             loop
             autoplay
             playsinline
@@ -1144,7 +1142,7 @@
             src={photo.url}
             alt=""
             class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
-            style="--w: {photo.width}px; --ar: {photo.width} / {photo.height};"
+            style="--ar: {photo.width} / {photo.height};"
             draggable="false"
             onload={() => {
               loadedUrl = photo.url;
@@ -1391,13 +1389,16 @@
       transform var(--duration-enter) var(--ease-enter);
   }
 
-  /* Media and placeholder dimensions, constrained by native size and viewport space. */
+  /* Media and placeholder dimensions. The viewer is a stage, so the media fills the space
+     available instead of being capped at its native pixel width — a 320px photo used to sit
+     as a small island in the middle of a desktop viewer. The aspect ratio decides the shape
+     (a tall image is limited by height, a wide one by width); the only cap left is the stage.
+     --ar defaults to 1 so a missing ratio still yields a sane box. */
   .lb-box {
-    width: min(var(--w), calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
+    width: min(calc(100vw - 2.5rem), calc((100dvh - 8rem) * var(--ar, 1)));
     max-width: calc(100vw - 2.5rem);
   }
 
-  /* Metadata-sized placeholder while media decodes. */
   .lb-skeleton {
     position: absolute;
     /* Center the skeleton independently of its containing block size. */
@@ -1438,7 +1439,7 @@
      with the larger budget — once, for the box both the media and the skeleton use. */
   @media (min-width: 768px) {
     .lb-box {
-      width: min(var(--w), calc(100vw - 8rem), calc((100dvh - 9rem) * var(--ar, 1)));
+      width: min(calc(100vw - 8rem), calc((100dvh - 9rem) * var(--ar, 1)));
       max-width: calc(100vw - 8rem);
     }
 

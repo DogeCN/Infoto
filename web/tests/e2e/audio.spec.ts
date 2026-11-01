@@ -68,13 +68,14 @@ test('unmuting a second card silences the first, and the Lightbox mirrors the ca
   await expect(cardA.locator('video')).toHaveJSProperty('muted', true);
   await expect(cardB.locator('video')).toHaveJSProperty('muted', false);
 
-  // Opening the card in the viewer must not create a second player: the viewer takes the
-  // open sound over and the card behind it goes quiet.
+  // Opening the card in the viewer must not create a second player. The viewer's element
+  // stays muted and the card keeps sounding, so the media's audio is never torn down and
+  // rebuilt across the transition.
   await cardB.click();
   const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
   await expect(lightbox.locator('video')).toBeAttached();
-  await expect(lightbox.locator('video')).toHaveJSProperty('muted', false);
-  await expect(cardB.locator('video')).toHaveJSProperty('muted', true);
+  await expect(lightbox.locator('video')).toHaveJSProperty('muted', true);
+  await expect(cardB.locator('video')).toHaveJSProperty('muted', false);
   // The corner control reads "Mute", i.e. sound is open.
   await expect(lightbox.getByRole('button', { name: muteName, exact: true })).toBeVisible();
 
@@ -93,11 +94,25 @@ test('sound opened in the Lightbox stays open on the card after closing', async 
   await cardB.click();
   const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
   await expect(lightbox.locator('video')).toBeAttached();
+  // The viewer's own element never sounds — it is a second render of the media the card is
+  // already playing, and two elements cannot share one audio stream without a gap at every
+  // open and close.
+  await expect(lightbox.locator('video')).toHaveJSProperty('muted', true);
+  await expect(cardB.locator('video')).toHaveJSProperty('muted', true);
+
+  // Its control edits the shared media state, and the CARD is the one element that plays it,
+  // so opening the sound here makes the card audible — no separate copy, no second player.
+  await lightbox.getByRole('button', { name: unmuteName, exact: true }).click();
+  await expect(cardB.locator('video')).toHaveJSProperty('muted', false);
   await expect(lightbox.locator('video')).toHaveJSProperty('muted', true);
 
-  // The viewer owns the state: opening the sound here is the same open sound the grid shows.
+  // Muting from the viewer silences that same card again.
+  await lightbox.getByRole('button', { name: muteName, exact: true }).click();
+  await expect(cardB.locator('video')).toHaveJSProperty('muted', true);
+
+  // Opening it once more and closing keeps the state on the card.
   await lightbox.getByRole('button', { name: unmuteName, exact: true }).click();
-  await expect(lightbox.locator('video')).toHaveJSProperty('muted', false);
+  await expect(cardB.locator('video')).toHaveJSProperty('muted', false);
   await page.keyboard.press('Escape');
   await expect(lightbox).toHaveCount(0);
   await expect(cardB.locator('video')).toHaveJSProperty('muted', false);
