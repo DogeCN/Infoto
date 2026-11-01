@@ -45,7 +45,7 @@
     restBottomInset?: number;
     selfId?: number;
     multiMode?: boolean;
-    // All write operations are committed upstream as ops (op-log → /sync)
+    // All write operations are committed upstream as ops (op-log → /ws)
     onLike?: (photo: Photo) => void;
     onDislike?: (photo: Photo) => void;
     onRequestDelete?: (photo: Photo) => void;
@@ -369,24 +369,41 @@
     // loads media; the rest of the window keeps its box and paints the skeleton, which is
     // invisible until it enters this band.
     const loadPad = viewportSize * MEDIA_LOAD_LOOKAHEAD;
-    const near = new Set(
-      windowIndices(
-        boxes,
-        order,
-        dir,
-        scrollPos - loadPad,
-        scrollPos + viewportSize + loadPad,
-        maxExtent,
-      ),
-    );
-    // `boxes` is replaced on a debounce, while `allPhotos` changes the moment a /sync
+    // An unmeasured viewport (`viewportSize === 0`, the first frame before the mount
+    // measurement lands) cannot describe a band at all: both edges collapse to the scroll
+    // offset and nothing is "near", so every card would paint a skeleton it never leaves
+    // while the snapshot is already on screen. Treat that frame as "all near" — loading is
+    // the harmless outcome there; a permanent skeleton over loaded media is not.
+    const near =
+      viewportSize > 0
+        ? new Set(
+            windowIndices(
+              boxes,
+              order,
+              dir,
+              scrollPos - loadPad,
+              scrollPos + viewportSize + loadPad,
+              maxExtent,
+            ),
+          )
+        : new Set(indices);
+    // The cards the *live viewport* can see, with no lookahead. This is the one gate for
+    // smooth positional motion: a card on screen may glide between layouts, and a card
+    // outside it must not travel across the page — it appears where it belongs and only
+    // fades in. Derived from the measured viewport and the live scroll offset (never a
+    // breakpoint), so it follows exactly what is visible at the moment of the change.
+    const onScreen =
+      viewportSize > 0
+        ? new Set(windowIndices(boxes, order, dir, scrollPos, scrollPos + viewportSize, maxExtent))
+        : new Set<number>();
+    // `boxes` is replaced on a debounce, while `allPhotos` changes the moment a sync
     // snapshot lands, so for a frame a laid-out box can name a photo that is already gone.
     // Rendering one handed PhotoCard an undefined `photo`, and its media load/error handlers
     // are dispatched against the recorded handler even after teardown -- that read threw on
     // `$$props.photo.url`. Dropping those boxes keeps the two structures in step.
     return indices
       .filter((i) => photoMap.has(boxes[i].id))
-      .map((i) => ({ box: boxes[i], index: i, near: near.has(i) }));
+      .map((i) => ({ box: boxes[i], index: i, near: near.has(i), onScreen: onScreen.has(i) }));
   });
 
   // Marquee hits: computed inside onMove (marqueeRect is only used for rendering)
@@ -423,7 +440,7 @@
     lightboxOpen = true;
   }
 
-  // The preview list can shrink underneath an open Lightbox (/sync drops a
+  // The preview list can shrink underneath an open Lightbox (a sync drops a
   // duplicate, a photo gets deleted): clamp instead of leaving a dead index.
   $effect(() => {
     if (lightboxPhotos.length === 0) {
@@ -642,13 +659,14 @@
         ? `${totalH}px`
         : `calc(100% - ${padTop + padX}px)`}"
     >
-      {#each visibleBoxes as { box, near } (box.id)}
+      {#each visibleBoxes as { box, near, onScreen } (box.id)}
         {@const photo = photoMap.get(box.id)}
         {#if photo}
           <PhotoCard
             {photo}
             {selfId}
             mediaNear={near}
+            smoothMotion={onScreen}
             autoplay={near && autoplayBoxIds.has(box.id)}
             x={box.x}
             y={box.y}

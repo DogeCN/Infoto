@@ -182,6 +182,37 @@ test('postUpload: uses an idle watchdog, reports real progress, and names the pa
   assert.equal(((explicit.sentBody as FormData).get('file') as File).name, 'm.webm');
 });
 
+test('postUpload: an explicit name survives, so a document is never relabelled `.bin`', async () => {
+  // The editor accepts any file and the Markdown renderer decides how to display it BY
+  // EXTENSION. Deriving the name from MIME alone turned every non-media pick into
+  // `<id>.bin` — a `.md`, `.txt` or `.zip` blob carries an empty `File.type`, so nothing
+  // could recover the extension once the picked name was dropped.
+  for (const name of ['notes.md', 'readme.txt', 'bundle.zip', 'slides.pdf']) {
+    const xhr = new FakeXhr();
+    const call = postUpload(new Blob(['x']), {
+      mediaHostUrl: MEDIA_HOST,
+      timeoutMs: 1_000,
+      fileName: name,
+      xhrFactory: () => xhr as unknown as XMLHttpRequest,
+    });
+    xhr.finish(200, JSON.stringify({ data: 'https://cdn.test/a.md' }));
+    await call;
+    assert.equal(((xhr.sentBody as FormData).get('file') as File).name, name);
+  }
+
+  // A blob with no MIME and no explicit name still gets a deterministic extension; the
+  // `.bin` fallback stays for genuinely unknown payloads rather than becoming the default.
+  const unnamed = new FakeXhr();
+  const unnamedCall = postUpload(new Blob(['x']), {
+    mediaHostUrl: MEDIA_HOST,
+    timeoutMs: 1_000,
+    xhrFactory: () => unnamed as unknown as XMLHttpRequest,
+  });
+  unnamed.finish(200, JSON.stringify({ data: 'https://cdn.test/a.bin' }));
+  await unnamedCall;
+  assert.equal(((unnamed.sentBody as FormData).get('file') as File).name, 'm.bin');
+});
+
 test('postUpload: settles network, setup, cancellation, and late events exactly once', async () => {
   // Maps network, HTTP, cancel, and late responses without a second settle.
   {

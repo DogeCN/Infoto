@@ -11,7 +11,8 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { locales } from '../../../src/shared/copy';
-import type { Photo, SyncResponse } from '../../../src/shared/types';
+import type { Photo } from '../../../src/shared/types';
+import { mountAlbum } from './albumSocket';
 
 const enCopy = locales['en-US'];
 
@@ -38,20 +39,10 @@ async function mockAlbum(page: Page) {
     Element.prototype.setPointerCapture = () => undefined;
     Element.prototype.releasePointerCapture = () => undefined;
   });
-  await page.route('**/sync', (route) =>
-    route.fulfill({
-      json: {
-        ok: true,
-        selfId: 7,
-        serverTime: Date.now(),
-        mediaHostUrl: 'https://facade.test',
-        photos,
-        announcements: [],
-        polls: [],
-        feedback: [],
-      } satisfies SyncResponse,
-    }),
-  );
+  await mountAlbum(page, {
+    selfId: 7,
+    snapshot: { photos, announcements: [], polls: [], feedback: [] },
+  });
   await page.route('https://media.test/**', (route) =>
     route.fulfill({
       contentType: 'image/svg+xml',

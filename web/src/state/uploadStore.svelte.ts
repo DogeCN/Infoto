@@ -37,7 +37,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       const sha = uploadOpSha(op);
       // The card is gone — cancelled, dismissed, or its pending photo deleted. Writing the op
       // now would recreate the row the user just removed, after the tombstone that deleted it,
-      // because /sync applies a batch in array order and a delete of an unknown sha is a no-op.
+      // because the write path applies a batch in array order and a delete of an unknown sha is a no-op.
       if (sha && !hasTaskForSha(sha)) return;
       const record = sha ? hostedRecord(op, sha, artifact) : null;
       if (!record) return;
@@ -98,7 +98,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     };
   }
 
-  // /sync names the upload facade; the SharedWorker needs it before any job can upload.
+  // the `welcome` frame names the upload facade; the SharedWorker needs it before any job can upload.
   setMediaHostSink((url) => pipeline.setMediaHost(url));
   // Deleting a pending photo reaches here through the app store: cancel the job (stops an
   // in-flight transfer before it can write its upload op) and drop the card.
@@ -220,7 +220,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
 
   // ---- Optimistic upload entries ----
   // Transcode done → insert at the top under a "curtain" mask that pulls up with
-  // progress; failure → full mask + retry icon; /sync drops it by sha256 (server wins).
+  // progress; failure → full mask + retry icon; a sync drops it by sha256 (server wins).
   let nextTempId = -1;
   const tempIdByJob = new Map<string, number>();
   const jobByTempId = new Map<number, string>();
@@ -376,7 +376,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
         // toast emitted for the same task, so the cover itself carries no text.
         m.set(id, { failed: true, preview: !t.url });
       }
-      // done → no mask (curtain fully open, awaiting /sync correction)
+      // done → no mask (curtain fully open, awaiting the server's correction)
     }
     return m;
   });

@@ -1,9 +1,13 @@
 // Resolve top-bar density from measured content widths, defaulting to full density until measurements arrive.
 
-export type BarMode = 'full' | 'compact' | 'paged';
+export type BarMode = 'full' | 'compact' | 'icon' | 'paged';
 
-/** Ordered widest-first; the index is the density rank. */
-const RANK: Record<BarMode, number> = { full: 0, compact: 1, paged: 2 };
+/**
+ * Ordered widest-first; the index is the density rank. `icon` sits between `compact` and
+ * `paged`: the pill's third fold (icons only, still one screen, no arrow) happens here,
+ * and the arrow only appears once even that cannot fit — so the arrow fold is last.
+ */
+const RANK: Record<BarMode, number> = { full: 0, compact: 1, icon: 2, paged: 3 };
 
 // Height ramps linearly with bar width. Padding stays constant so the controls do not
 // drift away from the window edge as the bar widens.
@@ -56,17 +60,22 @@ export function barCssVars(barWidth: number): string {
 interface BarRequirements {
   /** One screen, sort labels visible. */
   full: number;
-  /** One screen, sort labels hidden. */
+  /** One screen, sort labels hidden except the active item. */
   compact: number;
-  /** The wider of the two paged screens. */
+  /** One screen, icons only — the pill's third fold, reached before the arrow appears. */
+  icon: number;
+  /** The wider of the two paged screens, reached only once even icons-only cannot fit one screen. */
   paged: number;
 }
 
-/** Spare width required before switching to a roomier density. */
-export const BAR_HYSTERESIS_PX = 24;
+/** Spare width required before switching to a roomier density. Kept small so the bar does
+ * not fold a mode away while there is still room — the slack was the source of premature
+ * density drops that left the middle empty. */
+export const BAR_HYSTERESIS_PX = 14;
 
-/** Minimum spare width for a fitting layout, below the hysteresis threshold. */
-export const BAR_MIN_SLACK_PX = 12;
+/** Minimum spare width for a fitting layout, below the hysteresis threshold. Small: the bar
+ * holds the roomiest fitting mode until it genuinely will not fit, instead of retracting early. */
+export const BAR_MIN_SLACK_PX = 6;
 
 /** Select the roomiest fitting density. Tightening uses minimum slack; loosening requires additional hysteresis. */
 export function resolveBarMode(
@@ -80,9 +89,10 @@ export function resolveBarMode(
   const need: Record<BarMode, number> = {
     full: req.full,
     compact: req.compact,
+    icon: req.icon,
     paged: req.paged,
   };
-  const modes: readonly BarMode[] = ['full', 'compact', 'paged'];
+  const modes: readonly BarMode[] = ['full', 'compact', 'icon', 'paged'];
   /** A mode is only usable with `slack` px to spare. */
   const fits = (m: BarMode, slack: number): boolean => available >= need[m] + slack;
 

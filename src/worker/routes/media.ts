@@ -3,6 +3,7 @@
 
 import type { Context } from 'hono';
 import type { AppEnv } from '../app.ts';
+import { globalAlbumId } from '../app.ts';
 import { fromId36, isLoopbackOrigin, isStorableMediaUrl } from '../../shared/media.ts';
 import { MEDIA_TYPE } from '../../shared/types.ts';
 import { notFoundPage, serverErrorPage } from '../errors.ts';
@@ -23,12 +24,12 @@ const MIME_BY_TYPE: Record<number, string> = {
  * loopback origin. A deployed worker's facade is a real HTTPS host (the deploy workflow
  * exits 1 without one), so it never matches and always gets the strict rule.
  *
- * Both the write path (`/sync` upload ops) and the read proxy (`/l/:id36`) must use this,
+ * Both the write path (upload ops arriving over `/ws`) and the read proxy (`/l/:id36`) must use this,
  * or a locally uploaded photo is stored and then refused, or silently dropped on arrival.
  * Compare parsed origins, never string prefixes: "http://127.0.0.1:8788.evil.example"
  * shares a prefix with the origin but is an unrelated host.
  */
-export function isAllowedMediaUrl(env: AppEnv, url: string): boolean {
+export function isAllowedMediaUrl(env: { mediaHostUrl?: string }, url: string): boolean {
   if (isStorableMediaUrl(url)) return true;
   // Only a loopback-configured facade unlocks the exception; absent config is a
   // misconfigured deployment and gets no exemption.
@@ -46,10 +47,30 @@ export function mediaHandler(env: AppEnv) {
     const id = fromId36(id36);
     if (id === null) return notFoundPage(c.req.raw);
 
-    const row = await env.db.prepare('SELECT url, type FROM photos WHERE id = ?').bind(id).first<{
-      url: string;
-      type: number;
-    }>();
+    // The op log is the hot store and D1 only catches up at the edges, so the DO is
+    // asked first and D1 is the fallback (a cold object hydrates on demand).
+    let row: { url: string; type: number } | null = null;
+    if (env.album) {
+      try {
+        const probe = await env.album
+          .get(env.album.idFromName(globalAlbumId))
+          .fetch(new Request(`https://album.internal/internal/photo/${id36}`));
+        if (probe.ok) {
+          const body = (await probe.json()) as { found: boolean; url?: string; type?: number };
+          if (body.found && body.url && body.type !== undefined) {
+            row = { url: body.url, type: body.type };
+          }
+        }
+      } catch {
+        // The object is unreachable — fall through to D1.
+      }
+    }
+    if (!row) {
+      row = await env.db
+        .prepare('SELECT url, type FROM photos WHERE id = ?')
+        .bind(id)
+        .first<{ url: string; type: number }>();
+    }
     if (!row || !MIME_BY_TYPE[row.type]) return notFoundPage(c.req.raw);
 
     let upstream: Response;

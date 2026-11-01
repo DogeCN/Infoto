@@ -2,6 +2,7 @@
 // one Hono app per isolate.
 
 import { createApp, type AppEnv } from './app.ts';
+import { Album } from './do/Album.ts';
 import { d1Db } from './db-d1.ts';
 import {
   MAX_OUTPUT_TOKENS,
@@ -14,6 +15,7 @@ import {
 
 export interface Env {
   DB: D1Database;
+  Album: DurableObjectNamespace;
   ASSETS: Fetcher;
   AI?: Ai;
   /** Dev-only REST transport; production uses the AI binding instead. */
@@ -26,8 +28,21 @@ export interface Env {
 
 const apps = new WeakMap<Env, ReturnType<typeof createApp>>();
 
+export { Album };
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === '/ws') {
+      // WebSocket upgrades only: the DO's internal endpoints stay reachable exclusively
+      // through the binding, never from the public route.
+      if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+        return new Response('Expected WebSocket', { status: 426 });
+      }
+      const id = env.Album.idFromName('global');
+      const stub = env.Album.get(id);
+      return stub.fetch(request);
+    }
     let app = apps.get(env);
     if (!app) {
       // Workers AI is optional: a deployment without the binding still serves the album, and
@@ -53,6 +68,7 @@ export default {
       const runner = restRunner ?? bindingRunner;
       const appEnv: AppEnv = {
         db: d1Db(env.DB),
+        album: env.Album,
         mediaHostUrl: env.MEDIA_HOST_URL,
         turnstileSecret: env.TURNSTILE_SECRET_KEY,
         turnstileSiteKey: env.TURNSTILE_SITE_KEY,

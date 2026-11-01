@@ -1,7 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { fmt, locales } from '../../../src/shared/copy';
-import type { Announcement, Photo, SyncResponse } from '../../../src/shared/types';
+import type { Announcement, Photo } from '../../../src/shared/types';
+import { installSyncWorker, mountAlbum } from './albumSocket';
 
 const enCopy = locales['en-US'];
 const zhCopy = locales['zh-CN'];
@@ -23,20 +24,9 @@ const photos: Photo[] = Array.from({ length: 9 }, (_, index) => ({
 
 async function mockAlbum(page: Page, items = photos, announcements: Announcement[] = []) {
   await page.addInitScript(() => localStorage.setItem('infoto-locale', 'en-US'));
-  await page.route('**/sync', (route) =>
-    route.fulfill({
-      json: {
-        ok: true,
-        selfId: 0,
-        serverTime: Date.now(),
-        mediaHostUrl: 'https://facade.test',
-        photos: items,
-        announcements,
-        polls: [],
-        feedback: [],
-      } satisfies SyncResponse,
-    }),
-  );
+  await mountAlbum(page, {
+    snapshot: { photos: items, announcements, polls: [], feedback: [] },
+  });
   await page.route('https://media.test/**', (route) =>
     route.fulfill({
       contentType: 'image/svg+xml',
@@ -432,35 +422,59 @@ test('photo actions have no visible header, all hover, and open Lens through the
 });
 
 test('failed sync attempts stop until the next explicit trigger', async ({ page }) => {
-  let status = 503;
-  let requests = 0;
-  await page.route('**/sync', (route) => {
-    requests++;
-    return route.fulfill({ status, json: { ok: false, error: 'unavailable' } });
+  // The socket is the sync trigger now (ADR 0026). A refused handshake leaves the sync
+  // button visible; no background retry may dial again — only clicking it does.
+  let attempts = 0;
+  let accept = false;
+  await installSyncWorker(page);
+  await page.routeWebSocket('**/ws', (route) => {
+    attempts++;
+    route.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.type !== 'hello') return;
+      if (accept) {
+        route.send(
+          JSON.stringify({
+            type: 'welcome',
+            selfId: 0,
+            uuid: 'e2e',
+            serverTime: Date.now(),
+            mediaHostUrl: 'https://facade.test',
+            seq: 0,
+            snapshot: { photos, announcements: [], polls: [], feedback: [] },
+          }),
+        );
+      } else {
+        // A refused handshake drops the socket, exactly as the Durable Object does — the
+        // page can only come back by dialing again, which is the sync button's job.
+        route.send(JSON.stringify({ type: 'error', error: 'turnstile_failed' }));
+        route.close();
+      }
+    });
   });
+  const sync = page.getByRole('button', { name: enCopy.sync.button, exact: true });
   await page.goto('/');
-  await expect.poll(() => requests).toBe(1);
-  await expect(page.getByRole('button', { name: enCopy.sync.button, exact: true })).toHaveAttribute(
-    'aria-busy',
-    'false',
-  );
-  expect(requests).toBe(1);
-  await page.clock.install();
-  await page.clock.runFor(120_000);
+  await expect.poll(() => attempts).toBe(1);
+  // A failed connection is the offline state: the button stays, idle.
+  await expect(sync).toBeVisible();
+  await expect(sync).toHaveAttribute('aria-busy', 'false');
+  expect(attempts).toBe(1);
   await page.evaluate(() => {
     window.dispatchEvent(new Event('online'));
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  expect(requests).toBe(1);
-  status = 429;
-  await page.getByRole('button', { name: enCopy.sync.button, exact: true }).click();
-  await expect.poll(() => requests).toBe(2);
-  await expect(page.getByRole('button', { name: enCopy.sync.button, exact: true })).toHaveAttribute(
-    'aria-busy',
-    'false',
-  );
-  await page.clock.runFor(120_000);
-  expect(requests).toBe(2);
+  // `online` and `visibilitychange` are none of them a sync trigger (ADR 0008): nothing
+  // redials on its own, however long the page sits there.
+  await page.waitForTimeout(1500);
+  expect(attempts).toBe(1);
+  accept = true;
+  await sync.click();
+  // The click redials; a welcome then puts the page in the connected state, which is what
+  // hides the button entirely — a connected client syncs without being told to (ADR 0026).
+  await expect.poll(() => attempts, { timeout: 15_000 }).toBe(2);
+  await expect(sync).toBeHidden({ timeout: 15_000 });
+  await page.waitForTimeout(1500);
+  expect(attempts).toBe(2);
 });
 
 test('verification failures stay stopped and manual sync can recover', async ({ page }) => {
@@ -488,41 +502,51 @@ test('verification failures stay stopped and manual sync can recover', async ({ 
       },
     });
   });
-  let requests = 0;
+  let attempts = 0;
   let acceptToken = false;
-  await page.route('**/sync', (route) => {
-    requests++;
-    const body = route.request().postDataJSON();
-    if (!body.turnstileToken) {
-      return route.fulfill({
-        status: 401,
-        json: { ok: false, error: 'turnstile_required', turnstileSiteKey: 'test-key' },
-      });
-    }
-    if (!acceptToken)
-      return route.fulfill({ status: 401, json: { ok: false, error: 'turnstile_failed' } });
-    return route.fulfill({
-      json: {
-        ok: true,
-        selfId: 0,
-        serverTime: Date.now(),
-        mediaHostUrl: 'https://facade.test',
-        photos,
-        locale: 'en-US',
-        announcements: [],
-        polls: [],
-        feedback: [],
-      },
+  await installSyncWorker(page);
+  await page.routeWebSocket('**/ws', (route) => {
+    attempts++;
+    route.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.type !== 'hello') return;
+      // A fresh visitor has no uuid cookie, so the server demands verification; the
+      // page renders the widget and retries the hello with the token it produced.
+      if (!frame.turnstileToken) {
+        route.send(
+          JSON.stringify({
+            type: 'error',
+            error: 'turnstile_required',
+            turnstileSiteKey: 'test-key',
+          }),
+        );
+        return;
+      }
+      if (!acceptToken) {
+        route.send(JSON.stringify({ type: 'error', error: 'turnstile_failed' }));
+        return;
+      }
+      route.send(
+        JSON.stringify({
+          type: 'welcome',
+          selfId: 0,
+          uuid: 'e2e',
+          serverTime: Date.now(),
+          mediaHostUrl: 'https://facade.test',
+          seq: 0,
+          snapshot: { photos, announcements: [], polls: [], feedback: [] },
+        }),
+      );
     });
   });
   const sync = page.getByRole('button', { name: enCopy.sync.button, exact: true });
   await page.goto('/');
-  await expect.poll(() => requests).toBe(1);
+  await expect.poll(() => attempts).toBe(1);
   await expect(sync).toHaveAttribute('aria-busy', 'false');
-  expect(requests).toBe(1);
   await page.clock.install();
   await page.clock.runFor(120_000);
-  expect(requests).toBe(1);
+  // The widget must not retry itself — nothing is attempted while time passes.
+  expect(attempts).toBe(1);
   await page.evaluate(() => {
     const state = (
       window as unknown as { verificationTest: { renders: number; failWidget: boolean } }
@@ -530,18 +554,15 @@ test('verification failures stay stopped and manual sync can recover', async ({ 
     if (state.renders !== 1) throw new Error('Unexpected widget retry');
     state.failWidget = false;
   });
-  await sync.click();
-  await expect.poll(() => requests).toBe(3);
-  await expect(sync).toHaveAttribute('aria-busy', 'false');
-  await page.clock.runFor(120_000);
-  expect(requests).toBe(3);
+  // A manual retry: the socket is still open but unauthenticated, so the click redials.
+  // The server asks for verification, the widget now emits a token, and — with the server
+  // accepting it — the hello finally lands.
   acceptToken = true;
   await sync.click();
-  await expect(page.locator('main img').first()).toBeVisible();
-  await expect(sync).toHaveAttribute('aria-busy', 'false');
-  expect(requests).toBe(5);
-  await page.clock.runFor(120_000);
-  expect(requests).toBe(5);
+  await expect.poll(() => attempts, { timeout: 15_000 }).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('main img').first()).toBeVisible({ timeout: 15_000 });
+  // Connected and authenticated: the button hides, which is the connection-aware rule.
+  await expect(sync).toBeHidden({ timeout: 15_000 });
 });
 
 test('a tooltip needs hover or keyboard focus, never incidental focus', async ({ page }) => {

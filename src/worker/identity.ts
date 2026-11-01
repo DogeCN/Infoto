@@ -4,7 +4,7 @@
 import type { Db } from './db.ts';
 
 const COOKIE_NAME = 'uuid';
-/** Cookie lifetime in seconds. The cookie is re-issued on every /sync, so this is a
+/** Cookie lifetime in seconds. The cookie is re-issued on every `/ws` handshake, so this is a
  *  sliding window; 400 days is the largest value browsers accept. */
 const COOKIE_MAX_AGE = 34_560_000;
 export const ROOT_ID = 0;
@@ -59,9 +59,9 @@ async function findUserByUuid(db: Db, uuid: string | undefined): Promise<UserRow
 /** Identity for the request's `uuid` cookie, or null. */
 export async function resolveUser(
   db: Db,
-  cookieHeader: string | undefined,
+  cookieHeader: string | null | undefined,
 ): Promise<UserRow | null> {
-  return findUserByUuid(db, parseCookies(cookieHeader)[COOKIE_NAME]);
+  return findUserByUuid(db, parseCookies(cookieHeader ?? undefined)[COOKIE_NAME]);
 }
 
 /** Insert a user with the next integer ID and retrieve the row by UUID. */

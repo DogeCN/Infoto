@@ -11,7 +11,8 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { locales } from '../../../src/shared/copy';
-import type { Photo, SyncResponse } from '../../../src/shared/types';
+import { mountAlbum } from './albumSocket';
+import type { Photo } from '../../../src/shared/types';
 
 const enCopy = locales['en-US'];
 const unmuteName = enCopy.lightbox.unmute;
@@ -34,20 +35,10 @@ const photos: Photo[] = Array.from({ length: 2 }, (_, index) => ({
 
 async function mockAlbum(page: Page) {
   await page.addInitScript(() => localStorage.setItem('infoto-locale', 'en-US'));
-  await page.route('**/sync', (route) =>
-    route.fulfill({
-      json: {
-        ok: true,
-        selfId: 7,
-        serverTime: Date.now(),
-        mediaHostUrl: 'https://facade.test',
-        photos,
-        announcements: [],
-        polls: [],
-        feedback: [],
-      } satisfies SyncResponse,
-    }),
-  );
+  await mountAlbum(page, {
+    selfId: 7,
+    snapshot: { photos, announcements: [], polls: [], feedback: [] },
+  });
   // Never fulfilled: see the header comment.
   await page.route('https://media.test/**', () => {});
 }
@@ -113,7 +104,7 @@ test('sound opened in the Lightbox stays open on the card after closing', async 
   await expect(cards.nth(0).locator('video')).toHaveJSProperty('muted', true);
 });
 
-test('the viewer closes a sound that belongs to another media', async ({ page }) => {
+test('the viewer leaves a sound that belongs to another media alone', async ({ page }) => {
   const cards = await openAlbum(page);
   const cardA = cards.nth(0);
   const cardB = cards.nth(1);
@@ -121,11 +112,14 @@ test('the viewer closes a sound that belongs to another media', async ({ page })
   await cardA.getByRole('button', { name: unmuteName, exact: true }).click();
   await expect(cardA.locator('video')).toHaveJSProperty('muted', false);
 
-  // Viewing another photo is leaving the one that was sounding; a hidden card must not keep
-  // playing behind the overlay.
+  // Viewing a DIFFERENT photo must not silence audio the user deliberately opened. Browsing
+  // is not a request to stop the sound; only a deliberate unmute elsewhere moves it, or the
+  // close. The card keeps playing it (muted or not is its own surface's business) rather
+  // than being torn down, because a pause/play here is an audible gap across the transition.
   await cardB.click();
   const lightbox = page.getByRole('dialog', { name: enCopy.lightbox.preview });
   await expect(lightbox.locator('video')).toHaveJSProperty('muted', true);
-  await expect(cardA.locator('video')).toHaveJSProperty('muted', true);
+  await expect(cardA.locator('video')).toHaveJSProperty('muted', false);
+  // The viewer offers its own unmute, which would take the sound over from the card.
   await expect(lightbox.getByRole('button', { name: unmuteName, exact: true })).toBeVisible();
 });

@@ -10,7 +10,6 @@
   import TopBar from '$lib/components/TopBar.svelte';
   import { toastOptions } from '$base/lib/ui';
   import { getEngine } from '../../core/engine';
-  import { postSync, TurnstileRequiredError } from '../../core/api/syncClient';
   import { createAppStore } from '../../state/appStore.svelte';
   import { UploadPipeline, type UploadRow } from '../../transcode/pipeline';
 
@@ -25,23 +24,26 @@
   const store = createAppStore();
   let syncErrorToastAt = 0;
   const engine = getEngine({
-    postSyncFn: postSync,
     onSyncResponse: (response, context) => store.applySync(response, context),
-    // Paint the persisted snapshot before the first request resolves; the sync then
+    onServerOps: (applied) => store.applyServerOps(applied),
+    onOwnEcho: (applied) => store.onOwnEcho(applied),
+    onOpDropped: (cid) => store.onOpDropped(cid),
+    // Paint the persisted snapshot before the first exchange completes; the sync then
     // replaces it. Without it the admin tabs are empty for one round trip, and stay
     // empty entirely when the server cannot be reached.
     onCachedSnapshot: (response) => store.applySync(response),
     onError: (phase, error) => {
       console.error('[sync]', phase, error);
-      if (error instanceof TurnstileRequiredError) {
-        identityRejected = true;
-        return;
-      }
       const now = Date.now();
       if (now - syncErrorToastAt > 10_000) {
         syncErrorToastAt = now;
         toast.error(copy.sync.failed, { description: copy.sync.dataMayBeStale });
       }
+    },
+    // The admin page never renders the verification widget: an unverified device is
+    // sent to the gallery, which owns the onboarding.
+    onTurnstileRequired: () => {
+      identityRejected = true;
     },
   });
   store.bindEngine(engine);

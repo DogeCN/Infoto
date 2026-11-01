@@ -163,7 +163,7 @@ const UPLOAD_ERROR_TEXT: Record<string, (c: Copy) => string> = {
   http_401: (c) => c.upload.errors.unauthorized,
   oversize: (c) => c.upload.errors.oversize,
   http_413: (c) => c.upload.errors.tooLarge,
-  // No facade address ever arrived with /sync — the server has no media host configured.
+  // No facade address ever arrived with the `welcome` frame — the server has no media host configured.
   media_host_unset: (c) => c.upload.errors.noMediaHost,
 };
 

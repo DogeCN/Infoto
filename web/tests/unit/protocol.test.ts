@@ -5,6 +5,7 @@ import {
   isSwToPage,
   LEASE_HEARTBEAT_MS,
   LEASE_TIMEOUT_MS,
+  editorUploadFileName,
   pipelineResultAction,
   shouldWriteAlbumUploadOp,
 } from '../../src/transcode/protocol';
@@ -118,3 +119,26 @@ function status(
 ) {
   return { t: 'jobStatus' as const, jobId: 'job', purpose, phase, ...extra };
 }
+
+test('editor upload: the picked name survives, so a document is never relabelled .bin', () => {
+  // The reported bug: the admin announcement editor accepts any file, and a non-media
+  // pick came back as `<id>.bin`. The extension is load-bearing — the Markdown renderer
+  // decides how to display a hosted file by extension — and MIME cannot recover it,
+  // because File.type is '' for most non-media extensions. The picked name must win.
+  for (const name of ['notes.md', 'readme.txt', 'bundle.zip', 'slides.pdf', 'data.csv']) {
+    assert.equal(editorUploadFileName(name), name);
+  }
+  // A real extension is kept whatever it is; only a name without one defers to MIME.
+  assert.equal(editorUploadFileName('report.final'), 'report.final');
+  assert.equal(editorUploadFileName('noext'), undefined);
+  assert.equal(editorUploadFileName(''), undefined, 'an empty pick has nothing to keep');
+  assert.equal(editorUploadFileName(undefined), undefined);
+  // Only the LAST dot-segment counts, and it must be a plain alphanumeric extension.
+  assert.equal(editorUploadFileName('archive.tar.gz'), 'archive.tar.gz');
+  assert.equal(editorUploadFileName('name.'), undefined, 'a trailing dot is not an extension');
+  assert.equal(
+    editorUploadFileName('weird.ext!'),
+    undefined,
+    'a non-alphanumeric suffix defers to MIME',
+  );
+});

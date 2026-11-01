@@ -1,13 +1,9 @@
-// Request helpers shared by the /admin write routes: JSON body reading, the root
-// identity gate, id validation and `sort` renumbering.
+// Request helpers shared by the /admin translate route: JSON body reading, the root
+// identity gate and id validation.
 
 import type { Context, MiddlewareHandler } from 'hono';
-import { isLocaleCode } from '../shared/copy.ts';
 import type { Db } from './db.ts';
 import { ROOT_ID, resolveUser } from './identity.ts';
-
-/** Tables whose `sort` column holds a manual display order within a locale. */
-type SortTable = 'announcements' | 'feedback' | 'polls';
 
 /** JSON body of `c`, or null when it is missing or malformed. */
 export function readJson<T>(c: Context): Promise<T | null> {
@@ -43,43 +39,4 @@ export function idParam(c: Context): number | null {
   if (!/^[1-9]\d*$/.test(raw)) return null;
   const id = Number(raw);
   return Number.isSafeInteger(id) ? id : null;
-}
-
-/** Distinct positive integer ids out of an `{ ids }` body; anything else is dropped. */
-function bodyIds(body: { ids?: unknown } | null): number[] {
-  const raw: unknown[] = Array.isArray(body?.ids) ? body.ids : [];
-  return [
-    ...new Set(
-      raw.filter(
-        (id): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0,
-      ),
-    ),
-  ];
-}
-
-/** Place submitted IDs first, preserve the order of omitted rows, and assign consecutive sort values. */
-export function reorderHandler(db: Db, table: SortTable) {
-  return async (c: Context): Promise<Response> => {
-    const body = await readJson<{ ids?: unknown; locale?: unknown }>(c);
-    const ids = bodyIds(body);
-    const raw = body?.locale;
-    const locale = isLocaleCode(raw) ? raw : null;
-    if (ids.length === 0 || !locale) return badRequest(c);
-    const rows = await db
-      .prepare(`SELECT id FROM ${table} WHERE locale = ? ORDER BY sort ASC`)
-      .bind(locale)
-      .all<{ id: number }>();
-    const rank = new Map(ids.map((id, i) => [id, i]));
-    const rest = ids.length;
-    const all = rows.results
-      .map((row) => row.id)
-      .sort((a, b) => (rank.get(a) ?? rest) - (rank.get(b) ?? rest));
-    await db.batch(
-      all.map((id, i) => ({
-        sql: `UPDATE ${table} SET sort = ? WHERE id = ? AND locale = ?`,
-        binds: [i, id, locale],
-      })),
-    );
-    return c.json({ ok: true });
-  };
 }

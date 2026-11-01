@@ -25,6 +25,7 @@ import { readArtifact, removeArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
 import {
   LEASE_TIMEOUT_MS,
+  editorUploadFileName,
   isPageToSw,
   type JobMeta,
   type JobPhase,
@@ -138,7 +139,7 @@ function jobArtifactExt(rec: JobRec): 'webp' | 'webm' {
 
 /** Video concurrency, bounded to one or two jobs and refined by page capability hints. */
 let videoLimit = videoPoolSize('navigator' in self ? navigator : {});
-/** Upload facade from the page's /sync response; unset means "use the local simulation". */
+/** Upload facade from the page's `welcome` frame; unset means "use the local simulation". */
 let mediaHostUrl: string | undefined;
 
 function notify(rec: JobRec, extra: Partial<JobStatusMessage> = {}): void {
@@ -418,6 +419,14 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   let fileName: string | undefined;
   if (source) {
     blob = source;
+    // The editor uploads the file the user picked, as-is, so the name the user already has
+    // is the name that must survive into the URL: the Markdown renderer tells a document
+    // from an image by extension, and a `.md`/`.txt`/`.zip` blob carries an empty or
+    // unhelpful MIME (`File.type` is '' for most non-media extensions). Deriving the
+    // extension from MIME alone turned every such upload into `<id>.bin`, which the
+    // renderer then had no way to display. Fall back to the MIME-derived name only when
+    // the pick had no usable name at all.
+    fileName = editorUploadFileName(rec.fileName);
   } else {
     const ext = extOfType(rec.meta!.type);
     fileName = `m.${ext}`;
@@ -435,7 +444,7 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
     failJob(rec, 'oversize');
     return;
   }
-  // The facade address arrives with /sync before any job can run. Without it there is no
+  // The facade address arrives with the `welcome` frame before any job can run. Without it there is no
   // host to upload to, and guessing one would send a user's photo to a place nobody
   // configured — so the job fails with the reason instead.
   if (!mediaHostUrl) {
@@ -473,7 +482,7 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   if (r.ok) {
     rec.url = r.url;
     // The photo's own timestamp: the instant the host accepted it. `serverTime` is read
-    // once per /sync request, so a batch of uploads would otherwise share one millisecond
+    // once per sync batch, so a batch of uploads would otherwise share one millisecond
     // and "latest" could not order them.
     rec.createdAt = Date.now();
     // No prewarm here: this worker's fetch does not populate the renderer's cache, so it

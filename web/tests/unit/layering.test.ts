@@ -87,6 +87,10 @@ function layerOf(file: string): Layer | 'worker' | null {
     case 'core':
     case 'transcode':
       return 'core';
+    case 'sync':
+      // The websocket transport and coordinator sit beside `core` — `core/engine.ts`
+      // imports it — so it shares that rank instead of escaping the walk unrecognised.
+      return 'core';
     case 'state':
       return 'state';
     case 'lib':

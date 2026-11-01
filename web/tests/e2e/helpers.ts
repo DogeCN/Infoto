@@ -38,12 +38,20 @@ export async function prepareGate(page: Page): Promise<void> {
       `,
     }),
   );
-  await page.route('**/sync', async (route) => {
-    if (!delayed) {
-      delayed = true;
-      await new Promise((resolve) => setTimeout(resolve, 750));
-    }
-    await route.continue();
+  // Delay the FIRST socket handshake so the verification overlay is observable mounting
+  // before its answer arrives. The write entry is the `/ws` WebSocket now (ADR 0026),
+  // so the proxy forwards to the real server and only slows the first client frame.
+  await page.routeWebSocket('**/ws', (route) => {
+    const server = route.connectToServer();
+    route.onMessage((message) => {
+      if (!delayed) {
+        delayed = true;
+        setTimeout(() => server.send(message), 750);
+        return;
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => route.send(message));
   });
   await page.addInitScript(() => {
     window.__infotoVerifySeen = false;

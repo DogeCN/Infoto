@@ -9,9 +9,11 @@
   import SiteIcon from './SiteIcon.svelte';
   import type { GeomStamp } from '$base/lib/layout';
   import type { UploadOverlay } from '../../core/pending';
+  import { hasDecoded, markDecoded, forgetDecoded } from '../../state/decode.svelte';
   import {
     playbackVolume,
     isAudioOpen,
+    isAudioMediaOpen,
     releaseAudio,
     toggleAudio,
   } from '../../state/playback.svelte';
@@ -46,6 +48,11 @@
      *  virtualizer's buffer band renders cards before they are visible; keeping their
      *  images out of the DOM is what bounds decoded-image memory on a long album. */
     mediaNear?: boolean;
+    /** Whether this card is INSIDE the live viewport, which is the one condition for smooth
+     *  positional motion. A card outside it appears where it belongs and fades in; it never
+     *  travels across the page, because that travel happens off-screen and only makes the
+     *  layout look busy. Derived from the measured viewport at the moment of the change. */
+    smoothMotion?: boolean;
     /** Whether this card is in the autoplay band (the viewport's visible top row); the
      *  open-sound holder always keeps its player regardless of the band. */
     autoplay?: boolean;
@@ -69,6 +76,7 @@
     reflowAt = 0,
     overlay,
     mediaNear = true,
+    smoothMotion = true,
     autoplay: autoplayProp = true,
     selected = false,
     multiMode = false,
@@ -109,6 +117,10 @@
     const remembered =
       motionMemory &&
       !reducedMotion &&
+      // Smooth positional motion is for cards the eye can follow: one that enters from
+      // outside the viewport appears in place and only fades in, because a glide the user
+      // cannot see is not an improvement, it is work the layout does for nobody.
+      smoothMotion &&
       reflowAt > 0 &&
       performance.now() - reflowAt <= reflowFlipWindowMs
         ? motionMemory.get(photo.id)
@@ -157,7 +169,7 @@
   });
   // The URL that has finished loading into the <img>/<video> below. The UI (skeleton /
   // opacity) is *derived* from `loadedUrl === photo.url`, so an object-identity swap on
-  // every /sync keeps the loaded image visible; the browser caches decoding by URL itself.
+  // every sync keeps the loaded image visible; the browser caches decoding by URL itself.
   let loadedUrl = $state('');
   let observedUrl = '';
 
@@ -180,10 +192,13 @@
   $effect(() => {
     if (videoEl) videoEl.volume = playbackVolume.value;
   });
-  /** Band membership plus the sound exemption: a card holding the open sound keeps its
-   *  player even after the band moves on — the page says its audio is open, and scrolling
-   *  must not kill it. */
-  let playsHere = $derived(autoplayProp || isAudioOpen(photo.url, 'grid'));
+  /** Band membership plus the sound exemption: a card whose media has its sound open keeps
+   *  playing even after the band moves on — the page says its audio is open, and neither
+   *  scrolling nor opening the viewer may cut it. The exemption is keyed on the MEDIA, not on
+   *  this surface's ownership, so entering the Lightbox (which takes the unmute right for
+   *  itself) does not pause the card underneath: that would stop and restart the same audio
+   *  stream across the entry, which is the gap this avoids. */
+  let playsHere = $derived(autoplayProp || isAudioMediaOpen(photo.url));
   // The band is a playback cap, not a source cap: a card outside it keeps its source and
   // freezes on the frame it reached, so the grid never flashes blank as the band moves.
   $effect(() => {
@@ -202,8 +217,16 @@
   });
   /** Media is only in the DOM within the load band. Outside it the card keeps its box and
    *  paints the skeleton, which is what releases the decoded bitmap: an `<img>` element left in
-   *  the document holds its full-resolution decode for as long as it exists. */
-  let showMedia = $derived(mediaNear && photo.url !== '');
+   *  the document holds its full-resolution decode for as long as it exists.
+   *
+   *  A card whose media is already decoded keeps rendering it even outside the band. The band
+   *  exists to bound decoded bitmaps, and the bitmap is already resident — refusing to mount
+   *  it only produced a skeleton over media the page had plainly shown seconds earlier (the
+   *  reported "Lightbox loaded instantly, card stuck on the skeleton"). "Decoded" is the
+   *  page-wide record in `state/decode.svelte.ts`, not this card's own guess, so a preview
+   *  that decoded in the viewer counts here too. The element still unmounts on a true
+   *  teardown, which releases the decode as before. */
+  let showMedia = $derived(photo.url !== '' && (mediaNear || hasDecoded(photo.url)));
   // Keep `loadedUrl` across band exits so a card that scrolls back in paints its media
   // immediately instead of flashing a skeleton. The media element itself still unmounts
   // (releasing the decode), and `loadedUrl === photo.url` makes the return paint straight
@@ -218,7 +241,9 @@
       video.load();
     }
     // An unmounted card cannot keep the sound open; another surface's sound is untouched.
-    releaseAudio(photo.url, 'grid');
+    // `photo` is re-read from the each scope at teardown: when the card unmounts because
+    // its photo left the map (a removed upload), the scope already reads undefined.
+    releaseAudio(photo?.url ?? '', 'grid');
   });
   /** Largest fraction the upload curtain may open to while the job is still running. */
   const CURTAIN_MAX_OPEN = 0.9;
@@ -265,6 +290,9 @@
   function handleMediaError(): void {
     if (overlay?.preview && !overlay.failed) return;
     loadFailed = true;
+    // The media that failed must stop counting as decoded, or a later remount would trust
+    // the page-wide record, mount the same URL again, and fail in the same place.
+    forgetDecoded(photo.url);
   }
 
   function handleClick() {
@@ -280,7 +308,7 @@
   class="absolute left-0 top-0 overflow-hidden rounded-[var(--radius-card)] bg-card cursor-pointer border {selected
     ? 'border-primary'
     : 'border-white/0 hover:border-white/10'}"
-  class:card-motion={placed}
+  class:card-motion={placed && smoothMotion}
   style="transform: translate3d({fromBox?.x ?? x}px, {fromBox?.y ?? y}px, 0); width: {fromBox?.w ??
     width}px; height: {fromBox?.h ?? height}px; transform-origin: top left"
   role="button"
@@ -323,7 +351,10 @@
           loop
           autoplay={playsHere}
           playsinline
-          onloadeddata={() => (loadedUrl = photo.url)}
+          onloadeddata={() => {
+            loadedUrl = photo.url;
+            markDecoded(photo.url);
+          }}
           onerror={handleMediaError}
         ></video>
       </div>
@@ -338,7 +369,10 @@
         loading="lazy"
         decoding="async"
         draggable="false"
-        onload={() => (loadedUrl = photo.url)}
+        onload={() => {
+          loadedUrl = photo.url;
+          markDecoded(photo.url);
+        }}
         onerror={handleMediaError}
       />
     {/if}

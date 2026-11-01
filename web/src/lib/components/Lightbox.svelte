@@ -34,6 +34,7 @@
     closeAudio,
     toggleAudio,
   } from '../../state/playback.svelte';
+  import { markDecoded } from '../../state/decode.svelte';
   import ActionSheet from './ActionSheet.svelte';
   import TimeLabel from './TimeLabel.svelte';
   import Tooltip from './Tooltip.svelte';
@@ -161,6 +162,9 @@
   let snapAnim: Animation | null = null;
   /** True while Ctrl is held; lets a plain drag switch into the Ctrl zoom/rotate mode. */
   let ctrlPressed = false;
+  /** True once the CURRENT gesture has entered the Ctrl rotate/zoom mode. Read on release so
+   *  a rotate is classified as a rotate rather than as a swipe (its pointer travelled far). */
+  let ctrlWasActive = false;
   const active = new Map<number, { x: number; y: number }>();
   let downPoint = { x: 0, y: 0 };
   /** Viewport-scaled thresholds for the gesture in flight (set on pointerdown). */
@@ -285,6 +289,7 @@
     if (showMenu || ctrlZoomPointer !== null || e.button !== 0) return;
     // A fresh gesture overrides any rotation-snap ease still playing.
     snapAnim?.cancel();
+    ctrlWasActive = false;
     hintAt = scaledThreshold(HINT_THRESHOLD);
     triggerAt = scaledThreshold(SWIPE_THRESHOLD);
 
@@ -324,6 +329,21 @@
     target: HTMLElement | null,
   ): void {
     if (!wrapEl) return;
+    // A plain drag previews its displacement through `applyWrap(dx, dy)` WITHOUT writing it
+    // back into `zoomX`/`zoomY` — that is what keeps a swipe preview from becoming real pan.
+    // Entering Ctrl mid-drag must not therefore start from the stale 0 offsets: committing the
+    // preview first makes the gesture start exactly where the media is on screen, so holding
+    // Ctrl never recentres it and the pan carries through the transition untouched.
+    if (!panning && gestureMoved) {
+      const dx = active.get(pointerId);
+      if (dx) {
+        zoomX += dx.x - downPoint.x;
+        zoomY += dx.y - downPoint.y;
+      }
+    }
+    // A horizontal preview also queued a swipe; it is replaced by the real transform below.
+    gestureDir = null;
+    gestureRatio = 0;
     const wrapRect = wrapEl.getBoundingClientRect();
     const center = {
       x: (wrapRect.left + wrapRect.right) / 2,
@@ -336,11 +356,11 @@
     ctrlZoomStartRot = rot;
     ctrlZoomStartX = zoomX;
     ctrlZoomStartY = zoomY;
-    // Drop a plain drag's swipe preview; the real transform is what the gesture starts from.
+    // Drop a plain drag's swipe preview; the committed transform is what the gesture starts
+    // from, so the media does not move on the frame the modifier is pressed.
     applyWrap();
     ctrlZoomPointer = pointerId;
-    gestureDir = null;
-    gestureRatio = 0;
+    ctrlWasActive = true;
     gestureMoved = true;
     active.set(pointerId, { x: clientX, y: clientY });
     target?.setPointerCapture?.(pointerId);
@@ -571,6 +591,9 @@
 
     const release = classifyRelease({
       pinchSequence: tail,
+      // A Ctrl-driven rotate/zoom must never be read as a swipe on release: the pointer
+      // travelled far while rotating, and that displacement is the rotation, not a vote.
+      ctrlSequence: ctrlWasActive,
       panning: wasPanning,
       dx,
       dy,
@@ -587,6 +610,19 @@
       gestureDir = null;
       gestureRatio = 0;
       applyWrap(0, 0, true);
+      settleTransform(true);
+      return;
+    }
+
+    // The same for a Ctrl rotate/zoom: the pointer travelled far while rotating, and
+    // measuring that against the original press point would read the rotation as a vote or
+    // a page. It ends as a transform, settled where it landed.
+    if (release.kind === 'ctrl-tail') {
+      lastTap = null;
+      gestureDir = null;
+      gestureRatio = 0;
+      applyWrap(0, 0, true);
+      snapWithEase();
       settleTransform(true);
       return;
     }
@@ -769,7 +805,17 @@
   }
 
   function handleKeyUp(e: KeyboardEvent) {
-    if (e.key === 'Control') ctrlPressed = false;
+    if (e.key !== 'Control') return;
+    ctrlPressed = false;
+    // Releasing the modifier ends the rotate/zoom gesture: settle it at once. The rotation
+    // snaps to the nearest 90° (eased) and the pan is re-applied from wherever it landed,
+    // which is what makes the hand-off back to plain panning continuous instead of a jump —
+    // and what a horizontal drag needed, since its preview used to be dropped on entry.
+    if (ctrlZoomPointer !== null) {
+      ctrlZoomPointer = null;
+      snapWithEase();
+      settleTransform(true);
+    }
   }
 
   /** Toggle the shared sound for the photo on show; only type 2 has an audio track. */
@@ -854,26 +900,27 @@
     if (wrapEl) applyWrap();
   });
 
-  // The viewer is the only surface allowed to sound while it is open. It takes over the sound
-  // already open for this photo (so the grid and the viewer agree) and closes anything that
-  // belongs to another media — a hidden card must not keep playing behind the overlay.
+  // The open sound belongs to the MEDIA, not to the surface that happens to own it (see
+  // `playback.svelte.ts`), so opening the viewer must not restart anything:
+  //   - opened on the sounding photo: ownership moves to the viewer's element so this render
+  //     can unmute it, but `audio.url` never changes — no audio stream is started or stopped;
+  //   - opened on a DIFFERENT photo: the open sound is left alone. Browsing must never mute
+  //     audio the user deliberately opened.
   $effect(() => {
     if (!open || !photo) return;
-    if (audio.url === photo.url) {
-      if (audio.surface !== 'lightbox') claimAudio('lightbox');
-    } else if (audio.url !== null) {
-      closeAudio();
-    }
+    if (audio.url === null || audio.url !== photo.url) return;
+    if (audio.surface !== 'lightbox') claimAudio('lightbox', photo.url);
   });
 
-  // Closing the viewer hands its sound back to the grid card behind it. This is what keeps the
-  // two surfaces on one state: unmute here, close, and the card is open too (and vice versa).
-  // It is not a cleanup, on purpose — an unmounted gallery has no card to hand off to.
+  // Closing the viewer hands ownership back to the card behind it. The card never stopped
+  // playing that media (ownership is per-media), so this is a mute/unmute on a live element
+  // rather than a restart, and the sound is continuous across the viewer's lifetime.
   let viewerWasOpen = false;
   $effect(() => {
     const wasOpen = viewerWasOpen;
     viewerWasOpen = open;
-    if (wasOpen && !open && audio.surface === 'lightbox') claimAudio('grid');
+    if (wasOpen && !open && audio.surface === 'lightbox')
+      claimAudio('grid', audio.url ?? undefined);
   });
 
   onDestroy(() => {
@@ -1076,7 +1123,10 @@
             autoplay
             playsinline
             preload="metadata"
-            onloadeddata={() => (loadedUrl = photo.url)}
+            onloadeddata={() => {
+              loadedUrl = photo.url;
+              markDecoded(photo.url);
+            }}
             onerror={() => {
               loadFailed = true;
               toastLoadFailed(photo.url);
@@ -1089,7 +1139,10 @@
             class="lb-box lb-media {loadedUrl === photo.url ? 'opacity-100' : 'opacity-0'}"
             style="--w: {photo.width}px; --ar: {photo.width} / {photo.height};"
             draggable="false"
-            onload={() => (loadedUrl = photo.url)}
+            onload={() => {
+              loadedUrl = photo.url;
+              markDecoded(photo.url);
+            }}
             onerror={() => {
               loadFailed = true;
               toastLoadFailed(photo.url);

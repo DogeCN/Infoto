@@ -107,7 +107,7 @@ plain-text `[vars]` entry in `wrangler.toml` — it is a public hostname, not a 
 | ---------------------------------------- | ---------------------------------------- |
 | Signing the request to your storage      | **You** (the facade)                     |
 | Storing the file, returning a public URL | **You** (the facade)                     |
-| Authenticating the visitor               | Infoto (`/sync`), not the facade         |
+| Authenticating the visitor               | Infoto (`/ws`), not the facade           |
 | Storing the URL                          | Infoto (`photos.url`)                    |
 | Serving the bytes to viewers             | Infoto (`GET /l/:id36`) proxies your URL |
 | Transcoding to WebP / WebM               | The browser, before upload               |
@@ -274,7 +274,7 @@ Secrets and variables → Actions → _Variables_）。不带末尾斜杠、不�
 | -------------------- | ------------------------------------- |
 | 对存储的请求签名     | **你**（门面）                        |
 | 存文件、返回公开 URL | **你**（门面）                        |
-| 访客身份验证         | Infoto（`/sync`），不是门面           |
+| 访客身份验证         | Infoto（`/ws`），不是门面             |
 | 存储 URL             | Infoto（`photos.url`）                |
 | 向访客提供字节       | Infoto（`GET /l/:id36` 代理你的 URL） |
 | 转码为 WebP / WebM   | 浏览器，上传之前                      |

@@ -117,8 +117,8 @@ export interface PoolHintRequest {
 }
 
 /**
- * Upload target from the /sync response. The SW is shared across tabs and outlives any one
- * page, so it cannot call /sync itself; whichever page connects last sets the target.
+ * Upload target from the `welcome` frame. The SW is shared across tabs and outlives any one
+ * page, so it cannot sync itself; whichever page connects last sets the target.
  */
 export interface MediaHostRequest {
   t: 'mediaHost';
@@ -160,7 +160,7 @@ export interface JobStatusMessage {
   /** Artifact sha256 when done / duplicate (for the op payload and dedupe registry). */
   sha256?: string;
   /** When the facade returned the URL (ms epoch). Carried so the upload op records the
-   *  moment the photo actually landed, not the moment a later /sync request ran. */
+   *  moment the photo actually landed, not the moment a later sync ran. */
   createdAt?: number;
 }
 
@@ -247,6 +247,24 @@ export function isSwToPage(m: unknown): m is SwToPageMessage {
 }
 
 export type PipelineResultAction = 'observe' | 'resolve' | 'reject' | 'ignore';
+
+/**
+ * The name an EDITOR upload travels under, or undefined to let postUpload derive it.
+ *
+ * The editor accepts any file, and the extension is load-bearing downstream: the Markdown
+ * renderer decides how to display a hosted file by its extension, so a name that loses the
+ * user's .md/.txt/.pdf becomes an undisplayable <id>.bin. MIME cannot recover it (File.type
+ * is '' for most non-media extensions), so the picked name wins outright and only a
+ * nameless or extension-less pick falls back to the MIME-derived form. The ALBUM path is
+ * unaffected on purpose: it uploads a transcoded artifact whose type IS known and whose
+ * name is deliberately neutral (m.<ext>).
+ */
+export function editorUploadFileName(name: string | undefined): string | undefined {
+  const picked = (name ?? '').trim();
+  if (picked === '') return undefined;
+  const ext = picked.includes('.') ? picked.slice(picked.lastIndexOf('.') + 1) : '';
+  return /^[a-z0-9]{1,16}$/i.test(ext) ? picked : undefined;
+}
 
 export function shouldWriteAlbumUploadOp(
   purpose: JobPurpose,

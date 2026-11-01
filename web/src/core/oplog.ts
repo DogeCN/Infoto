@@ -15,7 +15,7 @@ const DB_VERSION = 3;
 const STORE = 'oplog';
 const CACHE_STORE = 'metaCache';
 const PHOTO_STORE = 'photos';
-/** Reserved metaCache key holding the last full /sync snapshot. Album hashes are 64 hex
+/** Reserved metaCache key holding the last full sync snapshot. Album hashes are 64 hex
  *  characters, so this word can never collide with one. */
 const SNAPSHOT_KEY = 'snapshot';
 /** Store the previous version used for resumable uploads; 3 absorbed it into `photos`. */
@@ -388,7 +388,7 @@ export function rebuildCache(db: IDBDatabase, snapshot: SyncResponse): Promise<v
   });
 }
 
-/** The last full /sync snapshot, or null when this device has never completed a sync. */
+/** The last full sync snapshot, or null when this device has never completed a sync. */
 export function readSnapshot(db: IDBDatabase): Promise<SyncResponse | null> {
   return run(db, CACHE_STORE, 'readonly', (tx) => {
     const req = tx.objectStore(CACHE_STORE).get(SNAPSHOT_KEY);

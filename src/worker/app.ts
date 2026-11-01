@@ -4,19 +4,21 @@ import { Hono } from 'hono';
 import type { Translator } from '../shared/types.ts';
 import type { Db } from './db.ts';
 import { notFoundPage, serverErrorPage } from './errors.ts';
-import { syncHandler } from './routes/sync.ts';
+
 import { mediaHandler } from './routes/media.ts';
 import { migrateExportHandler, migrateImportHandler } from './routes/migrate.ts';
 import { adminApp } from './routes/admin.ts';
 
 export interface AppEnv {
   db: Db;
+  /** The single album Durable Object ("global") — migrate flushes/rehydrates through it. */
+  album?: DurableObjectNamespace;
   /** External image-host facade the browser uploads to (contract: README §Media host facade).
-   *  Delivered in the /sync response; defaults to the local simulated host in dev. */
+   *  Delivered in the /ws welcome frame; defaults to the local simulated host in dev. */
   mediaHostUrl?: string;
   /** Cloudflare Turnstile secret key. */
   turnstileSecret?: string;
-  /** Public Turnstile site key — delivered in the /sync 401 `turnstile_required` body. */
+  /** Public Turnstile site key — delivered in the `turnstile_required` error frame. */
   turnstileSiteKey?: string;
   /** Static file fallback (the ASSETS binding). */
   assets?: (req: Request) => Promise<Response>;
@@ -24,19 +26,21 @@ export interface AppEnv {
   translate?: Translator;
 }
 
+/** The one album object; there are no other albums. */
+export const globalAlbumId = 'global';
+
 /** Endpoints answering JSON. Everything else gets the HTML error page, so a media
  *  proxy or static request never has to parse an error body. */
-const JSON_ROUTE = /^\/(?:sync|admin)(?:\/|$)/;
+const JSON_ROUTE = /^\/admin(?:\/|$)/;
 
 export function createApp(env: AppEnv): Hono {
   const app = new Hono();
 
-  app.post('/sync', syncHandler(env));
   // A real robots policy: the SPA fallback would otherwise answer /robots.txt with the
   // HTML shell (a soft-200 that crawlers — e.g. the Google Lens URL fetcher — read as
   // noise instead of a policy).
   app.get('/robots.txt', () => {
-    const body = 'User-agent: *\nDisallow: /admin\nDisallow: /sync\n';
+    const body = 'User-agent: *\nDisallow: /admin\nDisallow: /ws\n';
     return new Response(body, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',

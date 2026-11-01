@@ -56,15 +56,11 @@ test('run_worker_first: every Worker route reaches the Worker', () => {
 
 test('run_worker_first: the API collections are covered bare and by sub-path', () => {
   const patterns = runWorkerFirst();
-  // Cloudflare does not document whether `*` crosses `/`, so a collection whose sub-resources
-  // are a segment deeper than the base needs both forms present.
-  for (const base of ['/admin/announcements', '/admin/polls', '/admin/feedback']) {
-    assert.ok(patterns.includes(base), `run_worker_first is missing the bare ${base}`);
-    assert.ok(
-      patterns.includes(`${base}/*`),
-      `run_worker_first is missing ${base}/* (sub-resources such as ${base}/:id)`,
-    );
-  }
+  // Announcement / poll / feedback mutations are WebSocket ops via the Durable Object
+  // (ADR 0026); the HTTP write surface left is /admin/migrate and /admin/translate, both
+  // listed above.
+  assert.ok(patterns.includes('/admin/migrate'), 'run_worker_first is missing /admin/migrate');
+  assert.ok(patterns.includes('/admin/translate'), 'run_worker_first is missing /admin/translate');
 });
 
 test('run_worker_first: the SPA shell stays with the asset layer', () => {

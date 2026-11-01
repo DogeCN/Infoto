@@ -1,38 +1,56 @@
+// Seeded album integration: the real Worker + Durable Object against a seeded local D1.
+//
+// Opt-in (`INFOTO_SEEDED_TEST`): seeding is a manual step, so CI and a normal local run
+// skip these. The write entry is the `/ws` WebSocket (ADR 0026) — the old `POST /sync`
+// probes these used are gone — so state reads open a real connection and read its `welcome`
+// snapshot.
+//
+// ⚠️ One connection per user: the Durable Object replaces a user's older socket (4001), so
+// every `snapshot()` read kicks the page's own connection until it syncs again. Assertions
+// read server state from that fresh connection, and UI state is checked after a reload.
 import { expect, test, type Page } from '@playwright/test';
-import type { SyncResponse } from '../../../src/shared/types';
+import type { Announcement, Feedback, Op, Poll, Photo } from '../../../src/shared/types';
+import { connectRoot, connectVisitor, type LiveAlbum } from './albumSocket';
 
 test.skip(
   !process.env['INFOTO_SEEDED_TEST'],
   'Requires seeded local D1 with the all-zero root UUID.',
 );
 
-async function enter(page: Page, role = 'root') {
+/** The album state as a real client sees it: the `welcome` snapshot over `/ws`. */
+interface AlbumView {
+  selfId: number;
+  photos: Photo[];
+  announcements: Announcement[];
+  polls: Poll[];
+  feedback: Feedback[];
+}
+
+/** Dial the album as `role` and connect the page's own engine (a `goto` first: same-origin). */
+async function enter(page: Page, role: 'root' | 'visitor' = 'root'): Promise<LiveAlbum> {
   await page.addInitScript(() => localStorage.setItem('infoto-locale', 'en-US'));
-  if (role === 'root') {
-    const response = await page.request.post('/sync', {
-      headers: { Cookie: 'uuid=00000000-0000-0000-0000-000000000000' },
-      data: { locale: 'en-US', ops: [] },
-    });
-    expect(response.ok()).toBe(true);
-    expect((await response.json()).selfId).toBe(0);
-  } else {
-    const response = await page.request.post('/sync', {
-      data: { locale: 'en-US', ops: [], turnstileToken: 'seeded-e2e' },
-    });
-    expect(response.ok()).toBe(true);
-  }
   await page.goto('/');
+  const { album } = role === 'root' ? await connectRoot(page) : await connectVisitor(page);
   await expect(page.locator('main img').first()).toBeVisible();
+  return album;
 }
-async function snapshot(page: Page): Promise<SyncResponse> {
-  const response = await page.request.post('/sync', { data: { locale: 'en-US', ops: [] } });
-  expect(response.ok()).toBe(true);
-  return response.json();
+
+/** Read the present album state over its own connection, then close it. */
+async function snapshot(page: Page, role: 'root' | 'visitor' = 'root'): Promise<AlbumView> {
+  const { album, welcome } = role === 'root' ? await connectRoot(page) : await connectVisitor(page);
+  await album.close();
+  return {
+    selfId: welcome.selfId,
+    photos: welcome.snapshot?.photos ?? [],
+    announcements: welcome.snapshot?.announcements ?? [],
+    polls: welcome.snapshot?.polls ?? [],
+    feedback: welcome.snapshot?.feedback ?? [],
+  };
 }
-async function sync(page: Page) {
-  const done = page.waitForResponse((r) => new URL(r.url()).pathname === '/sync' && r.ok());
-  await page.getByRole('button', { name: /^Sync/ }).click();
-  await done;
+
+/** Root-only cleanup: delete every row this spec created, as ops. */
+async function cleanup(album: LiveAlbum, ops: Op[]): Promise<void> {
+  if (ops.length > 0) await album.apply(ops);
 }
 
 test('seeded gallery supports filters, video playback, nested buttons and downloads', async ({
@@ -90,7 +108,7 @@ test('seeded gallery supports filters, video playback, nested buttons and downlo
 test('independent polls, reactions and feedback persist through real sync and reload', async ({
   page,
 }) => {
-  await enter(page);
+  const album = await enter(page);
   const before = await snapshot(page);
   const announcementTitle = `Local review announcement ${Date.now()}`;
   const optionA = `First choice ${Date.now()}`;
@@ -100,28 +118,32 @@ test('independent polls, reactions and feedback persist through real sync and re
   let announcementId: number | undefined;
 
   try {
-    const pollResponse = await page.request.post('/admin/polls', {
-      data: {
-        options: [optionA, optionB],
-        allowMultiple: true,
-        locale: 'en-US',
+    // Admin CRUD is a WebSocket op now, so a spec drives it the way a real admin does.
+    const createdPoll = await album.apply([
+      {
+        type: 'poll_create',
+        cid: `poll-${Date.now()}`,
+        payload: { options: [optionA, optionB], allowMultiple: true, locale: 'en-US' },
       },
-    });
-    expect(pollResponse.ok()).toBe(true);
-    const poll = ((await pollResponse.json()) as { poll: SyncResponse['polls'][number] }).poll;
-    pollId = poll.id;
+    ]);
+    expect(createdPoll.dropped).toEqual([]);
+    pollId = (createdPoll.applied[0]?.op.payload as { id?: number } | undefined)?.id;
+    expect(pollId).toBeGreaterThan(0);
 
-    const announcementResponse = await page.request.post('/admin/announcements', {
-      data: {
-        title: announcementTitle,
-        contentMd: `Choose below.\n\n::poll:en-US:${poll.id}`,
-        locale: 'en-US',
+    const createdAnn = await album.apply([
+      {
+        type: 'ann_create',
+        cid: `ann-${Date.now()}`,
+        payload: {
+          title: announcementTitle,
+          contentMd: `Choose below.\n\n::poll:en-US:${pollId}`,
+          locale: 'en-US',
+        },
       },
-    });
-    expect(announcementResponse.ok()).toBe(true);
-    announcementId = (
-      (await announcementResponse.json()) as { announcement: SyncResponse['announcements'][number] }
-    ).announcement.id;
+    ]);
+    expect(createdAnn.dropped).toEqual([]);
+    announcementId = (createdAnn.applied[0]?.op.payload as { id?: number } | undefined)?.id;
+    expect(announcementId).toBeGreaterThan(0);
 
     await page.reload();
     await expect(page.locator('main img').first()).toBeVisible();
@@ -137,7 +159,12 @@ test('independent polls, reactions and feedback persist through real sync and re
     await expect(sidebar.getByText(text, { exact: true })).toBeVisible();
     await sidebar.getByRole('button', { name: 'Send', exact: true }).click();
     await page.keyboard.press('Escape');
-    await sync(page);
+    // The send queued a feedback op; the page flushes it on its own schedule.
+    await expect
+      .poll(async () => (await snapshot(page)).feedback.some((item) => item.contentMd === text), {
+        timeout: 15_000,
+      })
+      .toBe(true);
     await page.reload();
     await expect(page.locator('main img').first()).toBeVisible();
 
@@ -160,20 +187,27 @@ test('independent polls, reactions and feedback persist through real sync and re
       .poll(async () => (await snapshot(page)).feedback.some((item) => item.contentMd === text))
       .toBe(false);
   } finally {
+    const ops: Op[] = [];
     if (announcementId !== undefined)
-      await page.request.delete(`/admin/announcements/${announcementId}`);
-    if (pollId !== undefined) await page.request.delete(`/admin/polls/${pollId}`);
+      ops.push({ type: 'ann_delete', target: announcementId, cid: `c-ann-${Date.now()}` });
+    if (pollId !== undefined)
+      ops.push({ type: 'poll_delete', target: pollId, cid: `c-poll-${Date.now()}` });
     for (const feedback of (await snapshot(page)).feedback.filter(
       (item) => item.contentMd === text,
     ))
-      await page.request.delete(`/admin/feedback/${feedback.id}`);
+      ops.push({
+        type: 'fb_delete',
+        target: feedback.id,
+        cid: `c-fb-${feedback.id}-${Date.now()}`,
+      });
+    await cleanup(album, ops);
   }
 });
 
 test('admin creates, edits, cancels, reorders, exports and deletes announcements', async ({
   page,
 }) => {
-  await enter(page);
+  const album = await enter(page);
   const before = await snapshot(page);
   const title = `Local review announcement ${Date.now()}`;
   try {
@@ -226,11 +260,16 @@ test('admin creates, edits, cancels, reorders, exports and deletes announcements
       .poll(async () => (await snapshot(page)).announcements.some((a) => a.title === title))
       .toBe(false);
   } finally {
+    const ops: Op[] = [
+      {
+        type: 'ann_reorder',
+        cid: `reorder-${Date.now()}`,
+        payload: { locale: 'en-US', ids: before.announcements.map((a) => a.id) },
+      },
+    ];
     for (const a of (await snapshot(page)).announcements.filter((a) => a.title === title))
-      await page.request.delete(`/admin/announcements/${a.id}`);
-    await page.request.post('/admin/announcements/reorder', {
-      data: { ids: before.announcements.map((a) => a.id) },
-    });
+      ops.unshift({ type: 'ann_delete', target: a.id, cid: `c-${a.id}-${Date.now()}` });
+    await cleanup(album, ops);
   }
 });
 
@@ -238,15 +277,19 @@ test('ordinary visitors cannot use admin APIs and the narrow gallery remains usa
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await enter(page, 'visitor');
-  expect((await snapshot(page)).selfId).not.toBe(0);
-  expect(
-    (
-      await page.request.post('/admin/announcements', {
-        data: { title: 'Forbidden', contentMd: 'test' },
-      })
-    ).status(),
-  ).toBe(403);
+  const visitor = await enter(page, 'visitor');
+  expect((await snapshot(page, 'visitor')).selfId).not.toBe(0);
+  // A non-root admin op is refused before the log — the socket-era equivalent of the 403.
+  const refused = await visitor.apply([
+    {
+      type: 'ann_create',
+      cid: `forbidden-${Date.now()}`,
+      payload: { title: 'Forbidden', contentMd: 'test', locale: 'en-US' },
+    },
+  ]);
+  expect(refused.dropped.length).toBeGreaterThan(0);
+  expect(refused.applied).toEqual([]);
+  // /admin/migrate is still an HTTP route, so its status check stands.
   expect((await page.request.get('/admin/migrate')).status()).toBe(403);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const sidebar = page.getByRole('dialog', { name: 'Settings' });

@@ -3,6 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { fmt, locales } from '../../../src/shared/copy';
 import { passGate } from './helpers';
+import { LiveAlbum, installSyncWorker } from './albumSocket';
 
 const enCopy = locales['en-US'];
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -91,7 +92,6 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
 
   test('image E2E: JPEG → WebP → OPFS → /upload proxy → URL written to op-log → duplicate upload skips', async ({
     page,
-    context,
   }) => {
     const pageErrors: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
@@ -112,22 +112,19 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await expect(photoCards(page).first()).toBeVisible();
     expect(pageErrors).toEqual([]);
 
-    // the sha dedupe cache lives in IndexedDB and is refreshed by the engine's
-    // sync path — hit the real top-bar sync button (a bare fetch would not
-    // refresh it), so the second pick can hit the duplicate branch
+    // The sha dedupe cache lives in IndexedDB and is refreshed by the engine's sync path.
+    // A connected client hides the sync button (ADR 0026): the welcome/exchange that
+    // follows every ingest is what refreshes it, so the second pick can hit the duplicate.
     const topImage = photoCards(page).first().locator('img');
     await expect(topImage).toHaveCSS('opacity', '1', { timeout: 30_000 });
-    await page.locator('header button:has(svg.lucide-refresh-cw)').click();
-    await page.waitForResponse(
-      (r) => r.url().includes('/sync') && r.request().method() === 'POST' && r.ok(),
-      { timeout: 30_000 },
-    );
-    await expect(topImage).toHaveCSS('opacity', '1');
 
-    // Assert duplicate detection through pipeline events and the server snapshot.
+    // The duplicate upload leaves the photo count unchanged. Reading it opens a fresh
+    // connection, which the Durable Object lets replace the page's own (one per user);
+    // the page reconnects by itself, and every count below is taken the same way.
     const count = async () => {
-      const r = await context.request.post('/sync', { data: { locale: 'en-US', ops: [] } });
-      return ((await r.json()) as { photos: unknown[] }).photos.length;
+      const { album, welcome } = await LiveAlbum.connect(page);
+      await album.close();
+      return welcome.snapshot?.photos.length ?? 0;
     };
     const before = await count();
     const dupLog = page.waitForEvent('console', {
@@ -141,7 +138,6 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     await chooser2;
     await dupLog;
     await expect(page.getByText(duplicateLabel).last()).toBeVisible();
-    await page.locator('header button:has(svg.lucide-refresh-cw)').click();
     await expect.poll(count, { timeout: 30_000 }).toBe(before); // The duplicate upload leaves the photo count unchanged.
   });
 
@@ -189,9 +185,13 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     expect(r.at).toBe(false);
   });
 
-  test('retry handle: failed tasks expose a retry button', async ({ page }) => {
+  test('retry handle: a stage-1 failure stays a toast with no card', async ({ page }) => {
     await passGate(page);
-    // An empty PNG fails decoding and exposes a retryable upload card.
+    // A failure before the artifact exists has nothing to preview or resend, so it must not
+    // render a card. The retryable card (stage 1 done, upload refused) needs an unavailable
+    // facade, which is `seeded.spec.ts`'s `INFOTO_EXPECT_UPLOAD_FAILURE` case: the browser
+    // POSTs straight to the facade from the SharedWorker, so a page-level route cannot
+    // make that leg fail.
     const chooser = page
       .waitForEvent('filechooser')
       .then((fc) =>
@@ -199,10 +199,10 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
       );
     await uploadButton(page).click();
     await chooser;
-    await expect(page.locator('button:has(svg.lucide-rotate-ccw)').first()).toBeVisible({
+    await expect(page.getByRole('button', { name: retryLabel, exact: true })).toHaveCount(0);
+    await expect(page.getByText(fmt(enCopy.upload.failed, { fileName: 'retry.png' }))).toBeVisible({
       timeout: 120_000,
     });
-    await expect(page.getByRole('button', { name: retryLabel, exact: true })).toBeVisible();
   });
 
   test('cross-tab: page A uploads, page B sees it (SharedWorker + BroadcastChannel + sync)', async ({
@@ -228,29 +228,36 @@ test.describe('transcode + upload pipeline (local Worker)', () => {
     }).toPass({ timeout: 30_000 });
   });
 
-  test('pagehide submit: a queued op leaves in a keepalive request', async ({ page }) => {
-    await passGate(page);
+  test('pagehide submit: the queued op leaves in an `ops` frame', async ({ page }) => {
+    // The socket lives in the SharedWorker, so a page-level `routeWebSocket` cannot see
+    // it. `installSyncWorker` moves that one worker in-page, and the proxy below then
+    // records every client frame while forwarding to the real Durable Object — the
+    // connection the flush needs stays intact.
+    await installSyncWorker(page);
+    const frames: string[] = [];
+    await page.routeWebSocket('**/ws', (route) => {
+      const server = route.connectToServer();
+      route.onMessage((message) => {
+        if (typeof message === 'string') frames.push(message);
+        server.send(message);
+      });
+      server.onMessage((message) => route.send(message));
+    });
 
     // The flush is a no-op with an empty oplog, so the op has to go through the engine:
     // submitting feedback from the sidebar appends it and leaves one operation pending.
+    await page.addInitScript(() => localStorage.setItem('infoto-locale', 'en-US'));
+    await page.goto('/');
     const sidebar = page.getByRole('dialog', { name: enCopy.sidebar.announcementsTitle });
     await page.getByRole('button', { name: enCopy.topbar.announcements, exact: true }).click();
     await sidebar.getByPlaceholder(enCopy.announcements.feedbackPlaceholder).fill('pagehide-e2e');
     await sidebar.getByRole('button', { name: enCopy.announcements.send, exact: true }).click();
 
-    // Wait for the pending badge: appending the op is an IndexedDB write, so the flush
-    // is still a no-op a tick after the click. The badge is the UI's own signal that
-    // the engine holds an unsent operation.
-    const syncButton = page.getByRole('button', {
-      name: fmt(enCopy.sync.pendingCount, { count: 1 }),
-    });
-    await expect(syncButton).toBeVisible();
-
-    // Observe the flush itself: the engine's keepalive POST carries the queued op.
-    const flushed = page.waitForRequest((r) => r.url().includes('/sync') && r.method() === 'POST', {
-      timeout: 15_000,
-    });
+    // The page-exit flush sends the queued op as one `ops` frame. A connected client hides
+    // the sync button (ADR 0026), so the frame — not a badge — is the observable signal.
     await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
-    expect((await flushed).postData()).toContain('fb_create');
+    await expect
+      .poll(() => frames.some((f) => f.includes('fb_create')), { timeout: 15_000 })
+      .toBe(true);
   });
 });

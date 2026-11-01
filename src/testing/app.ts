@@ -1,11 +1,13 @@
 // Scaffolding shared by the Worker route tests: schema load, in-memory app factory,
-// Turnstile siteverify stub and the /sync request helpers. Every test file installs the
-// stub itself (vitest isolates per file).
+// Turnstile siteverify stub and a request-costing database wrapper. Every test file
+// installs the stub itself (vitest isolates per file).
+//
+// Identity and album mutations are WebSocket ops via the Durable Object now, so there is
+// no HTTP write route to drive in tests — fixtures that need rows insert them directly.
 
-import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Op, SyncResponse, Translator } from '../shared/types.ts';
+import type { Translator } from '../shared/types.ts';
 import { createApp } from '../worker/app.ts';
 import type { Db, DbPrepared, DbStatement } from '../worker/db.ts';
 import { VERIFY_URL } from '../worker/turnstile.ts';
@@ -104,32 +106,4 @@ export function countingDb(
       },
     },
   };
-}
-
-export function cookieFrom(res: Response): string {
-  const raw = res.headers.get('set-cookie') ?? '';
-  const m = raw.match(/uuid=([^;]+)/);
-  assert.ok(m, 'Set-Cookie uuid');
-  return `uuid=${m[1]}`;
-}
-
-export async function sync(app: TestApp, body: unknown, cookie?: string): Promise<Response> {
-  return app.request('http://localhost/sync', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
-    body: JSON.stringify(body),
-  });
-}
-
-/** Identity-creating empty sync; the stub accepts the fake token. */
-export function syncNew(app: TestApp, cookie?: string): Promise<Response> {
-  return sync(app, { ops: [], turnstileToken: 'ok' }, cookie);
-}
-
-export function postOps(app: TestApp, cookie: string, ops: Op[]): Promise<Response> {
-  return sync(app, { ops }, cookie);
-}
-
-export async function snap(app: TestApp, cookie: string): Promise<SyncResponse> {
-  return (await (await postOps(app, cookie, [])).json()) as SyncResponse;
 }

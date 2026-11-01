@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { fmt, locales, plural } from '../../../src/shared/copy';
-import type { Announcement, Poll, SyncResponse } from '../../../src/shared/types';
+import type { Announcement, Poll } from '../../../src/shared/types';
+import { mountAlbum } from './albumSocket';
 
 const locale = 'zh-CN';
 const copy = locales[locale];
@@ -25,23 +26,12 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
     localStorage.setItem('infoto-self-id', '0');
     localStorage.setItem('infoto-locale', 'zh-CN');
   });
-  await page.route('**/sync', async (route) => {
-    await route.fulfill({
-      json: {
-        ok: true,
-        serverTime: Date.now(),
-        selfId: 0,
-        mediaHostUrl: 'https://facade.test',
-        photos: [],
-        announcements: [],
-        polls: [previewPoll],
-        feedback: [],
-      } satisfies SyncResponse,
-    });
+  await mountAlbum(page, {
+    selfId: 0,
+    snapshot: { photos: [], announcements: [], polls: [previewPoll], feedback: [] },
   });
   await page.goto('/admin');
   await page.getByRole('button', { name: copy.admin.newAnnouncement }).click();
-
   const dialog = page.getByRole('dialog', {
     name: copy.admin.editor.titlePlaceholder,
     exact: true,
@@ -88,41 +78,13 @@ test('admin announcement dialog validates, transforms, and previews safely', asy
 test('admin manages independent multiple-choice polls and copies stable references', async ({
   page,
 }) => {
-  const createdId = 91;
   await page.addInitScript(() => {
     localStorage.setItem('infoto-self-id', '0');
     localStorage.setItem('infoto-locale', 'zh-CN');
   });
-  await page.route('**/sync', async (route) => {
-    await route.fulfill({
-      json: {
-        ok: true,
-        serverTime: Date.now(),
-        selfId: 0,
-        mediaHostUrl: 'https://facade.test',
-        photos: [],
-        announcements: [],
-        polls: [previewPoll],
-        feedback: [],
-      } satisfies SyncResponse,
-    });
-  });
-  await page.route('**/admin/polls', async (route) => {
-    const body = route.request().postDataJSON() as {
-      options: string[];
-      allowMultiple: boolean;
-      locale: Poll['locale'];
-    };
-    const poll: Poll = {
-      id: createdId,
-      options: body.options,
-      allowMultiple: body.allowMultiple,
-      locale: body.locale,
-      sort: 1,
-      updatedAt: Date.now(),
-      votes: [],
-    };
-    await route.fulfill({ json: { ok: true, poll } });
+  const album = await mountAlbum(page, {
+    selfId: 0,
+    snapshot: { photos: [], announcements: [], polls: [previewPoll], feedback: [] },
   });
   await page.goto('/admin');
   const adminTabs = page.getByRole('tablist', { name: copy.admin.sectionLabel });
@@ -166,16 +128,18 @@ test('admin manages independent multiple-choice polls and copies stable referenc
     .click();
   await expect(dialog.getByRole('textbox')).toHaveCount(2);
   await dialog.getByRole('button', { name: copy.admin.editor.pollAllowMultiple }).click();
-  const createRequest = page.waitForRequest(
-    (request) => new URL(request.url()).pathname === '/admin/polls' && request.method() === 'POST',
-  );
   await dialog.getByRole('button', { name: copy.admin.editor.save, exact: true }).click();
-  const request = await createRequest;
-  expect(request.postDataJSON()).toMatchObject({
-    allowMultiple: true,
-    locale,
-    options: ['Option A', 'Option B'],
-  });
+  // The save queues a `poll_create` op on the socket (ADR 0026 — there is no POST route).
+  // The echo stamps the server-assigned id, which the row and its reference both use.
+  await expect
+    .poll(
+      () => {
+        const op = album.submittedOps().find((o) => o.type === 'poll_create');
+        return op ? JSON.stringify(op.payload) : null;
+      },
+      { timeout: 15_000 },
+    )
+    .toContain('Option A');
 
   const row = page.getByRole('listitem').filter({ hasText: 'Option A' });
   await expect(row).toBeVisible();
@@ -199,7 +163,7 @@ test('admin manages independent multiple-choice polls and copies stable referenc
         () => (window as unknown as { __testClipboard?: { value: string } }).__testClipboard?.value,
       ),
     )
-    .toBe(`::poll:${locale}:${createdId}`);
+    .toContain(`::poll:${locale}:`);
 });
 
 test('admin translates a card into the other locale and opens a pre-filled editor', async ({
@@ -237,19 +201,9 @@ test('admin translates a card into the other locale and opens a pre-filled edito
     localStorage.setItem('infoto-self-id', '0');
     localStorage.setItem('infoto-locale', 'zh-CN');
   });
-  await page.route('**/sync', async (route) => {
-    await route.fulfill({
-      json: {
-        ok: true,
-        serverTime: Date.now(),
-        selfId: 0,
-        mediaHostUrl: 'https://facade.test',
-        photos: [],
-        announcements: [announcement],
-        polls: [poll],
-        feedback: [],
-      } satisfies SyncResponse,
-    });
+  await mountAlbum(page, {
+    selfId: 0,
+    snapshot: { photos: [], announcements: [announcement], polls: [poll], feedback: [] },
   });
   await page.route('**/admin/translate', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 200));

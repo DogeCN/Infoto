@@ -1,60 +1,49 @@
-// Sync on initialization, pagehide, or explicit request. Unsent operations persist in IndexedDB.
+// The per-tab sync engine over the coordinator transport (ADR 0026). Every op is
+// persisted in the shared IndexedDB oplog first — with its client nonce (cid) and commit
+// time (ct) — and the coordinator (one WebSocket per browser, ADR 0026 §8) owns the
+// connection, the backlog flush, and the ack bookkeeping. This engine's remaining jobs:
+// stamp and queue ops, apply what the server broadcasts to this tab's store, and mirror
+// the connection state to the UI. Triggers stay ADR 0008's: page open, page exit, and
+// the sync button, which exists only while the socket is not connected.
 
-import { MAX_SYNC_OPS, type Op, type SyncRequest, type SyncResponse } from '$shared/types';
-import { postSync } from './api/syncClient';
-import { coalesceKey, type MarkSet } from './ops';
+import type { AppliedOp, Op, SyncResponse, WsServerFrame } from '$shared/types';
 import {
-  rebuildCache,
   appendOp,
   appendUpload,
-  countOps,
-  deleteOps,
   openOplogDb,
   putOp,
   readOps,
   readPhotoRecords,
   readSnapshot,
+  rebuildCache,
   removePhotos,
   retirePhotos,
   updatePhotoRecord,
-  uploadOpShas,
   type PhotoRecord,
 } from './oplog';
-
-/** Browser hard limit for a keepalive request body. */
-export const KEEPALIVE_BODY_LIMIT = 65_536;
-
-/** Longest operation prefix within the UTF-8 keepalive byte budget and server operation limit. Returns null if the first operation exceeds the budget. */
-export function keepalivePrefix(
-  ops: Op[],
-  budget: number = KEEPALIVE_BODY_LIMIT,
-): { ops: Op[]; body: string } | null {
-  const enc = new TextEncoder();
-  const wrapper = enc.encode(JSON.stringify({ ops: [] })).length;
-  let bytes = wrapper;
-  const picked: Op[] = [];
-  for (const op of ops.slice(0, MAX_SYNC_OPS)) {
-    const size = enc.encode(JSON.stringify(op)).length + (picked.length > 0 ? 1 : 0); // comma
-    if (bytes + size > budget) {
-      if (picked.length === 0) return null; // first op alone is oversize
-      break;
-    }
-    bytes += size;
-    picked.push(op);
-  }
-  return { ops: picked, body: JSON.stringify({ ops: picked }) };
-}
+import { coalesceKey, type MarkSet } from './ops';
+import { portTransport, sharedWorkerTransport, type SyncTransport } from '../sync/transport';
 
 export interface EngineIo {
   db?: IDBDatabase;
-  fetchFn?: typeof fetch;
-  postSyncFn?: typeof postSync;
-  /** Response sink (store write). */
+  /** Transport override (tests); defaults to the SharedWorker coordinator. */
+  transport?: SyncTransport;
+  /** Response sink (store write) — a whole snapshot from `welcome`. */
   onSyncResponse?: (r: SyncResponse, context: SyncSnapshotContext) => void;
-  /** Last persisted snapshot, delivered before the first request so a returning visitor
-   *  renders the album instead of an empty state for one round trip. */
+  /** Last persisted snapshot, delivered before the first exchange so a returning visitor
+   *  renders the album instead of an empty state while the socket opens. */
   onCachedSnapshot?: (r: SyncResponse) => void;
-  onError?: (phase: 'submit' | 'pagehide', e: unknown) => void;
+  /** Ops broadcast by the server that this tab did not originate — applied live. */
+  onServerOps?: (applied: AppliedOp[]) => void;
+  /** The echo of an op this tab originated: already applied optimistically, so the store
+   *  only learns the server-assigned identity (a create's real id) through it. */
+  onOwnEcho?: (applied: AppliedOp) => void;
+  /** The server refused one of this tab's ops; the optimistic state rolls back. */
+  onOpDropped?: (cid: string) => void;
+  onError?: (phase: 'connect' | 'submit', e: unknown) => void;
+  /** The server wants a Turnstile token before this device gets an identity; the app
+   *  renders the widget and calls verify() with the answer. */
+  onTurnstileRequired?: (siteKey: string | null) => void;
 }
 
 export interface SyncSnapshotContext {
@@ -62,38 +51,71 @@ export interface SyncSnapshotContext {
   queuedOps: Op[];
 }
 
-type SyncAttemptResult =
-  | { ok: true; confirmedThroughVersion: number }
-  | { ok: false; error: unknown; confirmedThroughVersion: number };
+export type SyncAttemptResult = { ok: true } | { ok: false; error: unknown };
 
 export interface EngineState {
-  /** true = a sync is in flight (ops keep accumulating; operations are never blocked). */
+  /** true = the coordinator has a flush in flight (ops keep accumulating). */
   syncing: boolean;
-  /** Pending op count (snapshot, for harness display). */
+  /** Pending op count across the browser (snapshot, for the button badge). */
   pending: number;
+  /** The shared socket is open and authenticated. The sync button hides on true and
+   *  shows on false — offline, dropped, kicked, or still negotiating (ADR 0026). */
+  connected: boolean;
 }
+
+const CONNECT_TIMEOUT_MS = 15_000;
+/** Sliding cookie window; matches the server's session cookie (400-day browser cap). */
+const COOKIE_MAX_AGE_S = 34_560_000;
 
 const globalScope = globalThis as unknown as { __infotoEngine?: SyncEngine };
 
-/** Sync engine — singleton. */
+/** Sync engine — one per tab. The transport is shared; the stores are not. */
 export class SyncEngine {
   private db: IDBDatabase | null = null;
   private io: EngineIo;
+  private transport: SyncTransport;
   private listeners = new Set<(s: EngineState) => void>();
-  private syncing = false;
   private pending = 0;
-  private activeSync: Promise<SyncAttemptResult> | null = null;
-  private inFlightKeys = new Set<IDBValidKey>();
+  private connected = false;
+  private syncing = false;
+  /** Cids this tab originated and has not seen echoed; their broadcast skips the apply,
+   *  because the optimistic state is already on screen. A superseded op keeps its nonce
+   *  here on purpose: its echo must stay skipped even though the queue entry moved on. */
+  private recentCids = new Set<string>();
   private pagehideInstalled = false;
-  readonly state: EngineState = { syncing: false, pending: 0 };
+  readonly state: EngineState = { syncing: false, pending: 0, connected: false };
 
   constructor(io: EngineIo = {}) {
     this.io = io;
     this.db = io.db ?? null;
+    this.transport =
+      io.transport ??
+      sharedWorkerTransport() ??
+      // No SharedWorker (old Safari): no shared connection is possible, so the page runs
+      // in the offline state — browsing and queueing work, syncing waits for a browser
+      // that can hold the socket.
+      portTransport({
+        addEventListener: () => {},
+        postMessage: () => {},
+      });
+    this.transport.onFrame((frame) => this.onFrame(frame));
+    this.transport.onDropped((cid) => {
+      this.recentCids.delete(cid);
+      try {
+        this.io.onOpDropped?.(cid);
+      } catch {
+        // A rollback must never break the frame pump.
+      }
+    });
+    this.transport.onState((s) => {
+      this.connected = s.connected;
+      this.syncing = s.syncing;
+      this.pending = s.pending;
+      this.emit();
+    });
   }
 
-  /** Adopt a new set of callbacks (a remounted page supplies its own store). Injected
-   *  values already present are kept, so a later caller only has to pass what changed. */
+  /** Adopt a new set of callbacks (a remounted page supplies its own store). */
   rebind(io: EngineIo): void {
     if (io.db) this.db = io.db;
     this.io = { ...this.io, ...io };
@@ -102,6 +124,7 @@ export class SyncEngine {
   private emit(): void {
     this.state.syncing = this.syncing;
     this.state.pending = this.pending;
+    this.state.connected = this.connected;
     for (const l of this.listeners) l({ ...this.state });
   }
 
@@ -112,47 +135,149 @@ export class SyncEngine {
 
   async init(): Promise<void> {
     if (!this.db) this.db = await openOplogDb();
-    // Paint the last snapshot first: a returning visitor sees the album instead of the empty
-    // state for the length of the first round trip. A read failure is not fatal — the sync
-    // below still fills the store from the server.
+    // Paint the last snapshot first: a returning visitor sees the album instead of the
+    // empty state while the socket opens. A read failure is not fatal — the welcome
+    // snapshot replaces it moments later.
     const cached = await readSnapshot(this.db).catch(() => null);
     if (cached) this.io.onCachedSnapshot?.(cached);
-    this.pending = await countOps(this.db);
-    this.emit();
-    void this.sync();
+    this.transport.init();
   }
 
-  /** Persist an operation and return its oplog key. An operation that supersedes a queued one
-   *  on the same dimension (see `coalesceKey`) replaces it in place, so a toggled mark, a
-   *  changed vote or a re-picked reaction costs one entry instead of a growing chain. */
+  /** Open the shared connection. Never retried in the background: the visible sync
+   *  button is the retry, and ops keep queuing in IndexedDB meanwhile. */
+  connect(): void {
+    this.transport.connect();
+  }
+
+  /** Ride a Turnstile token on the coordinator's next hello. */
+  verify(token: string): void {
+    this.transport.verify(token);
+  }
+
+  private onFrame(frame: WsServerFrame): void {
+    switch (frame.type) {
+      case 'welcome': {
+        this.mirrorCookie(frame.uuid);
+        if (frame.snapshot) {
+          const response: SyncResponse = {
+            ok: true,
+            serverTime: frame.serverTime,
+            selfId: frame.selfId,
+            mediaHostUrl: frame.mediaHostUrl,
+            photos: frame.snapshot.photos,
+            announcements: frame.snapshot.announcements,
+            polls: frame.snapshot.polls,
+            feedback: frame.selfId === 0 ? frame.snapshot.feedback : [],
+          };
+          void this.applySnapshot(response);
+        }
+        // Catch-up replay: history this tab has not applied, in order, on top of the
+        // snapshot (or on top of live state in the incremental case).
+        if (frame.ops && frame.ops.length > 0) {
+          this.applyForeign(frame.ops);
+        }
+        return;
+      }
+      case 'ops': {
+        const own: AppliedOp[] = [];
+        const foreign: AppliedOp[] = [];
+        for (const applied of frame.applied) {
+          if (applied.cid && this.recentCids.has(applied.cid)) own.push(applied);
+          else foreign.push(applied);
+        }
+        this.applyForeign(foreign);
+        for (const applied of own) {
+          try {
+            this.io.onOwnEcho?.(applied);
+          } catch (e) {
+            console.error('[sync] own echo handling failed', e);
+          }
+        }
+        return;
+      }
+      case 'error':
+        if (frame.error === 'turnstile_required' || frame.error === 'turnstile_failed') {
+          this.io.onTurnstileRequired?.(frame.turnstileSiteKey ?? null);
+          return;
+        }
+        this.io.onError?.('submit', new Error(frame.error));
+        return;
+      case 'pong':
+        return;
+    }
+  }
+
+  private applyForeign(applied: AppliedOp[]): void {
+    if (applied.length === 0) return;
+    try {
+      this.io.onServerOps?.(applied);
+    } catch (e) {
+      console.error('[sync] broadcast apply failed', e);
+    }
+  }
+
+  /** Fresh identities learn their uuid here; the cookie is what the next WS handshake
+   *  and the admin routes read. JS cannot set HttpOnly, so the next handshake re-issues it. */
+  private mirrorCookie(uuid: string): void {
+    if (!uuid || typeof document === 'undefined') return;
+    const parts = [
+      `uuid=${encodeURIComponent(uuid)}`,
+      'Path=/',
+      'SameSite=Lax',
+      `Max-Age=${COOKIE_MAX_AGE_S}`,
+    ];
+    if (location.protocol === 'https:') parts.push('Secure');
+    document.cookie = parts.join('; ');
+  }
+
+  private async applySnapshot(response: SyncResponse): Promise<void> {
+    if (!this.db) this.db = await openOplogDb();
+    const queuedOps = (await readOps(this.db).catch(() => [])).map((entry) => entry.op);
+    this.io.onSyncResponse?.(response, { queuedOps });
+    await rebuildCache(this.db, response).catch((error) => {
+      console.warn('[sync] SHA cache rebuild failed', error);
+    });
+    // The snapshot is authoritative: every record whose sha it carries (or whose uploader
+    // is this identity) is now confirmed and leaves the pending set.
+    await retirePhotos(
+      this.db,
+      response.photos.map((photo) => photo.sha256),
+      response.selfId,
+    ).catch((error) => console.warn('[sync] photo record cleanup failed', error));
+  }
+
+  /** Persist an operation and return its oplog key. An operation that supersedes a queued
+   *  one on the same dimension (see `coalesceKey`) replaces it in place, so a toggled
+   *  mark, a changed vote or a re-picked reaction costs one entry instead of a chain. The
+   *  superseded op's nonce stays in the skip set on purpose: its echo must never apply
+   *  the stale value over the replacement's optimistic state. */
   async addOp(op: Op): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
-    const superseded = await this.queuedKeyFor(op);
+    // A caller that already assigned a nonce keeps it: the store registers its ack handlers
+    // by that cid, so regenerating one here would strand the optimistic row forever.
+    const stamped: Op = { ...op, cid: op.cid ?? crypto.randomUUID(), ct: op.ct ?? Date.now() };
+    const superseded = await this.queuedKeyFor(stamped);
+    this.recentCids.add(stamped.cid!);
     if (superseded !== null) {
-      await putOp(this.db, superseded, op);
+      await putOp(this.db, superseded, stamped);
       // The pending count is unchanged, so there is nothing for a listener to re-read.
+      this.transport.queued();
       return Number(superseded);
     }
-    const key = await appendOp(this.db, op);
-    this.pending = await countOps(this.db);
+    const key = await appendOp(this.db, stamped);
+    this.pending += 1;
     this.emit();
+    this.transport.queued();
     return Number(key);
   }
 
-  /**
-   * The key of a queued op this one supersedes, or null to append. An op already claimed by an
-   * in-flight request is never superseded: that request carries the old value, and a successful
-   * response clears the key, which would take the replacement with it — a silently lost edit.
-   * The scan runs only for ops that have a dimension at all, so a batch of uploads never pays
-   * for it.
-   */
+  /** The key of a queued op this one supersedes, or null to append. */
   private async queuedKeyFor(op: Op): Promise<IDBValidKey | null> {
     const key = coalesceKey(op);
     if (key === null || !this.db) return null;
     const entries = await readOps(this.db);
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i]!;
-      if (this.inFlightKeys.has(entry.key)) continue;
       if (coalesceKey(entry.op) === key) return entry.key;
     }
     return null;
@@ -167,9 +292,14 @@ export class SyncEngine {
    */
   async addUploadOp(op: Op, record: PhotoRecord): Promise<number> {
     if (!this.db) this.db = await openOplogDb();
-    const key = await appendUpload(this.db, op, record);
-    this.pending = await countOps(this.db);
+    // A caller that already assigned a nonce keeps it: the store registers its ack handlers
+    // by that cid, so regenerating one here would strand the optimistic row forever.
+    const stamped: Op = { ...op, cid: op.cid ?? crypto.randomUUID(), ct: op.ct ?? Date.now() };
+    const key = await appendUpload(this.db, stamped, record);
+    this.recentCids.add(stamped.cid!);
+    this.pending += 1;
     this.emit();
+    this.transport.queued();
     return Number(key);
   }
 
@@ -186,173 +316,50 @@ export class SyncEngine {
   }
 
   /**
-   * Withdraw photos the user deleted: each record, the mark ops addressed to it and the upload op
-   * the record owns, in one transaction for the whole selection. An op already claimed by an
-   * in-flight request cannot be un-sent, so the caller files a `delete` op afterwards and the
-   * server ends up correct whether that request lands or fails (create+delete, or nothing).
+   * Withdraw photos the user deleted: each record, the mark ops addressed to it and the
+   * upload op the record owns, in one transaction for the whole selection. An op already
+   * carried by an in-flight frame cannot be un-sent, so the caller files a `delete` op
+   * afterwards and the server ends up correct whether that frame lands or fails
+   * (create+delete, or nothing).
    */
   async withdrawPhotos(shas: readonly string[]): Promise<void> {
     if (shas.length === 0) return;
     if (!this.db) this.db = await openOplogDb();
     await removePhotos(this.db, shas);
-    this.pending = await countOps(this.db);
-    this.emit();
+    this.transport.queued();
   }
 
-  private pagehideUrl(): string {
-    return `${window.location.origin}/sync`;
-  }
-
-  /** Send a bounded keepalive prefix on pagehide, excluding operations owned by another in-flight request. */
-  private flushOnPagehide(): void {
-    if (!this.db || this.pending === 0) return;
-    const db = this.db;
-    const fetchFn = this.io.fetchFn ?? fetch;
-    void readOps(db)
-      .then((entries) => {
-        const available = entries.filter((entry) => !this.inFlightKeys.has(entry.key));
-        if (available.length === 0) return;
-        const fit = keepalivePrefix(
-          available.map((entry) => entry.op),
-          KEEPALIVE_BODY_LIMIT,
-        );
-        if (!fit) {
-          console.warn('[infoto] first op exceeds the keepalive budget; kept for the next sync');
-          return;
-        }
-        const keys = available.slice(0, fit.ops.length).map((entry) => entry.key);
-        for (const key of keys) this.inFlightKeys.add(key);
-        let request: Promise<Response>;
-        try {
-          request = fetchFn(this.pagehideUrl(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: fit.body,
-            credentials: 'include',
-            keepalive: true,
-          });
-        } catch (error) {
-          // A synchronous throw never reaches the chain below, so the keys
-          // would otherwise stay marked and every later flush would skip them.
-          for (const key of keys) this.inFlightKeys.delete(key);
-          this.reportPagehideError(error);
-          return;
-        }
-        void request
-          .then((response) => {
-            // Non-ok and a failed clear both leave the op queued, so the
-            // next session resends it — never swallow that reason.
-            if (response.ok) return deleteOps(db, keys);
-            this.reportPagehideError(new Error(`pagehide flush rejected: HTTP ${response.status}`));
-          })
-          .catch((error: unknown) => this.reportPagehideError(error))
-          .finally(() => {
-            for (const key of keys) this.inFlightKeys.delete(key);
-          });
-      })
-      .catch((error: unknown) => this.reportPagehideError(error));
-  }
-
-  private reportPagehideError(error: unknown): void {
-    try {
-      this.io.onError?.('pagehide', error);
-    } catch {
-      // Error reporting must not change flush semantics.
+  /** Awaitable manual sync: make sure the shared connection is up, then let the
+   *  coordinator flush. Edits made meanwhile ride the same queue. */
+  sync(): Promise<SyncAttemptResult> {
+    if (this.connected) {
+      this.transport.flush();
+      return Promise.resolve({ ok: true });
     }
-  }
-
-  private async applySnapshot(
-    db: IDBDatabase,
-    response: SyncResponse,
-    context: SyncSnapshotContext,
-  ): Promise<void> {
-    this.io.onSyncResponse?.(response, context);
-    await rebuildCache(db, response).catch((error) => {
-      console.warn('[sync] SHA cache rebuild failed', error);
+    this.transport.connect();
+    return new Promise<SyncAttemptResult>((resolve) => {
+      const timer = setTimeout(() => {
+        unsubscribe();
+        resolve({ ok: false, error: new Error('connect_timeout') });
+      }, CONNECT_TIMEOUT_MS);
+      const unsubscribe = this.onState((s) => {
+        if (!s.connected) return;
+        clearTimeout(timer);
+        unsubscribe();
+        this.transport.flush();
+        resolve({ ok: true });
+      });
     });
   }
 
-  private async runSync(): Promise<SyncAttemptResult> {
-    let available: Awaited<ReturnType<typeof readOps>> = [];
-    let confirmedThroughVersion = 0;
-    this.syncing = true;
-    this.emit();
-    try {
-      if (!this.db) this.db = await openOplogDb();
-      const db = this.db;
-      available = (await readOps(db)).filter((entry) => !this.inFlightKeys.has(entry.key));
-      for (const entry of available) this.inFlightKeys.add(entry.key);
-      // Reserve the captured queue; later operations stay queued for the next sync.
-      for (let offset = 0; offset < Math.max(1, available.length); offset += MAX_SYNC_OPS) {
-        const batch = available.slice(offset, offset + MAX_SYNC_OPS);
-        const request: SyncRequest = { ops: batch.map((entry) => entry.op) };
-        const { response } = await (this.io.postSyncFn ?? postSync)(request, {
-          keepalive: this.keepaliveEligible(request.ops),
-        });
-        await deleteOps(
-          db,
-          batch.map((entry) => entry.key),
-        );
-        for (const entry of batch) {
-          this.inFlightKeys.delete(entry.key);
-          confirmedThroughVersion = Math.max(confirmedThroughVersion, Number(entry.key));
-        }
-        this.pending = await countOps(db);
-        const queuedOps = (await readOps(db)).map((entry) => entry.op);
-        await this.applySnapshot(db, response, { queuedOps });
-        // After the fold, never before. The retirement states the marks the record still carries
-        // itself, so a client that never hydrated its in-memory mark map cannot lose them.
-        await retirePhotos(db, uploadOpShas(batch.map((entry) => entry.op)), response.selfId).catch(
-          (error) => console.warn('[sync] photo record cleanup failed', error),
-        );
-      }
-      return { ok: true, confirmedThroughVersion };
-    } catch (error) {
-      try {
-        this.io.onError?.('submit', error);
-      } catch {
-        // Error reporting does not affect request completion.
-      }
-      return { ok: false, error, confirmedThroughVersion };
-    } finally {
-      for (const entry of available) this.inFlightKeys.delete(entry.key);
-      this.syncing = false;
-      this.emit();
-    }
-  }
-
-  /** A request started on a hidden document dies with the page unless it is
-   * keepalive, so the last edit before closing the tab can leave — but only when the
-   * whole batch fits the browser's keepalive body cap. */
-  private keepaliveEligible(ops: Op[]): boolean {
-    if (typeof document === 'undefined' || document.visibilityState === 'visible') return false;
-    const fit = keepalivePrefix(ops, KEEPALIVE_BODY_LIMIT);
-    return fit !== null && fit.ops.length === ops.length;
-  }
-
-  private beginSync(): Promise<SyncAttemptResult> {
-    const promise = this.runSync();
-    this.activeSync = promise;
-    const clear = () => {
-      if (this.activeSync === promise) this.activeSync = null;
-    };
-    void promise.then(clear, clear);
-    return promise;
-  }
-
-  /** Awaitable manual and site-open sync with request coalescing: edits made during an
-   *  in-flight request stay queued for the next trigger. */
-  sync(): Promise<SyncAttemptResult> {
-    if (!this.activeSync) return this.beginSync();
-    return this.activeSync;
-  }
-
-  /** Install the pagehide flush. Visibility changes do not trigger synchronization. */
+  /** Page-exit trigger: the coordinator flushes immediately, skipping its debounce.
+   *  Best effort — the ops are durable in IndexedDB either way, and a frame that dies
+   *  with the page is resent next session (its cid makes that idempotent). */
   install(windowObj: Window = window): void {
     if (this.pagehideInstalled) return;
     this.pagehideInstalled = true;
     windowObj.addEventListener('pagehide', () => {
-      this.flushOnPagehide();
+      this.transport.flush();
     });
   }
 }
