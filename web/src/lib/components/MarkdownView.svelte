@@ -1,20 +1,26 @@
 <script lang="ts">
   // Sanitized Markdown rendering. External images are enabled only for trusted content.
   import { onDestroy } from 'svelte';
-  import MarkdownIt from 'markdown-it';
   import DOMPurify from 'dompurify';
-  import { markdownImageRule } from '../../core/markdown';
+  import {
+    createMarkdownRenderer,
+    MARKDOWN_PUBLIC,
+    MARKDOWN_TRUSTED,
+    renderMarkdown,
+  } from '../../core/markdown';
   import { audio, playbackVolume, toggleAudio } from '../../state/playback.svelte';
   import { copy } from '$lib/i18n.svelte';
 
-  // Two independent renderers: the default one blocks images (public sidebar
-  // must not render arbitrary external image hosts); the trusted one allows them.
-  const mdSafe = new MarkdownIt({ html: false, linkify: true, breaks: true }).disable(['image']);
-  const mdFull = new MarkdownIt({ html: false, linkify: true, breaks: true });
+  // Two independent renderers. The public one (sidebar feedback, admin feedback) drops images
+  // to their alt text and refuses raw HTML, because a visitor authors that text; the trusted
+  // one (announcements, editor preview) renders media in place and accepts HTML — behind the
+  // same sanitizer, which is the only thing standing between an owner-authored style element
+  // and every reader's page.
+  const mdSafe = createMarkdownRenderer(MARKDOWN_PUBLIC);
   // The trusted renderer emits the final media element itself: the extension decides whether
   // `![alt](url)` becomes an image, a video, an audio player or a download link. Nothing has to
   // be replaced after parsing, so the browser never fetches a placeholder `<img>` first.
-  mdFull.renderer.rules.image = markdownImageRule;
+  const mdFull = createMarkdownRenderer(MARKDOWN_TRUSTED);
 
   // Inline SVG icons, byte-identical geometry to the @lucide/svelte volume-x / volume-2
   // icons the card and Lightbox render (this button is built imperatively, so it cannot
@@ -40,7 +46,7 @@
   const renderer = $derived(allowImages ? mdFull : mdSafe);
 
   let el: HTMLDivElement | undefined = $state(undefined);
-  let html = $derived(DOMPurify.sanitize(renderer.render(content)));
+  let html = $derived(renderMarkdown(renderer, DOMPurify, content));
 
   /** Drop the shimmer and reserve the media's real ratio once its intrinsic size is known. */
   function settleMedia(media: HTMLImageElement | HTMLVideoElement): void {

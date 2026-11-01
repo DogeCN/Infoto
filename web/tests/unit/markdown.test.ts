@@ -4,6 +4,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import MarkdownIt from 'markdown-it';
 import {
+  createMarkdownRenderer,
+  MARKDOWN_PUBLIC,
+  MARKDOWN_SANITIZER_CONFIG,
+  MARKDOWN_TRUSTED,
+  markdownSanitizerHooks,
+  type UponSanitizeElement,
   insertImageAt,
   insertLinkAt,
   insertMediaAt,
@@ -210,4 +216,173 @@ test('markdown media: every MIME the upload client names maps to an extension th
       `${mime} uploads as .${ext}, which renders as a link`,
     );
   }
+});
+
+// Appended to web/tests/unit/markdown.test.ts by a one-shot patch; kept as a file so quotes and
+// backticks are literal rather than doubly escaped through a template string.
+// GFM is CommonMark plus five extensions. Tables, emphasis and links were already correct; the
+// other three were silently missing, which is the worst failure mode for a Markdown dialect —
+// the author writes spec-correct syntax and nothing happens. Every case below is taken from the
+// spec's own example list (https://github.github.com/gfm/), so the assertions are the spec's
+// output rather than this implementation's current output.
+test('markdown gfm: strikethrough, task lists and autolinks follow the spec examples', () => {
+  const md = createMarkdownRenderer(MARKDOWN_TRUSTED);
+
+  // §6.5 example 1: one or two tildes, and <del> — not the bundled rule's two-or-more and <s>.
+  assert.equal(
+    md.render('~~Hi~~ Hello, ~there~ world!').trim(),
+    '<p><del>Hi</del> Hello, <del>there</del> world!</p>',
+  );
+  // §6.5 example 3: three tildes are not a strike.
+  assert.equal(
+    md.render('This will ~~~not~~~ strike.').trim(),
+    '<p>This will ~~~not~~~ strike.</p>',
+  );
+
+  // §5.3: a leading task marker becomes a disabled checkbox; nesting works.
+  const tasks = md.render('- [ ] foo\n- [x] bar');
+  assert.match(tasks, /<li><input type="checkbox" disabled>foo<\/li>/);
+  assert.match(tasks, /<li><input type="checkbox" disabled checked>bar<\/li>/);
+  assert.doesNotMatch(tasks, /\[[ x]\]/, 'the literal brackets must be consumed by the marker');
+  assert.match(
+    md.render('- [x] foo\n  - [ ] bar\n- [ ] bim'),
+    /<li><input type="checkbox" disabled checked>foo\n<ul>\n<li><input type="checkbox" disabled>bar/,
+  );
+  // A marker that is not at the head of the item's first block is not a task, per the definition.
+  assert.equal(md.render('foo [ ] bar').trim(), '<p>foo [ ] bar</p>');
+  assert.equal(md.render('- [no] x').trim(), '<ul>\n<li>[no] x</li>\n</ul>');
+
+  // §6.9: a bare domain autolinks, which linkify-it does not do by default.
+  assert.equal(
+    md.render('www.commonmark.org').trim(),
+    '<p><a href="http://www.commonmark.org">www.commonmark.org</a></p>',
+  );
+  assert.match(
+    md.render('Visit www.commonmark.org/help'),
+    /href="http:\/\/www\.commonmark\.org\/help"/,
+  );
+});
+
+// The two renderer configurations differ in exactly two ways, and both are load-bearing: a
+// visitor authors public text, and an announcement is authored by the album's owner.
+test('markdown renderers: public text drops HTML and media, trusted text accepts both', () => {
+  const publicMd = createMarkdownRenderer(MARKDOWN_PUBLIC);
+  const trusted = createMarkdownRenderer(MARKDOWN_TRUSTED);
+
+  // Raw HTML: refused for a visitor's text, parsed for the owner's.
+  assert.equal(
+    publicMd.render('press <kbd>Ctrl</kbd>').trim(),
+    '<p>press &lt;kbd&gt;Ctrl&lt;/kbd&gt;</p>',
+  );
+  assert.equal(trusted.render('press <kbd>Ctrl</kbd>').trim(), '<p>press <kbd>Ctrl</kbd></p>');
+  assert.match(trusted.render('<details><summary>s</summary>body</details>'), /<details>/);
+
+  // Media: dropped for public text, rendered in place for announcements.
+  assert.equal(
+    publicMd.render('look ![shot](https://h/a.png) here').trim(),
+    '<p>look shot here</p>',
+  );
+  assert.match(
+    trusted.render('![clip](https://h/clip.mp4)'),
+    /<video src="https:\/\/h\/clip\.mp4"/,
+  );
+  // ⚠️ The public renderer once emitted "!shot": disabling markdown-it's image rule leaves the
+  // leading `!` behind for the link rule to split around. The stray bang must not come back.
+  assert.doesNotMatch(publicMd.render('![shot](https://h/a.png)'), /!/);
+});
+
+// Appended to web/tests/unit/markdown.test.ts by a one-shot patch.
+// The rendering half of the pipeline is plain strings, but the *reader's* output goes through
+// DOMPurify, and the node test environment has no DOM. So the sanitizer's own decision —
+// which `<input>` survives — is tested here against a fake element, and the end-to-end result
+// was verified in a browser. Testing only the rendered string is what let a checkbox-less task
+// list ship: the string was right, the page was empty.
+class FakeNode {
+  nodeName: string;
+  parentNode: { removeChild: (node: FakeNode) => void } | null;
+  removed = false;
+  private attrs: Array<{ name: string; value: string }>;
+
+  constructor(name: string, attrs: Record<string, string> = {}) {
+    this.nodeName = name.toUpperCase();
+    this.attrs = Object.entries(attrs).map(([name, value]) => ({ name, value }));
+    this.parentNode = { removeChild: () => void (this.removed = true) };
+  }
+
+  get attributes() {
+    return [...this.attrs];
+  }
+  getAttribute(name: string) {
+    return this.attrs.find((a) => a.name === name)?.value ?? null;
+  }
+  removeAttribute(name: string) {
+    this.attrs = this.attrs.filter((a) => a.name !== name);
+  }
+  setAttribute(name: string, value: string) {
+    if (!this.attrs.some((a) => a.name === name)) this.attrs.push({ name, value });
+  }
+  names() {
+    return this.attrs.map((a) => a.name);
+  }
+}
+
+test('markdown sanitizer hooks: only the task checkbox survives an <input>', () => {
+  const hooks: UponSanitizeElement[] = [];
+  const fake = {
+    addHook: (_name: 'uponSanitizeElement', fn: UponSanitizeElement) => void hooks.push(fn),
+  };
+  markdownSanitizerHooks(fake);
+  assert.equal(hooks.length, 1, 'exactly one hook is registered');
+  // The hook is declared against `Node`; the fake only implements the attribute surface the hook
+  // actually reads, so the single call site is widened here rather than at every assertion.
+  const run = (node: FakeNode) => hooks[0]!(node as unknown as Node);
+
+  // A task checkbox is narrowed to the shape the renderer emits: decorative and inert.
+  const checkbox = new FakeNode('input', { type: 'checkbox', checked: '' });
+  run(checkbox);
+  assert.equal(checkbox.removed, false);
+  assert.ok(checkbox.getAttribute('disabled') !== null, 'a rendered checkbox must be disabled');
+  assert.deepEqual(checkbox.names().sort(), ['checked', 'disabled', 'type']);
+
+  // Anything that could carry a payload or look like a real field is gone.
+  const sneaky = new FakeNode('input', {
+    type: 'checkbox',
+    name: 'pw',
+    formaction: 'https://evil.example',
+  });
+  run(sneaky);
+  assert.equal(sneaky.removed, false, 'a checkbox itself survives');
+  assert.equal(sneaky.getAttribute('name'), null, 'name must not ride along');
+  assert.equal(sneaky.getAttribute('formaction'), null, 'formaction must not ride along');
+
+  // A non-checkbox input is removed outright — the phishing shape.
+  for (const attrs of [
+    { type: 'text', placeholder: 'Password' },
+    { type: 'password', name: 'pw' },
+    { type: 'image', formaction: 'https://evil.example' },
+    {} as Record<string, string>,
+  ]) {
+    const node = new FakeNode('input', attrs);
+    run(node);
+    assert.equal(node.removed, true, `input ${JSON.stringify(attrs)} must be removed`);
+  }
+
+  // The hook must not touch anything that is not an input.
+  const div = new FakeNode('div', { class: 'x' });
+  run(div);
+  assert.equal(div.removed, false);
+  assert.deepEqual(div.names(), ['class']);
+});
+
+// The end-to-end claim: the configuration keeps forms out and the attribute that carries GFM
+// table alignment in. Verified against real DOMPurify in a browser; asserted here as policy.
+test('markdown sanitizer config: forms out, the style attribute stays', () => {
+  const tags = MARKDOWN_SANITIZER_CONFIG.FORBID_TAGS;
+  for (const tag of ['form', 'textarea', 'select', 'button', 'iframe', 'object', 'embed']) {
+    assert.ok(tags.includes(tag), `${tag} must be stripped`);
+  }
+  // ⚠️ `input` must NOT be listed: the task-list checkbox is an `<input>`, and a blanket ban
+  // removed it silently. The hook narrows it per element instead.
+  assert.ok(!tags.includes('input'), 'input is narrowed by the hook, not banned wholesale');
+  assert.ok(!Object.keys(MARKDOWN_SANITIZER_CONFIG).includes('FORBID_ATTR'), 'style must stay');
 });

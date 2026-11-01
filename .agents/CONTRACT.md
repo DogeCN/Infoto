@@ -671,6 +671,52 @@ tabular-nums`, swapping in place inside one grid cell so the cross-fade never re
   edit cannot show a count the next snapshot contradicts. ⚠️ An API caller that **reorders** a
   same-length option list gets votes silently re-pointed at different labels — the editor has no
   reorder gesture, which is what makes the length test sufficient.
+- **The Markdown dialect is CommonMark + GFM, except for raw HTML on public text.** The
+  parser is `markdown-it`; before this, it followed CommonMark and _one_ of GFM's five
+  extensions (tables), so spec-correct input for the other three silently did nothing — the worst
+  failure mode for a dialect, because the author sees no error and assumes their syntax is wrong.
+  - `web/src/core/markdown.ts` is the one place the parser is wired (`createMarkdownRenderer`).
+    It used to be re-listed by hand at every call site, which is how the public renderer drifted
+    into emitting a stray `!` that no test could see.
+  - **Tables and emphasis** were already correct.
+  - **Strikethrough:** one _or_ two tildes, emitted as `<del>`. markdown-it ships two-or-more
+    and `<s>`; both are wrong against the spec's own examples.
+  - **Task lists:** `- [ ] x` becomes a disabled `<input type="checkbox">`. This is a core
+    post-pass over the token tree (`li_open` → first content), not a block rule: whether the
+    marker opens the item's **first** block is a property of the finished tree.
+  - **Autolinks:** a bare domain (`www.example.com`) links. `linkify: true` alone does not do
+    this — `linkify-it` defaults to protocol-or-email only.
+  - **Soft line breaks are hard.** `breaks: true` departs from the spec, deliberately: GFM's
+    soft breaks stay `\n`, but GitHub's user content — issues, comments, announcements — hard
+    breaks every newline, which is the writing habit this surface serves.
+  - **Raw HTML is per-surface, not global.** Announcements and the editor preview accept it
+    (`MARKDOWN_TRUSTED`); a visitor's feedback and the admin's copy do not (`MARKDOWN_PUBLIC`).
+    The renderer is a parameter, so a new call site has to pick a side rather than inherit one.
+    ⚠️ HTML is only safe here because every renderer output passes through DOMPurify
+    (`MARKDOWN_SANITIZER_CONFIG`); a call site that renders without it re-opens the whole
+    surface.
+  - **The allowlist is stated, and narrow.** Measured in a browser, DOMPurify's defaults already
+    strip `script`, `iframe`, `embed`, `object` and the `<style>` _element_, and refuse
+    `javascript:` URLs. The remaining holes are closed by `MARKDOWN_SANITIZER_CONFIG` plus one
+    hook:
+    - **`form` is forbidden** (with `textarea`/`select`/`button`), because a form is the
+      only thing that submits a visitor's input to a third party — a phishing surface on a page
+      nobody staffs.
+    - **`input` is _not_ forbidden, and is narrowed per element instead.** GFM task lists need
+      `<input type="checkbox">`; a blanket ban removes it along with the phishing shape.
+      ⚠️ That is exactly what the first version did, and **the task-list test passed while the
+      page showed no checkbox**: it asserted the renderer's string, and the sanitizer removed
+      the element afterwards. `markdownSanitizerHooks` keeps only `input[type=checkbox]`,
+      strips every other attribute (`name`, `formaction`), and forces `disabled`.
+    - **The `style` _attribute_ must stay**: GFM table alignment is emitted through it, and
+      forbidding the attribute silently left-aligns every column. The `<style>` _element_, which
+      is global, is stripped by the defaults; the attribute is per-element and is kept.
+  - ⚠️ **A rendering assertion is not a reader assertion.** The page assigns the **sanitized**
+    string, so any claim about what the reader sees has to run through `renderMarkdown`
+    (render + sanitize + hook). The task-list bug is the worked example: two green tests, one
+    empty page, because both stopped at the renderer's output.
+  - Deliberately absent: footnotes and `> [!NOTE]` alerts are GitHub product features, not part
+    of the GFM spec.
 - **Markdown follows `github-markdown-css` (light mode) for its non-interactive elements.** Two
   things were wrong at once, and the second was the more visible one.
   - **Colour.** `@tailwindcss/typography` styles `.prose` entirely through `--tw-prose-*` variables
@@ -905,8 +951,11 @@ before deadline` / `no response before deadline`).
         the container removes the shimmer and writes the real ratio. It still requires a real
         intrinsic size (`naturalWidth > 0`), so a cached image settles instead of leaving the
         holder on its 16:10 placeholder.
-      - `mdSafe` keeps images disabled for public content: the rule is installed on `mdFull`
-        only.
+      - The public renderer (`mdSafe`) gets `markdownImageTextRule` instead: an image becomes
+        its **alt text**, with no request and no markup. Disabling markdown-it's `image` rule
+        outright is **not** the same thing — the `link` rule then matches the `[alt](url)` half
+        and the leading `!` survives as literal text, so public text read `!shot`. ⚠️ Do not
+        revert to `.disable(['image'])`.
     - Video is muted for autoplay (`autoplay loop muted playsinline`) — the only autoplay browsers
       allow. Clicking the picture does nothing; each rendered video gets the same corner volume
       button as the waterfall card and Lightbox, built into the sanitized holder and wired to
