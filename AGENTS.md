@@ -28,7 +28,7 @@ Full-stack shared photo album: **Cloudflare Workers** (Hono + D1) backend + **Sv
 ## 3. Architecture Layers
 
 ```
-src/worker/        Worker entry & API (Hono routes, D1 implementation, identity/sync/media proxy)
+src/worker/        Worker entry & API (Hono routes, D1 implementation, /ws Album Durable Object, media proxy)
 src/shared/        Shared contracts, media identifiers, and copy/i18n
 src/testing/       Local dev + test adapters (node:sqlite Db; NEVER import in Worker)
 schema.sql         D1 DDL script (idempotent on deploy)
@@ -216,6 +216,8 @@ When a significant architectural decision is made, create `.agents/adr/NNNN-titl
 | `src/worker/schema-ddl.ts`                      | Generated DDL string for the Worker — never hand-edit                                                                            |
 | `README.md`                                     | Overview + facade API contract (§Media host facade) — read this to plug in a different storage backend                           |
 | `web/src/core/engine.ts`                        | Sync engine (oplog, sync trigger points)                                                                                         |
+| `web/src/sync/coordinator.ts`                   | The sync coordinator: one WebSocket per browser (SharedWorker, in-page fallback), ack bookkeeping by cid                         |
+| `src/worker/do/Album.ts`                        | The `/ws` Durable Object — sequential op log, snapshot fold, broadcast, archive edges                                            |
 | `web/src/base/upload/pipeline.ts`               | Upload pipeline (pure logic, testable)                                                                                           |
 | `web/src/transcode/pipeline.ts`                 | Transcode pipeline orchestrator                                                                                                  |
 | `web/src/transcode/sw.ts`                       | SharedWorker scheduler (image/video pools, lease heartbeats)                                                                     |
