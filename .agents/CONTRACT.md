@@ -256,13 +256,29 @@ Back-filled from the commit history. Tagged sections are not yet written.
   - The tooltip follows its trigger while open (scroll, resize, sidebar drag) and flips to the
     opposite side when the preferred one has no room; placement is fixed-positioned above
     `<body>` via `portal`, so overflow clipping and transformed ancestors cannot trap it.
-- **One open sound per page.** `state/playback.svelte.ts` owns a single `{ url, surface }` —
-  the one media whose audio is open and the surface (grid card, Lightbox, Markdown) holding
-  it. Unmuting anywhere closes whatever else was open; the same photo reads the same state in
-  the grid and in the viewer, and `surface` is what keeps a card and the viewer behind it
-  from playing the same audio twice, out of phase. Opening the viewer takes the card's sound
-  over, closing hands it back to the grid, and a surface that unmounts releases only its own
-  sound. The playback slider stays a level; it is never a mute control.
+- **One open sound per media, not per surface.** `state/playback.svelte.ts` owns
+  `{ url, surface }` — `url` is the media whose audio is open, `surface` is which _render_
+  may unmute its own element. Unmuting anywhere closes whatever else was open, and the same
+  photo reads the same state in the grid and in the viewer. `surface` exists because the
+  same media is rendered twice at once while the viewer is open; only one element may be
+  unmuted, or the audio plays twice out of phase. **Ownership moves, the media stays open:**
+  opening the viewer on a sounding card hands the unmute right to the viewer without
+  touching `url`, and closing hands it back — so no audio stream is started or stopped across
+  either transition. A card whose media has its sound open keeps _playing_ (muted while the
+  viewer owns the unmute) rather than pausing: the exemption is keyed on the media, not on
+  this surface's ownership, because a pause/play around the entry is exactly the audible gap
+  this avoids. **Opening the viewer on a different photo never silences an open sound** —
+  browsing must not mute audio the user deliberately opened. The playback slider stays a
+  level; it is never a mute control.
+  - **One record of what has decoded, shared by both renders.** `state/decode.svelte.ts` is
+    the page-wide "this URL has decoded at least once" set. A card whose media is already
+    decoded keeps rendering it outside the media band (the band bounds decoded bitmaps, and
+    that bitmap is already resident), instead of painting a skeleton over media the page had
+    plainly shown seconds earlier — the reported "viewer loaded instantly, card stuck on the
+    skeleton". It also makes the empty-viewport frame harmless: an unmeasured viewport cannot
+    describe a band, so every card counts as near there, because a loaded card is the
+    harmless outcome and a permanent skeleton over loaded media is not. A failed load clears
+    its entry, so the failure path runs again rather than being cached.
 - **Waterfall card.** The card positions itself at `0,0` and moves purely by transform; its
   box arrives entirely as props.
   - `tight` = `width < 140 || height < 64`. There are exactly two density shapes and no third.
@@ -319,6 +335,14 @@ Back-filled from the commit history. Tagged sections are not yet written.
     per-instance at all: it is the page's one open sound, which an unmount releases through
     `releaseAudio` only when that surface owned it. Geometry is deliberately carried across
     the unmount; ⚠️ §4.4 is the model, and it is the reason a remount can glide at all.
+  - **Smooth positional motion is for cards on screen, and only those.** A card that is
+    inside the live viewport may glide between layouts (the `--duration-reflow` /
+    `--ease-reflow` retarget, and a remount's FLIP from its remembered box). A card outside
+    it appears where it belongs and **fades in only** — its glide would happen off-screen,
+    so it is work nobody can see, and on a long album it is a card travelling across the
+    page for no reason. `smoothMotion` arrives from `WaterfallLayout`, derived from the
+    measured viewport and the live scroll offset at the moment of the change (never a
+    breakpoint), and it gates both the transition class and the remount FLIP.
   - **Media is loaded in a narrower band than the render window.** A card renders its `<img>` /
     `<video>` only while its box sits within the viewport plus `MEDIA_LOAD_LOOKAHEAD = 0.4` of a
     viewport on each side; the rest of the buffer band paints the skeleton with the media element
@@ -388,6 +412,30 @@ Back-filled from the commit history. Tagged sections are not yet written.
     comes from OPFS and not the pick, `rendersCard` holds across every phase, an unconfirmed
     batch still reads as cards after a failed sync, and a confirmed one retires them. The overlay's own
     geometry, layering and curtain arithmetic are asserted nowhere.
+- **The card and the viewer are two renders of one media, not two implementations of one
+  thing.** They look identical apart from the card's badges, and that sameness is deliberate —
+  but they are **not** the same component, and unifying them would be a rewrite that loses
+  behaviour rather than duplication:
+  - What they genuinely share is the media _state_, and that is now shared explicitly:
+    `state/playback.svelte.ts` owns which media's sound is open (keyed by URL), and
+    `state/decode.svelte.ts` owns which URLs have decoded. Every bug that came from the two
+    being separate — the audio gap across the viewer transition, the card stuck on a skeleton
+    over media the viewer had already shown — was fixed by unifying those two records, not by
+    merging the components.
+  - What they must NOT share is the layout/gesture model. The card is a **grid box**: it
+    arrives as absolute `x`/`y`/`width`/`height` props, sits at `0,0`, and moves purely by
+    transform inside a virtualized waterfall that unmounts it on scroll-out. The viewer is a
+    **full-screen stage**: fit/cover sizing from the media's native dimensions, pan, pinch,
+    rotation with Ctrl-free continuous zoom, 90° snapping, swipe paging, keyboard and
+    double-tap zoom, focus trapping, and an action sheet. Its own `<video>` is a gesture
+    target; the card's is a loop-and-mute thumbnail. Folding them into one component would
+    mean one component carrying both a virtualizer contract and a gesture contract, and every
+    change to either would have to prove it did not break the other.
+  - The rule that follows: **share the state, keep the render**. A new fact that both
+    surfaces must agree on becomes a module in `state/` (as the two above did), never a prop
+    threaded between them and never a second copy inside each. A visual change that should
+    affect both is made in both, and the contract is what keeps them in step.
+
 - **Lightbox.** The action sheet is a **bottom sheet**, not a dropdown — a dropdown's top-right
   anchor is outside a thumb's reach on a phone.
   - Seven actions in a three-column grid, each a distinct hue. This is a scanning cue and is
@@ -431,7 +479,19 @@ Back-filled from the commit history. Tagged sections are not yet written.
     snaps it back to the stage centre (it used to zero the offset) — and desktop gets the same
     zoom+rotate the touch pinch has. `Ctrl` may be pressed **any time**: held at press _or_
     pressed mid-drag or mid-pan (the plain drag switches into the `Ctrl` mode on the `Control`
-    keydown, and the `Control` keydown never resets the zoom). **Both** touch pinch and
+    keydown, and the `Control` keydown never resets the zoom). **The switch is seamless on
+    BOTH axes, and that is a state-commit problem, not a gesture problem:** a plain drag
+    previews its displacement without writing it back (`applyWrap(dx, dy)`), so the committed
+    `zoomX`/`zoomY` are still the pre-drag values. Entering `Ctrl` from a horizontal drag
+    therefore used to start the rotate around a stale offset and recentre the media (the
+    vertical case only survived because its preview happened to already sit near the centre).
+    `beginCtrlZoom` commits the previewed displacement into `zoomX`/`zoomY` before it captures
+    its start state, so the media never moves on the frame the modifier is pressed, on either
+    axis. **Releasing `Ctrl` ends the gesture**: `handleKeyUp` drops the pointer and runs the
+    rotation snap (`snapWithEase`) plus `settleTransform`, so the rotation lands on the nearest
+    90° and plain panning resumes from where it settled — with no jump, because the offset was
+    never discarded. `settleTransform` still centres a fit, **unrotated** image, which is the
+    whole-photo state; anything zoomed or rotated keeps its offset. **Both** touch pinch and
     `Ctrl`+drag rotation snap to the nearest 90° on release (kept as a signed value so a −90°
     gesture does not spin a full turn) — the desktop path had been missing the snap. The snap
     eases via the **Web Animations API**, not the inline CSS `transition`: a pinch's surviving
@@ -870,6 +930,15 @@ before deadline` / `no response before deadline`).
       survives only for media whose dimensions arrive late or never.
     - `isImageFile` gates the preview on MIME **or** file name, because a Windows pick with an
       empty MIME must still preview.
+    - **An editor upload keeps the picked file name.** The editor takes any file, and the
+      extension is load-bearing downstream: the Markdown renderer decides how to display a
+      hosted file by its extension, so a name that lost the user's `.md`/`.txt`/`.pdf` became
+      an undisplayable `<id>.bin`. MIME cannot recover it — `File.type` is `''` for most
+      non-media extensions — so the picked name wins outright (`editorUploadFileName`, in
+      `transcode/protocol.ts`), and only a nameless or extension-less pick falls back to the
+      MIME-derived form. **The album path is deliberately different:** it uploads a transcoded
+      artifact whose type IS known and whose name is neutral (`m.<ext>`), and that naming is
+      asserted by `uploadClient.test.ts`.
   - **A photo's `createdAt` is the moment its upload URL arrived, not the moment the op
     landed.** The SharedWorker stamps `Date.now()` when the facade returns the URL, carries it in
     the job-status message, and the page writes it into the upload op; the op itself also carries
@@ -940,6 +1009,20 @@ before deadline` / `no response before deadline`).
     deliberately **not** rounded (a CSS pixel maps to `dpr` device pixels).
   - The waterfall's `padTop` reads the same `--bar-h` with `TOP_GAP = 0`.
   - Nothing asserts the admin inset.
+  - **One component owns the admin row's header and its trailing action cluster.**
+    `routes/admin/RowActionCluster.svelte` is that owner: the header is
+    `flex items-start justify-between gap-3`, the row's identifying block sits in a
+    `min-w-0 flex-1` column (`leading`), and the controls sit in a
+    `flex shrink-0 items-center gap-1` cluster. The announcement, poll and feedback lists all
+    render through it. The frame is shared and not just the cluster, because where the controls
+    sit is decided by the frame: the three lists had drifted into `flex-wrap items-center`
+    (poll) against bare `items-start` (feedback and announcement), announcement's cluster also
+    lacked `items-center`, and only announcement gave its leading block `min-w-0 flex-1`. Those
+    are four different answers to the same question — where does the trailing cluster sit on a
+    row whose leading block can grow and wrap — so the same kind of row read differently on
+    different tabs, and a wrapped leading block dragged the controls with it. **Each list still
+    owns its buttons** — which ones exist, their order, disabled rules, danger flags, aria labels
+    and callbacks are per-list; the component owns only where they sit.
   - **A card can be translated into the other registered locale.** Each announcement and poll
     row carries a `Languages` control (`routes/admin/TranslateButton.svelte`, one component for
     both lists — the markup used to be duplicated) whose accessible name names the target
@@ -967,10 +1050,17 @@ before deadline` / `no response before deadline`).
     icon-button sits to the left of delete in the row's top-right cluster and writes `contentMd`
     through `copyToClipboard`. Success raises **no toast**: the glyph cross-fades to a check inside
     the same 16px cell (copy fading out, check fading in, one grid cell so the button never moves),
-    the button takes its active treatment, and after `COPIED_HOLD_MS = 1600` the check fades back
-    to the copy glyph. The confirmation belongs where the click landed. Failure is the one generic
-    toast (`lightbox.copyFailed`) — a second copy of that string is exactly the drift the copy
-    table exists to prevent.
+    its tooltip and label swap to the copied wording, and after `COPIED_HOLD_MS = 1600` the check
+    fades back to the copy glyph. The confirmation belongs where the click landed. **The
+    confirmation is that glyph swap and the label swap, never the button's `active` treatment.**
+    `active` — the `text-primary` tint `TooltipIconButton` applies — means "this control is
+    engaged": a filter is on, a mode is selected, a panel is open. A copy that happened once is
+    not engagement. Painted on a transient confirmation the tint reads as state the user could
+    click again to leave, it competes with the one signal that means engagement, and it sharpens
+    and fades for a reason nothing else on the row shares. A transient confirmation therefore
+    rides the glyph and the label only, and the control keeps its resting treatment throughout.
+    Failure is the one generic toast (`lightbox.copyFailed`) — a second copy of that string is
+    exactly the drift the copy table exists to prevent.
 - **Sync rides the `/ws` WebSocket (ADR 0026).** Frames (`shared/types.ts`): `hello` →
   `welcome` | `error`; `ops` {ops} → `ops` {applied} plus `welcome` on connect; `ping` → `pong`.
   The Durable Object is the album's single sequential writer — it appends each op to its own
@@ -1443,7 +1533,9 @@ The parts of this contract that are asserted by `npm test`:
 | The font race cancels the losers, and a failed source removes only itself            | `src/shared/fonts.test.ts`              |
 | The error page's CSP hash equals the race script it authorises                       | `src/shared/fonts.test.ts`              |
 | The playback level is a setting: v5 round-trips, clamps, and a bad one resets (§3)   | `web/tests/unit/settings.test.ts`       |
-| One open sound per page; surface hand-off keeps grid and viewer in step (§3)         | `web/tests/unit/playbackAudio.test.ts`  |
+| One open sound per media; ownership moves without restarting the audio (§3)          | `web/tests/unit/playbackAudio.test.ts`  |
+| One shared "already decoded" record keeps a loaded card off the skeleton (§3)        | `web/tests/unit/decode.test.ts`         |
+| An editor upload keeps the picked name; only an unknown payload becomes `.bin` (§3)  | `web/tests/unit/protocol.test.ts`       |
 | A failed media card shows the grey site mark, never a bare surface (§3)              | `web/tests/unit/photoCard.test.ts`      |
 | Every registered copy key is read by a source file (§10)                             | `src/shared/copy.test.ts`               |
 | An overlong announcement is refused on write, and a create takes no votes            | `src/worker/do/album.test.ts`           |

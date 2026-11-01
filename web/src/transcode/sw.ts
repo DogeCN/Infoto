@@ -25,6 +25,7 @@ import { readArtifact, removeArtifact, storeArtifact } from './opfs';
 import { transcodeImage } from './image.worker';
 import {
   LEASE_TIMEOUT_MS,
+  editorUploadFileName,
   isPageToSw,
   type JobMeta,
   type JobPhase,
@@ -418,6 +419,14 @@ async function runUpload(rec: JobRec, source?: Blob): Promise<void> {
   let fileName: string | undefined;
   if (source) {
     blob = source;
+    // The editor uploads the file the user picked, as-is, so the name the user already has
+    // is the name that must survive into the URL: the Markdown renderer tells a document
+    // from an image by extension, and a `.md`/`.txt`/`.zip` blob carries an empty or
+    // unhelpful MIME (`File.type` is '' for most non-media extensions). Deriving the
+    // extension from MIME alone turned every such upload into `<id>.bin`, which the
+    // renderer then had no way to display. Fall back to the MIME-derived name only when
+    // the pick had no usable name at all.
+    fileName = editorUploadFileName(rec.fileName);
   } else {
     const ext = extOfType(rec.meta!.type);
     fileName = `m.${ext}`;

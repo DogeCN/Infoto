@@ -5,6 +5,7 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ReorderableList from '$lib/components/ReorderableList.svelte';
   import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
+  import RowActionCluster from './RowActionCluster.svelte';
   import TranslateButton from './TranslateButton.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
   import { reactionCounts } from '../../core/reactions';
@@ -37,39 +38,37 @@
   <ReorderableList items={announcements} {onReorder} listLabel={copy.admin.announcement.listLabel}>
     {#snippet row(announcement)}
       {@const counts = reactionCounts(announcement, -1)}
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0 flex-1">
+      <RowActionCluster>
+        {#snippet leading()}
           <h3 class="text-sm font-medium">{announcement.title}</h3>
           <p class="mt-2 line-clamp-2 text-xs text-muted-foreground">
             {announcement.contentMd}
           </p>
-        </div>
-        <div class="flex shrink-0 gap-1">
-          <TranslateButton
-            locale={announcement.locale}
-            translating={translatingId === announcement.id}
-            disabled={translateDisabled || announcement.id < 0}
-            onclick={() => onTranslate(announcement)}
-          />
-          <TooltipIconButton
-            text={copy.admin.announcement.edit}
-            ariaLabel={copy.admin.announcement.editAria}
-            class="p-2"
-            onclick={() => onEdit(announcement)}
-          >
-            <Pencil class="size-4" />
-          </TooltipIconButton>
-          <TooltipIconButton
-            text={copy.admin.announcement.delete}
-            ariaLabel={copy.admin.announcement.deleteAria}
-            danger
-            class="p-2"
-            onclick={() => onDelete(announcement.id)}
-          >
-            <Trash2 class="size-4" />
-          </TooltipIconButton>
-        </div>
-      </div>
+        {/snippet}
+        <TranslateButton
+          locale={announcement.locale}
+          translating={translatingId === announcement.id}
+          disabled={translateDisabled || announcement.id < 0}
+          onclick={() => onTranslate(announcement)}
+        />
+        <TooltipIconButton
+          text={copy.admin.announcement.edit}
+          ariaLabel={copy.admin.announcement.editAria}
+          class="p-2"
+          onclick={() => onEdit(announcement)}
+        >
+          <Pencil class="size-4" />
+        </TooltipIconButton>
+        <TooltipIconButton
+          text={copy.admin.announcement.delete}
+          ariaLabel={copy.admin.announcement.deleteAria}
+          danger
+          class="p-2"
+          onclick={() => onDelete(announcement.id)}
+        >
+          <Trash2 class="size-4" />
+        </TooltipIconButton>
+      </RowActionCluster>
       <div class="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground/70">
         <div class="flex flex-wrap items-center gap-2">
           {#each counts as count (count.emoji)}

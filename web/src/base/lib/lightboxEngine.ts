@@ -246,6 +246,7 @@ const TAP_SLOP = 12;
 
 export type Release =
   | { kind: 'pinch-tail' }
+  | { kind: 'ctrl-tail' }
   | { kind: 'pan-end' }
   | { kind: 'tap' }
   | { kind: 'swipe'; dir: SwipeDir }
@@ -268,6 +269,11 @@ export type Release =
 export function classifyRelease(input: {
   /** A pinch happened in this multi-touch sequence and it has not fully ended. */
   pinchSequence: boolean;
+  /** A `Ctrl` rotate/zoom happened in this drag: the pointer may have been released
+   *  part-way through it and then dragged further as a plain pan. Such a release is a
+   *  transform, never a mark or a page — the press point it would be measured against
+   *  belongs to the gesture before the mode switch. */
+  ctrlSequence: boolean;
   panning: boolean;
   dx: number;
   dy: number;
@@ -275,6 +281,7 @@ export function classifyRelease(input: {
   isTouch: boolean;
 }): Release {
   if (input.pinchSequence) return input.panning ? { kind: 'pan-end' } : { kind: 'pinch-tail' };
+  if (input.ctrlSequence) return input.panning ? { kind: 'pan-end' } : { kind: 'ctrl-tail' };
 
   // A tap outranks a pan, and the order is the whole point. Once the photo is
   // zoomed, every single-finger touch is already a pan to `onPointerMove`, so

@@ -4,6 +4,7 @@ import {
   audio,
   claimAudio,
   closeAudio,
+  isAudioMediaOpen,
   isAudioOpen,
   releaseAudio,
   toggleAudio,
@@ -70,4 +71,33 @@ test('isAudioOpen ignores media without a URL', () => {
   assert.equal(isAudioOpen(undefined, 'grid'), false);
   assert.equal(isAudioOpen(null, 'grid'), false);
   assert.equal(isAudioOpen('', 'grid'), false);
+});
+
+test('opening the viewer keeps the media open and the card playing underneath', () => {
+  // The reported bug: muting a card, opening it, and the audio gapped on both transitions.
+  // Ownership moves between the two renders, but the media itself must never close, because
+  // the card keeps playing it and is only muted while the viewer holds the right.
+  silence();
+  toggleAudio('a', 'grid');
+  claimAudio('lightbox', 'a');
+  assert.equal(audio.url, 'a', 'the media stays open across the transition');
+  assert.equal(isAudioMediaOpen('a'), true, 'the card keeps playing it (muted, not paused)');
+  assert.equal(isAudioOpen('a', 'grid'), false, 'only the viewer may be unmuted');
+  assert.equal(isAudioOpen('a', 'lightbox'), true);
+
+  claimAudio('grid', 'a');
+  assert.equal(audio.url, 'a', 'closing the viewer must not restart the audio');
+  assert.equal(isAudioOpen('a', 'grid'), true);
+  silence();
+});
+
+test('opening another media leaves an open sound alone', () => {
+  // Browsing must not silence audio the user deliberately opened: the viewer opening on a
+  // DIFFERENT photo does not adopt and does not close the open one.
+  silence();
+  toggleAudio('a', 'grid');
+  claimAudio('lightbox', 'b');
+  assert.deepEqual({ ...audio }, { url: 'a', surface: 'grid' });
+  assert.equal(isAudioMediaOpen('a'), true);
+  silence();
 });

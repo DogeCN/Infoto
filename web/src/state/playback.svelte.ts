@@ -19,25 +19,35 @@ export function setPlaybackVolume(value: number): void {
 export type AudioSurface = 'grid' | 'lightbox' | 'markdown';
 
 /**
- * The media whose sound is **open**, and the surface currently rendering it.
+ * The media whose sound is **open** (by URL), and which render currently owns it.
  *
  * One owner for the whole page, not one flag per element: unmuting anywhere closes whatever
  * else was open, and the same photo therefore reads the same state in the waterfall and in the
- * Lightbox. The `surface` is not redundant with the URL — the same media can be rendered twice
- * at once (the grid card behind an open viewer), and only the surface holding the sound may
- * unmute its element, or the same audio would play twice, out of phase.
+ * Lightbox.
+ *
+ * The `surface` is which *render* may unmute its own element. It is not the identity of the
+ * open sound — the media can be rendered twice at once (the grid card behind an open viewer)
+ * and only one element may be unmuted, or the same audio plays twice, out of phase. Keeping
+ * the two apart is what lets the viewer open and close **without tearing the sound down**:
+ * ownership moves from one render to the other while `url` never changes, so no audio stream
+ * is started and stopped, and the card behind the viewer never falls silent.
  */
 export const audio = $state<{ url: string | null; surface: AudioSurface | null }>({
   url: null,
   surface: null,
 });
 
-/** True when `url` is the open media and `surface` is the one playing it. */
+/** True when `url` is the open media, on ANY surface rendering it. */
+export function isAudioMediaOpen(url: string | null | undefined): boolean {
+  return url != null && audio.url === url;
+}
+
+/** True when `url` is open AND this surface is the render allowed to unmute its element. */
 export function isAudioOpen(url: string | null | undefined, surface: AudioSurface): boolean {
   return url != null && audio.url === url && audio.surface === surface;
 }
 
-/** Open `url` on `surface`, or close it when that same element already holds the sound. */
+/** Open `url` on `surface`, or close it when that same media already holds the sound. */
 export function toggleAudio(url: string, surface: AudioSurface): void {
   if (audio.url === url && audio.surface === surface) {
     closeAudio();
@@ -47,9 +57,16 @@ export function toggleAudio(url: string, surface: AudioSurface): void {
   audio.surface = surface;
 }
 
-/** Move the open sound to another surface (the viewer taking it over, or handing it back). */
-export function claimAudio(surface: AudioSurface): void {
-  if (audio.url !== null) audio.surface = surface;
+/**
+ * Move the ownership of the SAME open media to another render (the viewer taking over a
+ * sounding card, or handing it back on close). Nothing is started or stopped: `url` is
+ * untouched, so there is no audible gap. A different media is left alone — opening another
+ * photo must not silence the one the user chose.
+ */
+export function claimAudio(surface: AudioSurface, url?: string): void {
+  if (audio.url === null) return;
+  if (url !== undefined && audio.url !== url) return;
+  audio.surface = surface;
 }
 
 /** Close whatever is open. */
@@ -58,7 +75,7 @@ export function closeAudio(): void {
   audio.surface = null;
 }
 
-/** A surface that unmounts gives up its own sound; another surface's sound is untouched. */
+/** A surface that unmounts gives up the sound only while it still owns it. */
 export function releaseAudio(url: string, surface: AudioSurface): void {
   if (audio.url === url && audio.surface === surface) closeAudio();
 }

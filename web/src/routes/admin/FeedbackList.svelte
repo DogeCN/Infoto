@@ -11,6 +11,7 @@
   import ReorderableList from '$lib/components/ReorderableList.svelte';
   import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
+  import RowActionCluster from './RowActionCluster.svelte';
   import { filterFeedback } from './feedbackView';
 
   interface Props {
@@ -89,51 +90,52 @@
       listLabel={copy.admin.feedback.listLabel}
     >
       {#snippet row(feedbackItem)}
-        <div class="flex items-start justify-between gap-3">
-          <div class="flex items-baseline gap-1 text-sm">
-            <span class="text-muted-foreground">{copy.admin.feedback.idLabel}</span>
-            <span class="font-semibold tabular-nums text-foreground">
-              {feedbackItem.userId}
-            </span>
-          </div>
-          <div class="flex shrink-0 items-center gap-1">
-            <TooltipIconButton
-              text={copiedId === feedbackItem.id
-                ? copy.admin.feedback.copied
-                : copy.admin.feedback.copy}
-              ariaLabel={copy.admin.feedback.copyAria}
-              active={copiedId === feedbackItem.id}
-              class="p-2"
-              onclick={() => void copyContent(feedbackItem)}
-            >
-              <!-- The glyph swaps in place: the copy icon fades out and the check fades in
-                   within one grid cell, so the button does not move or resize. -->
-              <span class="grid size-4 place-items-center">
-                <Copy
-                  class="col-start-1 row-start-1 size-4 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {copiedId ===
-                  feedbackItem.id
-                    ? 'opacity-0'
-                    : 'opacity-100'}"
-                />
-                <Check
-                  class="col-start-1 row-start-1 size-4 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {copiedId ===
-                  feedbackItem.id
-                    ? 'opacity-100'
-                    : 'opacity-0'}"
-                />
+        <RowActionCluster>
+          {#snippet leading()}
+            <div class="flex items-baseline gap-1 text-sm">
+              <span class="text-muted-foreground">{copy.admin.feedback.idLabel}</span>
+              <span class="font-semibold tabular-nums text-foreground">
+                {feedbackItem.userId}
               </span>
-            </TooltipIconButton>
-            <TooltipIconButton
-              text={copy.admin.feedback.delete}
-              ariaLabel={copy.admin.feedback.deleteAria}
-              danger
-              class="p-2"
-              onclick={() => onDelete(feedbackItem.id)}
-            >
-              <Trash2 class="size-4" />
-            </TooltipIconButton>
-          </div>
-        </div>
+            </div>
+          {/snippet}
+          <TooltipIconButton
+            text={copiedId === feedbackItem.id
+              ? copy.admin.feedback.copied
+              : copy.admin.feedback.copy}
+            ariaLabel={copy.admin.feedback.copyAria}
+            class="p-2"
+            onclick={() => void copyContent(feedbackItem)}
+          >
+            <!-- The glyph swaps in place: the copy icon fades out and the check fades in
+                 within one grid cell, so the button does not move or resize. The swap is the
+                 whole confirmation — the button keeps its resting treatment, because `active`
+                 means "this control is engaged", and a copy that succeeded is not engaged. -->
+            <span class="grid size-4 place-items-center">
+              <Copy
+                class="col-start-1 row-start-1 size-4 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {copiedId ===
+                feedbackItem.id
+                  ? 'opacity-0'
+                  : 'opacity-100'}"
+              />
+              <Check
+                class="col-start-1 row-start-1 size-4 transition-opacity duration-[var(--duration-exit)] ease-[var(--ease-exit)] {copiedId ===
+                feedbackItem.id
+                  ? 'opacity-100'
+                  : 'opacity-0'}"
+              />
+            </span>
+          </TooltipIconButton>
+          <TooltipIconButton
+            text={copy.admin.feedback.delete}
+            ariaLabel={copy.admin.feedback.deleteAria}
+            danger
+            class="p-2"
+            onclick={() => onDelete(feedbackItem.id)}
+          >
+            <Trash2 class="size-4" />
+          </TooltipIconButton>
+        </RowActionCluster>
 
         <div class="mt-2">
           <MarkdownView content={feedbackItem.contentMd} />

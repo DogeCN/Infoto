@@ -229,7 +229,15 @@ test('classifySwipe maps displacement to a direction past threshold (feature ges
 });
 
 test('classifyRelease never turns the tail of a pinch into a swipe', () => {
-  const base = { pinchSequence: false, panning: false, dx: 0, dy: 0, triggerAt: 60, isTouch: true };
+  const base = {
+    pinchSequence: false,
+    ctrlSequence: false,
+    panning: false,
+    dx: 0,
+    dy: 0,
+    triggerAt: 60,
+    isTouch: true,
+  };
   // Closing a two-finger zoom releases the partner finger at a point up to a whole
   // pinch-width away from the press point captured during the pinch. That distance
   // is what used to be classified as a swipe: zooming voted on the photo and
@@ -259,7 +267,13 @@ test('a tap still lands once the photo is zoomed (double tap toggles back out)',
   // pinch to get back to a whole photo, and pinch was the harder gesture. Mouse
   // hid the bug entirely, because the desktop double-click never enters this
   // state machine.
-  const zoomedAndPanned = { pinchSequence: false, panning: true, triggerAt: 30, isTouch: true };
+  const zoomedAndPanned = {
+    pinchSequence: false,
+    ctrlSequence: false,
+    panning: true,
+    triggerAt: 30,
+    isTouch: true,
+  };
   assert.deepEqual(classifyRelease({ ...zoomedAndPanned, dx: 2, dy: -1 }), { kind: 'tap' });
   // A real drag over the same zoomed photo still ends as a pan, not a tap.
   assert.deepEqual(classifyRelease({ ...zoomedAndPanned, dx: 40, dy: 5 }), { kind: 'pan-end' });
@@ -297,4 +311,31 @@ test('classifyClickNav splits the mask left=prev / right=next (feature 1)', () =
   assert.equal(classifyClickNav(100, 1000), 'prev');
   assert.equal(classifyClickNav(900, 1000), 'next');
   assert.equal(classifyClickNav(500, 1000), 'next');
+});
+
+test('classifyRelease never turns the tail of a Ctrl rotate into a swipe', () => {
+  const base = {
+    pinchSequence: false,
+    ctrlSequence: false,
+    panning: false,
+    dx: 0,
+    dy: 0,
+    triggerAt: 60,
+    isTouch: false,
+  };
+  // A Ctrl rotate drags the pointer a long way from the press point. Measured against
+  // that press point it reads as a swipe past the threshold, which would mark the photo
+  // and page — the very thing the rotate gesture is not.
+  assert.deepEqual(classifyRelease({ ...base, ctrlSequence: true, dx: 180, dy: -60 }), {
+    kind: 'ctrl-tail',
+  });
+  // The identical displacement without a Ctrl behind it is still an ordinary swipe.
+  assert.deepEqual(classifyRelease({ ...base, dx: 180, dy: -60 }), {
+    kind: 'swipe',
+    dir: 'right',
+  });
+  // On a photo that was already panning, the Ctrl tail may finish its pan instead.
+  assert.deepEqual(classifyRelease({ ...base, ctrlSequence: true, panning: true }), {
+    kind: 'pan-end',
+  });
 });

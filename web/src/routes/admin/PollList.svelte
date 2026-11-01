@@ -8,6 +8,7 @@
   import ReorderableList from '$lib/components/ReorderableList.svelte';
   import TimeLabel from '$lib/components/TimeLabel.svelte';
   import TooltipIconButton from '$lib/components/TooltipIconButton.svelte';
+  import RowActionCluster from './RowActionCluster.svelte';
   import TranslateButton from './TranslateButton.svelte';
   import VoteBlock from '$lib/components/VoteBlock.svelte';
 
@@ -48,45 +49,45 @@
       <!-- No title: the option rows are the poll. A short single-word title adds a heading
            that says nothing the rows do not, and pushes the list into a rhythm of boxes.
            The choice mode and the timestamp identify the row instead. -->
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <p class="text-xs text-muted-foreground">
-          {poll.allowMultiple ? copy.admin.poll.multipleAnswers : copy.admin.poll.singleAnswer}
-        </p>
-        <div class="flex shrink-0 items-center gap-1">
-          <TooltipIconButton
-            text={copy.admin.poll.copySyntax}
-            class="p-2"
-            disabled={poll.id < 0}
-            onclick={() => void copySyntax(poll)}
-          >
-            <Copy class="size-4" />
-          </TooltipIconButton>
-          <TranslateButton
-            locale={poll.locale}
-            translating={translatingId === poll.id}
-            disabled={translateDisabled || poll.id < 0}
-            onclick={() => onTranslate(poll)}
-          />
-          <TooltipIconButton
-            text={copy.admin.poll.edit}
-            class="p-2"
-            disabled={poll.id < 0}
-            onclick={() => onEdit(poll)}
-          >
-            <Pencil class="size-4" />
-          </TooltipIconButton>
-          <TooltipIconButton
-            text={copy.admin.poll.delete}
-            ariaLabel={copy.admin.poll.deleteAria}
-            danger
-            class="p-2"
-            disabled={poll.id < 0}
-            onclick={() => onDelete(poll.id)}
-          >
-            <Trash2 class="size-4" />
-          </TooltipIconButton>
-        </div>
-      </div>
+      <RowActionCluster>
+        {#snippet leading()}
+          <p class="text-xs text-muted-foreground">
+            {poll.allowMultiple ? copy.admin.poll.multipleAnswers : copy.admin.poll.singleAnswer}
+          </p>
+        {/snippet}
+        <TooltipIconButton
+          text={copy.admin.poll.copySyntax}
+          class="p-2"
+          disabled={poll.id < 0}
+          onclick={() => void copySyntax(poll)}
+        >
+          <Copy class="size-4" />
+        </TooltipIconButton>
+        <TranslateButton
+          locale={poll.locale}
+          translating={translatingId === poll.id}
+          disabled={translateDisabled || poll.id < 0}
+          onclick={() => onTranslate(poll)}
+        />
+        <TooltipIconButton
+          text={copy.admin.poll.edit}
+          class="p-2"
+          disabled={poll.id < 0}
+          onclick={() => onEdit(poll)}
+        >
+          <Pencil class="size-4" />
+        </TooltipIconButton>
+        <TooltipIconButton
+          text={copy.admin.poll.delete}
+          ariaLabel={copy.admin.poll.deleteAria}
+          danger
+          class="p-2"
+          disabled={poll.id < 0}
+          onclick={() => onDelete(poll.id)}
+        >
+          <Trash2 class="size-4" />
+        </TooltipIconButton>
+      </RowActionCluster>
 
       <!-- Read-only render of the poll. No heading: the option rows are self-describing, and
            a second bordered panel around them only nested one box inside another. The
