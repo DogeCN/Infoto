@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { AlbumSnapshot, AppliedOp, Op } from '../shared/types.ts';
+import type { AlbumSnapshot, AppliedOp, Op, UploadPayload } from '../shared/types.ts';
 import { applySnapshotOp, flushToD1, hydrateSnapshot } from './album-ops.ts';
 import { countingDb } from '../testing/app.ts';
 import { openLocalDb, type LocalDb } from '../testing/localDb.ts';
@@ -50,7 +50,14 @@ const upload = (sha: string, over: Partial<Op> = {}): Op => ({
 test('album-ops: an upload allocates an id, clamps createdAt, and dedupes by sha', async () => {
   const snap = emptySnapshot();
   const now = 1_900_000_000_000;
-  assert.ok(applySnapshotOp(snap, { id: 3 }, upload('aa'), now));
+  const firstUpload = upload('aa');
+  (firstUpload.payload as UploadPayload).id = 99;
+  assert.ok(applySnapshotOp(snap, { id: 3 }, firstUpload, now));
+  assert.equal(
+    (firstUpload.payload as { id?: number }).id,
+    1,
+    'the allocated id is stamped onto the broadcastable op',
+  );
   // A skewed client clock cannot pin a photo into the future.
   assert.ok(
     applySnapshotOp(
@@ -75,11 +82,10 @@ test('album-ops: an upload allocates an id, clamps createdAt, and dedupes by sha
   assert.equal(snap.photos[0]!.uploader, 3);
   assert.equal(snap.photos[0]!.createdAt, 1_700_000_000_000, 'an offline capture keeps its moment');
   assert.equal(snap.photos[1]!.createdAt, now, 'a future stamp is clamped to the server clock');
-  assert.equal(
-    applySnapshotOp(snap, { id: 3 }, upload('aa'), now),
-    false,
-    'the same sha writes once',
-  );
+  const duplicate = upload('aa');
+  (duplicate.payload as UploadPayload).id = 99;
+  assert.equal(applySnapshotOp(snap, { id: 3 }, duplicate, now), false, 'the same sha writes once');
+  assert.equal((duplicate.payload as { id?: number }).id, 1, 'a duplicate echo uses the stored id');
 });
 
 test('album-ops: an upload URL off the storable rule is refused', async () => {

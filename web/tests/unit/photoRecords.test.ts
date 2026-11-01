@@ -4,7 +4,8 @@
 // The regression these guard: a batch whose sync timed out left the photos hosted and
 // invisible, because the card showing them lived in the upload store's memory. The record is
 // the durable half — the worker writes `uploading`, the page turns it into `hosted` in the
-// same transaction that appends the upload op, and only a confirmed sync retires it.
+// same transaction that appends the upload op; a server echo replaces its pending card, and a
+// confirmed snapshot retires the durable record.
 //
 // `createUploadStore` pulls in the SharedWorker bundle, so the store's own read
 // (`refreshHostedPhotos`, temp ids, the in-memory mark map) is guarded from source at the end
@@ -14,7 +15,7 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Photo, SyncResponse, UploadPayload } from '$shared/types';
+import type { AppliedOp, Photo, SyncResponse, UploadPayload } from '$shared/types';
 import { buildUploadOp } from '../../src/base/upload/pipeline';
 import { SyncEngine } from '../../src/core/engine';
 import { FakeTransport } from './transportFake';
@@ -265,6 +266,52 @@ const snapshot = (photos: Photo[] = []): SyncResponse => ({
   announcements: [],
   polls: [],
   feedback: [],
+});
+
+test('an own upload echo promotes its optimistic photo to the server-assigned album row', () => {
+  const store = createAppStore();
+  store.applySync({ ...snapshot(), selfId: 7 });
+  store.setMarkBySha('sha-live', 'like', true);
+
+  const applied: AppliedOp = {
+    seq: 1,
+    actor: 7,
+    ts: 1_700_000_000_100,
+    cid: 'upload-cid',
+    op: {
+      type: 'upload',
+      cid: 'upload-cid',
+      payload: {
+        id: 42,
+        sha256: 'sha-live',
+        url: 'https://host/sha-live.webp',
+        width: 800,
+        height: 600,
+        size: 100,
+        type: 0,
+        createdAt: 1_700_000_000_000,
+      },
+    },
+  };
+  store.onOwnEcho(applied);
+
+  assert.deepEqual(store.photos, [
+    {
+      id: 42,
+      sha256: 'sha-live',
+      url: 'https://host/sha-live.webp',
+      uploader: 7,
+      width: 800,
+      height: 600,
+      size: 100,
+      createdAt: 1_700_000_000_000,
+      type: 0,
+      likes: [7],
+      dislikes: [],
+      reports: [],
+    },
+  ]);
+  assert.equal(store.pendingMarks.has('sha-live'), false);
 });
 
 /** The page's own read: records in, cards out. */

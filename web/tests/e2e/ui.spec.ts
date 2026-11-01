@@ -421,9 +421,10 @@ test('photo actions have no visible header, all hover, and open Lens through the
   await popup.close();
 });
 
-test('failed sync attempts stop until the next explicit trigger', async ({ page }) => {
-  // The socket is the sync trigger now (ADR 0026). A refused handshake leaves the sync
-  // button visible; no background retry may dial again — only clicking it does.
+test('a failed manual reconnect spins, reports failure, and stays stopped until clicked again', async ({
+  page,
+}) => {
+  // A refused handshake leaves the sync button visible; no background retry may dial again.
   let attempts = 0;
   let accept = false;
   await installSyncWorker(page);
@@ -458,22 +459,30 @@ test('failed sync attempts stop until the next explicit trigger', async ({ page 
   await expect(sync).toBeVisible();
   await expect(sync).toHaveAttribute('aria-busy', 'false');
   expect(attempts).toBe(1);
+  await sync.click();
+  await expect(sync).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByText(enCopy.sync.failed, { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(sync).toHaveAttribute('aria-busy', 'false');
+  await expect(sync).toBeEnabled();
+  await expect.poll(() => attempts).toBe(2);
+
   await page.evaluate(() => {
     window.dispatchEvent(new Event('online'));
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  // `online` and `visibilitychange` are none of them a sync trigger (ADR 0008): nothing
-  // redials on its own, however long the page sits there.
+  // Network and visibility changes do not redial a dropped socket.
   await page.waitForTimeout(1500);
-  expect(attempts).toBe(1);
+  expect(attempts).toBe(2);
   accept = true;
   await sync.click();
   // The click redials; a welcome then puts the page in the connected state, which is what
-  // hides the button entirely — a connected client syncs without being told to (ADR 0026).
-  await expect.poll(() => attempts, { timeout: 15_000 }).toBe(2);
+  // hides the button entirely — connected clients flush without another click.
+  await expect.poll(() => attempts, { timeout: 15_000 }).toBe(3);
   await expect(sync).toBeHidden({ timeout: 15_000 });
   await page.waitForTimeout(1500);
-  expect(attempts).toBe(2);
+  expect(attempts).toBe(3);
 });
 
 test('verification failures stay stopped and manual sync can recover', async ({ page }) => {

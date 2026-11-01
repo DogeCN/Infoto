@@ -35,8 +35,8 @@ export interface EngineIo {
   onCachedSnapshot?: (r: SyncResponse) => void;
   /** Ops broadcast by the server that this tab did not originate — applied live. */
   onServerOps?: (applied: AppliedOp[]) => void;
-  /** The echo of an op this tab originated: already applied optimistically, so the store
-   *  only learns the server-assigned identity (a create's real id) through it. */
+  /** The echo of an op this tab originated. Creates learn their server id here, and uploads
+   *  replace their pending card with the server-assigned album row. */
   onOwnEcho?: (applied: AppliedOp) => void;
   /** The server refused one of this tab's ops; the optimistic state rolls back. */
   onOpDropped?: (cid: string) => void;

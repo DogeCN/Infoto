@@ -27,7 +27,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 
 /** A D1Database-shaped adapter over the local Db — exactly what `d1Db` touches, including
  *  D1's result shape (`{ results }` / `{ meta }`). */
-function fakeD1(db: LocalDb): D1Database {
+function fakeD1(db: LocalDb, beforeBatch?: (stmts: readonly DbStatement[]) => void): D1Database {
   const bindable = (sql: string) => {
     const bound = (values: unknown[]) => ({
       sql,
@@ -57,10 +57,12 @@ function fakeD1(db: LocalDb): D1Database {
   };
   return {
     prepare: (sql: string) => bindable(sql),
-    batch: async (stmts: readonly DbStatement[]) =>
-      (await db.batch(stmts)).map((r) => ({
+    batch: async (stmts: readonly DbStatement[]) => {
+      beforeBatch?.(stmts);
+      return (await db.batch(stmts)).map((r) => ({
         meta: { changes: r.changes, last_row_id: r.last_row_id },
-      })),
+      }));
+    },
   } as unknown as D1Database;
 }
 
@@ -98,7 +100,10 @@ class FakeConn {
   }
 }
 
-function makeAlbum(opts: Partial<AlbumEnv> = {}) {
+function makeAlbum(
+  opts: Partial<AlbumEnv> = {},
+  beforeBatch?: (stmts: readonly DbStatement[]) => void,
+) {
   const db = openLocalDb(':memory:');
   db.exec(schema);
   const rawStorage = new DatabaseSync(':memory:');
@@ -138,7 +143,7 @@ function makeAlbum(opts: Partial<AlbumEnv> = {}) {
     getWebSockets: () => sockets.filter((s) => !s.closed),
   };
   const env: AlbumEnv = {
-    DB: fakeD1(db),
+    DB: fakeD1(db, beforeBatch),
     MEDIA_HOST_URL: 'https://facade.test',
     TURNSTILE_SECRET_KEY: ALWAYS_PASS_SECRET,
     TURNSTILE_SITE_KEY: 'site-key-1',
@@ -217,6 +222,11 @@ test('album do: a fresh client gets a whole snapshot, and its ops land with serv
   assert.equal(broadcast.applied[0]!.seq, 1);
   assert.equal(broadcast.applied[0]!.cid, 'c1');
   assert.ok(broadcast.applied[0]!.ts > 1_600_000_000_000, 'the stamp is the server clock');
+  assert.equal(
+    (broadcast.applied[0]!.op.payload as { id?: number }).id,
+    1,
+    'the upload echo carries the server-assigned photo id',
+  );
   // The hot path never writes D1: /l/ links resolve through this object.
   const probe = await album.fetch(
     new Request('https://album.internal/internal/photo/' + (1).toString(36)),
@@ -362,6 +372,22 @@ test('album do: internal flush archives the log into D1, and rehydrate forgets i
   const photos = await db.prepare('SELECT COUNT(*) AS n FROM photos').first<{ n: number }>();
   assert.equal(photos!.n, 1, 'the flush archives the logged op');
 
+  const resumed = connect();
+  await authenticate(album, resumed, 0);
+  const welcome = resumed.frames[0]!;
+  assert.equal(welcome.type, 'welcome');
+  if (welcome.type !== 'welcome') return;
+  assert.equal(welcome.seq, 1, 'the sequence includes the archived watermark');
+  assert.ok(welcome.snapshot, 'a stale client receives the archived snapshot');
+  assert.deepEqual(welcome.ops, [], 'archived ops are not replayed over that snapshot');
+
+  const current = connect();
+  await authenticate(album, current, welcome.seq);
+  const incremental = current.frames[0]!;
+  assert.equal(incremental.type, 'welcome');
+  if (incremental.type !== 'welcome') return;
+  assert.equal(incremental.snapshot, undefined, 'a current client does not fetch another snapshot');
+
   // Import-style rehydration: the object forgets its hot state and reads D1 back.
   await db.exec('DELETE FROM photos');
   await album.fetch(new Request('https://album.internal/internal/rehydrate'));
@@ -369,6 +395,54 @@ test('album do: internal flush archives the log into D1, and rehydrate forgets i
     new Request('https://album.internal/internal/photo/' + (1).toString(36)),
   );
   assert.equal(probe.status, 404, 'the rehydrated snapshot is empty, like D1');
+});
+
+test('album do: a failed D1 archive keeps the log and retries committed chunks safely', async () => {
+  let batchCalls = 0;
+  const { album, db, connect, state } = makeAlbum({}, () => {
+    batchCalls++;
+    if (batchCalls === 2) throw new Error('injected archive failure');
+  });
+  const ws = connect();
+  await authenticate(album, ws);
+  await deliver(album, ws, {
+    type: 'ops',
+    ops: Array.from({ length: 101 }, (_, i) => {
+      const sha = `photo-${i}`;
+      return {
+        type: 'upload',
+        cid: `upload-${i}`,
+        payload: {
+          sha256: sha,
+          url: `https://facade.test/${sha}.webp`,
+          width: 1,
+          height: 1,
+          size: 2,
+          type: 0,
+          createdAt: 1_700_000_000_000,
+        },
+      };
+    }),
+  });
+
+  await assert.rejects(
+    album.fetch(new Request('https://album.internal/internal/flush')),
+    /injected archive failure/,
+  );
+  const afterFailure = await db.prepare('SELECT COUNT(*) AS n FROM photos').first<{ n: number }>();
+  const retained = await state.storage.sql
+    .exec<{ n: number }>('SELECT COUNT(*) AS n FROM ops')
+    .one();
+  assert.equal(afterFailure!.n, 100, 'the first committed D1 chunk remains');
+  assert.equal(Number(retained.n), 101, 'all source ops remain available for retry');
+
+  await album.fetch(new Request('https://album.internal/internal/flush'));
+  const afterRetry = await db.prepare('SELECT COUNT(*) AS n FROM photos').first<{ n: number }>();
+  const cleared = await state.storage.sql
+    .exec<{ n: number }>('SELECT COUNT(*) AS n FROM ops')
+    .one();
+  assert.equal(afterRetry!.n, 101, 'the retry safely upserts the already-committed chunk');
+  assert.equal(Number(cleared.n), 0, 'the log clears only after the full archive succeeds');
 });
 
 test('album do: the last departure sets the idle archive alarm, a return clears it', async () => {

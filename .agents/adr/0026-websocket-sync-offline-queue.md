@@ -24,15 +24,12 @@
     There is no DO op log, no compaction alarm, no snapshot copy: every redundancy the
     prototype carried was a data-loss risk with D1 already canonical.
   - **Connection-aware UI.** The sync button hides while the socket is open _and_
-    authenticated, and shows whenever it is not — offline, dropped, or pre-hello. Sync
-    triggers stay ADR 0008's (page open, page exit, explicit request); a broken socket is
-    never retried in the background, only by the visible button.
-  - **Offline queue with client timestamps.** Every op the client commits carries `ts`
-    (ms epoch, stamped at commit). The queue lives in IndexedDB as before; browsing and
-    operating offline work unchanged. On reconnect the whole backlog leaves in **one**
-    `sync` frame (chunked only past `MAX_SYNC_OPS`), never one frame per op. The server
-    clamps each op's `ts` to its own clock and falls back to the frame's arrival time when
-    the field is absent (ops queued before this change).
+    authenticated, and shows whenever it is not — offline, dropped, or pre-hello. A broken
+    socket is never redialed in the background, only by the visible button. The initial
+    revision kept ADR 0008's no-auto-submit rule; the Fourth amendment below supersedes it.
+  - ⚠️ **Superseded by the Second amendment:** the first revision queued client-stamped `ts`
+    values and sent the backlog in a `sync` frame. The current protocol sends `ops` frames,
+    stamps each op at ingest, and carries client commit time as `ct`.
   - **Identity over the socket.** The upgrade request's `uuid` cookie resolves a returning
     visitor before `hello`; `hello` carries a Turnstile token only when there is no
     identity yet. The server re-issues the HttpOnly cookie on the 101 handshake response.
@@ -70,19 +67,26 @@
   now takes the **same** archive path as the export flush — the separate log-compaction
   (`foldOps`) and the 256-op archive threshold were deleted: every stored op is already
   folded into the snapshot the archive writes from, so the second mechanism saved nothing and
-  added a way to get D1 wrong; (2) a whole-snapshot `welcome` makes the coordinator **adopt**
+  added a way to get D1 wrong; the single archive path clears the DO log only after all D1
+  batches succeed; (2) a whole-snapshot `welcome` makes the coordinator **adopt**
   the server's `seq` as its stored position (not merely advance it), which un-strands a client
   whose stored `lastSeq` sits above a rehydrated log; (3) where a browser ships no SharedWorker
   (Safari on iOS — the "one WebSocket per browser" above silently assumed one exists), the
   same coordinator runs in the page over a loopback port, so each tab holds its own socket and
   the kick rule cycles them newest-first; no browser is locked into a queue that never sends.
+- **Fourth amendment (2026-11-01): connected writes flush automatically.** Each newly queued
+  op schedules a 16 ms coalesced flush while the socket is connected; a successful `welcome`
+  flushes the offline backlog. Page exit also attempts a flush. A dropped socket is not
+  redialed in the background; the visible sync button is the retry. This supersedes ADR 0008's
+  HTTP-era rule that adding an op never submits it.
 - **Consequences**: The page knows "connected vs offline" as first-class state, and the
-  queue's cost model is one frame per flush instead of one request per batch. The uuid
+  queue's cost model is one frame per flush instead of one request per batch. Connected
+  clients receive other actors' operations live; reconnecting clients catch up by sequence
+  or receive a snapshot. A failed D1 archive leaves the DO log and watermark intact, so
+  partially committed D1 chunks can be safely upserted on retry. The uuid
   cookie is client-settable for fresh identities, which weakens HttpOnly until the next
   reconnect re-issues it — accepted, because the uuid only carries the power the page
-  already has (post content, place marks). There is still no cross-client push: two
-  browsers converge only when each next syncs; the stateless DO was chosen so that adding
-  a per-connection op log and fan-out later is an addition, not a rewrite. The e2e suite
+  already has (post content, place marks). The e2e suite
   was reworked onto the socket in the same migration: `web/tests/e2e/albumSocket.ts`
   stands in for the sync SharedWorker (an in-page port, because the socket lives inside
   that worker and `page.routeWebSocket` cannot intercept it) and drives `/ws` frames, with
@@ -93,6 +97,6 @@
   made D1 an unflushed shadow and compaction a data-loss hazard, and broke /admin/migrate,
   which reads D1. The shipped design is the corrected middle: the DO log is hot and canonical
   between archive edges, D1 is the cold snapshot written **at** those edges (export flush, idle
-  alarm), so migrate keeps reading D1 and no fold ever deletes an op D1 has not seen. Full op-level
-  fan-out with client-side appliers — right end state, but a client store rewrite; deferred
-  until this transport exists to carry it.
+  alarm), so migrate keeps reading D1; the DO log is cleared only after that archive succeeds. Full op-level
+  fan-out is implemented: the DO broadcasts ordered `AppliedOp` batches and each connected
+  client's store applies them live.

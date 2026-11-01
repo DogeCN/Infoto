@@ -4,8 +4,8 @@
 // dense sequence number, is folded into the in-memory snapshot, and is broadcast to every
 // connection in one frame. D1 is the cold snapshot store, written only at the archive edges
 // — before a migrate export, and by the idle alarm an hour after the last connection left —
-// and read only to hydrate a cold object. There is one archive path; nothing compacts the
-// log, because every stored op is already folded into the snapshot the archive writes from.
+// and read only to hydrate a cold object. The archive writes the current snapshot before
+// clearing the log; a failed D1 batch leaves the log intact for an idempotent retry.
 //
 // One instance exists ("global"); there are no other albums. A new connection of a user
 // that already has one replaces it (one device online per account); the replaced client
@@ -336,7 +336,7 @@ export class Album {
         ? lastSeqRaw
         : 0;
     const compacted = await this.readMeta();
-    const maxSeq = await this.maxSeq();
+    const maxSeq = Math.max(compacted.compactedSeq, await this.maxSeq());
     // Behind the retained window (or fresh): the whole snapshot. A client that claims a
     // seq this object has never issued (a migrate import reset the log beneath it, or a
     // stale localStorage value) is further ahead than the server can explain, so its
@@ -470,25 +470,23 @@ export class Album {
 
   // ---------- archiving ----------
 
-  /** Apply every stored op to D1 and fold the log away: D1 becomes exactly current, the
-   *  meta snapshot moves to the latest seq, and catch-up past this point is a snapshot.
-   *  Every stored op reached the snapshot at ingest, so this never writes a D1 row for an
-   *  op the applier refused — the only thing the log needs no compaction for. */
+  /** Archive the current state to D1 before advancing the snapshot watermark and clearing
+   *  the log. If any D1 batch fails, the watermark and log stay unchanged for retry. */
   private async flush(): Promise<void> {
     await this.ensureSchema();
     const snap = await this.ensureLoaded();
     const stored = await this.readStoredOps();
     const applied = stored.map((row) => this.toApplied(row));
     await flushToD1(d1Db(this.env.DB), snap, applied);
-    const maxSeq = applied.length > 0 ? applied[applied.length - 1]!.seq : await this.maxSeq();
+    const meta = await this.readMeta();
+    const latestSeq = applied.length > 0 ? applied[applied.length - 1]!.seq : await this.maxSeq();
+    const maxSeq = Math.max(meta.compactedSeq, latestSeq);
     await this.writeMeta(snap, maxSeq);
     await this.state.storage.sql.exec('DELETE FROM ops');
   }
 
   /** The idle alarm: the same archive edge a migrate export triggers, then back to idle.
-   *  A live connection stands the archive down for its hour; archiving folds nothing away
-   *  — every stored op is already in the snapshot, and D1 needs each op's net effect, which
-   *  the snapshot carries whole. */
+   *  A live connection stands the archive down for its hour. */
   async alarm(): Promise<void> {
     if (this.state.getWebSockets().length > 0) {
       await this.state.storage.setAlarm(Date.now() + IDLE_ARCHIVE_ALARM_MS);

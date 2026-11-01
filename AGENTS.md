@@ -110,7 +110,7 @@ Uploads go to a **standalone image-host facade** deployed separately (the refere
 10. **Reusable drag-sort list**: Always use `lib/components/ReorderableList.svelte` for new sortable lists.
 11. **Measure, never guess, in responsive layout**: Derive a control's state from a measured value, not a viewport breakpoint — `web/src/lib/components/topbarFit.ts` is the worked example, including the ways measuring goes wrong (hidden-copy widths, probe placement, a zero-slack fit) and the two follow-through traps: a measured height is useless unless the content inside scales with it (a taller bar with fixed-size icons just reads as padding below the bar), and whatever sits below must derive from that height rather than keep its own width formula.
 
-12. **Sync only on explicit user request, page open, or page exit**: no queue threshold, periodic/background retry, visibility-change sync, or HTTP 429 retry. Unconfirmed operations stay in IndexedDB. Admin mutation endpoints remain immediate user-initiated writes.
+12. **`/ws` flushes queued ops automatically while connected**: new ops are coalesced for 16 ms, and a successful welcome flushes the offline IndexedDB backlog. A disconnected socket is never redialed in the background; the sync button is the retry, and page exit makes a best-effort flush. No periodic or visibility-change retries. Admin mutations are immediate user actions carried by the same op stream.
 
 ---
 

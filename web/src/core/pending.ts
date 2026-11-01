@@ -76,11 +76,12 @@ export interface HostedPhotoFields {
  *
  * A record is the client's own durable word about a photo the album does not have yet: the worker
  * writes it as `uploading`, the page turns it into `hosted` in the same transaction that appends
- * the upload op, and a successful sync deletes it. So this projection is a filter, not a
- * reconstruction — there is no second place a photo's existence could be read from and disagree.
+ * the upload op, and a server echo or snapshot replaces it with the real photo. So this
+ * projection is a filter, not a reconstruction — there is no second place a photo's existence
+ * could be read from and disagree.
  *
  * `landed` is the album's own hashes and `live` the hashes of cards an in-memory job already
- * owns, so a photo is never drawn twice: the moment a snapshot carries a sha, or a job owns it,
+ * owns, so a photo is never drawn twice: the moment the album carries a sha, or a job owns it,
  * its record-derived card is gone.
  */
 export function hostedPhotoCards(

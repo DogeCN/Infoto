@@ -34,11 +34,13 @@
 
   /** Deduplicate sync failure toasts over ten seconds. */
   let lastSyncToastAt = 0;
-  function notifySyncFailure(): void {
+  function notifySyncFailure(hasPendingChanges = true): void {
     const now = Date.now();
     if (now - lastSyncToastAt < 10_000) return;
     lastSyncToastAt = now;
-    toast.error(copy.sync.failed, { description: copy.sync.queuedRetry });
+    toast.error(copy.sync.failed, {
+      description: hasPendingChanges ? copy.sync.queuedRetry : copy.sync.offlineRetry,
+    });
   }
 
   const store = createAppStore();
@@ -322,8 +324,17 @@
   function handleRemoveUpload(jobId: string) {
     uploads.cancel(jobId);
   }
-  function handleSync() {
-    void engine.sync();
+  async function handleSync(): Promise<void> {
+    try {
+      const result = await engine.sync();
+      if (!result.ok) {
+        console.error('[sync] manual reconnect failed', result.error);
+        notifySyncFailure(store.engineState.pending > 0);
+      }
+    } catch (error) {
+      console.error('[sync] manual reconnect failed', error);
+      notifySyncFailure(store.engineState.pending > 0);
+    }
   }
 
   /** The snapshot already carries every locale, so a language change is a local re-render. */

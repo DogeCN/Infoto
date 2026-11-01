@@ -24,7 +24,7 @@
     onSortChange?: (key: SortKey) => void;
     onSortReshuffle?: () => void;
     onSettingsClick?: () => void;
-    onSyncClick?: () => void;
+    onSyncClick?: () => Promise<void>;
     onAnnouncementClick?: () => void;
     onMultiSelectClick?: () => void;
     onUploadClick?: () => void;

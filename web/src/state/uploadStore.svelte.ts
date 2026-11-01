@@ -238,8 +238,9 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
   // ---- Cards the photo records state ----
   // The record is the client's own word about a photo the album does not have yet. The worker
   // writes it as `uploading`, the page turns it into `hosted` in the same transaction that
-  // appends the upload op, and a confirmed sync deletes it. The card is a filter over those
-  // records, so there is no second place a photo's existence could be read from and disagree.
+  // appends the upload op. A server echo replaces its pending card with the real photo; a later
+  // snapshot retires the durable record. The card is a filter over those records, so there is no
+  // second place a photo's existence could be read from and disagree.
   /** The projection, in upload order. */
   let hostedRecords = $state<HostedPhotoFields[]>([]);
   /** Temp ids for those cards, from the same counter as the live ones, so the two card sets can
@@ -329,8 +330,8 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
       }
     }
     // Photos the records state as hosted: the same card a `done` job leaves behind, still
-    // awaiting the sync that turns it into a row. The guard mirrors the live `done` path, so
-    // the moment the snapshot carries this sha the real photo takes the card's place.
+    // awaiting its server echo. The guard mirrors the live `done` path, so the moment the
+    // album row carries this sha the real photo takes the card's place.
     for (const q of hostedRecords) {
       if (landedShas.has(q.sha256)) continue;
       const id = tempIdBySha.get(q.sha256);
@@ -381,7 +382,7 @@ export function createUploadStore(store: ReturnType<typeof createAppStore>, engi
     return m;
   });
 
-  // Remove duplicates and terminal jobs confirmed by a snapshot without subscribing cleanup writes.
+  // Remove duplicates and terminal jobs confirmed by an album row without subscribing cleanup writes.
   $effect(() => {
     const shas = new Set(store.photos.map((p) => p.sha256));
     const toDrop: string[] = [];

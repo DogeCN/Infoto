@@ -34,8 +34,12 @@ browse and upload; one account holds the admin rights.
 - **Announcements** can embed photos, polls and Markdown; **polls** support multiple choice;
   **suggestions** are readable by everyone and readable by the admin only when signed in as it.
 - **Admin** manages content from `/admin`, and can export or import the whole album as SQL.
-- **Works offline**: the album you have already seen opens without a network and uploads
-  queue until you are back.
+- **Partly works offline**: after the first online visit, the app shell and last album snapshot
+  can open without a network. Cross-origin images and videos are cached by the service worker as
+  they load, including hosts that do not enable CORS. Offline media is limited to files the
+  browser retained; storage quotas, eviction, and user-cleared site data prevent a permanence
+  guarantee. Videos are fetched as complete files for offline playback. Changes stay queued
+  locally and sync when connected; after a dropped connection, click **Sync** to reconnect.
 
 Media never passes through the album server. The browser uploads the finished file directly
 to a media host you control, and the album stores only the URL.
@@ -182,7 +186,9 @@ exactly like a real facade, so local failures are real failures. **The port live
 - **公告**可内嵌图片、投票和 Markdown；**投票**支持多选；**留言建议**对所有人可读，
   仅在以管理员身份登录后可读。
 - **管理后台**在 `/admin`，可导出或导入整站数据（SQL）。
-- **离线可用**：看过的相册断网也能打开，上传会排队到网络恢复。
+- **部分支持离线**：首次联网后，应用页面和最近的相册快照可在断网时打开。服务工作线程会在跨域图片、
+  视频加载时缓存文件，也支持未开放 CORS 的媒体宿主。离线可用范围取决于浏览器保留的文件；存储配额、
+  浏览器淘汰和用户清理站点数据意味着无法保证永久保存。视频会按完整文件获取，以便离线播放。更改会保存在本地并在连接后同步；连接断开后，点击“同步”重试连接。
 
 媒体文件从不经过相册服务器：浏览器把成品直传到你自己控制的图床，相册只保存返回的 URL。
 

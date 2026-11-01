@@ -133,6 +133,8 @@ type OpType =
 
 /** Payload carried by an `upload` op (metadata of a photo already on the host). */
 export interface UploadPayload {
+  /** Server-assigned photo id, present on applied echoes and omitted by upload clients. */
+  id?: number;
   sha256: string;
   /** Image-host direct URL returned by /upload (`data` field). */
   url: string;

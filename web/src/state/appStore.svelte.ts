@@ -343,9 +343,10 @@ class AppState {
     }
   }
 
-  /** This tab's own echo: the optimistic state is already on screen; a create learns its
-   *  server-assigned id here, and the ack bookkeeping closes out. */
+  /** This tab's own echo: uploads enter the album here; other optimistic ops only need ack
+   *  bookkeeping or a server-assigned create id. */
   onOwnEcho(applied: AppliedOp): void {
+    if (applied.op.type === 'upload') this.applyServerOp(applied);
     if (!applied.cid) return;
     const handlers = this.ackHandlers.get(applied.cid);
     if (!handlers) return;
@@ -519,7 +520,7 @@ class AppState {
     this.allFeedback = r.selfId === 0 ? r.feedback : [];
   }
 
-  // Server-broadcast application (foreign ops, and catch-up replays)
+  // Server-applied operations (foreign ops, catch-up, and confirmed upload echoes)
 
   /** Fold one server-applied op into this tab's state. Every branch mirrors the
    *  Durable Object's applier (worker/album-ops.ts) so both sides compute the same
@@ -534,8 +535,12 @@ class AppState {
         const url = typeof p.url === 'string' ? p.url : null;
         const id = typeof p.id === 'number' ? p.id : null;
         if (!sha256 || !url || id === null) return;
-        if (this.photos.some((photo) => photo.sha256 === sha256)) return;
+        if (this.photos.some((photo) => photo.sha256 === sha256)) {
+          this.forgetPendingPhoto(sha256);
+          return;
+        }
         const type = (p.type === 0 || p.type === 1 || p.type === 2 ? p.type : 0) as Photo['type'];
+        const marks = this.pendingMarks.get(sha256) ?? ops.EMPTY_MARKS;
         this.photos = [
           ...this.photos,
           {
@@ -548,11 +553,12 @@ class AppState {
             size: typeof p.size === 'number' ? p.size : 0,
             createdAt: typeof p.createdAt === 'number' ? Math.min(p.createdAt, a.ts) : a.ts,
             type,
-            likes: [],
-            dislikes: [],
-            reports: [],
+            likes: marks.likes,
+            dislikes: marks.dislikes,
+            reports: marks.reports,
           },
         ];
+        this.forgetPendingPhoto(sha256);
         return;
       }
       case 'like':
@@ -822,7 +828,7 @@ class AppState {
     return true;
   }
 
-  /** A pending card is gone for good (cancelled / failed / dismissed): drop its state. */
+  /** A card has left the pending projection (confirmation, cancellation, failure, or dismissal). */
   forgetPendingPhoto(sha256: string): void {
     if (!sha256) return;
     // Nothing will ever state these marks: the row they belong to is not coming.

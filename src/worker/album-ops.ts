@@ -103,6 +103,7 @@ export function applySnapshotOp(
   switch (op.type) {
     case 'upload': {
       const p = record(op.payload);
+      delete p.id;
       const sha256 = text(p.sha256, 128);
       const url = text(p.url, 2048);
       const width = count(p.width);
@@ -114,9 +115,15 @@ export function applySnapshotOp(
       if (type === null || createdAt === null || createdAt === 0) return false;
       // Keep upload URL validation consistent with the read proxy.
       if (!isAllowedMediaUrl(ctx, url)) return false;
-      if (snap.photos.some((photo) => photo.sha256 === sha256)) return false;
+      const existing = snap.photos.find((photo) => photo.sha256 === sha256);
+      if (existing) {
+        stampId(op, existing.id);
+        return false;
+      }
+      const id = nextId(snap.photos);
+      stampId(op, id);
       snap.photos.push({
-        id: nextId(snap.photos),
+        id,
         sha256,
         url,
         uploader: user.id,
@@ -734,23 +741,15 @@ export function statementsForOp(applied: AppliedOp, snap: AlbumSnapshot): DbStat
 /** D1's per-query cap on bound parameters is 100; chunk accordingly. */
 export const MAX_BATCH_STATEMENTS = 100;
 
-/** Flush applied ops to D1: per-op upserts, chunked into transactions. A chunk that
- *  fails is dropped on its own, leaving the others applied. */
+/** Flush applied ops to D1 in bounded transactions. Any failure aborts the archive so the
+ *  Durable Object retains its log and can safely retry the idempotent upserts. */
 export async function flushToD1(db: Db, snap: AlbumSnapshot, applied: AppliedOp[]): Promise<void> {
   const statements: DbStatement[] = [];
   for (const appliedOp of applied) {
-    try {
-      statements.push(...statementsForOp(appliedOp, snap));
-    } catch (e) {
-      console.error('[album] flush statement failed', appliedOp.op.type, e);
-    }
+    statements.push(...statementsForOp(appliedOp, snap));
   }
   for (let offset = 0; offset < statements.length; offset += MAX_BATCH_STATEMENTS) {
     const chunk = statements.slice(offset, offset + MAX_BATCH_STATEMENTS);
-    try {
-      await db.batch(chunk);
-    } catch (e) {
-      console.error('[album] flush chunk dropped', chunk.length, e);
-    }
+    await db.batch(chunk);
   }
 }

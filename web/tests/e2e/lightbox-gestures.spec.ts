@@ -101,9 +101,7 @@ test('a zoomed photo drags freely, then springs back to the centre on release', 
   expect(Math.abs(home.ty)).toBeLessThanOrEqual(2);
 });
 
-test('a double-click zoomed photo drags, then springs back to the centre', async ({
-  page,
-}) => {
+test('a double-click zoomed photo drags, then springs back to the centre', async ({ page }) => {
   const lightbox = await openLightbox(page);
   const media = await lightbox.locator('img.lb-media').boundingBox();
   const cx = media!.x + media!.width / 2;
@@ -134,9 +132,7 @@ test('a double-click zoomed photo drags, then springs back to the centre', async
   expect(Math.abs(home.ty)).toBeLessThanOrEqual(2);
 });
 
-test('Ctrl+drag rotates where the photo sits, keeping its anchored offset', async ({
-  page,
-}) => {
+test('Ctrl+drag rotates where the photo sits, keeping its anchored offset', async ({ page }) => {
   const lightbox = await openLightbox(page);
   const media = await lightbox.locator('img.lb-media').boundingBox();
   const cx = media!.x + media!.width / 2;
@@ -173,9 +169,7 @@ test('Ctrl+drag rotates where the photo sits, keeping its anchored offset', asyn
   expect(Math.abs(rotated.ty)).toBeLessThanOrEqual(2);
 });
 
-test('a lightly zoomed photo drags instead of swiping, then springs back', async ({
-  page,
-}) => {
+test('a lightly zoomed photo drags instead of swiping, then springs back', async ({ page }) => {
   const lightbox = await openLightbox(page);
   const media = await lightbox.locator('img.lb-media').boundingBox();
   const cx = media!.x + media!.width / 2;

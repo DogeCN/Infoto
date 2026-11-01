@@ -11,21 +11,33 @@
   interface Props {
     pendingCount?: number;
     isSyncing?: boolean;
-    onSync?: () => void;
+    onSync?: () => Promise<void>;
   }
 
   let { pendingCount = 0, isSyncing = false, onSync }: Props = $props();
 
   let iconEl = $state<HTMLElement | undefined>(undefined);
+  let connecting = $state(false);
+  let busy = $derived(isSyncing || connecting);
   let angle = 0;
   let lastT: number | undefined;
 
   /** One frame of slack before the transition is dropped, so the turn is never cut short. */
   const FRAME_MS = 32;
 
+  async function startSync(): Promise<void> {
+    if (busy || !onSync) return;
+    connecting = true;
+    try {
+      await onSync();
+    } finally {
+      connecting = false;
+    }
+  }
+
   $effect(() => {
     if (!iconEl) return;
-    if (isSyncing) {
+    if (busy) {
       // Keep spinning from the current angle, roughly one turn per second.
       let raf = 0;
       const tick = (t: number) => {
@@ -61,9 +73,10 @@
     aria-label={pendingCount > 0
       ? fmt(copy.sync.pendingCount, { count: pendingCount })
       : copy.sync.button}
-    aria-busy={isSyncing}
-    class="icon-button relative p-2 {isSyncing ? 'text-primary' : ''}"
-    onclick={onSync}
+    aria-busy={busy}
+    disabled={connecting}
+    class="icon-button relative p-2 {busy ? 'text-primary' : ''}"
+    onclick={startSync}
   >
     <span bind:this={iconEl} class="inline-flex will-change-transform">
       <RefreshCw class="size-[var(--bar-icon)]" />
